@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { BrandHeader } from '@/components/BrandHeader';
 import { auth, signIn } from '@/lib/auth';
 
 export default async function Home() {
@@ -8,20 +9,28 @@ export default async function Home() {
   }
 
   return (
-    <main>
-      <h1>Lead Discovery Platform</h1>
-      <p>Multi-tenant B2B lead discovery, qualification, outreach, and intelligence.</p>
-      <p>Phase 1 — workspace foundation. Sign in to get started.</p>
-      <form
-        action={async () => {
-          'use server';
-          await signIn('google', { redirectTo: '/dashboard' });
-        }}
-      >
-        <button type="submit" className="signin-btn">
-          Sign in with Google
-        </button>
-      </form>
-    </main>
+    <>
+      <BrandHeader />
+      <main>
+        <section className="hero">
+          <p className="eyebrow">Commercial Intelligence Platform</p>
+          <h1>Find the right opportunities for the products you sell.</h1>
+          <p className="lede">
+            Multi-tenant B2B lead discovery, qualification, outreach, and intelligence — with
+            evidence, traceability, and a learning layer.
+          </p>
+          <form
+            action={async () => {
+              'use server';
+              await signIn('google', { redirectTo: '/dashboard' });
+            }}
+          >
+            <button type="submit" className="signin-btn">
+              Sign in with Google
+            </button>
+          </form>
+        </section>
+      </main>
+    </>
   );
 }

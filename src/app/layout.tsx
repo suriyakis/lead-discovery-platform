@@ -2,9 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Lead Discovery Platform',
+  title: 'Signal Works',
   description:
-    'Multi-tenant B2B lead discovery, qualification, outreach, and intelligence platform.',
+    'Find the right opportunities for the products you sell. Multi-tenant B2B lead discovery, qualification, outreach, and intelligence.',
 };
 
 export default function RootLayout({
