@@ -99,6 +99,10 @@ export default async function Dashboard() {
                 <span className="muted">Approve, reject, comment on harvested records.</span>
               </li>
               <li>
+                <Link href="/leads">Leads →</Link>
+                <span className="muted">Records the classification engine ranked as relevant.</span>
+              </li>
+              <li>
                 <Link href="/learning">Learning memory →</Link>
                 <span className="muted">Lessons distilled from review feedback.</span>
               </li>

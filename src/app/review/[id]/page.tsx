@@ -18,6 +18,7 @@ import {
   ignoreReviewItem,
   rejectReviewItem,
 } from '@/lib/services/review';
+import { listQualificationsForRecord } from '@/lib/services/qualification';
 
 export default async function ReviewDetail({
   params,
@@ -50,6 +51,7 @@ export default async function ReviewDetail({
   }
 
   const { item, sourceRecord, comments } = detail;
+  const qualList = await listQualificationsForRecord(ctx, sourceRecord.id);
   const normalized = sourceRecord.normalizedData as Record<string, unknown>;
   const title = (normalized.title as string | undefined) ?? sourceRecord.sourceUrl ?? `Record ${sourceRecord.id}`;
   const snippet = normalized.snippet as string | undefined;
@@ -162,6 +164,75 @@ export default async function ReviewDetail({
               </>
             ) : null}
           </dl>
+        </section>
+
+        <section>
+          <h2>Qualifications ({qualList.length})</h2>
+          {qualList.length === 0 ? (
+            <p className="muted">
+              No active product profiles. Create one to start classifying records.
+            </p>
+          ) : (
+            <ul className="qual-list">
+              {qualList.map(({ qualification, product }) => {
+                const evidence = qualification.evidence as {
+                  contributions?: Array<{ kind: string; value: string; delta: number }>;
+                };
+                const contribs = evidence.contributions ?? [];
+                return (
+                  <li key={qualification.id.toString()}>
+                    <div className="qual-head">
+                      <Link href={`/products/${product.id}`}>{product.name}</Link>
+                      <span className={qualification.isRelevant ? 'badge badge-good' : 'badge badge-bad'}>
+                        {qualification.isRelevant ? 'relevant' : 'not relevant'}
+                      </span>
+                      <span className="qual-score">
+                        score <strong>{qualification.relevanceScore}</strong>
+                        <span className="muted"> · threshold {product.relevanceThreshold}</span>
+                      </span>
+                      <span className="muted">conf {qualification.confidence}</span>
+                      <span className="muted">via {qualification.method}</span>
+                    </div>
+                    {qualification.qualificationReason ? (
+                      <p className="qual-reason qual-reason-good">
+                        <strong>Why qualified:</strong> {qualification.qualificationReason}
+                      </p>
+                    ) : null}
+                    {qualification.rejectionReason ? (
+                      <p className="qual-reason qual-reason-bad">
+                        <strong>Why rejected:</strong> {qualification.rejectionReason}
+                      </p>
+                    ) : null}
+                    {qualification.matchedKeywords.length > 0 ? (
+                      <p className="muted">
+                        Matched keywords: {qualification.matchedKeywords.join(', ')}
+                      </p>
+                    ) : null}
+                    {qualification.disqualifyingSignals.length > 0 ? (
+                      <p className="muted">
+                        Disqualifying: {qualification.disqualifyingSignals.join(', ')}
+                      </p>
+                    ) : null}
+                    {contribs.length > 0 ? (
+                      <details className="qual-evidence">
+                        <summary>Evidence ({contribs.length} contributions)</summary>
+                        <ul className="contrib-list">
+                          {contribs.map((c, idx) => (
+                            <li key={idx}>
+                              <code>{c.kind}</code> · {c.value} ·{' '}
+                              <span className={c.delta >= 0 ? 'delta-good' : 'delta-bad'}>
+                                {c.delta > 0 ? `+${c.delta}` : c.delta}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </section>
 
         {item.state !== 'archived' ? (

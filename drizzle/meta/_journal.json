@@ -43,6 +43,13 @@
       "when": 1777663972823,
       "tag": "0005_wandering_killraven",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1777670560881,
+      "tag": "0006_crazy_vertigo",
+      "breakpoints": true
     }
   ]
 }

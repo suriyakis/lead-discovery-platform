@@ -112,6 +112,25 @@ spend.
 
 **Phase 6 complete.**
 
+## Phase 7 — Classification Engine
+
+**Goal.** Source records get scored and labelled against active product profiles
+on the way in, with explainable evidence for every verdict.
+
+**Design lock (2026-05-01):** the engine is rule-first — keyword/sector
+matching with learning-lesson modifiers — to keep classification deterministic
+and free in Phase 7. The AI provider path stays optional and lands later via
+the existing `IAIProvider` abstraction without changing the table shape.
+`qualifications` is keyed `(workspace_id, source_record_id, product_profile_id)`
+so re-classifying upserts in place rather than accumulating duplicates.
+
+- [x] **P7-01.** `qualifications` schema (migration `0006_crazy_vertigo.sql`). One row per (record, product) pair with unique index, plus indexes on `(workspace_id, product_profile_id)` and `(workspace_id, is_relevant)`. Stores `is_relevant`, `relevance_score (0..100)`, `confidence`, qualification + rejection reasons, matched keywords, disqualifying signals, evidence JSON, method (`rules | ai | hybrid`), optional model id.
+- [x] **P7-02.** Pure rule engine in `qualification-engine.ts`. `classifyRecord(record, product, lessons)` returns a `ClassificationVerdict` with full evidence (every contribution recorded). Scoring: BASE 50, +6 per include keyword, -25 per exclude, +10 per sector hit, -50 per forbidden phrase (also forces `isRelevant=false`), ±10/-15 for positive/negative learning lessons. Confidence scales with the count of matching signals, capped 30..95. Lesson trigger token = longest word >4 chars in the rule (Phase 12 swaps for embedding similarity).
+- [x] **P7-03.** DB-backed service `qualification.ts`: `classifySourceRecord` iterates every active product profile, retrieves both product-scoped AND workspace-wide lessons via `getRelevantLessons`, runs the engine, upserts the row. `reclassifyWorkspace` re-runs over all source records (audit-logged). `listQualificationsForRecord`, `topQualification`, `listLeads(filter)` for /leads UI. Connector runner now calls `classifySourceRecord` best-effort after each insertRecord.
+- [x] **P7-04.** Tests in `src/tests/qualification.test.ts` (17 cases): one row per active product, inactive products skipped, idempotent upsert, top-1 ordering, product-scoped lessons influence only that product, runner auto-classifies, reclassifyWorkspace covers every record, no cross-workspace leak, plus engine unit cases (forbidden forces irrelevant, evidence trail completeness, confidence bounds). **189/189 total tests pass.**
+- [x] **P7-05.** UI: `/review/[id]` Qualifications panel (one card per product profile with score, threshold, reason, matched keywords, disqualifying signals, expandable evidence/contribution list). New `/leads` page with product filter, relevant-only/all toggle, score/recent sort, deep-links to the review item.
+- [ ] **P7-06.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

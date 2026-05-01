@@ -24,6 +24,7 @@ import {
   type NewSourceRecord,
 } from '@/lib/db/schema/connectors';
 import type { WorkspaceContext } from '@/lib/services/context';
+import { classifySourceRecord } from '@/lib/services/qualification';
 import { seedReviewItem } from '@/lib/services/review';
 import { getConnector } from './registry';
 
@@ -205,6 +206,14 @@ async function insertRecord(
     await seedReviewItem(ctx.workspaceId, inserted.id);
   } catch (err) {
     console.error('[runner] seedReviewItem failed:', err);
+  }
+
+  // Classify against every active product profile in the workspace.
+  // Best-effort — failure here logs but does not fail the run.
+  try {
+    await classifySourceRecord(ctx, inserted.id);
+  } catch (err) {
+    console.error('[runner] classifySourceRecord failed:', err);
   }
 
   return true;
