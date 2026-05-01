@@ -102,7 +102,7 @@ platform default in env. Every provider call logs `usage_log` with
 spend.
 
 - [x] **P6-01.** `workspace_secrets` schema with AES-256-GCM encryption (`MASTER_KEY` env). `crypto.ts` (encrypt/decrypt round-trip with auth tag), `secrets.ts` (set/get/has/delete/list, all admin-gated, audit-logged, no value leakage), `resolveProviderKey(ctx, secretKey, envVarName)` returning `{key, source}`. **150/150 tests pass.**
-- [ ] **P6-02.** SerpAPI search provider implementation.
+- [x] **P6-02.** SerpAPI search provider implementation. ISearchProvider updated to take WorkspaceContext + return SearchOutcome with usage. SerpAPIProvider with key resolution (workspace→platform→null), HTTP error mapping (401→unauthorized, 429→rate_limited, 5xx→upstream_error), 15s timeout via AbortController, body.error → provider_error, MockSearchProvider updated to return `{results, usage:{keySource:'mock',units:1,cost:0}}`. **166/166 tests pass.**
 - [ ] **P6-03.** `internet_search` connector that uses ISearchProvider + recipe queries.
 - [ ] **P6-04.** Workspace settings page `/settings/integrations`.
 - [ ] **P6-05.** Connector + recipe UI under `/connectors`.

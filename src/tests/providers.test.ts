@@ -59,26 +59,38 @@ describe('MockAIProvider.generateJson', () => {
 
 describe('MockSearchProvider', () => {
   const search = new MockSearchProvider();
+  const ctx = {
+    workspaceId: 1n,
+    userId: 'test-user',
+    role: 'owner' as const,
+  };
 
   it('returns the requested number of results, capped', async () => {
-    const r3 = await search.search('q', { maxResults: 3 });
-    expect(r3).toHaveLength(3);
-    const r60 = await search.search('q', { maxResults: 60 });
-    expect(r60).toHaveLength(50);
-    const rDefault = await search.search('q');
-    expect(rDefault).toHaveLength(5);
+    const r3 = await search.search(ctx, 'q', { maxResults: 3 });
+    expect(r3.results).toHaveLength(3);
+    const r60 = await search.search(ctx, 'q', { maxResults: 60 });
+    expect(r60.results).toHaveLength(50);
+    const rDefault = await search.search(ctx, 'q');
+    expect(rDefault.results).toHaveLength(5);
+  });
+
+  it('returns usage with mock keySource and zero cost', async () => {
+    const r = await search.search(ctx, 'q');
+    expect(r.usage.keySource).toBe('mock');
+    expect(r.usage.costEstimateCents).toBe(0);
+    expect(r.usage.units).toBe(1);
   });
 
   it('is deterministic for the same query', async () => {
-    const a = await search.search('foo', { maxResults: 5 });
-    const b = await search.search('foo', { maxResults: 5 });
-    expect(a).toEqual(b);
+    const a = await search.search(ctx, 'foo', { maxResults: 5 });
+    const b = await search.search(ctx, 'foo', { maxResults: 5 });
+    expect(a.results).toEqual(b.results);
   });
 
   it('differs across queries', async () => {
-    const a = await search.search('apple', { maxResults: 1 });
-    const b = await search.search('banana', { maxResults: 1 });
-    expect(a[0]?.url).not.toBe(b[0]?.url);
+    const a = await search.search(ctx, 'apple', { maxResults: 1 });
+    const b = await search.search(ctx, 'banana', { maxResults: 1 });
+    expect(a.results[0]?.url).not.toBe(b.results[0]?.url);
   });
 });
 
