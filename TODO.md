@@ -42,7 +42,18 @@ Each task ends with the app runnable + tests passing.
 - [x] **P1-12.** Minimal UI live and verified end-to-end. `src/app/page.tsx` (sign-in form via server action), `src/app/dashboard/page.tsx` (user info + workspace + role). Verified with real Google sign-in: user `jb.poltrade@gmail.com` promoted to `super_admin`, "Personal" workspace created with random slug, member row as `owner`, `audit_log` entry of kind `workspace.bootstrap` written. Note: `AUTH_URL=http://localhost:3000` is required to match the OLD Wandizz OAuth client's registered redirect URIs (the new dedicated client at `...8fpof5gm9b9r20mo293jg3vpahs8guff` had silent corruption on its redirect URIs that we couldn't fix; reverted to old client).
 - [x] **P1-13.** Deployed to agregat 2026-05-01 at `https://discover.nulife.pl`. Production stack: postgres + app via `docker-compose.prod.yml`, nginx vhost reverse-proxying `127.0.0.1:3001`, certbot SSL (Let's Encrypt, expires 2026-07-30). Migrations applied, `/api/health` returns 200 over HTTPS, sign-in flow live.
 
-**Phase 1 complete.** Tagged `phase-1-complete` in git. Next phase is P2 (Product Profiles).
+**Phase 1 complete.** Tagged `phase-1-complete` in git.
+
+## Phase 2 — Product Profiles
+
+- [x] **P2-01.** `product_profiles` schema (25 cols + reserved fields for Phase 9/13). Migration `0001_oval_stardust.sql` applied.
+- [x] **P2-02.** Service `src/lib/services/product-profile.ts`: create / get / list / update / archive / restore. Workspace-scoped, role-gated, transactional, audit-logged.
+- [x] **P2-03.** 21-test suite in `src/tests/product-profile.test.ts`. **76 / 76 total tests pass.**
+- [x] **P2.5.** Visual baseline: `signal/works` brand pulled from `suriyakis/market-navigator`. `BrandHeader` component, theme tokens, hero copy.
+- [x] **P2-04.** API surface: `auth-context.ts` (workspace resolver), `http.ts` (error mapper), Zod schemas, `/api/products` (GET/POST), `/api/products/[id]` (GET/PATCH/DELETE).
+- [x] **P2-05.** `/products` list page (active + archived sections, "+ New product" CTA).
+- [x] **P2-06.** `/products/new` create form + `/products/[id]` edit form via server actions. Shared `ProductFields` component with all 14 editable fields. Archive/restore for admins+.
+- [ ] **P2-07.** Deploy to prod: `git pull && docker compose build && pnpm db:migrate && smoke test /products`.
 
 ## Discovered along the way
 
