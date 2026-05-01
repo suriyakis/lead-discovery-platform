@@ -57,6 +57,17 @@ Each task ends with the app runnable + tests passing.
 
 **Phase 2 complete.**
 
+## Phase 3 — Connector Framework
+
+- [x] **P3-01.** Schema: connectors, connector_recipes, connector_runs, connector_run_logs, source_records (5 tables, 2 enums). Migration `0002_careful_titania.sql` applied.
+- [x] **P3-02.** ISourceConnector interface + HarvesterEvent types in `src/lib/connectors/types.ts`. NormalizedRecord shape with recordType + raw + normalized + evidence + confidence.
+- [x] **P3-03.** Connector registry in `src/lib/connectors/registry.ts`. registerConnector/getConnector/listConnectors + reset for tests.
+- [x] **P3-04.** Mock connector in `src/lib/connectors/mock.ts` — deterministic SHA-256-seeded records, `count`/`seed`/`delayMs`/`failAfter` recipe controls. Self-registers on import.
+- [x] **P3-05.** Runner in `src/lib/connectors/runner.ts`: marks run running, iterates events, persists logs/records, handles dedupe (unique conflict = silent skip), updates progress, ends as succeeded/failed/cancelled.
+- [x] **P3-06.** Service `src/lib/services/connector-run.ts`: createConnector (admin-gated), createRecipe, listRecipes, startRun (member+, refuses inactive connectors, snapshots recipe at run time), getRun, listRuns, listRunLogs, listSourceRecords. Each mutation emits audit_log.
+- [x] **P3-07.** Tests in `src/tests/connector.test.ts` (15 cases): happy path, deterministic seed, dedupe, fatal error, workspace isolation, role gates, audit emission, inactive-connector refusal, error shape. **91 / 91 total tests pass.**
+- [ ] **P3-08.** Deploy to prod.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

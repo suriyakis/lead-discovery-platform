@@ -6,3 +6,4 @@ export * from './auth';
 export * from './workspaces';
 export * from './audit';
 export * from './products';
+export * from './connectors';

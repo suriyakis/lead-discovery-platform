@@ -15,6 +15,13 @@
       "when": 1777657864197,
       "tag": "0001_oval_stardust",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777660923582,
+      "tag": "0002_careful_titania",
+      "breakpoints": true
     }
   ]
 }
