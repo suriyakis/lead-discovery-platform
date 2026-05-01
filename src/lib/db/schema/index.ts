@@ -7,3 +7,4 @@ export * from './workspaces';
 export * from './audit';
 export * from './products';
 export * from './connectors';
+export * from './review';

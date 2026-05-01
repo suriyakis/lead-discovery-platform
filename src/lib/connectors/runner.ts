@@ -24,6 +24,7 @@ import {
   type NewSourceRecord,
 } from '@/lib/db/schema/connectors';
 import type { WorkspaceContext } from '@/lib/services/context';
+import { seedReviewItem } from '@/lib/services/review';
 import { getConnector } from './registry';
 
 export interface RunResult {
@@ -184,9 +185,10 @@ async function insertRecord(
   // in `run`, so encode it.
   row.sourceSystem = `connector:${run.connectorId.toString()}`;
 
+  let inserted: { id: bigint } | undefined;
   try {
-    await db.insert(sourceRecords).values(row);
-    return true;
+    const result = await db.insert(sourceRecords).values(row).returning({ id: sourceRecords.id });
+    inserted = result[0];
   } catch (err) {
     if (err instanceof Error && /duplicate key/.test(err.message)) {
       // Dedupe — same workspace+system+id already exists. Not an error.
@@ -194,6 +196,18 @@ async function insertRecord(
     }
     throw err;
   }
+
+  if (!inserted) return false;
+
+  // Auto-create the review_items row so the user can act on this lead.
+  // Best-effort — failure here logs but doesn't fail the whole run.
+  try {
+    await seedReviewItem(ctx.workspaceId, inserted.id);
+  } catch (err) {
+    console.error('[runner] seedReviewItem failed:', err);
+  }
+
+  return true;
 }
 
 function clampConfidence(input: number): number {

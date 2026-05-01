@@ -94,6 +94,10 @@ export default async function Dashboard() {
                 <Link href="/products">Product Profiles →</Link>
                 <span className="muted">Define what you sell. Drives discovery and outreach.</span>
               </li>
+              <li>
+                <Link href="/review">Review queue →</Link>
+                <span className="muted">Approve, reject, comment on harvested records.</span>
+              </li>
             </ul>
           </section>
         ) : null}

@@ -70,6 +70,15 @@ Each task ends with the app runnable + tests passing.
 
 **Phase 3 complete.**
 
+## Phase 4 — Review Queue
+
+- [x] **P4-01.** Schema: `review_items`, `review_comments`. State enum (new/needs_review/approved/rejected/ignored/duplicate/archived). Unique index on (workspace, source_record). Migration `0003_eminent_talkback.sql` applied.
+- [x] **P4-02.** Service `src/lib/services/review.ts`: seed (idempotent), list (state/assignee filters), get with joined source record + commenters, approve/reject/ignore/flag/archive (admin-only), assign, comment, getStateCounts. Audit-logged on every mutation.
+- [x] **P4-03.** Runner now calls `seedReviewItem` after each successful source_record insert. Tests verify auto-seed.
+- [x] **P4-04.** Tests in `src/tests/review.test.ts` (19 cases): runner integration, listing, all transitions, comment validation/audit, assignment, counts, isolation. **110 / 110 total tests pass.**
+- [x] **P4-05.** UI: `/review` (state-tab filters with counts, summary cards) + `/review/[id]` (source detail, action row, reason-rejection form, threaded comments, server actions for every mutation).
+- [ ] **P4-06.** Deploy to prod.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
