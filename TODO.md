@@ -53,7 +53,9 @@ Each task ends with the app runnable + tests passing.
 - [x] **P2-04.** API surface: `auth-context.ts` (workspace resolver), `http.ts` (error mapper), Zod schemas, `/api/products` (GET/POST), `/api/products/[id]` (GET/PATCH/DELETE).
 - [x] **P2-05.** `/products` list page (active + archived sections, "+ New product" CTA).
 - [x] **P2-06.** `/products/new` create form + `/products/[id]` edit form via server actions. Shared `ProductFields` component with all 14 editable fields. Archive/restore for admins+.
-- [ ] **P2-07.** Deploy to prod: `git pull && docker compose build && pnpm db:migrate && smoke test /products`.
+- [x] **P2-07.** Deployed to https://discover.nulife.pl 2026-05-01. SHA `f586fd1`. New app container rebuilt with the /products UI; migration `0001_oval_stardust.sql` applied (product_profiles table live). Smoke tests pass: /api/health 200, /api/products 401 (correct, requires auth), /products 307 (redirects unauthenticated users).
+
+**Phase 2 complete.**
 
 ## Discovered along the way
 
