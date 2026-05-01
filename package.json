@@ -10,15 +10,39 @@
     "pnpm": ">=9.0.0"
   },
   "scripts": {
-    "dev": "echo 'Phase 0 skeleton — implement in P1-02.' && exit 1",
-    "build": "echo 'Phase 0 skeleton — implement in P1-02.' && exit 1",
-    "start": "echo 'Phase 0 skeleton — implement in P1-02.' && exit 1",
-    "test": "echo 'Phase 0 skeleton — implement in P1-10.' && exit 1",
-    "test:watch": "echo 'Phase 0 skeleton — implement in P1-10.' && exit 1",
-    "typecheck": "echo 'Phase 0 skeleton — implement in P1-01.' && exit 1",
-    "lint": "echo 'Phase 0 skeleton — implement in P1-01.' && exit 1",
-    "db:generate": "echo 'Phase 0 skeleton — implement in P1-03.' && exit 1",
-    "db:migrate": "echo 'Phase 0 skeleton — implement in P1-04.' && exit 1",
-    "db:studio": "echo 'Phase 0 skeleton — implement in P1-03.' && exit 1"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "next lint",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,md}\"",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "next-auth": "5.0.0-beta.25",
+    "@auth/drizzle-adapter": "^1.7.0",
+    "drizzle-orm": "^0.38.0",
+    "postgres": "^3.4.5",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "drizzle-kit": "^0.30.0",
+    "eslint": "^9.18.0",
+    "eslint-config-next": "^15.1.0",
+    "prettier": "^3.4.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
   }
 }
