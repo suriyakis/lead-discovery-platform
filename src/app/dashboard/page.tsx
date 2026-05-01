@@ -102,6 +102,10 @@ export default async function Dashboard() {
                 <Link href="/learning">Learning memory →</Link>
                 <span className="muted">Lessons distilled from review feedback.</span>
               </li>
+              <li>
+                <Link href="/settings/integrations">Settings →</Link>
+                <span className="muted">Integration keys, BYOK, workspace config.</span>
+              </li>
             </ul>
           </section>
         ) : null}

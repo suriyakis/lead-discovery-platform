@@ -112,3 +112,7 @@ function sleep(ms: number) {
 // mock connector exactly once (Map.set is idempotent on the same key).
 import { registerConnector } from './registry';
 registerConnector(new MockConnector());
+
+// Side-effect: importing the mock also imports the internet_search
+// connector so both are present in the registry.
+import './internet-search';
