@@ -27,6 +27,59 @@ main {
   margin: 0 auto;
 }
 
+main > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 1rem;
+  margin-bottom: 2rem;
+}
+
+main section {
+  margin: 2rem 0;
+}
+
+main h2 {
+  font-size: 1.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #555;
+  margin: 0 0 0.75rem;
+}
+
+main dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.25rem;
+  margin: 0;
+}
+
+main dt {
+  color: #666;
+  font-weight: 500;
+}
+
+main dd {
+  margin: 0;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+  padding: 0.5rem 1rem;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  background: white;
+}
+
+button.signin-btn {
+  background: #1a73e8;
+  color: white;
+  border-color: #1a73e8;
+  font-weight: 500;
+}
+
 code {
   font-family: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace;
   background: #eee;
