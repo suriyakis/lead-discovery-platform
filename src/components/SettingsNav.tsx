@@ -2,6 +2,7 @@ import Link from 'next/link';
 
 const ITEMS = [
   { href: '/settings/integrations', label: 'Integrations' },
+  { href: '/settings/usage', label: 'Usage' },
 ] as const;
 
 export function SettingsNav({ active }: Readonly<{ active: string }>) {

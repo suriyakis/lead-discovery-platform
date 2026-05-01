@@ -106,7 +106,7 @@ spend.
 - [x] **P6-03.** `internet_search` connector. Reads `searchQueries` array from the recipe (1..50 queries), iterates them through `getSearchProvider().search(ctx, query, options)`, emits each result as a `web_search_hit` NormalizedRecord, writes one `usage_log` entry per query with `payload.keySource`. Self-registers via `mock.ts` import chain. Recipe validation via Zod with `passthrough()` so generic recipe fields don't break it. Per-query failures non-fatal; `no_key`/`unauthorized` are fatal. **172/172 tests pass.**
 - [x] **P6-04.** Settings shell at `/settings` redirecting to `/settings/integrations`. SettingsNav component (tabbed). Integrations page shows SerpAPI status (workspace key / platform default / not configured), set/clear key form (admin-only), test-connection button. Toast-style success/error feedback via search params. Dashboard now links to Settings.
 - [ ] **P6-05.** Connector + recipe UI under `/connectors`.
-- [ ] **P6-06.** Usage logging in the search path; per-workspace cost view.
+- [x] **P6-06.** Usage logging in the search path was wired in P6-03 (`payload.keySource` per query call). Cost view at `/settings/usage` with range selector (Today / 7d / 30d / All time), totals card, by-(kind,provider) breakdown table, and by-key-source table that distinguishes workspace vs platform spend. `summarizeUsageByKeySource` helper added.
 - [ ] **P6-07.** BullMQ + Redis for durable jobs.
 - [ ] **P6-08.** Deploy with `MASTER_KEY` (required) and optional `SERPAPI_KEY`.
 

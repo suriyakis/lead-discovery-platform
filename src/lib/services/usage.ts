@@ -83,3 +83,48 @@ export async function summarizeUsage(
     eventCount: Number(r.eventCount),
   }));
 }
+
+export interface UsageByKeySourceRow {
+  kind: string;
+  provider: string;
+  keySource: string; // 'workspace' | 'platform' | 'mock' | other
+  totalUnits: bigint;
+  totalCostCents: number;
+  eventCount: number;
+}
+
+/**
+ * Cost view aggregation broken out by `payload.keySource` so the UI can
+ * show "you spent X on your own SerpAPI key, Y on the platform default".
+ */
+export async function summarizeUsageByKeySource(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  range: UsageSummaryRange = {},
+): Promise<UsageByKeySourceRow[]> {
+  const conds: SQL[] = [eq(usageLog.workspaceId, ctx.workspaceId)];
+  if (range.since) conds.push(gte(usageLog.createdAt, range.since));
+  if (range.until) conds.push(lte(usageLog.createdAt, range.until));
+
+  const keySource = sql<string>`coalesce(${usageLog.payload}->>'keySource', '(unspecified)')`;
+  const rows = await db
+    .select({
+      kind: usageLog.kind,
+      provider: usageLog.provider,
+      keySource,
+      totalUnits: sql<bigint>`coalesce(sum(${usageLog.units}), 0)::bigint`,
+      totalCostCents: sql<number>`coalesce(sum(${usageLog.costEstimateCents}), 0)::int`,
+      eventCount: sql<number>`count(*)::int`,
+    })
+    .from(usageLog)
+    .where(and(...conds))
+    .groupBy(usageLog.kind, usageLog.provider, keySource);
+
+  return rows.map((r) => ({
+    kind: r.kind,
+    provider: r.provider,
+    keySource: String(r.keySource),
+    totalUnits: typeof r.totalUnits === 'bigint' ? r.totalUnits : BigInt(r.totalUnits),
+    totalCostCents: Number(r.totalCostCents),
+    eventCount: Number(r.eventCount),
+  }));
+}
