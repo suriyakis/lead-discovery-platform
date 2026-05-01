@@ -21,15 +21,15 @@ Tasks are deliberately small. If a task feels like it's growing past one focused
 - [x] `docker-compose.yml` skeleton.
 - [x] `docker/Dockerfile` skeleton.
 - [x] `package.json` skeleton with scripts and a frozen pnpm version field (real deps come in Phase 1).
-- [ ] Create the GitHub repo and push the initial commit.
-- [ ] Verify Phase 0 review with operator before starting Phase 1.
+- [x] Create the GitHub repo and push the initial commit. (suriyakis/lead-discovery-platform on 2026-05-01)
+- [x] Verify Phase 0 review with operator before starting Phase 1.
 
 ## Phase 1 — Core platform foundation (next up)
 
 Each task ends with the app runnable + tests passing.
 
-- [ ] **P1-01.** Add real Phase 1 dependencies in `package.json` (Next.js 15, React 19, Drizzle, postgres driver, Zod, Auth.js, Vitest, ESLint, Prettier). Lock with `pnpm install`. Commit `pnpm-lock.yaml`.
-- [ ] **P1-02.** Bootstrap Next.js App Router skeleton (`src/app/layout.tsx`, `src/app/page.tsx`, `src/app/api/health/route.ts`). `pnpm dev` serves a placeholder. `/api/health` returns `{ ok: true }`.
+- [x] **P1-01.** Phase 1 dependencies added: Next.js 15.5, React 19.2, Auth.js 5.0.0-beta.25, Drizzle 0.38, postgres 3.4, Zod 3.25, Vitest 2.1, Prettier 3.8, ESLint 9.39, TypeScript 5.9. pnpm-lock.yaml committed.
+- [x] **P1-02.** Next.js App Router skeleton live: `src/app/layout.tsx`, `src/app/page.tsx`, `src/app/api/health/route.ts`. tsconfig strict, ESLint flat config + Prettier wired. `pnpm typecheck`, `pnpm build`, `pnpm dev` all green; `/api/health` returns `{"ok":true}`. Note: `output: 'standalone'` deferred until Dockerfile actually consumes it.
 - [ ] **P1-03.** Configure Drizzle: `src/lib/db/client.ts`, `src/lib/db/schema/index.ts`, `drizzle.config.ts`. Pointing at the docker-compose Postgres.
 - [ ] **P1-04.** Define `users`, `workspaces`, `workspace_members`, `workspace_settings`, `audit_log`, `usage_log`, plus Auth.js's `accounts`, `sessions`, `verification_tokens`. Generate the first migration. `pnpm db:migrate` applies it cleanly on a fresh DB.
 - [ ] **P1-05.** Define `WorkspaceContext` and a `withWorkspaceContext` helper for route handlers and services. Add a unit test that asserts `workspaceId` is required on the context.
