@@ -89,7 +89,9 @@ Each task ends with the app runnable + tests passing.
 - [x] **P5-04.** Hooked into `commentOnReviewItem` — every review comment becomes a feedback event. Best-effort (failures logged, do not undo the comment).
 - [x] **P5-05.** Tests in `src/tests/learning.test.ts` (17 cases): heuristic edge cases, recordFeedback with/without extraction, role gates, lesson list ordering by confidence, enable/disable round-trips, retrieval taskType filtering, product-scoping, applyLessonsToPrompt. **131/131 total tests pass.**
 - [x] **P5-06.** UI: `/learning` (category tabs + show-disabled toggle), `/learning/new` (manual creation form), `/learning/[id]` (edit + enable/disable toggle). Linked from dashboard.
-- [ ] **P5-07.** Deploy.
+- [x] **P5-07.** Deployed 2026-05-01. SHA `7d1a401`. Migration `0004_mute_the_executioner.sql` applied (19 total tables).
+
+**Phase 5 complete.**
 
 ## Discovered along the way
 
