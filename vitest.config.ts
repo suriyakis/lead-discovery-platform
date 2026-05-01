@@ -22,6 +22,8 @@ export default defineConfig({
       // Auth.js complains if AUTH_SECRET is missing even in tests that don't
       // exercise auth — populate with a deterministic non-secret.
       AUTH_SECRET: 'test-secret-deterministic-not-for-production-use-only-tests',
+      // Deterministic 32-byte hex for the at-rest secrets crypto.
+      MASTER_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       // Force mock providers for any code path that touches them.
       AI_PROVIDER: 'mock',
       SEARCH_PROVIDER: 'mock',

@@ -93,6 +93,23 @@ Each task ends with the app runnable + tests passing.
 
 **Phase 5 complete.**
 
+## Phase 6 — First real discovery source
+
+**Design lock (2026-05-01):** API keys for paid providers (SerpAPI, etc.)
+support BYOK: workspace-supplied key wins, otherwise falls back to a
+platform default in env. Every provider call logs `usage_log` with
+`payload.keySource = "workspace" | "platform"` so cost views distinguish
+spend.
+
+- [x] **P6-01.** `workspace_secrets` schema with AES-256-GCM encryption (`MASTER_KEY` env). `crypto.ts` (encrypt/decrypt round-trip with auth tag), `secrets.ts` (set/get/has/delete/list, all admin-gated, audit-logged, no value leakage), `resolveProviderKey(ctx, secretKey, envVarName)` returning `{key, source}`. **150/150 tests pass.**
+- [ ] **P6-02.** SerpAPI search provider implementation.
+- [ ] **P6-03.** `internet_search` connector that uses ISearchProvider + recipe queries.
+- [ ] **P6-04.** Workspace settings page `/settings/integrations`.
+- [ ] **P6-05.** Connector + recipe UI under `/connectors`.
+- [ ] **P6-06.** Usage logging in the search path; per-workspace cost view.
+- [ ] **P6-07.** BullMQ + Redis for durable jobs.
+- [ ] **P6-08.** Deploy with `MASTER_KEY` (required) and optional `SERPAPI_KEY`.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
