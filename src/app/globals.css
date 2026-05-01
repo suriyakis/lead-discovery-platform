@@ -601,6 +601,105 @@ button.primary-btn {
   margin: 1rem 0 0;
 }
 
+/* ---- Template radio grid ---- */
+.template-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.template-option {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.75rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: var(--brand-card);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.template-option:has(input:checked) {
+  border-color: var(--brand-primary);
+  background: var(--brand-card-elevated);
+}
+
+.template-option:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.template-option input[type='radio'] {
+  margin-top: 0.25rem;
+}
+
+.template-option p {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+}
+
+/* ---- JSON / log blocks ---- */
+.json-block {
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  padding: 1rem;
+  font-family: var(--brand-mono);
+  font-size: 0.8125rem;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--brand-fg);
+}
+
+.log-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-family: var(--brand-mono);
+  font-size: 0.8125rem;
+}
+
+.log-list li {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px dashed oklch(0.3 0.025 250 / 0.4);
+}
+
+.log-list li:last-child {
+  border-bottom: 0;
+}
+
+.log-time {
+  color: var(--brand-muted);
+  flex-shrink: 0;
+  min-width: 7rem;
+}
+
+.log-level {
+  font-weight: 600;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  min-width: 4rem;
+}
+
+.log-info .log-level {
+  color: var(--brand-accent-teal);
+}
+
+.log-warn .log-level {
+  color: var(--brand-accent-amber);
+}
+
+.log-error .log-level {
+  color: var(--brand-status-rejected);
+}
+
+.log-msg {
+  word-break: break-word;
+}
+
 /* ---- Review state tabs ---- */
 .state-tabs {
   display: flex;

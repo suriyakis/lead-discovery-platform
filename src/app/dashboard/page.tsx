@@ -103,6 +103,10 @@ export default async function Dashboard() {
                 <span className="muted">Lessons distilled from review feedback.</span>
               </li>
               <li>
+                <Link href="/connectors">Connectors →</Link>
+                <span className="muted">Discovery sources, recipes, runs.</span>
+              </li>
+              <li>
                 <Link href="/settings/integrations">Settings →</Link>
                 <span className="muted">Integration keys, BYOK, workspace config.</span>
               </li>
