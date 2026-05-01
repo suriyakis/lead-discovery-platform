@@ -1,0 +1,7 @@
+// Single import surface for the database schema. The Drizzle client and
+// drizzle-kit both read from here. Add new tables by exporting them from
+// their module file and re-exporting that module here.
+
+export * from './auth';
+export * from './workspaces';
+export * from './audit';
