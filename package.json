@@ -1,0 +1,24 @@
+{
+  "name": "lead-discovery-platform",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Multi-tenant B2B lead discovery, qualification, outreach, and intelligence platform.",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "echo 'Phase 0 skeleton — implement in P1-02.' && exit 1",
+    "build": "echo 'Phase 0 skeleton — implement in P1-02.' && exit 1",
+    "start": "echo 'Phase 0 skeleton — implement in P1-02.' && exit 1",
+    "test": "echo 'Phase 0 skeleton — implement in P1-10.' && exit 1",
+    "test:watch": "echo 'Phase 0 skeleton — implement in P1-10.' && exit 1",
+    "typecheck": "echo 'Phase 0 skeleton — implement in P1-01.' && exit 1",
+    "lint": "echo 'Phase 0 skeleton — implement in P1-01.' && exit 1",
+    "db:generate": "echo 'Phase 0 skeleton — implement in P1-03.' && exit 1",
+    "db:migrate": "echo 'Phase 0 skeleton — implement in P1-04.' && exit 1",
+    "db:studio": "echo 'Phase 0 skeleton — implement in P1-03.' && exit 1"
+  }
+}

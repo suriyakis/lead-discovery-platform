@@ -1,0 +1,60 @@
+# Local development stack.
+# Production overrides live in docker-compose.prod.yml.
+#
+# Phase 0: only postgres is meaningful. The `app` service is sketched but the
+# Dockerfile and source aren't ready until Phase 1 P1-01..P1-02.
+#
+# Usage:
+#   docker compose up -d postgres        # just the database (Phase 0)
+#   docker compose up -d                 # full stack (Phase 1+)
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lead
+      POSTGRES_PASSWORD: lead
+      POSTGRES_DB: lead
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lead -d lead"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    profiles: ["app"]    # only starts when explicitly requested in Phase 0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://lead:lead@postgres:5432/lead
+      APP_URL: http://localhost:3000
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./storage:/app/storage   # local storage provider mount
+
+  # Reserved for Phase 6+. Uncomment when BullMQ is wired.
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis-data:/data
+
+volumes:
+  postgres-data:
+  # redis-data:
