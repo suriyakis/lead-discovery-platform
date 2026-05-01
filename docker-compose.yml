@@ -46,15 +46,23 @@ services:
     volumes:
       - ./storage:/app/storage   # local storage provider mount
 
-  # Reserved for Phase 6+. Uncomment when BullMQ is wired.
-  # redis:
-  #   image: redis:7-alpine
-  #   restart: unless-stopped
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redis-data:/data
+  # Redis backs the BullMQ-based durable job queue (Phase 6+). Dev can
+  # run with JOB_QUEUE_PROVIDER=memory and skip this; flip to bullmq to
+  # use it.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles: ['queue', 'app']
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   postgres-data:
-  # redis-data:
+  redis-data:

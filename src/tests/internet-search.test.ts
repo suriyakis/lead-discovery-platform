@@ -68,10 +68,11 @@ describe('internet_search connector — happy path', () => {
     const { run, result } = await startRun(ctx(s.workspaceA, s.ownerA), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
-    expect(result.status).toBe('succeeded');
+        wait: true,
+      });
+    expect(result!.status).toBe('succeeded');
     // 2 queries × 3 results each = 6 records.
-    expect(result.recordCount).toBe(6);
+    expect(result!.recordCount).toBe(6);
     expect(run.recordCount).toBe(6);
 
     const recs = await db
@@ -98,7 +99,8 @@ describe('internet_search connector — happy path', () => {
     await startRun(ctx(s.workspaceA, s.ownerA), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
     const usage = await db
       .select()
       .from(usageLog)
@@ -120,7 +122,8 @@ describe('internet_search connector — happy path', () => {
     const { run } = await startRun(ctx(s.workspaceA, s.ownerA), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
     const logs = await db
       .select()
       .from(connectorRunLogs)
@@ -140,9 +143,10 @@ describe('internet_search connector — recipe validation', () => {
     const { result } = await startRun(ctx(s.workspaceA, s.ownerA), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
-    expect(result.status).toBe('failed');
-    expect(result.error?.message).toContain('searchQueries');
+        wait: true,
+      });
+    expect(result!.status).toBe('failed');
+    expect(result!.error?.message).toContain('searchQueries');
   });
 
   it('fails when searchQueries is empty array', async () => {
@@ -151,8 +155,9 @@ describe('internet_search connector — recipe validation', () => {
     const { result } = await startRun(ctx(s.workspaceA, s.ownerA), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
-    expect(result.status).toBe('failed');
+        wait: true,
+      });
+    expect(result!.status).toBe('failed');
   });
 });
 
@@ -168,7 +173,8 @@ describe('internet_search connector — isolation', () => {
     await startRun(ctx(s.workspaceA, s.ownerA), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
 
     const recsB = await db
       .select()

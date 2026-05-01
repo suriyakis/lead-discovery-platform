@@ -97,10 +97,11 @@ describe('connector run — happy path', () => {
     const { run, result } = await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
 
-    expect(result.status).toBe('succeeded');
-    expect(result.recordCount).toBe(4);
+    expect(result!.status).toBe('succeeded');
+    expect(result!.recordCount).toBe(4);
     expect(run.status).toBe('succeeded');
     expect(run.recordCount).toBe(4);
     expect(run.startedAt).not.toBeNull();
@@ -127,7 +128,8 @@ describe('connector run — happy path', () => {
     const r1 = await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
     const r2records = await listSourceRecords(
       ctx(s.workspaceA, s.ownerA, 'owner'),
       r1.run.id,
@@ -154,16 +156,18 @@ describe('source record dedupe', () => {
     const first = await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
-    expect(first.result.recordCount).toBe(4);
+        wait: true,
+      });
+    expect(first.result!.recordCount).toBe(4);
 
     const second = await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
-    expect(second.result.status).toBe('succeeded');
+        wait: true,
+      });
+    expect(second.result!.status).toBe('succeeded');
     // Inserts deduped by (workspace, source_system, source_id).
-    expect(second.result.recordCount).toBe(0);
+    expect(second.result!.recordCount).toBe(0);
 
     const total = await db
       .select()
@@ -183,11 +187,13 @@ describe('source record dedupe', () => {
     await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: r1.id,
-    });
+        wait: true,
+      });
     await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: r2.id,
-    });
+        wait: true,
+      });
     const total = await db
       .select()
       .from(sourceRecords)
@@ -210,9 +216,10 @@ describe('failure handling', () => {
     const { run, result } = await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
-    expect(result.status).toBe('failed');
-    expect(result.recordCount).toBe(2);
+        wait: true,
+      });
+    expect(result!.status).toBe('failed');
+    expect(result!.recordCount).toBe(2);
     expect(run.status).toBe('failed');
     expect(run.errorPayload).toMatchObject({ message: expect.stringContaining('synthetic') });
   });
@@ -227,7 +234,8 @@ describe('workspace isolation', () => {
     const { run } = await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
 
     await expect(getRun(ctx(s.workspaceB, s.ownerB, 'owner'), run.id)).rejects.toMatchObject(
       { code: 'not_found' },
@@ -240,7 +248,8 @@ describe('workspace isolation', () => {
     const { run } = await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
 
     await expect(
       listSourceRecords(ctx(s.workspaceB, s.ownerB, 'owner'), run.id),
@@ -293,6 +302,7 @@ describe('role gates', () => {
       startRun(ctx(s.workspaceA, s.viewerA, 'viewer'), {
         connectorId: connector.id,
         recipeId: recipe.id,
+        wait: true,
       }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
@@ -303,8 +313,9 @@ describe('role gates', () => {
     const { result } = await startRun(ctx(s.workspaceA, s.memberA, 'member'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
-    expect(result.status).toBe('succeeded');
+        wait: true,
+      });
+    expect(result!.status).toBe('succeeded');
   });
 });
 
@@ -317,7 +328,8 @@ describe('audit + logging', () => {
     await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
       connectorId: connector.id,
       recipeId: recipe.id,
-    });
+        wait: true,
+      });
     const events = await db
       .select()
       .from((await import('@/lib/db/schema/audit')).auditLog)
@@ -342,6 +354,7 @@ describe('audit + logging', () => {
       startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
         connectorId: connector.id,
         recipeId: recipe.id,
+        wait: true,
       }),
     ).rejects.toMatchObject({ code: 'conflict' });
   });

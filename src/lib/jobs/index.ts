@@ -119,8 +119,18 @@ export function getJobQueue(): IJobQueue {
     case 'memory':
       cached = new InMemoryJobQueue();
       return cached;
+    case 'bullmq': {
+      // Dynamic import so the bullmq + ioredis modules don't load (or
+      // require a Redis connection) when the operator chose memory.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { BullMQJobQueue } = require('./bullmq') as typeof import('./bullmq');
+      cached = new BullMQJobQueue();
+      return cached;
+    }
     default:
-      throw new Error(`Unknown JOB_QUEUE_PROVIDER: ${id}. Phase 1 supports only "memory".`);
+      throw new Error(
+        `Unknown JOB_QUEUE_PROVIDER: ${id}. Supported: "memory", "bullmq".`,
+      );
   }
 }
 

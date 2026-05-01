@@ -16,7 +16,9 @@ import {
   type NewConnectorRecipe,
   type NewConnectorRun,
 } from '@/lib/db/schema/connectors';
-import { runConnectorRun, type RunResult } from '@/lib/connectors/runner';
+import { type RunResult } from '@/lib/connectors/runner';
+import { getJobQueue } from '@/lib/jobs';
+import { registerJobHandlers, type ConnectorRunJobPayload } from '@/lib/jobs/bootstrap';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 
@@ -137,19 +139,31 @@ export interface StartRunInput {
   connectorId: bigint;
   recipeId?: bigint | null;
   productProfileIds?: bigint[];
+  /**
+   * If true, awaitRun() is called internally and `result` is populated.
+   * Mostly useful for tests and CLI tools; UI flows should leave this false
+   * and let the user navigate to the run page (which polls via reload).
+   */
+  wait?: boolean;
+  /** Max ms to wait when wait:true. Default 60s. */
+  waitTimeoutMs?: number;
 }
 
 /**
- * Start a connector run. Creates the connector_runs row and immediately
- * executes the connector inline. Phase 1 / Phase 3 design — durable async
- * execution via a real queue arrives in Phase 6.
+ * Start a connector run. Inserts the connector_runs row in `pending` state
+ * and enqueues a `connector.run` job. The job handler (registered via
+ * registerJobHandlers) drives the execution.
  *
- * Returns the final run row (with status set) plus the in-memory result.
+ * - With JOB_QUEUE_PROVIDER=memory the handler runs on the next microtask.
+ * - With JOB_QUEUE_PROVIDER=bullmq the handler runs in a Worker process.
+ *
+ * Returns the pending run row immediately. Pass `wait:true` (typically in
+ * tests) to block until the job reaches a terminal state.
  */
 export async function startRun(
   ctx: WorkspaceContext,
   input: StartRunInput,
-): Promise<{ run: ConnectorRun; result: RunResult }> {
+): Promise<{ run: ConnectorRun; jobId: string; result?: RunResult }> {
   if (!canWrite(ctx)) throw permissionDenied('start connector run');
 
   const connector = await getConnectorRow(ctx, input.connectorId);
@@ -197,17 +211,76 @@ export async function startRun(
     },
   });
 
-  const result = await runConnectorRun(ctx, created.id);
-  const reloaded = await getRun(ctx, created.id);
+  // Make sure handlers are wired before we enqueue. Idempotent.
+  registerJobHandlers();
+  const queue = getJobQueue();
+  const payload: ConnectorRunJobPayload = {
+    runId: created.id.toString(),
+    workspaceId: ctx.workspaceId.toString(),
+    userId: ctx.userId,
+    role: ctx.role,
+  };
+  const jobId = await queue.enqueue<ConnectorRunJobPayload>('connector.run', payload);
 
-  await recordAuditEvent(ctx, {
-    kind: 'connector_run.complete',
-    entityType: 'connector_run',
-    entityId: created.id,
-    payload: { status: result.status, recordCount: result.recordCount },
-  });
+  if (input.wait) {
+    const timeoutMs = input.waitTimeoutMs ?? 60_000;
+    const result = await awaitRun(ctx, created.id, { timeoutMs });
+    const reloaded = await getRun(ctx, created.id);
+    await recordAuditEvent(ctx, {
+      kind: 'connector_run.complete',
+      entityType: 'connector_run',
+      entityId: created.id,
+      payload: { status: result.status, recordCount: result.recordCount },
+    });
+    return { run: reloaded, jobId, result };
+  }
 
-  return { run: reloaded, result };
+  return { run: created, jobId };
+}
+
+export interface AwaitRunOptions {
+  /** Max ms to wait. Throws if exceeded. Default 60s. */
+  timeoutMs?: number;
+  /** Initial poll interval. Backs off up to 1s. Default 50ms. */
+  initialIntervalMs?: number;
+}
+
+/**
+ * Block until a connector run reaches a terminal state (succeeded /
+ * failed / cancelled). Polls connector_runs.status with backoff.
+ */
+export async function awaitRun(
+  ctx: WorkspaceContext,
+  runId: bigint,
+  options: AwaitRunOptions = {},
+): Promise<RunResult> {
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  const start = Date.now();
+  let interval = options.initialIntervalMs ?? 50;
+
+  while (Date.now() - start < timeoutMs) {
+    const run = await getRun(ctx, runId);
+    if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') {
+      const result: RunResult = {
+        status: run.status,
+        recordCount: run.recordCount,
+      };
+      if (run.errorPayload) {
+        const ep = run.errorPayload as { message?: string; payload?: unknown };
+        if (ep.message) {
+          result.error = { message: ep.message };
+          if (ep.payload !== undefined) result.error.payload = ep.payload;
+        }
+      }
+      return result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, interval));
+    interval = Math.min(interval * 2, 1000);
+  }
+  throw new ConnectorServiceError(
+    `awaitRun: timed out after ${timeoutMs}ms (run ${runId} did not reach terminal state)`,
+    'timeout',
+  );
 }
 
 export async function getRun(

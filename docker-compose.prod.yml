@@ -28,6 +28,21 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Loopback only on the host; the app container reaches it via the
+    # docker network alias `redis`.
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   app:
     build:
       context: .
@@ -36,14 +51,16 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
-      # Override DATABASE_URL to reach postgres via the docker-network alias.
-      # The .env's DATABASE_URL points at localhost:5432 so host-side
-      # `pnpm db:migrate` works; inside the container we route through the
-      # `postgres` service name instead.
+      # Override DATABASE_URL + REDIS_URL to reach the docker-network
+      # service hostnames. The .env's DATABASE_URL/REDIS_URL point at
+      # localhost so host-side `pnpm db:migrate` and bullmq inspectors work.
       DATABASE_URL: postgres://lead:${POSTGRES_PASSWORD}@postgres:5432/lead
+      REDIS_URL: redis://redis:6379
     ports:
       - '127.0.0.1:3001:3000'
     volumes:
@@ -51,4 +68,5 @@ services:
 
 volumes:
   postgres-data:
+  redis-data:
   app-storage:

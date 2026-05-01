@@ -78,7 +78,8 @@ async function seedDiscovery(s: Setup, count = 4) {
   await startRun(ctx(s.workspaceA, s.ownerA, 'owner'), {
     connectorId: connector.id,
     recipeId: recipe.id,
-  });
+        wait: true,
+      });
   const sr = await db
     .select()
     .from(sourceRecords)
