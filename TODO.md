@@ -81,6 +81,16 @@ Each task ends with the app runnable + tests passing.
 
 **Phase 4 complete.**
 
+## Phase 5 — Learning Memory Foundation
+
+- [x] **P5-01.** Schema: `learning_events` (append-only), `learning_lessons` (mutable, with reserved `embedding` for Phase 12). 12 lesson categories defined in service. Migration `0004_mute_the_executioner.sql` applied.
+- [x] **P5-02.** Service `src/lib/services/learning.ts`: recordFeedback (event + heuristic extractor + audit), createLesson, listLessons, getLesson, updateLesson, enableLesson/disableLesson, getRelevantLessons (taskType-aware: classification/outreach/reply category sets), applyLessonsToPrompt.
+- [x] **P5-03.** Heuristic extractor — pattern-matches qualification negative/positive, false positive/negative, outreach style, contact role, sector preference, dedupe hint, connector quality. Conservative — returns null on neutral text. Phase 7+ swaps for the AI provider abstraction.
+- [x] **P5-04.** Hooked into `commentOnReviewItem` — every review comment becomes a feedback event. Best-effort (failures logged, do not undo the comment).
+- [x] **P5-05.** Tests in `src/tests/learning.test.ts` (17 cases): heuristic edge cases, recordFeedback with/without extraction, role gates, lesson list ordering by confidence, enable/disable round-trips, retrieval taskType filtering, product-scoping, applyLessonsToPrompt. **131/131 total tests pass.**
+- [x] **P5-06.** UI: `/learning` (category tabs + show-disabled toggle), `/learning/new` (manual creation form), `/learning/[id]` (edit + enable/disable toggle). Linked from dashboard.
+- [ ] **P5-07.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

@@ -98,6 +98,10 @@ export default async function Dashboard() {
                 <Link href="/review">Review queue →</Link>
                 <span className="muted">Approve, reject, comment on harvested records.</span>
               </li>
+              <li>
+                <Link href="/learning">Learning memory →</Link>
+                <span className="muted">Lessons distilled from review feedback.</span>
+              </li>
             </ul>
           </section>
         ) : null}

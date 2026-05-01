@@ -12,6 +12,7 @@ import {
 } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
+import { recordFeedback } from './learning';
 
 export class ReviewServiceError extends Error {
   public readonly code: string;
@@ -341,6 +342,22 @@ export async function commentOnReviewItem(
       payload: { commentId: comment.id.toString(), preview: trimmed.slice(0, 120) },
     });
 
+    return comment;
+  }).then(async (comment) => {
+    // Outside the transaction: feed the comment to the learning layer so
+    // structured lessons can be extracted. Best-effort — failure here logs
+    // but does not undo the comment write.
+    try {
+      await recordFeedback(ctx, {
+        entityType: 'review_item',
+        entityId: id.toString(),
+        actionType: 'general_instruction',
+        originalComment: text.trim(),
+        confidence: 50,
+      });
+    } catch (err) {
+      console.error('[review.comment] recordFeedback failed:', err);
+    }
     return comment;
   });
 }

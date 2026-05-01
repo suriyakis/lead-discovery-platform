@@ -441,7 +441,8 @@ button.primary-btn {
 }
 
 .form-grid input,
-.form-grid textarea {
+.form-grid textarea,
+.form-grid select {
   font: inherit;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--brand-border);
@@ -449,6 +450,14 @@ button.primary-btn {
   background: var(--brand-input);
   color: var(--brand-fg);
   resize: vertical;
+}
+
+.form-grid select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='%23999' d='M2 4l4 4 4-4z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2rem;
 }
 
 .form-grid input::placeholder,
