@@ -161,7 +161,7 @@ export async function startRun(
   }
 
   let recipeSnapshot: Record<string, unknown> | null = null;
-  let recipeId: bigint | null = input.recipeId ?? null;
+  const recipeId: bigint | null = input.recipeId ?? null;
   if (recipeId !== null) {
     const recipe = await getRecipe(ctx, recipeId);
     if (recipe.connectorId !== connector.id) {

@@ -66,7 +66,9 @@ Each task ends with the app runnable + tests passing.
 - [x] **P3-05.** Runner in `src/lib/connectors/runner.ts`: marks run running, iterates events, persists logs/records, handles dedupe (unique conflict = silent skip), updates progress, ends as succeeded/failed/cancelled.
 - [x] **P3-06.** Service `src/lib/services/connector-run.ts`: createConnector (admin-gated), createRecipe, listRecipes, startRun (member+, refuses inactive connectors, snapshots recipe at run time), getRun, listRuns, listRunLogs, listSourceRecords. Each mutation emits audit_log.
 - [x] **P3-07.** Tests in `src/tests/connector.test.ts` (15 cases): happy path, deterministic seed, dedupe, fatal error, workspace isolation, role gates, audit emission, inactive-connector refusal, error shape. **91 / 91 total tests pass.**
-- [ ] **P3-08.** Deploy to prod.
+- [x] **P3-08.** Deployed 2026-05-01. SHA `de06b8f` (+ lint cleanup in next commit). Migration `0002_careful_titania.sql` applied — 15 total tables. /api/health returns 200.
+
+**Phase 3 complete.**
 
 ## Discovered along the way
 
