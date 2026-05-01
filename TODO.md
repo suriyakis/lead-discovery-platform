@@ -77,7 +77,9 @@ Each task ends with the app runnable + tests passing.
 - [x] **P4-03.** Runner now calls `seedReviewItem` after each successful source_record insert. Tests verify auto-seed.
 - [x] **P4-04.** Tests in `src/tests/review.test.ts` (19 cases): runner integration, listing, all transitions, comment validation/audit, assignment, counts, isolation. **110 / 110 total tests pass.**
 - [x] **P4-05.** UI: `/review` (state-tab filters with counts, summary cards) + `/review/[id]` (source detail, action row, reason-rejection form, threaded comments, server actions for every mutation).
-- [ ] **P4-06.** Deploy to prod.
+- [x] **P4-06.** Deployed 2026-05-01. SHA `4778830`. Migration `0003_eminent_talkback.sql` applied (17 total tables). /api/health 200.
+
+**Phase 4 complete.**
 
 ## Discovered along the way
 
