@@ -10,7 +10,8 @@
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # See base compose: pgvector/pgvector:pg17 is required by Phase 12 (RAG).
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: lead

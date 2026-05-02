@@ -3,12 +3,33 @@ import {
   bigint,
   bigserial,
   boolean,
+  customType,
   index,
+  integer,
   pgTable,
   smallint,
   text,
   timestamp,
 } from 'drizzle-orm/pg-core';
+
+const VECTOR_DIM = 1536;
+const lessonEmbedding = customType<{ data: number[]; default: false; driverData: string }>({
+  dataType: () => `vector(${VECTOR_DIM})`,
+  fromDriver(value: unknown): number[] {
+    if (Array.isArray(value)) return value as number[];
+    if (typeof value === 'string') {
+      return value
+        .replace(/^\[/, '')
+        .replace(/\]$/, '')
+        .split(',')
+        .map((n) => Number(n));
+    }
+    return [];
+  },
+  toDriver(value: number[]): string {
+    return `[${value.join(',')}]`;
+  },
+});
 import { users } from './auth';
 import { workspaces } from './workspaces';
 import { productProfiles } from './products';
@@ -91,6 +112,11 @@ export const learningLessons = pgTable(
       .default(sql`'{}'::bigint[]`),
     enabled: boolean('enabled').notNull().default(true),
     confidence: smallint('confidence').notNull().default(60),
+    /** Phase 12: vector(1536) for similarity-based lesson retrieval. Populated by the indexer. */
+    embedding: lessonEmbedding('embedding'),
+    embeddingModel: text('embedding_model'),
+    embeddingDim: integer('embedding_dim').notNull().default(VECTOR_DIM),
+    embeddedAt: timestamp('embedded_at', { mode: 'date', withTimezone: true }),
     createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
     updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })

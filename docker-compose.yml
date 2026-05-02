@@ -10,7 +10,10 @@
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # pgvector/pgvector:pg17 = official postgres 17 image with the vector
+    # extension preinstalled. Phase 12 (RAG) requires `CREATE EXTENSION
+    # vector` for embedding columns and similarity search.
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: lead

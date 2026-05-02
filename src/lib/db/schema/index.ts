@@ -15,3 +15,4 @@ export * from './outreach';
 export * from './documents';
 export * from './mailing';
 export * from './pipeline';
+export * from './rag';
