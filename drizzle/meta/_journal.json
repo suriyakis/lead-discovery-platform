@@ -71,6 +71,13 @@
       "when": 1777702342390,
       "tag": "0009_blushing_kid_colt",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777703923069,
+      "tag": "0010_petite_payback",
+      "breakpoints": true
     }
   ]
 }
