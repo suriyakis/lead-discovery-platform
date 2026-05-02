@@ -13,3 +13,4 @@ export * from './secrets';
 export * from './qualifications';
 export * from './outreach';
 export * from './documents';
+export * from './mailing';

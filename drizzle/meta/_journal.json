@@ -64,6 +64,13 @@
       "when": 1777701086221,
       "tag": "0008_mixed_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1777702342390,
+      "tag": "0009_blushing_kid_colt",
+      "breakpoints": true
     }
   ]
 }
