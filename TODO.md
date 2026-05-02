@@ -266,7 +266,9 @@ choice via a checkbox on the push form.
 - [x] **P13-03.** Service (`src/lib/services/crm.ts`): create/update/archive connection (admin-only with credential rotation through `setSecret`), `testCrmConnection` (status + lastError side-effects), `pushLeadToCrm` (loads prior succeeded sync to reuse externalId, audit-logs every push, optional state advance), `exportLeadsToCsv` (state + product filters, writes to IStorage with download Content-Disposition), `listSyncEntries`.
 - [x] **P13-04.** Tests in `src/tests/crm.test.ts` (16 cases): CSV escaping (commas/quotes/newlines), connection CRUD (admin gates, unknown-system rejection, credential never persisted as cleartext, credential rotation), testCrmConnection status sync, pushLeadToCrm (sync entry persistence, prior externalId reuse on second push, failure → connection failing + error capture, advanceState path, cross-workspace refusal), bulk CSV export (file written to storage, state filter narrows, workspace isolation), listSyncEntries scoping. **326/326 total tests pass.**
 - [x] **P13-05.** UI: `/settings/crm` (list + Quick CSV export button + connection cards), `/settings/crm/new` (system + name + credential + base-URL form), `/settings/crm/[id]` (settings edit with credential rotate, Test connection, recent syncs timeline, admin archive). `/pipeline/[id]` extended with a CRM section: connection picker + advance-state checkbox + recent-syncs timeline. SettingsNav extended with the CRM tab.
-- [ ] **P13-06.** Deploy.
+- [x] **P13-06.** Deployed 2026-05-02. SHA `58e828c`. Migration `0012_workable_senator_kelly.sql` applied; crm_connections + crm_sync_log live. All 3 services healthy; wandizz untouched. CSV exports work out of the box (storage URL via the local provider for now); HubSpot stays unconfigured until a workspace adds a CRM connection with a real PAT.
+
+**Phase 13 complete.**
 
 ## Discovered along the way
 
