@@ -287,7 +287,17 @@ upserted on (workspace, key).
 - [x] **P14-02.** Admin service (`src/lib/services/admin.ts`): every operation calls `assertSuperAdmin(ctx, op)` first. `listAllWorkspaces` (member count + lead count + total usage cost via aggregate queries), `startImpersonation` (verifies target is a workspace member; auto-closes prior active session by the same actor; audit-logs into the target workspace), `endImpersonation`, `listImpersonationSessions(activeOnly?)`, `activeImpersonationFor(userId)`, `setFeatureFlag` (key shape `[a-z][a-z0-9_.]*` enforced; upserts), `listFeatureFlags`, `listAllUsers`, `recentAuditAcrossWorkspaces`.
 - [x] **P14-03.** Tests in `src/tests/admin.test.ts` (10 cases): every admin operation rejects non-super_admin actors; listAllWorkspaces returns aggregated metrics; impersonation start + end flow with audit trail; second start by same actor closes prior; cross-workspace target rejection; double-end rejected; activeOnly filter on session list; feature flag upsert behavior + key shape validation + workspace scoping. **336/336 total tests pass.**
 - [x] **P14-04.** UI: `/admin` (workspace list with metrics, active impersonation sessions panel, recent platform-wide audit feed), `/admin/workspaces/[id]` (member list with per-member Impersonate form + reason input, active-impersonation banner with End button, feature-flag matrix for the known keys: crm.hubspot, rag.openai, outreach.send, mailbox.imap_sync, connector.serpapi). Dashboard exposes the Admin link only when `session.user.role === 'super_admin'`.
-- [ ] **P14-05.** Deploy.
+- [x] **P14-05.** Deployed 2026-05-02. SHA `a506b67`. Migration `0013_loud_wendigo.sql` applied; impersonation_sessions + feature_flags live. All 3 services healthy on existing ports; wandizz untouched. The bootstrap super-admin (jb.poltrade@gmail.com) now sees an "Admin (god mode)" link on the dashboard.
+
+**Phase 14 complete.**
+
+## Roadmap status (2026-05-02)
+
+All 14 phases shipped end-to-end. The application is feature-complete per the
+locked roadmap. Bring-your-own provider keys (OpenAI, HubSpot PAT, SerpAPI,
+SMTP/IMAP) are the gating items for full production use. The S3 storage
+backend stays opt-in via env (STORAGE_PROVIDER=s3 + Hetzner/MinIO/R2/AWS
+credentials).
 
 ## Discovered along the way
 
