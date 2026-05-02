@@ -16,8 +16,12 @@ services:
       POSTGRES_USER: lead
       POSTGRES_PASSWORD: lead
       POSTGRES_DB: lead
-    ports:
-      - "5432:5432"
+    # No host port published in the base file. Prod (docker-compose.prod.yml)
+    # defines 127.0.0.1:5432:5432; dev that needs host access can copy
+    # docker-compose.override.yml.example to docker-compose.override.yml,
+    # which auto-loads when no -f flag is given. Compose merges port lists
+    # rather than overriding, so duplicating across files re-binds the
+    # container on multiple ports.
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -56,8 +60,10 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     profiles: ['queue', 'app']
-    ports:
-      - '127.0.0.1:6379:6379'
+    # No host port published here — prod defines 127.0.0.1:6379:6379. Dev
+    # that needs host access goes via docker-compose.override.yml.example.
+    # See the note on the postgres service for why duplicating across files
+    # is broken.
     volumes:
       - redis-data:/data
     healthcheck:

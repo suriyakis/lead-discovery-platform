@@ -1,0 +1,21 @@
+# Local-dev overrides. Copy to docker-compose.override.yml and compose will
+# auto-load it when invoked without explicit -f flags.
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   docker compose up -d postgres
+#
+# Production deploys use `-f docker-compose.yml -f docker-compose.prod.yml`,
+# which skips this file entirely.
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  app:
+    ports:
+      - "3000:3000"

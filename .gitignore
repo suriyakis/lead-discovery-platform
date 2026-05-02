@@ -31,3 +31,6 @@ docker/data/
 # Editor / OS
 *.swp
 *.swo
+
+# Local docker-compose override (copy from docker-compose.override.yml.example)
+docker-compose.override.yml
