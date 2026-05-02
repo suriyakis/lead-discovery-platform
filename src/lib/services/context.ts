@@ -102,3 +102,8 @@ export function canAdminWorkspace(ctx: WorkspaceContext): boolean {
 export function canOwnWorkspace(ctx: WorkspaceContext): boolean {
   return OWNER_ROLES.has(ctx.role);
 }
+
+/** True if the actor is a platform super admin (god-mode). */
+export function isSuperAdmin(ctx: WorkspaceContext): boolean {
+  return ctx.role === 'super_admin';
+}
