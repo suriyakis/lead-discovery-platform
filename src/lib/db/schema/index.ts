@@ -12,3 +12,4 @@ export * from './learning';
 export * from './secrets';
 export * from './qualifications';
 export * from './outreach';
+export * from './documents';
