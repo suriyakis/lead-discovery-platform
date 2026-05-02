@@ -11,3 +11,4 @@ export * from './review';
 export * from './learning';
 export * from './secrets';
 export * from './qualifications';
+export * from './outreach';
