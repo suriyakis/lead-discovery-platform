@@ -221,7 +221,9 @@ audit trail and the UI history panel share a single source of truth.
 - [x] **P11-02.** State machine service (`src/lib/services/pipeline.ts`). `ensureQualifiedLead` (idempotent), `transition` (forward map enforced; admin-only force; close requires reason), `updateContact` (email validated + lowercased), `assign`, `setNotes`, `listLeads`, `getLead` (with event history), `getStateCounts`. Every mutation emits a pipeline_event (creation | transition | contact_update | assignment | note) plus an audit_log entry.
 - [x] **P11-03.** Tests in `src/tests/pipeline.test.ts` (16 cases): ensure idempotency + cross-workspace rejection + viewer gate, full canonical-path walk through every state, non-forward refused without force, admin can force / member cannot, close-without-reason rejected, no-op re-transition, contact email validation, assignment + clear, notes trim, list filters by state + product, getStateCounts aggregation, getLead joined detail + event history, workspace isolation. **287/287 total tests pass.**
 - [x] **P11-04.** UI: `/pipeline` (list + kanban toggle, state + product filters, stage counts), `/pipeline/[id]` (state-transition buttons honoring the forward map, close form with reason picker, admin force-transition details panel, contact form, assignment, notes, full timeline of pipeline_events). `Promote to pipeline` button on `/leads` for relevant qualifications. Dashboard linked.
-- [ ] **P11-05.** Deploy.
+- [x] **P11-05.** Deployed 2026-05-02. SHA `86456da`. Migration `0010_petite_payback.sql` applied (qualified_leads + pipeline_events tables live). All 3 services healthy on existing ports; wandizz untouched on :3000.
+
+**Phase 11 complete.**
 
 ## Discovered along the way
 
