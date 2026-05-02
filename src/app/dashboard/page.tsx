@@ -134,6 +134,12 @@ export default async function Dashboard() {
                 <Link href="/settings/integrations">Settings →</Link>
                 <span className="muted">Integration keys, BYOK, workspace config.</span>
               </li>
+              {session.user.role === 'super_admin' ? (
+                <li>
+                  <Link href="/admin">Admin (god mode) →</Link>
+                  <span className="muted">Platform-wide views, impersonation, feature flags.</span>
+                </li>
+              ) : null}
             </ul>
           </section>
         ) : null}

@@ -270,6 +270,25 @@ choice via a checkbox on the push form.
 
 **Phase 13 complete.**
 
+## Phase 14 — God Mode
+
+**Goal.** Platform-admin views: workspace list, usage analytics, impersonation
+with full audit, premium-module enable/disable.
+
+**Design lock (2026-05-02):** super-admin status lives on `users.role` (the
+existing `user_role` enum); workspace-member roles are unaffected.
+Impersonation is a server-side construct backed by `impersonation_sessions`
+— the actor's user_id stays on every audit_log entry, so an impersonated
+action always traces back to the super-admin who triggered it. Feature
+flags are workspace-scoped boolean toggles with optional config jsonb,
+upserted on (workspace, key).
+
+- [x] **P14-01.** Schema (migration `0013_loud_wendigo.sql`): `impersonation_sessions` (actor + target + workspace + reason + start/end timestamps; partial unique index forces at most one active session per actor) and `feature_flags` (per-workspace per-key boolean + config jsonb). `isSuperAdmin(ctx)` helper added in `src/lib/services/context.ts`.
+- [x] **P14-02.** Admin service (`src/lib/services/admin.ts`): every operation calls `assertSuperAdmin(ctx, op)` first. `listAllWorkspaces` (member count + lead count + total usage cost via aggregate queries), `startImpersonation` (verifies target is a workspace member; auto-closes prior active session by the same actor; audit-logs into the target workspace), `endImpersonation`, `listImpersonationSessions(activeOnly?)`, `activeImpersonationFor(userId)`, `setFeatureFlag` (key shape `[a-z][a-z0-9_.]*` enforced; upserts), `listFeatureFlags`, `listAllUsers`, `recentAuditAcrossWorkspaces`.
+- [x] **P14-03.** Tests in `src/tests/admin.test.ts` (10 cases): every admin operation rejects non-super_admin actors; listAllWorkspaces returns aggregated metrics; impersonation start + end flow with audit trail; second start by same actor closes prior; cross-workspace target rejection; double-end rejected; activeOnly filter on session list; feature flag upsert behavior + key shape validation + workspace scoping. **336/336 total tests pass.**
+- [x] **P14-04.** UI: `/admin` (workspace list with metrics, active impersonation sessions panel, recent platform-wide audit feed), `/admin/workspaces/[id]` (member list with per-member Impersonate form + reason input, active-impersonation banner with End button, feature-flag matrix for the known keys: crm.hubspot, rag.openai, outreach.send, mailbox.imap_sync, connector.serpapi). Dashboard exposes the Admin link only when `session.user.role === 'super_admin'`.
+- [ ] **P14-05.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
