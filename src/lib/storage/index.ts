@@ -1,7 +1,8 @@
 // File storage abstraction.
 //
-// Phase 1: local filesystem. Writes go under STORAGE_LOCAL_ROOT (default
-// ./storage). S3-compatible implementation arrives in Phase 9.
+// Phase 1: local filesystem. Phase 9 added an S3-compatible implementation
+// (works against AWS S3, Hetzner Object Storage, Cloudflare R2, MinIO, etc.).
+// Selection at boot via STORAGE_PROVIDER env (`local` | `s3`).
 //
 // The interface is intentionally narrow. We add `list` / `copy` / etc. when
 // a real caller needs them.
@@ -105,8 +106,16 @@ export function getStorage(): IStorage {
       cached = new LocalFileStorage(root);
       return cached;
     }
+    case 's3': {
+      // Lazy-import so the AWS SDK is not loaded when the local provider is
+      // used (saves cold-start time + memory).
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { S3Storage } = require('./s3') as typeof import('./s3');
+      cached = S3Storage.fromEnv();
+      return cached;
+    }
     default:
-      throw new Error(`Unknown STORAGE_PROVIDER: ${id}. Phase 1 supports only "local".`);
+      throw new Error(`Unknown STORAGE_PROVIDER: ${id}. Supported: "local" | "s3".`);
   }
 }
 
