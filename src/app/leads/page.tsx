@@ -9,6 +9,7 @@ import {
 } from '@/lib/services/auth-context';
 import { listLeads, type LeadRow } from '@/lib/services/qualification';
 import { listProductProfiles } from '@/lib/services/product-profile';
+import { ensureQualifiedLead } from '@/lib/services/pipeline';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
 const SORT_OPTIONS = [
@@ -63,6 +64,20 @@ export default async function LeadsPage({
         b.qualification.createdAt.getTime() - a.qualification.createdAt.getTime(),
       )
     : leads;
+
+  async function promote(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const reviewItemIdRaw = String(formData.get('reviewItemId') ?? '');
+    const productIdRaw = String(formData.get('productProfileId') ?? '');
+    if (!/^\d+$/.test(reviewItemIdRaw) || !/^\d+$/.test(productIdRaw)) return;
+    const created = await ensureQualifiedLead(
+      c,
+      BigInt(reviewItemIdRaw),
+      BigInt(productIdRaw),
+    );
+    redirect(`/pipeline/${created.id}`);
+  }
 
   return (
     <>
@@ -176,6 +191,13 @@ export default async function LeadsPage({
                       {reviewItem ? <span>review: {reviewItem.state}</span> : null}
                       <span>{qualification.createdAt.toLocaleString()}</span>
                     </div>
+                    {reviewItem && qualification.isRelevant ? (
+                      <form action={promote} style={{ marginTop: '0.5rem' }}>
+                        <input type="hidden" name="reviewItemId" value={reviewItem.id.toString()} />
+                        <input type="hidden" name="productProfileId" value={product.id.toString()} />
+                        <button type="submit">Promote to pipeline →</button>
+                      </form>
+                    ) : null}
                   </li>
                 );
               })}

@@ -1199,3 +1199,70 @@ button.primary-btn {
   gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
+
+/* ---- Pipeline kanban ---- */
+.kanban {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.kanban-col {
+  background: oklch(0.2 0.02 250 / 0.5);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  padding: 0.75rem;
+  min-height: 240px;
+}
+
+.kanban-col-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--brand-border);
+}
+
+.kanban-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.kanban-list li {
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  padding: 0.5rem 0.625rem;
+  font-size: 0.875rem;
+}
+
+.kanban-list li a {
+  font-weight: 600;
+}
+
+.kanban-list li p {
+  margin: 0.125rem 0 0 0;
+  font-size: 0.8rem;
+}
+
+/* ---- Timeline ---- */
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.timeline li {
+  font-size: 0.875rem;
+  border-left: 2px solid var(--brand-border);
+  padding: 0.25rem 0 0.25rem 0.75rem;
+}

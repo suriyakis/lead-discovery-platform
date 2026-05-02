@@ -205,6 +205,24 @@ service.
 
 **Phase 10 complete.**
 
+## Phase 11 — Qualified Leads pipeline
+
+**Goal.** Separate raw discovery from a commercial leads pipeline with the
+nine-state journey from `raw_discovered` to `closed`. Promotion from /leads
+into /pipeline is explicit; future automation will hook auto-transitions
+(e.g., outbound-sent → `contacted`, inbound-received → `replied`).
+
+**Design lock (2026-05-02):** transitions are forward-only by default;
+non-forward moves require `force:true` AND `canAdminWorkspace`. Closing
+demands a `close_reason`. Every mutation appends to `pipeline_events` so the
+audit trail and the UI history panel share a single source of truth.
+
+- [x] **P11-01.** Schema (migration `0010_petite_payback.sql`): `qualified_leads` + `pipeline_events`. Per-state timestamps, contact info columns (filled at `contact_identified`), assignment, CRM linkage columns reserved for Phase 13, close_reason enum (won|lost|no_response|wrong_fit|duplicate|spam|other), tags[], notes. Unique on (workspace, review_item, product_profile). Indexes on (workspace, state), (workspace, product), (workspace, assigned_to).
+- [x] **P11-02.** State machine service (`src/lib/services/pipeline.ts`). `ensureQualifiedLead` (idempotent), `transition` (forward map enforced; admin-only force; close requires reason), `updateContact` (email validated + lowercased), `assign`, `setNotes`, `listLeads`, `getLead` (with event history), `getStateCounts`. Every mutation emits a pipeline_event (creation | transition | contact_update | assignment | note) plus an audit_log entry.
+- [x] **P11-03.** Tests in `src/tests/pipeline.test.ts` (16 cases): ensure idempotency + cross-workspace rejection + viewer gate, full canonical-path walk through every state, non-forward refused without force, admin can force / member cannot, close-without-reason rejected, no-op re-transition, contact email validation, assignment + clear, notes trim, list filters by state + product, getStateCounts aggregation, getLead joined detail + event history, workspace isolation. **287/287 total tests pass.**
+- [x] **P11-04.** UI: `/pipeline` (list + kanban toggle, state + product filters, stage counts), `/pipeline/[id]` (state-transition buttons honoring the forward map, close form with reason picker, admin force-transition details panel, contact form, assignment, notes, full timeline of pipeline_events). `Promote to pipeline` button on `/leads` for relevant qualifications. Dashboard linked.
+- [ ] **P11-05.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
