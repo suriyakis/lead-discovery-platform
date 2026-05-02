@@ -115,6 +115,10 @@ export default async function Dashboard() {
                 <span className="muted">Documents, URLs, and text excerpts attached to products.</span>
               </li>
               <li>
+                <Link href="/mailbox">Mailbox →</Link>
+                <span className="muted">SMTP/IMAP accounts, threads, signatures, suppression.</span>
+              </li>
+              <li>
                 <Link href="/learning">Learning memory →</Link>
                 <span className="muted">Lessons distilled from review feedback.</span>
               </li>

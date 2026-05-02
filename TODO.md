@@ -179,6 +179,30 @@ leave IStorage; metadata never leaves Drizzle.
 
 **Phase 9 complete.**
 
+## Phase 10 — Mailing Client
+
+**Goal.** Configure a mailbox, send and receive email through it, with thread
+view and signatures. **Manual sending only.** Drafts go via human approval —
+the Phase 8 outreach flow can hand an approved draft to the mailbox compose
+screen, and Phase 10 takes it from there.
+
+**Design lock (2026-05-02):** SMTP + IMAP credentials stored encrypted in
+`workspace_secrets`; only opaque secret keys live on the `mailboxes` row.
+Threading is best-effort header-based: the engine first tries to stitch via
+References / In-Reply-To against any prior message in the same workspace +
+mailbox, then falls back to a normalized-subject hash. Suppression list is
+checked on every outbound recipient — a hard suppression aborts the send
+before the SMTP layer is touched. The IMailProvider abstraction has a
+MockMailProvider for tests so no real SMTP/IMAP is required to exercise the
+service.
+
+- [x] **P10-01.** Schema (migration `0009_blushing_kid_colt.sql`): mailboxes (with status enum + isDefault flag), mail_threads (with cached message_count + lastMessageAt + participants[]), mail_messages (with direction + status enums, RFC-5322 message_id unique-on-workspace), signatures, suppression_list (with TTL-aware isSuppressed). Indexes for queue lookups and threading.
+- [x] **P10-02.** `IMailProvider` abstraction (`src/lib/mail/index.ts`) with `MockMailProvider` for tests; `SmtpImapMailProvider` (`src/lib/mail/smtp-imap.ts`) using nodemailer (SMTP send + verify) + imapflow (IMAP fetch) + mailparser. Lazy-imported by the factory so the real libs only enter the bundle when a real mailbox is wired up. Deps via pnpm.
+- [x] **P10-03.** Services: `mailbox.ts` (CRUD with secret-key reservation per UUID slot, default uniqueness, `buildProviderFor` seam, `testMailboxConnection`), `mail.ts` (sendMessage with suppression check + threading + audit, syncInbound with message_id dedup, listThreads/getThread/getMessage), `suppression.ts` (add/remove/list/isSuppressed with TTL), `signatures.ts` (CRUD with default-uniqueness scoping per mailbox|workspace).
+- [x] **P10-04.** Tests in `src/tests/mailing.test.ts` (25 cases): suppression TTL, mailbox secret-key encoding (regex-asserted, no cleartext on row), default uniqueness, archive clears default, testMailboxConnection updates status, signatures default-scoping, send rejects suppressed before hitting provider, two outbound messages with same References thread together, syncInbound dedups by message_id, workspace isolation across all five tables. **271/271 total tests pass.**
+- [x] **P10-05.** UI: `/mailbox` (list of mailboxes), `/mailbox/new` (create with full SMTP+IMAP form), `/mailbox/[id]` (mailbox detail with test/sync buttons + threads list), `/mailbox/[id]/edit` (rotate passwords without persisting cleartext, settings change), `/mailbox/[id]/compose` (new outbound, default signature auto-appended), `/mailbox/threads/[id]` (thread view with inbound/outbound styling + reply form that preserves References), `/mailbox/signatures` (CRUD with workspace-wide and mailbox-scoped sections), `/mailbox/suppression` (add/remove/list with reason + TTL). Dashboard linked.
+- [ ] **P10-06.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
