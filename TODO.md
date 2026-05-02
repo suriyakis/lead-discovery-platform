@@ -247,6 +247,27 @@ indexing + retrieval path without external API calls.
 
 **Phase 12 complete.**
 
+## Phase 13 — CRM / Export
+
+**Goal.** Export approved leads to CSV (file download) and push them to
+HubSpot via a real API adapter. Future CRM systems plug in behind the same
+`ICRMConnector` shape.
+
+**Design lock (2026-05-02):** CSV export is a pseudo-CRM connector — the
+same `push()` shape, but the service writes the bundled CSV to IStorage
+and surfaces a download URL. HubSpot uses Bearer-token auth with the
+private-app PAT; the token lives in `workspace_secrets`. State-advance is
+opt-in: a successful push can transition the lead to `synced_to_crm` with
+`crmExternalId` + `crmSystem` populated, but the operator drives that
+choice via a checkbox on the push form.
+
+- [x] **P13-01.** Schema (migration `0012_workable_senator_kelly.sql`): `crm_connections` (per-workspace per-system, credential as a secret-key reference, status enum, lastSyncedAt/lastError) + `crm_sync_log` (one row per push, externalId for the upsert path, payload + response audit jsonb, partial unique index limits one pending entry per (lead, connection)).
+- [x] **P13-02.** `ICRMConnector` abstraction (`src/lib/crm/index.ts`) with `CsvCrmConnector` (no remote calls — normalizes the row for bulk export) and `HubspotCrmConnector` (POST/PATCH `/crm/v3/objects/contacts` with Bearer token, 20s timeout, status-code + body capture for audit). State → hs_lead_status mapping; lead/product fields → standard HubSpot properties + `lead_platform_*` custom props for traceability. CSV helpers (`csvRowFor`, `rowsToCsv` with RFC-4180 quoting).
+- [x] **P13-03.** Service (`src/lib/services/crm.ts`): create/update/archive connection (admin-only with credential rotation through `setSecret`), `testCrmConnection` (status + lastError side-effects), `pushLeadToCrm` (loads prior succeeded sync to reuse externalId, audit-logs every push, optional state advance), `exportLeadsToCsv` (state + product filters, writes to IStorage with download Content-Disposition), `listSyncEntries`.
+- [x] **P13-04.** Tests in `src/tests/crm.test.ts` (16 cases): CSV escaping (commas/quotes/newlines), connection CRUD (admin gates, unknown-system rejection, credential never persisted as cleartext, credential rotation), testCrmConnection status sync, pushLeadToCrm (sync entry persistence, prior externalId reuse on second push, failure → connection failing + error capture, advanceState path, cross-workspace refusal), bulk CSV export (file written to storage, state filter narrows, workspace isolation), listSyncEntries scoping. **326/326 total tests pass.**
+- [x] **P13-05.** UI: `/settings/crm` (list + Quick CSV export button + connection cards), `/settings/crm/new` (system + name + credential + base-URL form), `/settings/crm/[id]` (settings edit with credential rotate, Test connection, recent syncs timeline, admin archive). `/pipeline/[id]` extended with a CRM section: connection picker + advance-state checkbox + recent-syncs timeline. SettingsNav extended with the CRM tab.
+- [ ] **P13-06.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

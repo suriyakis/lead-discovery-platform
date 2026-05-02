@@ -17,6 +17,12 @@ import {
   transition,
   updateContact,
 } from '@/lib/services/pipeline';
+import {
+  CrmServiceError,
+  listCrmConnections,
+  listSyncEntries,
+  pushLeadToCrm,
+} from '@/lib/services/crm';
 import type {
   CloseReason,
   PipelineState,
@@ -67,6 +73,9 @@ export default async function PipelineLeadDetail({
 
   const { lead, product, reviewItem, events } = detail;
   const allowed = FORWARD_TRANSITIONS[lead.state];
+  const crmConns = await listCrmConnections(ctx);
+  const activeCrm = crmConns.filter((c) => c.status !== 'archived');
+  const recentSyncs = await listSyncEntries(ctx, { leadId: lead.id, limit: 10 });
 
   async function doTransition(formData: FormData) {
     'use server';
@@ -140,6 +149,30 @@ export default async function PipelineLeadDetail({
     const userIdRaw = String(formData.get('assignedToUserId') ?? '').trim();
     await assign(c, id, userIdRaw || null);
     redirect(`/pipeline/${id}`);
+  }
+
+  async function pushCrm(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const connIdRaw = String(formData.get('connectionId') ?? '');
+    if (!/^\d+$/.test(connIdRaw)) return;
+    const advance = formData.get('advance') === 'on';
+    try {
+      const result = await pushLeadToCrm(c, {
+        connectionId: BigInt(connIdRaw),
+        leadId: id,
+        advanceState: advance,
+      });
+      const m =
+        result.entry.outcome === 'succeeded'
+          ? `Pushed (ext ${result.entry.externalId ?? '—'})`
+          : `Failed: ${result.entry.error ?? 'unknown'}`;
+      redirect(`/pipeline/${id}?message=${encodeURIComponent(m)}`);
+    } catch (err) {
+      const m =
+        err instanceof CrmServiceError ? err.message : err instanceof Error ? err.message : 'push failed';
+      redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
 
   return (
@@ -343,6 +376,50 @@ export default async function PipelineLeadDetail({
               </button>
             </div>
           </form>
+        </section>
+
+        <section>
+          <h2>CRM</h2>
+          {activeCrm.length === 0 ? (
+            <p className="muted">
+              No CRM connections configured.{' '}
+              <Link href="/settings/crm">Add one</Link> to push this lead.
+            </p>
+          ) : (
+            <form action={pushCrm} className="inline-form">
+              <label>
+                <span>Connection</span>
+                <select name="connectionId" required defaultValue="">
+                  <option value="" disabled>
+                    Pick a CRM…
+                  </option>
+                  {activeCrm.map((c) => (
+                    <option key={c.id.toString()} value={c.id.toString()}>
+                      {c.name} ({c.system})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" name="advance" defaultChecked />
+                <span>Advance to synced_to_crm on success</span>
+              </label>
+              <button type="submit">Push to CRM</button>
+            </form>
+          )}
+          {recentSyncs.length > 0 ? (
+            <ul className="timeline" style={{ marginTop: '0.75rem' }}>
+              {recentSyncs.map((s) => (
+                <li key={s.id.toString()}>
+                  <span className="muted">{s.createdAt.toLocaleString()}</span>{' '}
+                  <strong>{s.outcome}</strong>
+                  {s.statusCode ? ` · HTTP ${s.statusCode}` : ''}
+                  {s.externalId ? ` · ext ${s.externalId}` : ''}
+                  {s.error ? ` · ${s.error.slice(0, 200)}` : ''}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </section>
 
         <section>
