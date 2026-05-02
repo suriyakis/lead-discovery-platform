@@ -15,18 +15,22 @@ import {
   getKnowledgeSource,
   updateKnowledgeSource,
 } from '@/lib/services/knowledge-sources';
+import { indexKnowledgeSource, listIndexingJobs } from '@/lib/services/rag';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
 export default async function KnowledgeSourceDetail({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ message?: string; error?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
   const { id: idStr } = await params;
   if (!/^\d+$/.test(idStr)) redirect('/knowledge');
   const id = BigInt(idStr);
+  const sp = await searchParams;
 
   let ctx;
   try {
@@ -50,6 +54,7 @@ export default async function KnowledgeSourceDetail({
   const { source, document } = detail;
   const allProducts: ProductProfile[] = await listProductProfiles(ctx, { includeArchived: false });
   const attachedSet = new Set(source.productProfileIds.map((id) => id.toString()));
+  const indexJobs = await listIndexingJobs(ctx, { knowledgeSourceId: source.id, limit: 5 });
 
   async function saveEdits(formData: FormData) {
     'use server';
@@ -85,6 +90,18 @@ export default async function KnowledgeSourceDetail({
     const c = await getWorkspaceContext();
     await deleteKnowledgeSource(c, id);
     redirect('/knowledge');
+  }
+
+  async function reindex() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      const result = await indexKnowledgeSource(c, id);
+      redirect(`/knowledge/${id}?message=Indexed+${result.chunkCount}+chunks`);
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'index failed';
+      redirect(`/knowledge/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
 
   return (
@@ -163,6 +180,35 @@ export default async function KnowledgeSourceDetail({
             <dt>Created</dt>
             <dd>{source.createdAt.toLocaleString()}</dd>
           </dl>
+        </section>
+
+        {sp.message ? <p className="form-message">{sp.message}</p> : null}
+        {sp.error ? <p className="form-error">{sp.error}</p> : null}
+
+        <section>
+          <h2>RAG indexing</h2>
+          <p className="muted">
+            Indexing splits this source into chunks and embeds them for
+            similarity retrieval. Re-index after edits.
+          </p>
+          <form action={reindex}>
+            <button type="submit">
+              {indexJobs.some((j) => j.status === 'succeeded') ? 'Re-index' : 'Index now'}
+            </button>
+          </form>
+          {indexJobs.length > 0 ? (
+            <ul className="timeline" style={{ marginTop: '0.75rem' }}>
+              {indexJobs.map((j) => (
+                <li key={j.id.toString()}>
+                  <span className="muted">{j.createdAt.toLocaleString()}</span>{' '}
+                  <strong>{j.status}</strong>
+                  {j.chunkCount > 0 ? ` · ${j.chunkCount} chunks` : ''}
+                  {j.embeddingModel ? ` · ${j.embeddingModel}` : ''}
+                  {j.error ? ` · ${j.error.slice(0, 200)}` : ''}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </section>
 
         <section>

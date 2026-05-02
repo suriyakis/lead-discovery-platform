@@ -9,13 +9,17 @@ import {
 } from '@/lib/services/auth-context';
 import { MailServiceError, getThread, sendMessage } from '@/lib/services/mail';
 import { getMailbox } from '@/lib/services/mailbox';
+import {
+  ReplyAssistantError,
+  suggestReply,
+} from '@/lib/services/reply-assistant';
 
 export default async function ThreadDetail({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; suggestion?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -52,6 +56,21 @@ export default async function ThreadDetail({
     lastMessage && lastMessage.direction === 'inbound'
       ? lastMessage.fromAddress
       : lastMessage?.toAddresses[0] ?? '';
+
+  async function suggest() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      const result = await suggestReply(c, { threadId: id });
+      const params = new URLSearchParams({ suggestion: result.text });
+      redirect(`/mailbox/threads/${id}?${params.toString()}`);
+    } catch (err) {
+      const m =
+        err instanceof ReplyAssistantError ? err.message :
+        err instanceof Error ? err.message : 'suggest failed';
+      redirect(`/mailbox/threads/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
 
   async function reply(formData: FormData) {
     'use server';
@@ -143,6 +162,14 @@ export default async function ThreadDetail({
         {mailbox.status !== 'archived' ? (
           <section>
             <h2>Reply</h2>
+            <div className="action-row" style={{ marginBottom: '0.75rem' }}>
+              <form action={suggest}>
+                <button type="submit">Suggest reply (RAG)</button>
+              </form>
+              <span className="muted" style={{ alignSelf: 'center' }}>
+                Uses indexed documents + lessons to draft a grounded response.
+              </span>
+            </div>
             <form action={reply} className="edit-draft-form">
               <label>
                 <span>To</span>
@@ -163,7 +190,13 @@ export default async function ThreadDetail({
               </label>
               <label>
                 <span>Message</span>
-                <textarea name="body" rows={10} required maxLength={50000} />
+                <textarea
+                  name="body"
+                  rows={10}
+                  required
+                  maxLength={50000}
+                  defaultValue={sp.suggestion ?? ''}
+                />
               </label>
               <div className="action-row">
                 <button type="submit" className="primary-btn">

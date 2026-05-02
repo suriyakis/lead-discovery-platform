@@ -16,16 +16,20 @@ import {
   updateDocument,
 } from '@/lib/services/documents';
 import { listKnowledgeSources } from '@/lib/services/knowledge-sources';
+import { indexDocument, listIndexingJobs } from '@/lib/services/rag';
 
 export default async function DocumentDetail({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ message?: string; error?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
   const { id: idStr } = await params;
   if (!/^\d+$/.test(idStr)) redirect('/documents');
+  const sp = await searchParams;
   const id = BigInt(idStr);
 
   let ctx;
@@ -55,6 +59,7 @@ export default async function DocumentDetail({
   const referencingKs = allKs.filter(
     (r) => r.source.documentId !== null && r.source.documentId === document.id,
   );
+  const indexJobs = await listIndexingJobs(ctx, { documentId: document.id, limit: 5 });
 
   async function saveEdits(formData: FormData) {
     'use server';
@@ -84,6 +89,20 @@ export default async function DocumentDetail({
     const c = await getWorkspaceContext();
     await restoreDocument(c, id);
     redirect(`/documents/${id}`);
+  }
+
+  async function reindex() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      const result = await indexDocument(c, id);
+      redirect(
+        `/documents/${id}?message=Indexed+${result.chunkCount}+chunks`,
+      );
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'index failed';
+      redirect(`/documents/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
 
   return (
@@ -191,6 +210,39 @@ export default async function DocumentDetail({
                 </button>
               </div>
             </form>
+          </section>
+        ) : null}
+
+        {sp.message ? <p className="form-message">{sp.message}</p> : null}
+        {sp.error ? <p className="form-error">{sp.error}</p> : null}
+
+        {!isArchived ? (
+          <section>
+            <h2>RAG indexing</h2>
+            <p className="muted">
+              Indexing chunks the document content and embeds it for retrieval.
+              Re-index whenever the bytes change or you want to refresh embeddings.
+            </p>
+            <form action={reindex}>
+              <button type="submit">
+                {indexJobs.some((j) => j.status === 'succeeded')
+                  ? 'Re-index'
+                  : 'Index now'}
+              </button>
+            </form>
+            {indexJobs.length > 0 ? (
+              <ul className="timeline" style={{ marginTop: '0.75rem' }}>
+                {indexJobs.map((j) => (
+                  <li key={j.id.toString()}>
+                    <span className="muted">{j.createdAt.toLocaleString()}</span>{' '}
+                    <strong>{j.status}</strong>
+                    {j.chunkCount > 0 ? ` · ${j.chunkCount} chunks` : ''}
+                    {j.embeddingModel ? ` · ${j.embeddingModel}` : ''}
+                    {j.error ? ` · ${j.error.slice(0, 200)}` : ''}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </section>
         ) : null}
 

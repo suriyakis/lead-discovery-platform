@@ -225,6 +225,26 @@ audit trail and the UI history panel share a single source of truth.
 
 **Phase 11 complete.**
 
+## Phase 12 — Document Knowledge / RAG
+
+**Goal.** Retrieval-augmented generation: chunk + embed knowledge, retrieve
+top-k by cosine similarity, ground reply drafting on workspace knowledge.
+
+**Design lock (2026-05-02):** pgvector via the `pgvector/pgvector:pg17`
+image. Embeddings fixed at 1536 dimensions to match OpenAI
+text-embedding-3-small (the cheapest credible default; same dim as
+text-embedding-ada-002 for migration). HNSW indexes with cosine ops on both
+`document_chunks.embedding` and `learning_lessons.embedding`. Mock embedding
+provider produces deterministic unit vectors so tests exercise the full
+indexing + retrieval path without external API calls.
+
+- [x] **P12-01.** pgvector + schema (migration `0011_demonic_human_fly.sql`). `document_chunks` (per-chunk content + embedding + metadata, scoped to document OR knowledge_source), `indexing_jobs` (operational status). Additive `embedding`/`embedding_model`/`embedding_dim`/`embedded_at` columns on `learning_lessons`. Custom Drizzle `vector(1536)` type. HNSW indexes hand-edited into the migration since drizzle-kit doesn't yet support `USING hnsw`. Compose images upgraded to `pgvector/pgvector:pg17` (base + prod).
+- [x] **P12-02.** Embeddings provider abstraction (`src/lib/embeddings/index.ts`) with `MockEmbeddingProvider` (deterministic 1536-dim unit vectors via sha256-seeded expansion) and `OpenAIEmbeddingProvider` (text-embedding-3-small via /v1/embeddings, 30s timeout, `OPENAI_API_KEY` / `EMBEDDING_API_KEY` fallback). `EMBEDDING_PROVIDER` env switches; cosineSimilarity helper exported.
+- [x] **P12-03.** RAG service (`src/lib/services/rag.ts`): `chunkText` (~2000 char with sentence-boundary preference + 200 char overlap, 1000-chunk cap), text extraction (text/json + html stripping + UTF-8 sniff for unknown mimes), `indexDocument` / `indexKnowledgeSource` (drop-and-replace re-index, batched embed at 64/req, indexing_job logging), `embedLesson` / `embedAllLessons` (populate the new lesson columns), `retrieve` / `retrieveLessons` (cosine `<=>` ORDER BY with optional product-scope filter), `listIndexingJobs` / `listChunksForDocument` for the UI.
+- [x] **P12-04.** Tests in `src/tests/rag.test.ts` (19) + `src/tests/reply-assistant.test.ts` (4). 23 cases across chunking unit tests, mock embedder unit-vector + determinism properties, full document indexing pipeline, mime rejection with failed-job audit, role gates, cross-workspace isolation, retrieve top-k ordering + product filtering + empty-query short-circuit, lesson embedding round-trip, reply assistant prompt assembly + sources tracking. **310/310 total tests pass.**
+- [x] **P12-05.** Technical reply assistant (`src/lib/services/reply-assistant.ts`). Pulls the most-recent inbound message in a thread, retrieves top-k chunks + lessons, builds a structured prompt with explicit `<chunk>` blocks for the AI to ground on, calls `IAIProvider.generateText`. Wired into `/mailbox/threads/[id]` as a "Suggest reply (RAG)" button that pre-fills the reply textarea via search-param round trip. Re-index buttons added to `/documents/[id]` and `/knowledge/[id]` with the indexing-job timeline below each.
+- [ ] **P12-06.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
