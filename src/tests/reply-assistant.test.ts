@@ -12,7 +12,7 @@ import {
   suggestReply,
 } from '@/lib/services/reply-assistant';
 import { createMailbox } from '@/lib/services/mailbox';
-import { sendMessage, syncInbound } from '@/lib/services/mail';
+import { syncInbound } from '@/lib/services/mail';
 import { uploadDocument } from '@/lib/services/documents';
 import { indexDocument } from '@/lib/services/rag';
 import {

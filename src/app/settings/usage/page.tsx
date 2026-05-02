@@ -82,7 +82,7 @@ export default async function UsagePage({
           <Link href="/dashboard">Dashboard</Link> / Settings
         </p>
         <h1>Settings</h1>
-        <SettingsNavExtended active="/settings/usage" />
+        <SettingsNav active="usage" />
 
         <div className="state-tabs">
           {RANGES.map((r) => (
@@ -191,19 +191,3 @@ export default async function UsagePage({
   );
 }
 
-// Inline expansion of SettingsNav with Usage added — keeps the import surface small.
-function SettingsNavExtended({ active }: { active: string }) {
-  const items = [
-    { href: '/settings/integrations', label: 'Integrations' },
-    { href: '/settings/usage', label: 'Usage' },
-  ];
-  return (
-    <nav className="settings-nav">
-      {items.map((it) => (
-        <Link key={it.href} href={it.href} className={active === it.href ? 'active' : ''}>
-          {it.label}
-        </Link>
-      ))}
-    </nav>
-  );
-}

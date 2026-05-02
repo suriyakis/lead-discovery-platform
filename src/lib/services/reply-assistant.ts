@@ -151,7 +151,10 @@ function buildPrompt(
   const chunkLines =
     chunks.length > 0
       ? chunks
-          .map((c, i) => `<chunk id="${c.chunk.id}" similarity="${c.similarity.toFixed(3)}">\n${c.chunk.content}\n</chunk>`)
+          .map(
+            (c) =>
+              `<chunk id="${c.chunk.id}" similarity="${c.similarity.toFixed(3)}">\n${c.chunk.content}\n</chunk>`,
+          )
           .join('\n\n')
       : '(no relevant context found in the workspace knowledge base)';
 

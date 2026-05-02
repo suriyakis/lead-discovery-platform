@@ -11,7 +11,6 @@ import {
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { createProductProfile } from '@/lib/services/product-profile';
 import {
-  PipelineServiceError,
   assign,
   ensureQualifiedLead,
   getLead,

@@ -11,7 +11,6 @@ import {
   makeWorkspaceContext,
 } from '@/lib/services/context';
 import {
-  AdminServiceError,
   activeImpersonationFor,
   endImpersonation,
   listAllUsers,
