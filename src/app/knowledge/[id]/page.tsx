@@ -1,0 +1,238 @@
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { BrandHeader } from '@/components/BrandHeader';
+import { auth, signOut } from '@/lib/auth';
+import {
+  AuthRequiredError,
+  NoWorkspaceError,
+  getWorkspaceContext,
+} from '@/lib/services/auth-context';
+import { canAdminWorkspace } from '@/lib/services/context';
+import { listProductProfiles } from '@/lib/services/product-profile';
+import {
+  KnowledgeSourceServiceError,
+  deleteKnowledgeSource,
+  getKnowledgeSource,
+  updateKnowledgeSource,
+} from '@/lib/services/knowledge-sources';
+import type { ProductProfile } from '@/lib/db/schema/products';
+
+export default async function KnowledgeSourceDetail({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const session = await auth();
+  if (!session?.user?.id) redirect('/');
+  const { id: idStr } = await params;
+  if (!/^\d+$/.test(idStr)) redirect('/knowledge');
+  const id = BigInt(idStr);
+
+  let ctx;
+  try {
+    ctx = await getWorkspaceContext();
+  } catch (err) {
+    if (err instanceof AuthRequiredError) redirect('/');
+    if (err instanceof NoWorkspaceError) redirect('/knowledge');
+    throw err;
+  }
+
+  let detail;
+  try {
+    detail = await getKnowledgeSource(ctx, id);
+  } catch (err) {
+    if (err instanceof KnowledgeSourceServiceError && err.code === 'not_found') {
+      redirect('/knowledge');
+    }
+    throw err;
+  }
+
+  const { source, document } = detail;
+  const allProducts: ProductProfile[] = await listProductProfiles(ctx, { includeArchived: false });
+  const attachedSet = new Set(source.productProfileIds.map((id) => id.toString()));
+
+  async function saveEdits(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const title = String(formData.get('title') ?? '').trim();
+    const summary = String(formData.get('summary') ?? '').trim();
+    const language = String(formData.get('language') ?? 'en').trim() || 'en';
+    const rawTags = String(formData.get('tags') ?? '');
+    const tags = rawTags.split(',').map((t) => t.trim()).filter(Boolean);
+    const productIds = formData.getAll('productProfileIds')
+      .map((v) => String(v))
+      .filter((v) => /^\d+$/.test(v))
+      .map((v) => BigInt(v));
+    const url = String(formData.get('url') ?? '').trim();
+    const textExcerpt = String(formData.get('textExcerpt') ?? '');
+
+    const patch: Parameters<typeof updateKnowledgeSource>[2] = {
+      title: title || undefined,
+      summary: summary,
+      language,
+      tags,
+      productProfileIds: productIds,
+    };
+    if (source.kind === 'url' && url) patch.url = url;
+    if (source.kind === 'text') patch.textExcerpt = textExcerpt;
+
+    await updateKnowledgeSource(c, id, patch);
+    redirect(`/knowledge/${id}`);
+  }
+
+  async function destroy() {
+    'use server';
+    const c = await getWorkspaceContext();
+    await deleteKnowledgeSource(c, id);
+    redirect('/knowledge');
+  }
+
+  return (
+    <>
+      <BrandHeader
+        rightSlot={
+          <>
+            <span className="who">{session.user.email}</span>
+            <form
+              action={async () => {
+                'use server';
+                await signOut({ redirectTo: '/' });
+              }}
+            >
+              <button type="submit" className="ghost-btn">
+                Sign out
+              </button>
+            </form>
+          </>
+        }
+      />
+      <main>
+        <p className="muted">
+          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/knowledge">Knowledge</Link> / {source.title}
+        </p>
+        <h1>{source.title}</h1>
+        <p>
+          <span className="badge">{source.kind}</span>
+        </p>
+
+        <section>
+          <h2>Source</h2>
+          <dl>
+            <dt>Kind</dt>
+            <dd>
+              <code>{source.kind}</code>
+            </dd>
+            {source.kind === 'document' && document ? (
+              <>
+                <dt>Document</dt>
+                <dd>
+                  <Link href={`/documents/${document.id}`}>{document.name}</Link>
+                  <span className="muted"> · {document.filename}</span>
+                </dd>
+              </>
+            ) : null}
+            {source.kind === 'url' && source.url ? (
+              <>
+                <dt>URL</dt>
+                <dd>
+                  <a href={source.url} target="_blank" rel="noreferrer">
+                    {source.url}
+                  </a>
+                </dd>
+              </>
+            ) : null}
+            {source.kind === 'text' && source.textExcerpt ? (
+              <>
+                <dt>Excerpt</dt>
+                <dd>
+                  <pre className="draft-body">{source.textExcerpt}</pre>
+                </dd>
+              </>
+            ) : null}
+            <dt>Language</dt>
+            <dd>
+              <code>{source.language}</code>
+            </dd>
+            {source.tags.length > 0 ? (
+              <>
+                <dt>Tags</dt>
+                <dd>{source.tags.join(', ')}</dd>
+              </>
+            ) : null}
+            <dt>Created</dt>
+            <dd>{source.createdAt.toLocaleString()}</dd>
+          </dl>
+        </section>
+
+        <section>
+          <h2>Edit</h2>
+          <form action={saveEdits} className="edit-draft-form">
+            <label>
+              <span>Title</span>
+              <input type="text" name="title" defaultValue={source.title} maxLength={240} required />
+            </label>
+            {source.kind === 'url' ? (
+              <label>
+                <span>URL</span>
+                <input type="url" name="url" defaultValue={source.url ?? ''} required />
+              </label>
+            ) : null}
+            {source.kind === 'text' ? (
+              <label>
+                <span>Excerpt</span>
+                <textarea name="textExcerpt" rows={8} defaultValue={source.textExcerpt ?? ''} maxLength={200000} />
+              </label>
+            ) : null}
+            <label>
+              <span>Summary</span>
+              <textarea name="summary" rows={3} defaultValue={source.summary ?? ''} maxLength={4000} />
+            </label>
+            <label>
+              <span>Language</span>
+              <input type="text" name="language" defaultValue={source.language} maxLength={8} />
+            </label>
+            <label>
+              <span>Tags (comma-separated)</span>
+              <input type="text" name="tags" defaultValue={source.tags.join(', ')} maxLength={400} />
+            </label>
+            <label>
+              <span>Attached products</span>
+              <select
+                name="productProfileIds"
+                multiple
+                size={Math.min(8, Math.max(3, allProducts.length))}
+              >
+                {allProducts.map((p) => (
+                  <option
+                    key={p.id.toString()}
+                    value={p.id.toString()}
+                    selected={attachedSet.has(p.id.toString())}
+                  >
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="action-row">
+              <button type="submit" className="primary-btn">
+                Save
+              </button>
+            </div>
+          </form>
+        </section>
+
+        {canAdminWorkspace(ctx) ? (
+          <section>
+            <h2>Admin</h2>
+            <form action={destroy}>
+              <button type="submit" className="ghost-btn">
+                Delete (cannot be undone)
+              </button>
+            </form>
+          </section>
+        ) : null}
+      </main>
+    </>
+  );
+}

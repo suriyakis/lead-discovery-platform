@@ -1085,3 +1085,65 @@ button.primary-btn {
   line-height: 1.55;
   min-height: 14rem;
 }
+
+.edit-draft-form select {
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: var(--brand-input);
+  color: var(--brand-fg);
+}
+
+/* ---- Document upload + knowledge form ---- */
+.upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 560px;
+}
+
+.upload-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.upload-form label > span {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.upload-form input[type='file'],
+.upload-form input[type='text'] {
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: var(--brand-input);
+  color: var(--brand-fg);
+}
+
+.upload-form button {
+  align-self: flex-start;
+}
+
+.ks-kind-fields {
+  border: 1px dashed var(--brand-border);
+  border-radius: var(--brand-radius);
+  padding: 0.75rem 1rem;
+  margin: 0;
+}
+
+.ks-kind-fields legend {
+  padding: 0 0.5rem;
+  font-size: 0.825rem;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}

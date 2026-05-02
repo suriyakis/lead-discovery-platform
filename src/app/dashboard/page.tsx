@@ -107,6 +107,14 @@ export default async function Dashboard() {
                 <span className="muted">Generated drafts awaiting human review and approval.</span>
               </li>
               <li>
+                <Link href="/documents">Documents →</Link>
+                <span className="muted">Uploaded files: pricing, specs, case studies.</span>
+              </li>
+              <li>
+                <Link href="/knowledge">Knowledge sources →</Link>
+                <span className="muted">Documents, URLs, and text excerpts attached to products.</span>
+              </li>
+              <li>
                 <Link href="/learning">Learning memory →</Link>
                 <span className="muted">Lessons distilled from review feedback.</span>
               </li>

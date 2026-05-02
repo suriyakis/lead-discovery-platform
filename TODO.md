@@ -155,6 +155,28 @@ at most one active draft (partial unique index on
 
 **Phase 8 complete.**
 
+## Phase 9 — Document Storage
+
+**Goal.** Upload, tag, list documents. Wrap them and external URLs as
+"knowledge sources" attachable to product profiles, ready for future RAG
+phases. Storage backend swappable between local FS (dev) and S3-compatible
+(prod) via `STORAGE_PROVIDER` env.
+
+**Design lock (2026-05-02):** The `documents` table is pure file metadata
+(name, mime, size, sha256, storage_key, tags, status). The
+`knowledge_sources` table is the unifying abstraction for "things this
+workspace knows" — a knowledge source is one of `document | url | text`. It
+attaches to product profiles via `product_profile_ids bigint[]`. Future
+phases (chunking, embeddings, RAG retrieval) read these rows. Bytes never
+leave IStorage; metadata never leaves Drizzle.
+
+- [x] **P9-01.** `documents` + `knowledge_sources` schema (migration `0008_mixed_rogue.sql`). `document_status` enum (uploading | ready | failed | archived); `knowledge_source_kind` enum (document | url | text). Indexes: documents on workspace, (workspace, sha256) for dedup detection, (workspace, status); knowledge_sources on workspace and (workspace, kind).
+- [x] **P9-02.** S3-compatible IStorage implementation (`src/lib/storage/s3.ts`). Works against AWS S3, Hetzner Object Storage, Cloudflare R2, MinIO. Configured via env: `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`/`AWS_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`/`AWS_SECRET_ACCESS_KEY`, optional `S3_ENDPOINT`, `S3_FORCE_PATH_STYLE`, `S3_PUBLIC_BASE_URL`. Factory in `src/lib/storage/index.ts` lazy-imports the s3 module so the AWS SDK doesn't load when local provider is used. 11 storage tests cover both backends. Deps: `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`.
+- [x] **P9-03.** Documents + knowledge sources services. `documents.ts` provides `uploadDocument` (computes sha256, generates `workspaces/<id>/documents/<uuid>.<ext>` key, audit-logs), `listDocuments`, `getDocument` (returns signed URL), `streamDocument` (Readable for direct serving), `updateDocument`, `archiveDocument` / `restoreDocument` (admin). `knowledge-sources.ts` handles all three kinds with kind-specific shape validation, cross-workspace document rejection, postgres array-membership for product filtering.
+- [x] **P9-04.** Tests in `src/tests/storage.test.ts` (11 cases) + `src/tests/documents.test.ts` (22 cases). Covers: local + S3 storage backends, env parsing, key-traversal rejection, upload + stream round-trips, tag sanitization, viewer-denied uploads, archive doesn't delete bytes, knowledge source kind validation (document/url/text), cross-workspace isolation, product-attachment filtering. **246/246 total tests pass.**
+- [x] **P9-05.** UI: `/documents` (upload form + library list with archived toggle), `/documents/[id]` (metadata, download link, name+tags edit, knowledge sources referencing this doc, admin archive/restore), `/knowledge` (list with kind + product filters, "New source" button), `/knowledge/new` (kind switch, kind-specific fields, multi-product attachment), `/knowledge/[id]` (detail + edit + admin delete). Dashboard linked.
+- [ ] **P9-06.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
