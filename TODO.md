@@ -175,7 +175,9 @@ leave IStorage; metadata never leaves Drizzle.
 - [x] **P9-03.** Documents + knowledge sources services. `documents.ts` provides `uploadDocument` (computes sha256, generates `workspaces/<id>/documents/<uuid>.<ext>` key, audit-logs), `listDocuments`, `getDocument` (returns signed URL), `streamDocument` (Readable for direct serving), `updateDocument`, `archiveDocument` / `restoreDocument` (admin). `knowledge-sources.ts` handles all three kinds with kind-specific shape validation, cross-workspace document rejection, postgres array-membership for product filtering.
 - [x] **P9-04.** Tests in `src/tests/storage.test.ts` (11 cases) + `src/tests/documents.test.ts` (22 cases). Covers: local + S3 storage backends, env parsing, key-traversal rejection, upload + stream round-trips, tag sanitization, viewer-denied uploads, archive doesn't delete bytes, knowledge source kind validation (document/url/text), cross-workspace isolation, product-attachment filtering. **246/246 total tests pass.**
 - [x] **P9-05.** UI: `/documents` (upload form + library list with archived toggle), `/documents/[id]` (metadata, download link, name+tags edit, knowledge sources referencing this doc, admin archive/restore), `/knowledge` (list with kind + product filters, "New source" button), `/knowledge/new` (kind switch, kind-specific fields, multi-product attachment), `/knowledge/[id]` (detail + edit + admin delete). Dashboard linked.
-- [ ] **P9-06.** Deploy.
+- [x] **P9-06.** Deployed 2026-05-02. SHA `e7ced89`. Migration `0008_mixed_rogue.sql` applied (documents + knowledge_sources tables live, both confirmed via `\dt`). Storage stays on `STORAGE_PROVIDER=local` for now — when user provisions a Hetzner Object Storage bucket and sets `S3_*` env, flipping `STORAGE_PROVIDER=s3` is a single env change with no code redeploy. Wandizz on :3000 untouched. Host-side `pnpm db:migrate` per the operational memory.
+
+**Phase 9 complete.**
 
 ## Discovered along the way
 
