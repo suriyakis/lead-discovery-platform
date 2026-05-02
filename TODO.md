@@ -129,7 +129,9 @@ so re-classifying upserts in place rather than accumulating duplicates.
 - [x] **P7-03.** DB-backed service `qualification.ts`: `classifySourceRecord` iterates every active product profile, retrieves both product-scoped AND workspace-wide lessons via `getRelevantLessons`, runs the engine, upserts the row. `reclassifyWorkspace` re-runs over all source records (audit-logged). `listQualificationsForRecord`, `topQualification`, `listLeads(filter)` for /leads UI. Connector runner now calls `classifySourceRecord` best-effort after each insertRecord.
 - [x] **P7-04.** Tests in `src/tests/qualification.test.ts` (17 cases): one row per active product, inactive products skipped, idempotent upsert, top-1 ordering, product-scoped lessons influence only that product, runner auto-classifies, reclassifyWorkspace covers every record, no cross-workspace leak, plus engine unit cases (forbidden forces irrelevant, evidence trail completeness, confidence bounds). **189/189 total tests pass.**
 - [x] **P7-05.** UI: `/review/[id]` Qualifications panel (one card per product profile with score, threshold, reason, matched keywords, disqualifying signals, expandable evidence/contribution list). New `/leads` page with product filter, relevant-only/all toggle, score/recent sort, deep-links to the review item.
-- [ ] **P7-06.** Deploy.
+- [x] **P7-06.** Deployed 2026-05-02. SHA `ff37019`. Migration `0006_crazy_vertigo.sql` applied (qualifications table). Discover container moved off the shared :3000 host port to `127.0.0.1:3001:3000` so wandizz (lead.nulife.pl) could re-claim :3000. Both vhosts live: lead.nulife.pl → wandizz on :3000, discover.nulife.pl → docker app on :3001. Health: `{"ok":true}`.
+
+**Phase 7 complete.**
 
 ## Discovered along the way
 

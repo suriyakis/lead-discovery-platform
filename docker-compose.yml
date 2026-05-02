@@ -41,8 +41,11 @@ services:
       APP_URL: http://localhost:3000
     env_file:
       - .env
-    ports:
-      - "3000:3000"
+    # No host port published in the base file. Prod (docker-compose.prod.yml)
+    # defines 127.0.0.1:3001:3000 — defining it in both files would bind the
+    # container on multiple ports because compose merges port lists rather
+    # than overriding. Local dev that wants a host port should add it via a
+    # docker-compose.override.yml.
     volumes:
       - ./storage:/app/storage   # local storage provider mount
 

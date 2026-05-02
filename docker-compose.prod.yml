@@ -61,6 +61,9 @@ services:
       # localhost so host-side `pnpm db:migrate` and bullmq inspectors work.
       DATABASE_URL: postgres://lead:${POSTGRES_PASSWORD}@postgres:5432/lead
       REDIS_URL: redis://redis:6379
+    # Defined here (not in docker-compose.yml) because compose merges port
+    # lists rather than overriding — putting it in both files would publish
+    # the container on multiple ports.
     ports:
       - '127.0.0.1:3001:3000'
     volumes:
