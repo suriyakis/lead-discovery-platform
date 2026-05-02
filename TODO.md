@@ -151,7 +151,9 @@ at most one active draft (partial unique index on
 - [x] **P8-03.** Server actions inlined per the existing pattern (no separate file). `/review/[id]` carries `generateDraft`; `/drafts/[id]` carries `saveEdits`, `approve`, `reject`, `regenerate`, `archive`. All declared with `'use server'`, role-gated through the service layer.
 - [x] **P8-04.** Tests in `src/tests/outreach.test.ts` (24 cases): pure engine (rules + AI), forbidden-phrase audit trail, lesson-injection scoping, AI confidence drop on stripped phrases, DB-backed generate/supersede/edit/approve/reject lifecycle, terminal-status conflict, role gates (canWrite for generate, canAdminWorkspace for archive), workspace isolation on list + get + cross-workspace generate. **213/213 total tests pass.**
 - [x] **P8-05.** UI: `/drafts` (list with status + product filters), `/drafts/[id]` (subject + body editor with inline save, approve/reject buttons, regenerate-with-method dropdown, admin archive). Per-qualification "Generate draft" button on `/review/[id]` with method picker; if an active draft exists the button becomes "Regenerate" plus a direct "Open draft" link. Dashboard linked.
-- [ ] **P8-06.** Deploy.
+- [x] **P8-06.** Deployed 2026-05-02. SHA `a2f91df`. Migration `0007_dusty_wrecker.sql` applied (outreach_drafts table live, 0 rows). All 3 services healthy. Sancho hit `tsx: command not found` running `npm run db:migrate` inside the container; host-side `pnpm db:migrate` worked first try — saved as a feedback memory so future Phase X-Y6 deploys default to host-side migrate.
+
+**Phase 8 complete.**
 
 ## Discovered along the way
 
