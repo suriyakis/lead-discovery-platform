@@ -19,6 +19,10 @@ import {
   rejectReviewItem,
 } from '@/lib/services/review';
 import { listQualificationsForRecord } from '@/lib/services/qualification';
+import {
+  activeDraftFor,
+  generateOutreachDraft,
+} from '@/lib/services/outreach';
 
 export default async function ReviewDetail({
   params,
@@ -52,6 +56,15 @@ export default async function ReviewDetail({
 
   const { item, sourceRecord, comments } = detail;
   const qualList = await listQualificationsForRecord(ctx, sourceRecord.id);
+  const activeDrafts = await Promise.all(
+    qualList.map(async ({ product }) => {
+      const draft = await activeDraftFor(ctx, item.id, product.id);
+      return { productId: product.id, draft };
+    }),
+  );
+  const activeDraftByProduct = new Map(
+    activeDrafts.map((d) => [d.productId.toString(), d.draft]),
+  );
   const normalized = sourceRecord.normalizedData as Record<string, unknown>;
   const title = (normalized.title as string | undefined) ?? sourceRecord.sourceUrl ?? `Record ${sourceRecord.id}`;
   const snippet = normalized.snippet as string | undefined;
@@ -97,6 +110,20 @@ export default async function ReviewDetail({
     if (!text) return;
     await commentOnReviewItem(c, id, text);
     redirect(`/review/${id}`);
+  }
+  async function generateDraft(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const productIdRaw = String(formData.get('productId') ?? '');
+    if (!/^\d+$/.test(productIdRaw)) return;
+    const methodRaw = String(formData.get('method') ?? 'rules');
+    const method = (methodRaw === 'ai' || methodRaw === 'hybrid' ? methodRaw : 'rules');
+    const created = await generateOutreachDraft(c, {
+      reviewItemId: id,
+      productProfileId: BigInt(productIdRaw),
+      method,
+    });
+    redirect(`/drafts/${created.id}`);
   }
 
   return (
@@ -228,6 +255,31 @@ export default async function ReviewDetail({
                         </ul>
                       </details>
                     ) : null}
+                    <div className="qual-draft-row">
+                      {activeDraftByProduct.get(product.id.toString()) ? (
+                        <Link
+                          href={`/drafts/${activeDraftByProduct.get(product.id.toString())!.id}`}
+                          className="primary-btn"
+                        >
+                          Open draft →
+                        </Link>
+                      ) : null}
+                      {item.state !== 'archived' ? (
+                        <form action={generateDraft} className="generate-draft-form">
+                          <input type="hidden" name="productId" value={product.id.toString()} />
+                          <select name="method" defaultValue="rules">
+                            <option value="rules">rules</option>
+                            <option value="ai">ai</option>
+                            <option value="hybrid">hybrid</option>
+                          </select>
+                          <button type="submit">
+                            {activeDraftByProduct.get(product.id.toString())
+                              ? 'Regenerate'
+                              : 'Generate draft'}
+                          </button>
+                        </form>
+                      ) : null}
+                    </div>
                   </li>
                 );
               })}

@@ -103,6 +103,10 @@ export default async function Dashboard() {
                 <span className="muted">Records the classification engine ranked as relevant.</span>
               </li>
               <li>
+                <Link href="/drafts">Outreach drafts →</Link>
+                <span className="muted">Generated drafts awaiting human review and approval.</span>
+              </li>
+              <li>
                 <Link href="/learning">Learning memory →</Link>
                 <span className="muted">Lessons distilled from review feedback.</span>
               </li>

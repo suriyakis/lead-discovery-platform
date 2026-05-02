@@ -1014,3 +1014,74 @@ button.primary-btn {
   font-family: var(--brand-mono);
   margin-top: 0.375rem;
 }
+
+/* ---- Drafts ---- */
+.qual-draft-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--brand-border);
+}
+
+.generate-draft-form {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.generate-draft-form select {
+  font: inherit;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: var(--brand-input);
+  color: var(--brand-fg);
+}
+
+.draft-body {
+  white-space: pre-wrap;
+  background: oklch(0.18 0.02 250 / 0.6);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  padding: 1rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.edit-draft-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.edit-draft-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.edit-draft-form label > span {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.edit-draft-form input,
+.edit-draft-form textarea {
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: var(--brand-input);
+  color: var(--brand-fg);
+  resize: vertical;
+}
+
+.edit-draft-form textarea {
+  font-family: inherit;
+  line-height: 1.55;
+  min-height: 14rem;
+}

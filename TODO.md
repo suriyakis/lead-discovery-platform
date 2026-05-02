@@ -133,6 +133,26 @@ so re-classifying upserts in place rather than accumulating duplicates.
 
 **Phase 7 complete.**
 
+## Phase 8 — Outreach Drafts
+
+**Goal.** Generate drafts from approved records using product-specific style.
+**No sending.** Drafts land in a review state; humans approve; future Send
+phase reads approved rows and dispatches.
+
+**Design lock (2026-05-02):** rules-mode is the deterministic default, AI-mode
+optional via the `IAIProvider` abstraction. Output of *both* modes routes
+through forbidden-phrase stripping at the engine, so a misbehaving AI cannot
+smuggle banned phrases past us. Each `(review_item, product_profile)` pair has
+at most one active draft (partial unique index on
+`status <> 'superseded'`); regenerating supersedes the prior row.
+
+- [x] **P8-01.** `outreach_drafts` schema (migration `0007_dusty_wrecker.sql`). One row per (review_item, product_profile) attempt with `outreach_draft_status` enum (draft | needs_edit | approved | rejected | superseded). Stores subject, body, channel/language, confidence, method, model, evidence jsonb, forbidden_stripped[], matched_lesson_ids[], plus the full review trail (approved/rejected/edited by user + timestamps, rejection_reason). Indexes: `(workspace, status)`, `(workspace, product)`, `(review_item, product)`, partial unique on `(workspace, review_item, product) WHERE status <> 'superseded'`.
+- [x] **P8-02.** Engine + service. `outreach-engine.ts` exposes `composeRulesDraft` (deterministic template) and `composeAiDraft` (calls `IAIProvider.generateText` with a structured prompt). Both modes run forbidden-phrase stripping. `outreach.ts` provides `generateOutreachDraft` (resolves the pair, retrieves outreach lessons workspace+product scoped, supersedes prior draft in transaction, audit-logs), plus `editOutreachDraft` (re-runs strip on user-supplied body), `approveOutreachDraft`, `rejectOutreachDraft`, `archiveOutreachDraft` (admin), `listOutreachDrafts`, `getOutreachDraft`, `activeDraftFor`.
+- [x] **P8-03.** Server actions inlined per the existing pattern (no separate file). `/review/[id]` carries `generateDraft`; `/drafts/[id]` carries `saveEdits`, `approve`, `reject`, `regenerate`, `archive`. All declared with `'use server'`, role-gated through the service layer.
+- [x] **P8-04.** Tests in `src/tests/outreach.test.ts` (24 cases): pure engine (rules + AI), forbidden-phrase audit trail, lesson-injection scoping, AI confidence drop on stripped phrases, DB-backed generate/supersede/edit/approve/reject lifecycle, terminal-status conflict, role gates (canWrite for generate, canAdminWorkspace for archive), workspace isolation on list + get + cross-workspace generate. **213/213 total tests pass.**
+- [x] **P8-05.** UI: `/drafts` (list with status + product filters), `/drafts/[id]` (subject + body editor with inline save, approve/reject buttons, regenerate-with-method dropdown, admin archive). Per-qualification "Generate draft" button on `/review/[id]` with method picker; if an active draft exists the button becomes "Regenerate" plus a direct "Open draft" link. Dashboard linked.
+- [ ] **P8-06.** Deploy.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
