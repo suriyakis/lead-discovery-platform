@@ -3,6 +3,7 @@
 // outreach service a ready IMailProvider per mailbox.
 
 import { and, desc, eq, type SQL } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import {
   mailboxes,
@@ -94,13 +95,12 @@ export async function createMailbox(
       );
   }
 
-  // Reserve secret keys keyed by a stable identifier we can derive.
-  // We use the fromAddress + ":smtp" / ":imap" — workspace_secrets is
-  // workspace-scoped, so collisions across workspaces are fine.
-  const smtpSecretKey = `mailbox:${fromAddress}:smtp_password`;
-  const imapSecretKey = input.imap
-    ? `mailbox:${fromAddress}:imap_password`
-    : null;
+  // Reserve secret keys via a per-mailbox slot id. The secrets layer
+  // requires keys of the form `<lowercase-scope>.<field>` so we cannot
+  // embed the email address verbatim — use a 12-char hex slot per mailbox.
+  const slot = randomUUID().replace(/-/g, '').slice(0, 12);
+  const smtpSecretKey = `mailbox.smtpPassword_${slot}`;
+  const imapSecretKey = input.imap ? `mailbox.imapPassword_${slot}` : null;
 
   await setSecret(ctx, smtpSecretKey, input.smtpPassword);
   if (imapSecretKey && input.imap) {
@@ -200,7 +200,8 @@ export async function updateMailbox(
     updates.imapUser = input.imap.user.trim();
     updates.imapFolder = input.imap.folder?.trim() || 'INBOX';
     if (!existing.imapPasswordSecretKey) {
-      updates.imapPasswordSecretKey = `mailbox:${existing.fromAddress}:imap_password`;
+      const slot = randomUUID().replace(/-/g, '').slice(0, 12);
+      updates.imapPasswordSecretKey = `mailbox.imapPassword_${slot}`;
     }
     if (input.imap.password) {
       const key = updates.imapPasswordSecretKey ?? existing.imapPasswordSecretKey;

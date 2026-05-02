@@ -2,11 +2,12 @@
 // outbound + inbound message is persisted, threaded by header heuristic,
 // and audit-logged. Suppression list is checked before every send.
 
-import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, or, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   mailMessages,
   mailThreads,
+  mailboxes,
   type MailMessage,
   type MailThread,
   type NewMailMessage,
@@ -184,24 +185,12 @@ export async function syncInbound(
   }
 
   await db
-    .update(
-      // re-import here to avoid circular schema export
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      (require('@/lib/db/schema/mailing') as typeof import('@/lib/db/schema/mailing')).mailboxes,
-    )
+    .update(mailboxes)
     .set({ lastSyncedAt: new Date(), lastError: null, updatedAt: new Date() })
     .where(
       and(
-        eq(
-          (require('@/lib/db/schema/mailing') as typeof import('@/lib/db/schema/mailing'))
-            .mailboxes.workspaceId,
-          ctx.workspaceId,
-        ),
-        eq(
-          (require('@/lib/db/schema/mailing') as typeof import('@/lib/db/schema/mailing'))
-            .mailboxes.id,
-          mailbox.id,
-        ),
+        eq(mailboxes.workspaceId, ctx.workspaceId),
+        eq(mailboxes.id, mailbox.id),
       ),
     );
 
@@ -361,6 +350,49 @@ async function ensureThread(
 ): Promise<MailThread> {
   const key = computeThreadKey(input);
 
+  // First, see whether a prior message we already persisted carries any of
+  // the message IDs in the reply chain. If so, that's our thread — even if
+  // the original was created under a subject-derived key (likely when this
+  // thread started as our outbound). This is what stitches together the
+  // first send (no References) with its first reply (References = first).
+  const replyChainIds = mergeUniqueLower([
+    ...input.references,
+    ...(input.inReplyTo ? [input.inReplyTo] : []),
+  ]);
+  if (replyChainIds.length > 0) {
+    const linked = await db
+      .select({ threadId: mailMessages.threadId })
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.mailboxId, mailboxId),
+          inArray(mailMessages.messageId, replyChainIds),
+        ),
+      )
+      .limit(1);
+    if (linked[0]?.threadId) {
+      const threadRows = await db
+        .select()
+        .from(mailThreads)
+        .where(eq(mailThreads.id, linked[0].threadId))
+        .limit(1);
+      if (threadRows[0]) {
+        const merged = mergeUniqueLower([
+          ...threadRows[0].participants,
+          ...input.participants,
+        ]);
+        if (merged.length !== threadRows[0].participants.length) {
+          await db
+            .update(mailThreads)
+            .set({ participants: merged, updatedAt: new Date() })
+            .where(eq(mailThreads.id, threadRows[0].id));
+        }
+        return threadRows[0];
+      }
+    }
+  }
+
   const existing = await db
     .select()
     .from(mailThreads)
@@ -451,3 +483,4 @@ async function touchThread(threadId: bigint): Promise<void> {
 
 // re-export for tests
 void inArray;
+void or;
