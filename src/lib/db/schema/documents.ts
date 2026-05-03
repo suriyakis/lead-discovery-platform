@@ -103,6 +103,20 @@ export const knowledgeSourceKind = pgEnum('knowledge_source_kind', [
   'text',
 ]);
 
+/**
+ * Phase 22: purpose category — used by RAG retrieval to filter by intent
+ * (technical specs vs marketing collateral vs case studies vs internal
+ * notes vs objection-handling).
+ */
+export const knowledgePurposeCategory = pgEnum('knowledge_purpose_category', [
+  'technical',
+  'marketing',
+  'case_study',
+  'internal_note',
+  'objection_handling',
+  'general',
+]);
+
 export const knowledgeSources = pgTable(
   'knowledge_sources',
   {
@@ -122,6 +136,9 @@ export const knowledgeSources = pgTable(
     title: text('title').notNull(),
     summary: text('summary'),
     language: text('language').notNull().default('en'),
+    purposeCategory: knowledgePurposeCategory('purpose_category')
+      .notNull()
+      .default('general'),
     tags: text('tags')
       .array()
       .notNull()

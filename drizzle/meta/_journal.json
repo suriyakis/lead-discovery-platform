@@ -148,6 +148,13 @@
       "when": 1777847470060,
       "tag": "0020_mighty_caretaker",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1777848434660,
+      "tag": "0021_mean_maginty",
+      "breakpoints": true
     }
   ]
 }

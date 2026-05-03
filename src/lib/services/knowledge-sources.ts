@@ -53,6 +53,14 @@ export interface CreateKnowledgeSourceInput {
   textExcerpt?: string | null;
   summary?: string | null;
   language?: string;
+  /** Phase 22: filter axis for RAG retrieval. */
+  purposeCategory?:
+    | 'technical'
+    | 'marketing'
+    | 'case_study'
+    | 'internal_note'
+    | 'objection_handling'
+    | 'general';
   tags?: ReadonlyArray<string>;
   productProfileIds?: ReadonlyArray<bigint>;
 }
@@ -96,6 +104,7 @@ export async function createKnowledgeSource(
     title,
     summary: summary || null,
     language: (input.language ?? 'en').slice(0, 8),
+    purposeCategory: input.purposeCategory ?? 'general',
     tags,
     productProfileIds: productIds,
     createdBy: ctx.userId,
@@ -192,6 +201,13 @@ export interface UpdateKnowledgeSourceInput {
   url?: string;
   textExcerpt?: string;
   language?: string;
+  purposeCategory?:
+    | 'technical'
+    | 'marketing'
+    | 'case_study'
+    | 'internal_note'
+    | 'objection_handling'
+    | 'general';
   tags?: ReadonlyArray<string>;
   productProfileIds?: ReadonlyArray<bigint>;
 }
@@ -231,6 +247,7 @@ export async function updateKnowledgeSource(
     updates.textExcerpt = input.textExcerpt;
   }
   if (input.language !== undefined) updates.language = input.language.slice(0, 8);
+  if (input.purposeCategory !== undefined) updates.purposeCategory = input.purposeCategory;
   if (input.tags !== undefined) updates.tags = sanitizeTags(input.tags);
   if (input.productProfileIds !== undefined) {
     updates.productProfileIds = await sanitizeProductIds(ctx, input.productProfileIds);

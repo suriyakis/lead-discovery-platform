@@ -62,6 +62,22 @@ export default async function KnowledgeSourceDetail({
     const title = String(formData.get('title') ?? '').trim();
     const summary = String(formData.get('summary') ?? '').trim();
     const language = String(formData.get('language') ?? 'en').trim() || 'en';
+    const purposeRaw = String(formData.get('purposeCategory') ?? 'general');
+    const purposeCategory = (
+      purposeRaw === 'technical' ||
+      purposeRaw === 'marketing' ||
+      purposeRaw === 'case_study' ||
+      purposeRaw === 'internal_note' ||
+      purposeRaw === 'objection_handling'
+        ? purposeRaw
+        : 'general'
+    ) as
+      | 'technical'
+      | 'marketing'
+      | 'case_study'
+      | 'internal_note'
+      | 'objection_handling'
+      | 'general';
     const rawTags = String(formData.get('tags') ?? '');
     const tags = rawTags.split(',').map((t) => t.trim()).filter(Boolean);
     const productIds = formData.getAll('productProfileIds')
@@ -75,6 +91,7 @@ export default async function KnowledgeSourceDetail({
       title: title || undefined,
       summary: summary,
       language,
+      purposeCategory,
       tags,
       productProfileIds: productIds,
     };
@@ -171,6 +188,10 @@ export default async function KnowledgeSourceDetail({
             <dd>
               <code>{source.language}</code>
             </dd>
+            <dt>Purpose</dt>
+            <dd>
+              <code>{source.purposeCategory}</code>
+            </dd>
             {source.tags.length > 0 ? (
               <>
                 <dt>Tags</dt>
@@ -237,6 +258,17 @@ export default async function KnowledgeSourceDetail({
             <label>
               <span>Language</span>
               <input type="text" name="language" defaultValue={source.language} maxLength={8} />
+            </label>
+            <label>
+              <span>Purpose</span>
+              <select name="purposeCategory" defaultValue={source.purposeCategory}>
+                <option value="general">General</option>
+                <option value="technical">Technical specs</option>
+                <option value="marketing">Marketing collateral</option>
+                <option value="case_study">Case study</option>
+                <option value="internal_note">Internal note</option>
+                <option value="objection_handling">Objection handling</option>
+              </select>
             </label>
             <label>
               <span>Tags (comma-separated)</span>

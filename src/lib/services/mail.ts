@@ -24,6 +24,7 @@ import {
   renderSignatureText,
 } from './signatures';
 import { analyseReply } from './reply-classifier';
+import { randomUUID } from 'node:crypto';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -112,6 +113,16 @@ export async function sendMessage(
     }
   } catch (err) {
     console.error('[mail.send] signature render failed:', err);
+  }
+
+  // Phase 22: tracking pixel. Token is opaque + workspace-scoped; URL is
+  // /api/track/<token>.gif. We embed it ONLY when the caller supplied an
+  // HTML body (text-only emails skip the pixel).
+  const trackingToken = randomUUID().replace(/-/g, '');
+  if (outboundHtml) {
+    const appUrl = process.env.APP_URL ?? 'http://localhost:3000';
+    const pixelUrl = `${appUrl.replace(/\/+$/, '')}/api/track/${trackingToken}.gif`;
+    outboundHtml = `${outboundHtml}<img src="${pixelUrl}" width="1" height="1" alt="" style="display:block;margin:0;padding:0;border:0" />`;
   }
 
   const out: OutboundMessage = {
@@ -207,6 +218,7 @@ export async function sendMessage(
     sentAt: new Date(),
     sourceDraftId: input.sourceDraftId ?? null,
     contactId,
+    trackingToken,
     createdBy: ctx.userId,
   };
 

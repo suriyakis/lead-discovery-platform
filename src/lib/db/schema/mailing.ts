@@ -237,6 +237,10 @@ export const mailMessages = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    /** Phase 22: opaque token used in tracking pixel + URL. NULL for inbound. */
+    trackingToken: text('tracking_token'),
+    openCount: integer('open_count').notNull().default(0),
+    firstOpenedAt: timestamp('first_opened_at', { mode: 'date', withTimezone: true }),
 
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
@@ -428,6 +432,37 @@ export const replyAutoActions = pgTable('reply_auto_actions', {
 
 export type ReplyAutoActions = typeof replyAutoActions.$inferSelect;
 export type NewReplyAutoActions = typeof replyAutoActions.$inferInsert;
+
+/**
+ * Phase 22: open-tracking pixel events. Each row = one tracking-pixel
+ * fetch; multiple opens of the same message produce multiple rows.
+ */
+export const emailOpens = pgTable(
+  'email_opens',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    messageId: bigint('message_id', { mode: 'bigint' }).notNull(),
+    /** Public token used in the pixel URL — stored on the message at send. */
+    token: text('token').notNull(),
+    userAgent: text('user_agent'),
+    ipHash: text('ip_hash'),
+    openedAt: timestamp('opened_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    workspaceMessageIdx: index('email_opens_ws_message_idx').on(
+      table.workspaceId,
+      table.messageId,
+    ),
+  }),
+);
+
+export type EmailOpenEvent = typeof emailOpens.$inferSelect;
+export type NewEmailOpenEvent = typeof emailOpens.$inferInsert;
 
 // Voids to keep dead-imports quiet during early phases (smallint reserved
 // for future quota/score columns).

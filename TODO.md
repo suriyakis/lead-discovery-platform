@@ -299,6 +299,85 @@ SMTP/IMAP) are the gating items for full production use. The S3 storage
 backend stays opt-in via env (STORAGE_PROVIDER=s3 + Hetzner/MinIO/R2/AWS
 credentials).
 
+## Phase 15 — User management lifecycle + sidebar
+
+- [x] **P15-01.** Schema (migration `0014_giant_blindfold.sql`): `users.account_status` enum (pending|active|suspended|rejected) + `preauthorized_emails` table.
+- [x] **P15-02.** `src/lib/services/users.ts`: preauthorize, setAccountStatus, member CRUD with last-owner protection. Pre-authorize path in Auth.js `signIn` callback flips matching emails to `active` automatically.
+- [x] **P15-03.** `AccountInactiveError` gate in `getWorkspaceContext`; `/pending` page for non-active accounts.
+- [x] **P15-04.** Admin UI: `/admin/users` (status changes), `/settings/members` (workspace member CRUD, last-owner protection).
+- [x] **P15-05.** Sidebar component (`AppShell`/`Sidebar`) with PINNED/SECONDARY/SETTINGS sections + Admin section gated on super_admin.
+- [x] **P15-06.** 19 tests in `src/tests/users.test.ts`.
+
+**Phase 15 complete.**
+
+## Phase 16 — Contacts module
+
+- [x] **P16-01.** Schema (migration `0015_fair_vengeance.sql`): `contacts` (workspace-scoped, email-deduped) + `contact_associations` (polymorphic entity_type/entity_id). Backfill from `qualified_leads.contactEmail` so existing pipeline rows get a contact.
+- [x] **P16-02.** `src/lib/services/contacts.ts`: upsertContact (sparse merge — never blanks set fields), mergeContacts (re-points associations and audit-logs both rows). `mail_messages.contact_id` denormalized for inbox queries.
+- [x] **P16-03.** Wired into `pipeline.updateContact`, `mail.sendMessage`, `mail.persistInbound` so contact resolution is automatic.
+- [x] **P16-04.** UI: `/contacts` list + `/contacts/[id]` detail with linked outreach communication.
+- [x] **P16-05.** 14 tests in `src/tests/contacts.test.ts`.
+
+**Phase 16 complete.**
+
+## Phase 17 — Structured signatures + suppression upgrades
+
+- [x] **P17-01.** Schema (migration `0016_steep_terror.sql`): added structured signature columns (name/title/phone/email/website/linkedin/photo) + suppression `kind` enum (email|domain|company) + `value` column. Backfill suppression `value` from existing addresses.
+- [x] **P17-02.** `signatures.ts`: structured fields + `renderSignatureHtml`/`renderSignatureText` helpers. `mail.sendMessage` now appends the default signature.
+- [x] **P17-03.** Kind-aware `addSuppression` + `isSuppressed` (email + domain + company) + `recordBounce` helper. `mail.sendMessage` auto-bounce-suppresses on SMTP error responseCode.
+- [x] **P17-04.** UI: `/mailbox/suppression` kind selector + structured-fields fieldset on `/mailbox/signatures`.
+- [x] **P17-05.** 15 tests in `src/tests/suppression-p17.test.ts`.
+
+**Phase 17 complete.**
+
+## Phase 18 — CRM extensions: notes + deals
+
+- [x] **P18-01.** Schema (migration `0017_bumpy_the_order.sql`): `crm_sync_kind` enum (contact|note|deal) + `kind`/`related_message_id` columns on `crm_sync_log`.
+- [x] **P18-02.** Extended `ICRMConnector` with `pushNote` + `pushDeal`; HubSpot implementations use HUBSPOT_DEFINED association typeIds for note↔contact and deal↔contact.
+- [x] **P18-03.** Service layer: `pushThreadAsNotes` (one note per thread message), `pushDeal` from a qualified lead.
+- [x] **P18-04.** `/pipeline/[id]` exposes Push notes / Push deal buttons + thread picker.
+- [x] **P18-05.** 5 tests in `src/tests/crm-p18.test.ts`.
+
+**Phase 18 complete.**
+
+## Phase 19 — Send queue + scheduling
+
+- [x] **P19-01.** Schema (migration `0018_dashing_cannonball.sql`): `outreach_queue` (queued/sending/sent/failed/skipped/cancelled) + `outreach_send_settings` (daily cap, domain cooldown, delay mode, emergency pause).
+- [x] **P19-02.** `outreach-queue.ts` enqueue + claim + dispatch with delay-mode-aware `scheduledSendAt` (immediate/fixed/random) and pre-send guards (suppression, daily cap, domain cooldown).
+- [x] **P19-03.** UI: `/mailbox/queue` (queue view + status filters + cancel) + Enqueue-for-send form on `/drafts/[id]`.
+- [x] **P19-04.** 13 tests in `src/tests/outreach-queue.test.ts`.
+
+**Phase 19 complete.**
+
+## Phase 20 — Reply classification + autonomous handoff
+
+- [x] **P20-01.** Schema (migration `0019_fantastic_skrulls.sql`): `mail_messages.reply_classification` + confidence + extracted_emails + `reply_auto_actions` table.
+- [x] **P20-02.** `reply-classifier.ts`: heuristic-first PATTERNS (unsubscribe / bounce / out_of_office / negative / interest / positive / redirect / doc_request / question / irrelevant) with optional AI override. `analyseReply` persists classification + executes auto-actions (suppress/notify_owner/wait_retry).
+- [x] **P20-03.** Wired synchronously into `mail.persistInbound` so every inbound is classified at receive time.
+- [x] **P20-04.** 18 tests in `src/tests/reply-classifier.test.ts` using a synthetic-insert helper that bypasses the slow startRun chain.
+
+**Phase 20 complete.**
+
+## Phase 21 — Autopilot
+
+- [x] **P21-01.** Schema (migration `0020_mighty_caretaker.sql`): `autopilot_settings` (toggles + per-step gates + thresholds + emergency pause) + `autopilot_log` (run_id-grouped).
+- [x] **P21-02.** `autopilot.ts` `runOnce` orchestrator with 6 gated steps: discovery → review-auto-approve → draft generation → draft auto-approve → enqueue → CRM push. Each step honours its own enabled flag; emergency pause halts everything.
+- [x] **P21-03.** UI: `/autopilot` (settings + recent run log).
+- [x] **P21-04.** 9 tests in `src/tests/autopilot.test.ts`.
+
+**Phase 21 complete.**
+
+## Phase 22 — Hints + tracking pixel + knowledge purpose categories
+
+- [x] **P22-01.** Schema (migration `0021_mean_maginty.sql`): `knowledge_purpose_category` enum (technical|marketing|case_study|internal_note|objection_handling|general) + `purpose_category` column on `knowledge_sources`. `email_opens` table + `mail_messages.tracking_token`/`open_count`/`first_opened_at` for open tracking.
+- [x] **P22-02.** `hints.ts`: derived (non-persisted) UX context — `hintsForLead` (product_fit, next_action, pending_approval), `hintsForThread` (last reply classification), `hintsForDraft` (ai_generated, forbidden_stripped, send_scheduled/sent/failed), `leadStateSummary`.
+- [x] **P22-03.** `<HintBadge>` + `<HintBadgeList>` components wired into `/pipeline` (list + kanban) and `/drafts` list.
+- [x] **P22-04.** Tracking pixel: `mail.sendMessage` injects a 1×1 `<img>` pointing at `/api/track/<token>.gif`; the route records `email_opens` + bumps the message counter, always returns the GIF regardless of token validity.
+- [x] **P22-05.** RAG: `purposeCategory` filter wired through `RetrieveOptions` + the actual SQL filter in `retrieve()`. `/knowledge/new` and `/knowledge/[id]` expose the dropdown; `knowledge-sources.update` accepts the new field.
+- [x] **P22-06.** 13 tests in `src/tests/p22.test.ts`. **443/443 total tests pass.**
+
+**Phase 22 complete.**
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

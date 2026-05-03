@@ -490,6 +490,14 @@ export interface RetrieveOptions {
   /** Top-k. Defaults to 8. */
   limit?: number;
   productProfileId?: bigint;
+  /** Phase 22: filter chunks to a single knowledge purpose category. */
+  purposeCategory?:
+    | 'technical'
+    | 'marketing'
+    | 'case_study'
+    | 'internal_note'
+    | 'objection_handling'
+    | 'general';
   embedder?: IEmbeddingProvider;
 }
 
@@ -529,6 +537,19 @@ export async function retrieve(
         WHERE ${knowledgeSources.id} = ${documentChunks.knowledgeSourceId}
           AND ${options.productProfileId} = ANY(${knowledgeSources.productProfileIds})
       ))`,
+    );
+  }
+  // Phase 22: optional purpose-category filter. Only chunks owned by a
+  // knowledge_source with a matching purpose_category are returned.
+  // Document-only chunks (no knowledge_source) are excluded when this
+  // filter is active — purpose is a knowledge-source-level axis.
+  if (options.purposeCategory !== undefined) {
+    conditions.push(
+      sql`EXISTS (
+        SELECT 1 FROM ${knowledgeSources}
+        WHERE ${knowledgeSources.id} = ${documentChunks.knowledgeSourceId}
+          AND ${knowledgeSources.purposeCategory} = ${options.purposeCategory}
+      )`,
     );
   }
 

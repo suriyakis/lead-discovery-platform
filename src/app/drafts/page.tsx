@@ -12,6 +12,8 @@ import {
   listOutreachDrafts,
   type OutreachDraftRow,
 } from '@/lib/services/outreach';
+import { hintsForDraft, type Hint } from '@/lib/services/hints';
+import { HintBadgeList } from '@/components/HintBadge';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
@@ -40,6 +42,7 @@ export default async function DraftsPage({
 
   let products: ProductProfile[] = [];
   let drafts: OutreachDraftRow[] = [];
+  let hintsByDraft: Map<string, Hint[]> = new Map();
   try {
     const ctx = await getWorkspaceContext();
     products = await listProductProfiles(ctx, { includeArchived: false });
@@ -48,6 +51,13 @@ export default async function DraftsPage({
       productProfileId: productFilter ?? undefined,
       limit: 200,
     });
+    const hintEntries = await Promise.all(
+      drafts.map(async ({ draft }) => {
+        const h = await hintsForDraft(ctx, draft.id);
+        return [draft.id.toString(), h] as const;
+      }),
+    );
+    hintsByDraft = new Map(hintEntries);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -160,6 +170,7 @@ export default async function DraftsPage({
                       ) : null}
                       <span>{draft.createdAt.toLocaleString()}</span>
                     </div>
+                    <HintBadgeList hints={hintsByDraft.get(draft.id.toString()) ?? []} />
                   </li>
                 );
               })}

@@ -13,6 +13,8 @@ import {
   listLeads,
   type PipelineLeadRow,
 } from '@/lib/services/pipeline';
+import { hintsForLead, type Hint } from '@/lib/services/hints';
+import { HintBadgeList } from '@/components/HintBadge';
 import type { PipelineState } from '@/lib/db/schema/pipeline';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
@@ -57,6 +59,7 @@ export default async function PipelinePage({
 
   let products: ProductProfile[] = [];
   let leads: PipelineLeadRow[] = [];
+  let hintsByLead: Map<string, Hint[]> = new Map();
   let counts: Record<PipelineState, number> = {
     raw_discovered: 0,
     relevant: 0,
@@ -82,6 +85,14 @@ export default async function PipelinePage({
     if (view === 'kanban' && stateKey === 'all') {
       leads = leads.filter((r) => r.lead.state !== 'closed');
     }
+    // Fetch hints for the visible leads in parallel.
+    const hintEntries = await Promise.all(
+      leads.map(async ({ lead }) => {
+        const hints = await hintsForLead(ctx, lead.id);
+        return [lead.id.toString(), hints] as const;
+      }),
+    );
+    hintsByLead = new Map(hintEntries);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -188,6 +199,7 @@ export default async function PipelinePage({
                               {lead.contactEmail ? (
                                 <p className="muted">{lead.contactEmail}</p>
                               ) : null}
+                              <HintBadgeList hints={hintsByLead.get(lead.id.toString()) ?? []} />
                             </li>
                           );
                         })}
@@ -232,6 +244,8 @@ export default async function PipelinePage({
                         ) : null}
                         <span>updated {lead.updatedAt.toLocaleString()}</span>
                       </div>
+                      <HintBadgeList hints={hintsByLead.get(lead.id.toString()) ?? []} />
+
                     </li>
                   );
                 })}
