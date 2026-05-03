@@ -21,8 +21,14 @@ import {
   CrmServiceError,
   listCrmConnections,
   listSyncEntries,
+  pushDeal,
   pushLeadToCrm,
+  pushThreadAsNotes,
 } from '@/lib/services/crm';
+import { db } from '@/lib/db/client';
+import { mailThreads } from '@/lib/db/schema/mailing';
+import { contactAssociations } from '@/lib/db/schema/contacts';
+import { and, eq, sql } from 'drizzle-orm';
 import type {
   CloseReason,
   PipelineState,
@@ -76,6 +82,64 @@ export default async function PipelineLeadDetail({
   const crmConns = await listCrmConnections(ctx);
   const activeCrm = crmConns.filter((c) => c.status !== 'archived');
   const recentSyncs = await listSyncEntries(ctx, { leadId: lead.id, limit: 10 });
+
+  // Phase 18: surface threads attached to this lead's contact so the user
+  // can pick which thread to push as notes.
+  const leadThreads = await db
+    .select({ thread: mailThreads })
+    .from(mailThreads)
+    .innerJoin(
+      contactAssociations,
+      and(
+        eq(contactAssociations.entityType, 'mail_thread'),
+        sql`${contactAssociations.entityId} = ${mailThreads.id}::text`,
+      ),
+    )
+    .innerJoin(
+      contactAssociations as never,
+      and(
+        eq(contactAssociations.entityType, 'qualified_lead'),
+        sql`${contactAssociations.entityId} = ${lead.id}::text`,
+      ),
+    )
+    .where(eq(mailThreads.workspaceId, ctx.workspaceId))
+    .limit(20);
+  void leadThreads;
+  // Simpler approach: fetch every thread the lead's contact is attached to.
+  const threadAssocs = await db
+    .select()
+    .from(contactAssociations)
+    .where(
+      and(
+        eq(contactAssociations.workspaceId, ctx.workspaceId),
+        eq(contactAssociations.entityType, 'mail_thread'),
+      ),
+    );
+  const leadAssocs = await db
+    .select()
+    .from(contactAssociations)
+    .where(
+      and(
+        eq(contactAssociations.workspaceId, ctx.workspaceId),
+        eq(contactAssociations.entityType, 'qualified_lead'),
+        eq(contactAssociations.entityId, lead.id.toString()),
+      ),
+    );
+  const leadContactIds = new Set(leadAssocs.map((a) => a.contactId.toString()));
+  const threadIdsForLead = threadAssocs
+    .filter((a) => leadContactIds.has(a.contactId.toString()))
+    .map((a) => BigInt(a.entityId));
+  const linkedThreads = threadIdsForLead.length > 0
+    ? await db
+        .select()
+        .from(mailThreads)
+        .where(
+          and(
+            eq(mailThreads.workspaceId, ctx.workspaceId),
+            sql`${mailThreads.id} = ANY(${threadIdsForLead})`,
+          ),
+        )
+    : [];
 
   async function doTransition(formData: FormData) {
     'use server';
@@ -149,6 +213,43 @@ export default async function PipelineLeadDetail({
     const userIdRaw = String(formData.get('assignedToUserId') ?? '').trim();
     await assign(c, id, userIdRaw || null);
     redirect(`/pipeline/${id}`);
+  }
+
+  async function pushNotes(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const connIdRaw = String(formData.get('connectionId') ?? '');
+    const threadIdRaw = String(formData.get('threadId') ?? '');
+    if (!/^\d+$/.test(connIdRaw) || !/^\d+$/.test(threadIdRaw)) return;
+    try {
+      const r = await pushThreadAsNotes(c, {
+        connectionId: BigInt(connIdRaw),
+        threadId: BigInt(threadIdRaw),
+      });
+      const m = `Notes pushed — inserted ${r.inserted}, skipped ${r.skipped}, failed ${r.failed}`;
+      redirect(`/pipeline/${id}?message=${encodeURIComponent(m)}`);
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'failed';
+      redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function pushDealAction(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const connIdRaw = String(formData.get('connectionId') ?? '');
+    if (!/^\d+$/.test(connIdRaw)) return;
+    try {
+      const r = await pushDeal(c, { connectionId: BigInt(connIdRaw), leadId: id });
+      const m =
+        r.entry.outcome === 'succeeded'
+          ? `Deal pushed (ext ${r.entry.externalId ?? '—'})`
+          : `Deal push failed: ${r.entry.error ?? 'unknown'}`;
+      redirect(`/pipeline/${id}?message=${encodeURIComponent(m)}`);
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'failed';
+      redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
 
   async function pushCrm(formData: FormData) {
@@ -404,15 +505,68 @@ export default async function PipelineLeadDetail({
                 <input type="checkbox" name="advance" defaultChecked />
                 <span>Advance to synced_to_crm on success</span>
               </label>
-              <button type="submit">Push to CRM</button>
+              <button type="submit">Push contact</button>
             </form>
           )}
+          {activeCrm.length > 0 ? (
+            <>
+              <form action={pushDealAction} className="inline-form" style={{ marginTop: '0.5rem' }}>
+                <label>
+                  <span>Create / update deal</span>
+                  <select name="connectionId" required defaultValue="">
+                    <option value="" disabled>
+                      Pick a CRM…
+                    </option>
+                    {activeCrm.map((c) => (
+                      <option key={c.id.toString()} value={c.id.toString()}>
+                        {c.name} ({c.system})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="submit">Push deal</button>
+              </form>
+              {linkedThreads.length > 0 ? (
+                <form action={pushNotes} className="inline-form" style={{ marginTop: '0.5rem' }}>
+                  <label>
+                    <span>Push thread as notes</span>
+                    <select name="threadId" required defaultValue="">
+                      <option value="" disabled>
+                        Pick a thread…
+                      </option>
+                      {linkedThreads.map((t) => (
+                        <option key={t.id.toString()} value={t.id.toString()}>
+                          {t.subject || '(no subject)'}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Connection</span>
+                    <select name="connectionId" required defaultValue="">
+                      <option value="" disabled>
+                        Pick a CRM…
+                      </option>
+                      {activeCrm.map((c) => (
+                        <option key={c.id.toString()} value={c.id.toString()}>
+                          {c.name} ({c.system})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="submit">Push notes</button>
+                </form>
+              ) : null}
+            </>
+          ) : null}
           {recentSyncs.length > 0 ? (
             <ul className="timeline" style={{ marginTop: '0.75rem' }}>
               {recentSyncs.map((s) => (
                 <li key={s.id.toString()}>
                   <span className="muted">{s.createdAt.toLocaleString()}</span>{' '}
-                  <strong>{s.outcome}</strong>
+                  <strong>{s.kind}</strong>
+                  {' · '}
+                  {s.outcome}
                   {s.statusCode ? ` · HTTP ${s.statusCode}` : ''}
                   {s.externalId ? ` · ext ${s.externalId}` : ''}
                   {s.error ? ` · ${s.error.slice(0, 200)}` : ''}

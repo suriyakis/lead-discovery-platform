@@ -2,7 +2,7 @@
 // qualified_leads into a CRM via the configured ICRMConnector. CSV exports
 // are bundled and dropped into IStorage so the UI can offer a download link.
 
-import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
@@ -17,9 +17,17 @@ import {
   type CrmConnection,
   type CrmConnectionStatus,
   type CrmSyncEntry,
+  type CrmSyncKind,
   type NewCrmConnection,
   type NewCrmSyncEntry,
 } from '@/lib/db/schema/crm';
+import {
+  mailMessages,
+  mailThreads,
+  type MailMessage,
+  type MailThread,
+} from '@/lib/db/schema/mailing';
+import { contactAssociations } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
 import {
   canAdminWorkspace,
@@ -55,6 +63,8 @@ const invariant = (msg: string) =>
   new CrmServiceError(msg, 'invariant_violation');
 const invalid = (msg: string) =>
   new CrmServiceError(msg, 'invalid_input');
+const conflict = (msg: string) =>
+  new CrmServiceError(msg, 'conflict');
 
 const SUPPORTED_SYSTEMS = new Set(['csv', 'hubspot']);
 
@@ -333,6 +343,298 @@ export async function pushLeadToCrm(
       connectionId: input.connectionId.toString(),
       outcome: result.outcome,
       externalId: entry.externalId ?? null,
+    },
+  });
+
+  return { entry, result };
+}
+
+// ---- notes + deals (Phase 18) -------------------------------------
+
+export interface PushThreadAsNotesInput {
+  connectionId: bigint;
+  threadId: bigint;
+  /** Test seam. */
+  connectorOverride?: ICRMConnector;
+}
+
+export async function pushThreadAsNotes(
+  ctx: WorkspaceContext,
+  input: PushThreadAsNotesInput,
+): Promise<{ inserted: number; skipped: number; failed: number }> {
+  if (!canWrite(ctx)) throw permissionDenied('crm.push_notes');
+  const conn = await loadConnection(ctx, input.connectionId);
+  if (conn.status === 'archived') throw invalid('connection is archived');
+
+  const threadRows = await db
+    .select()
+    .from(mailThreads)
+    .where(
+      and(
+        eq(mailThreads.workspaceId, ctx.workspaceId),
+        eq(mailThreads.id, input.threadId),
+      ),
+    )
+    .limit(1);
+  if (!threadRows[0]) throw notFound('mail_thread');
+  const thread: MailThread = threadRows[0];
+
+  const messages = await db
+    .select()
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        eq(mailMessages.threadId, thread.id),
+      ),
+    )
+    .orderBy(asc(mailMessages.createdAt));
+
+  if (messages.length === 0) {
+    return { inserted: 0, skipped: 0, failed: 0 };
+  }
+
+  // Find a qualified_lead via mail_messages.contact_id ↔ contact_associations.
+  // For simplicity here we take the first message's contact and look up its
+  // most-recent qualified_lead association.
+  const firstContactId = messages.find((m) => m.contactId !== null)?.contactId ?? null;
+  if (!firstContactId) {
+    return { inserted: 0, skipped: messages.length, failed: 0 };
+  }
+
+  const leadAssoc = await db
+    .select({ lead: qualifiedLeads })
+    .from(qualifiedLeads)
+    .innerJoin(
+      contactAssociations,
+      and(
+        eq(contactAssociations.entityType, 'qualified_lead'),
+        sql`${contactAssociations.entityId} = ${qualifiedLeads.id}::text`,
+      ),
+    )
+    .where(
+      and(
+        eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+        eq(contactAssociations.contactId, firstContactId),
+      ),
+    )
+    .limit(1);
+  const lead = leadAssoc[0]?.lead;
+  if (!lead) {
+    return { inserted: 0, skipped: messages.length, failed: 0 };
+  }
+
+  // The contact's CRM externalId is required — look up via the most-recent
+  // succeeded contact-kind sync for this lead.
+  const contactSync = await db
+    .select()
+    .from(crmSyncLog)
+    .where(
+      and(
+        eq(crmSyncLog.workspaceId, ctx.workspaceId),
+        eq(crmSyncLog.crmConnectionId, input.connectionId),
+        eq(crmSyncLog.qualifiedLeadId, lead.id),
+        eq(crmSyncLog.kind, 'contact'),
+        eq(crmSyncLog.outcome, 'succeeded'),
+      ),
+    )
+    .orderBy(desc(crmSyncLog.createdAt))
+    .limit(1);
+  const contactExternalId = contactSync[0]?.externalId ?? null;
+  if (!contactExternalId) {
+    throw conflict('push contact first — no externalId for this lead on this CRM');
+  }
+
+  const dealSync = await db
+    .select()
+    .from(crmSyncLog)
+    .where(
+      and(
+        eq(crmSyncLog.workspaceId, ctx.workspaceId),
+        eq(crmSyncLog.crmConnectionId, input.connectionId),
+        eq(crmSyncLog.qualifiedLeadId, lead.id),
+        eq(crmSyncLog.kind, 'deal'),
+        eq(crmSyncLog.outcome, 'succeeded'),
+      ),
+    )
+    .orderBy(desc(crmSyncLog.createdAt))
+    .limit(1);
+  const dealExternalId = dealSync[0]?.externalId ?? undefined;
+
+  const connector = input.connectorOverride ?? (await buildConnector(ctx, conn));
+  if (!connector.pushNote) {
+    return { inserted: 0, skipped: messages.length, failed: 0 };
+  }
+
+  let inserted = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const msg of messages) {
+    // De-dup: skip messages we've already pushed as notes for this connection.
+    const prior = await db
+      .select()
+      .from(crmSyncLog)
+      .where(
+        and(
+          eq(crmSyncLog.workspaceId, ctx.workspaceId),
+          eq(crmSyncLog.crmConnectionId, input.connectionId),
+          eq(crmSyncLog.kind, 'note'),
+          eq(crmSyncLog.relatedMessageId, msg.id),
+          eq(crmSyncLog.outcome, 'succeeded'),
+        ),
+      )
+      .limit(1);
+    if (prior[0]) {
+      skipped++;
+      continue;
+    }
+    const startedAt = new Date();
+    const result = await connector.pushNote({
+      contactExternalId,
+      dealExternalId,
+      message: msg,
+      thread,
+    });
+    const finishedAt = new Date();
+    await db.insert(crmSyncLog).values({
+      workspaceId: ctx.workspaceId,
+      crmConnectionId: input.connectionId,
+      qualifiedLeadId: lead.id,
+      kind: 'note',
+      relatedMessageId: msg.id,
+      outcome: result.outcome,
+      externalId: result.externalId ?? null,
+      statusCode: result.statusCode ?? null,
+      error: result.error ?? null,
+      payload: result.payload,
+      response: result.response,
+      triggeredBy: ctx.userId,
+      startedAt,
+      finishedAt,
+    } satisfies NewCrmSyncEntry);
+    if (result.outcome === 'succeeded') inserted++;
+    else if (result.outcome === 'skipped') skipped++;
+    else failed++;
+  }
+
+  await recordAuditEvent(ctx, {
+    kind: 'crm.push_notes',
+    entityType: 'mail_thread',
+    entityId: thread.id,
+    payload: {
+      connectionId: input.connectionId.toString(),
+      messageCount: messages.length,
+      inserted,
+      skipped,
+      failed,
+    },
+  });
+
+  return { inserted, skipped, failed };
+}
+
+export interface PushDealInput {
+  connectionId: bigint;
+  leadId: bigint;
+  connectorOverride?: ICRMConnector;
+}
+
+export async function pushDeal(
+  ctx: WorkspaceContext,
+  input: PushDealInput,
+): Promise<{ entry: CrmSyncEntry; result: SyncResult }> {
+  if (!canWrite(ctx)) throw permissionDenied('crm.push_deal');
+  const conn = await loadConnection(ctx, input.connectionId);
+  if (conn.status === 'archived') throw invalid('connection is archived');
+  const lead = await loadLead(ctx, input.leadId);
+  const product = await loadProduct(ctx, lead.productProfileId);
+
+  // Need a contact externalId — look up the latest successful contact push.
+  const contactSync = await db
+    .select()
+    .from(crmSyncLog)
+    .where(
+      and(
+        eq(crmSyncLog.workspaceId, ctx.workspaceId),
+        eq(crmSyncLog.crmConnectionId, input.connectionId),
+        eq(crmSyncLog.qualifiedLeadId, lead.id),
+        eq(crmSyncLog.kind, 'contact'),
+        eq(crmSyncLog.outcome, 'succeeded'),
+      ),
+    )
+    .orderBy(desc(crmSyncLog.createdAt))
+    .limit(1);
+  const contactExternalId = contactSync[0]?.externalId ?? null;
+  if (!contactExternalId) {
+    throw conflict('push contact first — no externalId for this lead on this CRM');
+  }
+
+  const prior = await db
+    .select()
+    .from(crmSyncLog)
+    .where(
+      and(
+        eq(crmSyncLog.workspaceId, ctx.workspaceId),
+        eq(crmSyncLog.crmConnectionId, input.connectionId),
+        eq(crmSyncLog.qualifiedLeadId, lead.id),
+        eq(crmSyncLog.kind, 'deal'),
+        eq(crmSyncLog.outcome, 'succeeded'),
+      ),
+    )
+    .orderBy(desc(crmSyncLog.createdAt))
+    .limit(1);
+  const prevDealId = prior[0]?.externalId ?? null;
+
+  const connector = input.connectorOverride ?? (await buildConnector(ctx, conn));
+  if (!connector.pushDeal) {
+    throw invalid(`adapter ${conn.system} does not support deals`);
+  }
+
+  const startedAt = new Date();
+  let result: SyncResult;
+  try {
+    result = await connector.pushDeal(
+      { lead, product, contactExternalId },
+      prevDealId,
+    );
+  } catch (err) {
+    result = {
+      outcome: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+      payload: {},
+      response: {},
+    };
+  }
+  const finishedAt = new Date();
+
+  const [entry] = await db
+    .insert(crmSyncLog)
+    .values({
+      workspaceId: ctx.workspaceId,
+      crmConnectionId: input.connectionId,
+      qualifiedLeadId: lead.id,
+      kind: 'deal',
+      outcome: result.outcome,
+      externalId: result.externalId ?? prevDealId,
+      statusCode: result.statusCode ?? null,
+      error: result.error ?? null,
+      payload: result.payload,
+      response: result.response,
+      triggeredBy: ctx.userId,
+      startedAt,
+      finishedAt,
+    } satisfies NewCrmSyncEntry)
+    .returning();
+  if (!entry) throw invariant('crm_sync_log insert returned no row');
+
+  await recordAuditEvent(ctx, {
+    kind: 'crm.push_deal',
+    entityType: 'qualified_lead',
+    entityId: lead.id,
+    payload: {
+      connectionId: input.connectionId.toString(),
+      outcome: result.outcome,
+      externalId: entry.externalId,
     },
   });
 

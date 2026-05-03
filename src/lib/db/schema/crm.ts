@@ -98,6 +98,12 @@ export const crmSyncOutcome = pgEnum('crm_sync_outcome', [
   'skipped',
 ]);
 
+/**
+ * Phase 18: a sync log entry can describe a contact push, a note push, or
+ * a deal push. Defaults to contact for back-compat with Phase 13 rows.
+ */
+export const crmSyncKind = pgEnum('crm_sync_kind', ['contact', 'note', 'deal']);
+
 export const crmSyncLog = pgTable(
   'crm_sync_log',
   {
@@ -111,6 +117,9 @@ export const crmSyncLog = pgTable(
     qualifiedLeadId: bigint('qualified_lead_id', { mode: 'bigint' })
       .notNull()
       .references(() => qualifiedLeads.id, { onDelete: 'cascade' }),
+    kind: crmSyncKind('kind').notNull().default('contact'),
+    /** When kind=note, the mail_message id this note was bundled from. */
+    relatedMessageId: bigint('related_message_id', { mode: 'bigint' }),
 
     outcome: crmSyncOutcome('outcome').notNull().default('pending'),
     /** Adapter-assigned external id, when present. */
@@ -152,3 +161,4 @@ export const crmSyncLog = pgTable(
 export type CrmSyncEntry = typeof crmSyncLog.$inferSelect;
 export type NewCrmSyncEntry = typeof crmSyncLog.$inferInsert;
 export type CrmSyncOutcome = (typeof crmSyncOutcome.enumValues)[number];
+export type CrmSyncKind = (typeof crmSyncKind.enumValues)[number];
