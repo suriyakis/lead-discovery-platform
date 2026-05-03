@@ -23,6 +23,7 @@ import {
   renderSignatureHtml,
   renderSignatureText,
 } from './signatures';
+import { analyseReply } from './reply-classifier';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -362,6 +363,26 @@ async function persistInbound(
   } satisfies NewMailMessage);
 
   await touchThread(thread.id);
+
+  // Phase 20: classify the inbound + run auto-actions inline. Best-effort.
+  try {
+    const insertedRows = await db
+      .select({ id: mailMessages.id })
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.messageId, inbound.messageId),
+        ),
+      )
+      .limit(1);
+    if (insertedRows[0]) {
+      await analyseReply(ctx, insertedRows[0].id);
+    }
+  } catch (err) {
+    console.error('[mail.persistInbound] reply classification failed:', err);
+  }
+
   return false;
 }
 

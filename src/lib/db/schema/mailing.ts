@@ -225,6 +225,18 @@ export const mailMessages = pgTable(
     sourceDraftId: bigint('source_draft_id', { mode: 'bigint' }),
     /** Phase 16: optional FK to the resolved contact (matched on send / inbound parse). */
     contactId: bigint('contact_id', { mode: 'bigint' }),
+    /** Phase 20: classification of inbound replies (null on outbound). */
+    replyClassification: text('reply_classification'),
+    replyClassificationConfidence: smallint('reply_classification_confidence'),
+    replyClassifiedAt: timestamp('reply_classified_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    /** Phase 20: emails extracted from a redirect-style reply ("Please contact john@...""). */
+    extractedEmails: text('extracted_emails')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
 
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
@@ -392,6 +404,30 @@ export type SuppressionEntry = typeof suppressionList.$inferSelect;
 export type NewSuppressionEntry = typeof suppressionList.$inferInsert;
 export type SuppressionReason = (typeof suppressionReason.enumValues)[number];
 export type SuppressionKind = (typeof suppressionKind.enumValues)[number];
+
+/**
+ * Phase 20: per-workspace auto-action toggles for classified inbound mail.
+ */
+export const replyAutoActions = pgTable('reply_auto_actions', {
+  workspaceId: bigint('workspace_id', { mode: 'bigint' })
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  /** auto-suppress + close the lead on bounce. */
+  autoSuppressBounce: boolean('auto_suppress_bounce').notNull().default(true),
+  /** auto-suppress + close the lead on unsubscribe. */
+  autoSuppressUnsubscribe: boolean('auto_suppress_unsubscribe').notNull().default(true),
+  /** auto-close lead on a negative classification. */
+  autoCloseNegative: boolean('auto_close_negative').notNull().default(false),
+  /** auto-create new contacts from extracted emails on redirect replies. */
+  autoExtractRedirects: boolean('auto_extract_redirects').notNull().default(true),
+  updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type ReplyAutoActions = typeof replyAutoActions.$inferSelect;
+export type NewReplyAutoActions = typeof replyAutoActions.$inferInsert;
 
 // Voids to keep dead-imports quiet during early phases (smallint reserved
 // for future quota/score columns).
