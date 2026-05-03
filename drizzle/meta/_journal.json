@@ -99,6 +99,13 @@
       "when": 1777707227904,
       "tag": "0013_loud_wendigo",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1777841046357,
+      "tag": "0014_giant_blindfold",
+      "breakpoints": true
     }
   ]
 }

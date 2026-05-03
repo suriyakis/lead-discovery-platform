@@ -1,0 +1,252 @@
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { AppShell } from '@/components/AppShell';
+import { auth, signOut } from '@/lib/auth';
+import {
+  AccountInactiveError,
+  AuthRequiredError,
+  NoWorkspaceError,
+  getWorkspaceContext,
+} from '@/lib/services/auth-context';
+import { isSuperAdmin } from '@/lib/services/context';
+import {
+  UserServiceError,
+  listAllUsers,
+  listPreauthorizedEmails,
+  preauthorizeEmail,
+  revokePreauthorize,
+  setAccountStatus,
+} from '@/lib/services/users';
+import { db } from '@/lib/db/client';
+import { workspaces } from '@/lib/db/schema/workspaces';
+import type { AccountStatus, User } from '@/lib/db/schema/auth';
+
+export default async function AdminUsersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string; error?: string }>;
+}) {
+  const session = await auth();
+  if (!session?.user?.id) redirect('/');
+  const sp = await searchParams;
+
+  let ctx;
+  try {
+    ctx = await getWorkspaceContext();
+  } catch (err) {
+    if (err instanceof AuthRequiredError) redirect('/');
+    if (err instanceof AccountInactiveError) redirect('/pending');
+    if (err instanceof NoWorkspaceError) redirect('/');
+    throw err;
+  }
+  if (!isSuperAdmin(ctx)) {
+    return (
+      <AppShell active="admin.users">
+        <h1>Users</h1>
+        <p className="form-error">Super-admin only.</p>
+      </AppShell>
+    );
+  }
+
+  const [allUsers, preauths, allWorkspaces] = await Promise.all([
+    listAllUsers(ctx, { limit: 500 }),
+    listPreauthorizedEmails(ctx),
+    db.select().from(workspaces).orderBy(workspaces.name),
+  ]);
+
+  async function setStatus(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const targetUserId = String(formData.get('userId') ?? '');
+    const status = String(formData.get('status') ?? '') as AccountStatus;
+    const reason = String(formData.get('reason') ?? '').trim() || null;
+    try {
+      await setAccountStatus(c, targetUserId, status, reason);
+      redirect(`/admin/users?message=${encodeURIComponent(`Set ${status}`)}`);
+    } catch (err) {
+      const m =
+        err instanceof UserServiceError ? err.message : err instanceof Error ? err.message : 'failed';
+      redirect(`/admin/users?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function preauth(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const email = String(formData.get('email') ?? '').trim();
+    const wsRaw = String(formData.get('workspaceId') ?? '');
+    const workspaceId = /^\d+$/.test(wsRaw) ? BigInt(wsRaw) : null;
+    const role = (String(formData.get('role') ?? 'member') as 'owner' | 'admin' | 'manager' | 'member' | 'viewer');
+    try {
+      await preauthorizeEmail(c, { email, workspaceId, role });
+      redirect(`/admin/users?message=${encodeURIComponent(`Pre-authorized ${email}`)}`);
+    } catch (err) {
+      const m = err instanceof UserServiceError ? err.message : 'failed';
+      redirect(`/admin/users?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function revoke(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const id = String(formData.get('id') ?? '');
+    await revokePreauthorize(c, id);
+    redirect('/admin/users?message=Revoked');
+  }
+
+  return (
+    <AppShell
+      active="admin.users"
+      isSuperAdmin
+      rightSlot={
+        <>
+          <span className="who">{session.user.email}</span>
+          <form
+            action={async () => {
+              'use server';
+              await signOut({ redirectTo: '/' });
+            }}
+          >
+            <button type="submit" className="ghost-btn">
+              Sign out
+            </button>
+          </form>
+        </>
+      }
+    >
+      <p className="muted">
+        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/admin">Admin</Link> / Users
+      </p>
+      <h1>Users</h1>
+      {sp.message ? <p className="form-message">{sp.message}</p> : null}
+      {sp.error ? <p className="form-error">{sp.error}</p> : null}
+
+      <section>
+        <h2>Pre-authorize</h2>
+        <p className="muted">
+          Drop an email into the allow-list before they sign in. On first
+          OAuth round-trip they&apos;ll skip the pending state and join the
+          named workspace at the named role.
+        </p>
+        <form action={preauth} className="inline-form">
+          <label>
+            <span>Email</span>
+            <input type="email" name="email" required />
+          </label>
+          <label>
+            <span>Workspace</span>
+            <select name="workspaceId" defaultValue="">
+              <option value="">— none —</option>
+              {allWorkspaces.map((w) => (
+                <option key={w.id.toString()} value={w.id.toString()}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Role</span>
+            <select name="role" defaultValue="member">
+              <option value="owner">owner</option>
+              <option value="admin">admin</option>
+              <option value="manager">manager</option>
+              <option value="member">member</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </label>
+          <button type="submit" className="primary-btn">
+            Add
+          </button>
+        </form>
+        {preauths.length > 0 ? (
+          <ul className="profile-list">
+            {preauths.map((p) => (
+              <li key={p.id}>
+                <div className="lead-row">
+                  <code>{p.email}</code>
+                  <span className="badge">{p.role}</span>
+                  {p.consumedAt ? (
+                    <span className="muted">
+                      consumed {p.consumedAt.toLocaleString()}
+                    </span>
+                  ) : null}
+                </div>
+                {!p.consumedAt ? (
+                  <form action={revoke} style={{ marginTop: '0.5rem' }}>
+                    <input type="hidden" name="id" value={p.id} />
+                    <button type="submit" className="ghost-btn">
+                      Revoke
+                    </button>
+                  </form>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+
+      <section>
+        <h2>All users ({allUsers.length})</h2>
+        <ul className="profile-list">
+          {allUsers.map((u) => (
+            <li key={u.id}>
+              <div className="lead-row">
+                <strong>{u.name ?? u.email}</strong>
+                <span className="muted">{u.email}</span>
+                <span className="badge">{u.role}</span>
+                <span className={statusBadge(u.accountStatus)}>
+                  {u.accountStatus}
+                </span>
+              </div>
+              {u.accountStatusReason ? (
+                <p className="muted">Reason: {u.accountStatusReason}</p>
+              ) : null}
+              {u.id === session.user.id ? (
+                <p className="muted">— this is you</p>
+              ) : (
+                <UserStatusForms user={u} setStatus={setStatus} />
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </AppShell>
+  );
+}
+
+function UserStatusForms({
+  user,
+  setStatus,
+}: {
+  user: User;
+  setStatus: (formData: FormData) => Promise<void>;
+}) {
+  const targets: AccountStatus[] = ['active', 'pending', 'suspended', 'rejected'];
+  return (
+    <form action={setStatus} className="inline-form" style={{ marginTop: '0.5rem' }}>
+      <input type="hidden" name="userId" value={user.id} />
+      <label>
+        <span>Status</span>
+        <select name="status" defaultValue={user.accountStatus}>
+          {targets.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>Reason</span>
+        <input type="text" name="reason" maxLength={200} />
+      </label>
+      <button type="submit">Apply</button>
+    </form>
+  );
+}
+
+function statusBadge(s: string): string {
+  if (s === 'active') return 'badge badge-good';
+  if (s === 'suspended' || s === 'rejected') return 'badge badge-bad';
+  return 'badge';
+}

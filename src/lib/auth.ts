@@ -1,11 +1,18 @@
 import { DrizzleAdapter } from '@auth/drizzle-adapter';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import NextAuth from 'next-auth';
 import Google from 'next-auth/providers/google';
 import { db } from '@/lib/db/client';
-import { accounts, sessions, users, verificationTokens } from '@/lib/db/schema/auth';
+import {
+  accounts,
+  preauthorizedEmails,
+  sessions,
+  users,
+  verificationTokens,
+} from '@/lib/db/schema/auth';
 import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
 import { auditLog } from '@/lib/db/schema/audit';
+import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 
 const ownerEmail = process.env.OWNER_EMAIL?.toLowerCase().trim() || null;
 
@@ -27,12 +34,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   ],
   callbacks: {
     async session({ session, user }) {
-      // Inject id and platform role onto session.user for downstream code.
-      // The shape is augmented in src/types/next-auth.d.ts.
+      // Inject id, platform role, and accountStatus onto session.user. The
+      // shape is augmented in src/types/next-auth.d.ts.
       session.user.id = user.id;
-      // The Drizzle adapter returns the full user row including custom columns.
-      const role = (user as { role?: 'member' | 'super_admin' }).role ?? 'member';
-      session.user.role = role;
+      const u = user as {
+        role?: 'member' | 'super_admin';
+        accountStatus?: 'pending' | 'active' | 'suspended' | 'rejected';
+      };
+      session.user.role = u.role ?? 'member';
+      session.user.accountStatus = u.accountStatus ?? 'pending';
       return session;
     },
   },
@@ -47,10 +57,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         .set({ lastSignedInAt: new Date() })
         .where(eq(users.id, user.id));
 
-      // Bootstrap path. The very first sign-in by OWNER_EMAIL is auto-promoted
-      // to super_admin and seeded with a personal workspace.
+      // Bootstrap path. The very first sign-in by OWNER_EMAIL is auto-
+      // promoted to super_admin + seeded with a personal workspace + lifted
+      // out of pending.
       if (isNewUser && ownerEmail !== null && email === ownerEmail) {
-        await db.update(users).set({ role: 'super_admin' }).where(eq(users.id, user.id));
+        await db
+          .update(users)
+          .set({
+            role: 'super_admin',
+            accountStatus: 'active',
+            accountStatusUpdatedAt: new Date(),
+            accountStatusUpdatedBy: user.id,
+          })
+          .where(eq(users.id, user.id));
 
         const [created] = await db
           .insert(workspaces)
@@ -76,6 +95,60 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             entityId: String(created.id),
             payload: { reason: 'owner_email_first_login', email },
           });
+        }
+        return;
+      }
+
+      // Pre-authorize path. New users whose email is on the
+      // preauthorized_emails allow-list get lifted to active immediately
+      // and dropped into the named workspace at the named role.
+      if (isNewUser) {
+        const preauth = await db
+          .select()
+          .from(preauthorizedEmails)
+          .where(
+            and(
+              eq(preauthorizedEmails.email, email),
+              isNull(preauthorizedEmails.consumedAt),
+            ),
+          )
+          .limit(1);
+
+        if (preauth[0]) {
+          const entry = preauth[0];
+          await db
+            .update(users)
+            .set({
+              accountStatus: 'active',
+              accountStatusUpdatedAt: new Date(),
+              accountStatusUpdatedBy: entry.createdBy ?? null,
+            })
+            .where(eq(users.id, user.id));
+
+          if (entry.workspaceId) {
+            const wsId = BigInt(entry.workspaceId);
+            await db
+              .insert(workspaceMembers)
+              .values({
+                workspaceId: wsId,
+                userId: user.id,
+                role: (entry.role as WorkspaceMemberRole) ?? 'member',
+              })
+              .onConflictDoNothing();
+            await db.insert(auditLog).values({
+              workspaceId: wsId,
+              userId: entry.createdBy ?? user.id,
+              kind: 'user.preauthorize_consumed',
+              entityType: 'user',
+              entityId: user.id,
+              payload: { email, role: entry.role },
+            });
+          }
+
+          await db
+            .update(preauthorizedEmails)
+            .set({ consumedAt: new Date() })
+            .where(eq(preauthorizedEmails.id, entry.id));
         }
       }
     },

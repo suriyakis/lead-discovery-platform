@@ -11,6 +11,24 @@ import { integer, pgEnum, pgTable, primaryKey, text, timestamp } from 'drizzle-o
 
 export const userRole = pgEnum('user_role', ['member', 'super_admin']);
 
+/**
+ * Account lifecycle. Phase 15:
+ *   pending   — first sign-in (or admin pre-created via preauthorize but
+ *               their first OAuth round-trip hasn't happened yet); user
+ *               sees a /pending page until an admin activates them.
+ *   active    — full access.
+ *   suspended — temporarily blocked by an admin (reason on
+ *               accountStatusReason).
+ *   rejected  — admin rejected the user; future sign-ins land on the
+ *               pending wall again.
+ */
+export const accountStatus = pgEnum('account_status', [
+  'pending',
+  'active',
+  'suspended',
+  'rejected',
+]);
+
 export const users = pgTable('users', {
   id: text('id')
     .primaryKey()
@@ -20,11 +38,43 @@ export const users = pgTable('users', {
   emailVerified: timestamp('emailVerified', { mode: 'date' }),
   image: text('image'),
   role: userRole('role').notNull().default('member'),
+  accountStatus: accountStatus('accountStatus').notNull().default('pending'),
+  accountStatusReason: text('accountStatusReason'),
+  accountStatusUpdatedAt: timestamp('accountStatusUpdatedAt', {
+    mode: 'date',
+    withTimezone: true,
+  }),
+  accountStatusUpdatedBy: text('accountStatusUpdatedBy'),
   createdAt: timestamp('createdAt', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),
   lastSignedInAt: timestamp('lastSignedInAt', { mode: 'date', withTimezone: true }),
 });
+
+/**
+ * Pre-authorized email allow-list. Admins can pre-list an email so the user
+ * lands on `active` at first sign-in instead of `pending`. Workspace-scoped:
+ * an entry pre-adds the user to the named workspace at the named role.
+ */
+export const preauthorizedEmails = pgTable('preauthorized_emails', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  email: text('email').notNull().unique(),
+  /** Workspace-id (text-encoded bigint) the user should join on first signin. */
+  workspaceId: text('workspaceId'),
+  /** Role they should receive in that workspace. Defaults to 'member'. */
+  role: text('role').notNull().default('member'),
+  createdBy: text('createdBy'),
+  createdAt: timestamp('createdAt', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  consumedAt: timestamp('consumedAt', { mode: 'date', withTimezone: true }),
+});
+
+export type AccountStatus = (typeof accountStatus.enumValues)[number];
+export type PreauthorizedEmail = typeof preauthorizedEmails.$inferSelect;
+export type NewPreauthorizedEmail = typeof preauthorizedEmails.$inferInsert;
 
 export const accounts = pgTable(
   'accounts',

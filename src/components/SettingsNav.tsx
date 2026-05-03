@@ -2,6 +2,7 @@ import Link from 'next/link';
 
 const ITEMS = [
   { href: '/settings/integrations', label: 'Integrations', key: 'integrations' },
+  { href: '/settings/members', label: 'Members', key: 'members' },
   { href: '/settings/usage', label: 'Usage', key: 'usage' },
   { href: '/settings/crm', label: 'CRM & Export', key: 'crm' },
 ] as const;

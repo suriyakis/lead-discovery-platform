@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { auth, signOut } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
@@ -10,6 +10,13 @@ export default async function Dashboard() {
   const session = await auth();
   if (!session?.user?.id) {
     redirect('/');
+  }
+  // Phase 15: bounce non-active users to the pending wall.
+  if (
+    session.user.accountStatus !== 'active' &&
+    session.user.role !== 'super_admin'
+  ) {
+    redirect('/pending');
   }
 
   const userId = session.user.id;
@@ -26,26 +33,26 @@ export default async function Dashboard() {
   const primary = memberships[0];
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
-        <h1>Dashboard</h1>
+    <AppShell
+      active="dashboard"
+      isSuperAdmin={session.user.role === 'super_admin'}
+      rightSlot={
+        <>
+          <span className="who">{session.user.email}</span>
+          <form
+            action={async () => {
+              'use server';
+              await signOut({ redirectTo: '/' });
+            }}
+          >
+            <button type="submit" className="ghost-btn">
+              Sign out
+            </button>
+          </form>
+        </>
+      }
+    >
+      <h1>Dashboard</h1>
 
         <section>
           <h2>You</h2>
@@ -143,7 +150,6 @@ export default async function Dashboard() {
             </ul>
           </section>
         ) : null}
-      </main>
-    </>
+    </AppShell>
   );
 }

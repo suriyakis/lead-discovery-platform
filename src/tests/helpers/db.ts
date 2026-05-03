@@ -22,6 +22,7 @@ const TENANT_TABLES = [
   'sessions',
   'accounts',
   'verification_tokens',
+  'preauthorized_emails',
   'users',
 ];
 
@@ -44,6 +45,7 @@ export async function seedUser(input: {
   email: string;
   name?: string;
   role?: 'member' | 'super_admin';
+  accountStatus?: 'pending' | 'active' | 'suspended' | 'rejected';
 }): Promise<string> {
   const inserted = await db
     .insert(users)
@@ -51,6 +53,10 @@ export async function seedUser(input: {
       email: input.email,
       name: input.name ?? input.email.split('@')[0] ?? null,
       role: input.role ?? 'member',
+      // Default to active so existing service tests don't have to know
+      // about Phase 15. Tests that exercise the lifecycle pass an
+      // explicit value.
+      accountStatus: input.accountStatus ?? 'active',
     })
     .returning();
   if (!inserted[0]) throw new Error('user insert returned no row');

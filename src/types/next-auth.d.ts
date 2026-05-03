@@ -10,6 +10,7 @@ declare module 'next-auth' {
     user: {
       id: string;
       role: 'member' | 'super_admin';
+      accountStatus: 'pending' | 'active' | 'suspended' | 'rejected';
     } & DefaultSession['user'];
   }
 }

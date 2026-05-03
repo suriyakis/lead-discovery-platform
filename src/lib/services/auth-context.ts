@@ -8,6 +8,16 @@ import {
   makeWorkspaceContext,
 } from './context';
 
+/** Thrown when the signed-in user's accountStatus is not 'active'. */
+export class AccountInactiveError extends Error {
+  public readonly accountStatus: string;
+  constructor(status: string) {
+    super(`account status is ${status}`);
+    this.name = 'AccountInactiveError';
+    this.accountStatus = status;
+  }
+}
+
 export class AuthRequiredError extends Error {
   constructor() {
     super('Authentication required');
@@ -39,6 +49,15 @@ export class NoWorkspaceError extends Error {
 export async function getWorkspaceContext(): Promise<WorkspaceContext> {
   const session = await auth();
   if (!session?.user?.id) throw new AuthRequiredError();
+  // Phase 15: every authenticated user passes the accountStatus gate
+  // before any workspace data is read. super_admin always passes (the
+  // bootstrap super_admin was lifted to active during sign-in).
+  if (
+    session.user.accountStatus !== 'active' &&
+    session.user.role !== 'super_admin'
+  ) {
+    throw new AccountInactiveError(session.user.accountStatus);
+  }
 
   const memberships = await db
     .select()
