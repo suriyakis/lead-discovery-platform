@@ -18,3 +18,4 @@ export * from './pipeline';
 export * from './rag';
 export * from './crm';
 export * from './admin';
+export * from './contacts';

@@ -223,6 +223,8 @@ export const mailMessages = pgTable(
 
     /** Optional link back to an outreach draft we sent from. */
     sourceDraftId: bigint('source_draft_id', { mode: 'bigint' }),
+    /** Phase 16: optional FK to the resolved contact (matched on send / inbound parse). */
+    contactId: bigint('contact_id', { mode: 'bigint' }),
 
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',

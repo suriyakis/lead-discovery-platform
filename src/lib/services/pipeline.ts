@@ -22,6 +22,7 @@ import {
   canWrite,
   type WorkspaceContext,
 } from './context';
+import { attachContact, upsertContact } from './contacts';
 
 export class PipelineServiceError extends Error {
   public readonly code: string;
@@ -274,6 +275,27 @@ export async function updateContact(
     )
     .returning();
   if (!updated) throw invariant('contact update returned no row');
+
+  // Phase 16: keep the canonical contacts table in sync. If the email was
+  // set/changed, upsert + attach. Best-effort — failure here doesn't undo
+  // the lead update.
+  if (updated.contactEmail) {
+    try {
+      const contact = await upsertContact(ctx, {
+        email: updated.contactEmail,
+        name: updated.contactName,
+        role: updated.contactRole,
+        phone: updated.contactPhone,
+      });
+      await attachContact(ctx, contact.id, {
+        type: 'qualified_lead',
+        id: leadId.toString(),
+        relation: 'primary',
+      });
+    } catch (err) {
+      console.error('[pipeline.updateContact] contact sync failed:', err);
+    }
+  }
 
   await logEvent(ctx, leadId, current.state, current.state, 'contact_update', {
     fields: Object.keys(input),

@@ -16,6 +16,7 @@ import {
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 import { buildProviderFor } from './mailbox';
+import { attachContact, upsertContact } from './contacts';
 import { isSuppressed } from './suppression';
 import {
   type IMailProvider,
@@ -113,6 +114,27 @@ export async function sendMessage(
     participants: collectParticipants(out),
   });
 
+  // Phase 16: resolve / upsert the primary recipient as a contact and
+  // attach it to the thread + message. Best-effort.
+  const primaryAddress = input.to[0]?.address;
+  let contactId: bigint | null = null;
+  if (primaryAddress) {
+    try {
+      const contact = await upsertContact(ctx, {
+        email: primaryAddress,
+        name: input.to[0]?.name,
+      });
+      contactId = contact.id;
+      await attachContact(ctx, contact.id, {
+        type: 'mail_thread',
+        id: thread.id.toString(),
+        relation: 'primary',
+      });
+    } catch (err) {
+      console.error('[mail.send] contact resolve failed:', err);
+    }
+  }
+
   // Persist outbound row.
   const row: NewMailMessage = {
     workspaceId: ctx.workspaceId,
@@ -135,11 +157,23 @@ export async function sendMessage(
     attachments: [],
     sentAt: new Date(),
     sourceDraftId: input.sourceDraftId ?? null,
+    contactId,
     createdBy: ctx.userId,
   };
 
   const [created] = await db.insert(mailMessages).values(row).returning();
   if (!created) throw invariant('mail_message insert returned no row');
+
+  if (contactId) {
+    try {
+      await attachContact(ctx, contactId, {
+        type: 'mail_message',
+        id: created.id.toString(),
+      });
+    } catch (err) {
+      console.error('[mail.send] contact-message attach failed:', err);
+    }
+  }
 
   await recordAuditEvent(ctx, {
     kind: 'mail.send',
@@ -233,6 +267,23 @@ async function persistInbound(
     ],
   });
 
+  // Phase 16: resolve / upsert the inbound sender as a contact + attach.
+  let contactId: bigint | null = null;
+  try {
+    const contact = await upsertContact(ctx, {
+      email: inbound.from.address,
+      name: inbound.from.name ?? null,
+    });
+    contactId = contact.id;
+    await attachContact(ctx, contact.id, {
+      type: 'mail_thread',
+      id: thread.id.toString(),
+      relation: 'inbound_sender',
+    });
+  } catch (err) {
+    console.error('[mail.persistInbound] contact resolve failed:', err);
+  }
+
   await db.insert(mailMessages).values({
     workspaceId: ctx.workspaceId,
     mailboxId,
@@ -250,6 +301,7 @@ async function persistInbound(
     subject: inbound.subject,
     bodyText: inbound.textBody,
     bodyHtml: inbound.htmlBody,
+    contactId,
     headers: inbound.headers as unknown as Record<string, unknown>,
     attachments: inbound.attachments.map((a) => ({
       filename: a.filename,

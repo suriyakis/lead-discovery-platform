@@ -106,6 +106,13 @@
       "when": 1777841046357,
       "tag": "0014_giant_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1777841994633,
+      "tag": "0015_fair_vengeance",
+      "breakpoints": true
     }
   ]
 }
