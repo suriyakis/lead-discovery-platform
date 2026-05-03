@@ -17,6 +17,8 @@ import {
   getOutreachDraft,
   rejectOutreachDraft,
 } from '@/lib/services/outreach';
+import { enqueueDraft } from '@/lib/services/outreach-queue';
+import { listMailboxes } from '@/lib/services/mailbox';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 
 export default async function DraftDetail({
@@ -50,6 +52,8 @@ export default async function DraftDetail({
   }
 
   const { draft, product, sourceRecord, reviewItem } = row;
+  const mailboxes = await listMailboxes(ctx);
+  const sendableMailboxes = mailboxes.filter((m) => m.status !== 'archived');
   const normalized = sourceRecord.normalizedData as Record<string, unknown>;
   const recordTitle =
     (normalized.title as string | undefined) ??
@@ -69,6 +73,28 @@ export default async function DraftDetail({
     await editOutreachDraft(c, id, { subject, body });
     redirect(`/drafts/${id}`);
   }
+  async function enqueueForSend(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const mailboxIdRaw = String(formData.get('mailboxId') ?? '');
+    if (!/^\d+$/.test(mailboxIdRaw)) return;
+    const delayMode = String(formData.get('delayMode') ?? 'random') as
+      | 'immediate'
+      | 'fixed'
+      | 'random';
+    try {
+      await enqueueDraft(c, {
+        draftId: id,
+        mailboxId: BigInt(mailboxIdRaw),
+        delayMode,
+      });
+      redirect('/mailbox/queue?message=Enqueued');
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'failed';
+      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
   async function approve() {
     'use server';
     const c = await getWorkspaceContext();
@@ -243,6 +269,32 @@ export default async function DraftDetail({
               </label>
               <button type="submit">Reject</button>
             </form>
+            {sendableMailboxes.length > 0 ? (
+              <form action={enqueueForSend} className="inline-form" style={{ marginTop: '0.75rem' }}>
+                <label>
+                  <span>Send via</span>
+                  <select name="mailboxId" required defaultValue="">
+                    <option value="" disabled>
+                      Pick a mailbox…
+                    </option>
+                    {sendableMailboxes.map((m) => (
+                      <option key={m.id.toString()} value={m.id.toString()}>
+                        {m.name} ({m.fromAddress})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Delay</span>
+                  <select name="delayMode" defaultValue="random">
+                    <option value="immediate">immediate</option>
+                    <option value="fixed">fixed</option>
+                    <option value="random">random</option>
+                  </select>
+                </label>
+                <button type="submit">Enqueue for send</button>
+              </form>
+            ) : null}
           </section>
         ) : null}
 

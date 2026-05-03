@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
+  boolean,
   index,
   jsonb,
   pgEnum,
@@ -155,3 +156,128 @@ export type OutreachDraft = typeof outreachDrafts.$inferSelect;
 export type NewOutreachDraft = typeof outreachDrafts.$inferInsert;
 export type OutreachDraftStatus = (typeof outreachDraftStatus.enumValues)[number];
 export type OutreachDraftMethod = 'rules' | 'ai' | 'hybrid';
+
+/**
+ * Phase 19: outreach queue. Approved drafts (or one-off scheduled sends)
+ * land here with a scheduled_send_at; a BullMQ recurring worker picks
+ * them up and dispatches via mail.sendMessage.
+ *
+ * status flow:
+ *   queued    — waiting for scheduled_send_at to elapse
+ *   sending   — worker has claimed and started the send
+ *   sent      — provider returned a messageId
+ *   failed    — provider error; last_error populated
+ *   skipped   — domain cooldown / daily cap / suppression blocked send
+ *   cancelled — operator cancelled before send
+ */
+export const outreachQueueStatus = pgEnum('outreach_queue_status', [
+  'queued',
+  'sending',
+  'sent',
+  'failed',
+  'skipped',
+  'cancelled',
+]);
+
+export const sendDelayMode = pgEnum('send_delay_mode', [
+  'immediate',
+  'fixed',
+  'random',
+]);
+
+export const outreachQueue = pgTable(
+  'outreach_queue',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    /** Which mailbox to send from. */
+    mailboxId: bigint('mailbox_id', { mode: 'bigint' }).notNull(),
+    /** Source draft (when the queue item was created from outreach_drafts). */
+    draftId: bigint('draft_id', { mode: 'bigint' }).references(
+      () => outreachDrafts.id,
+      { onDelete: 'set null' },
+    ),
+    /** Recipient as a flat array — copied off the draft / supplied by caller. */
+    toAddresses: text('to_addresses').array().notNull().default(sql`'{}'::text[]`),
+    ccAddresses: text('cc_addresses').array().notNull().default(sql`'{}'::text[]`),
+    bccAddresses: text('bcc_addresses').array().notNull().default(sql`'{}'::text[]`),
+    subject: text('subject').notNull(),
+    bodyText: text('body_text'),
+    bodyHtml: text('body_html'),
+    /** Optional thread anchor for replies (preserved through to send). */
+    inReplyTo: text('in_reply_to'),
+    references: text('references').array().notNull().default(sql`'{}'::text[]`),
+
+    status: outreachQueueStatus('status').notNull().default('queued'),
+    /** Mode used to compute scheduled_send_at. */
+    delayMode: sendDelayMode('delay_mode').notNull().default('immediate'),
+    /** Computed at enqueue time. */
+    scheduledSendAt: timestamp('scheduled_send_at', {
+      mode: 'date',
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+
+    attemptCount: smallint('attempt_count').notNull().default(0),
+    lastError: text('last_error'),
+    /** mail_message id once sent. */
+    sentMessageId: bigint('sent_message_id', { mode: 'bigint' }),
+
+    createdBy: text('created_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    workspaceStatusIdx: index('outreach_queue_ws_status_idx').on(
+      table.workspaceId,
+      table.status,
+    ),
+    workspaceScheduleIdx: index('outreach_queue_ws_schedule_idx').on(
+      table.workspaceId,
+      table.scheduledSendAt,
+    ),
+    /** At most one active queue item per draft. */
+    draftActiveIdx: uniqueIndex('outreach_queue_draft_active_idx')
+      .on(table.draftId)
+      .where(sql`status IN ('queued', 'sending')`),
+  }),
+);
+
+export type OutreachQueueEntry = typeof outreachQueue.$inferSelect;
+export type NewOutreachQueueEntry = typeof outreachQueue.$inferInsert;
+export type OutreachQueueStatus = (typeof outreachQueueStatus.enumValues)[number];
+export type SendDelayMode = (typeof sendDelayMode.enumValues)[number];
+
+/**
+ * Phase 19: per-workspace send-queue settings. Daily cap + delay mode
+ * defaults + domain cooldown live here.
+ */
+export const outreachSendSettings = pgTable('outreach_send_settings', {
+  workspaceId: bigint('workspace_id', { mode: 'bigint' })
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  dailyEmailLimit: smallint('daily_email_limit').notNull().default(50),
+  /** Hours between consecutive emails to the same domain. */
+  domainCooldownHours: smallint('domain_cooldown_hours').notNull().default(24),
+  defaultDelayMode: sendDelayMode('default_delay_mode').notNull().default('random'),
+  fixedDelayMinutes: smallint('fixed_delay_minutes').notNull().default(15),
+  randomDelayMinMinutes: smallint('random_delay_min_minutes').notNull().default(5),
+  randomDelayMaxMinutes: smallint('random_delay_max_minutes').notNull().default(30),
+  emergencyPause: boolean('emergency_pause').notNull().default(false),
+  updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type OutreachSendSettings = typeof outreachSendSettings.$inferSelect;
+export type NewOutreachSendSettings = typeof outreachSendSettings.$inferInsert;
