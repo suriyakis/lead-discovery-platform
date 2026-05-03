@@ -1,7 +1,7 @@
 // Documents service. Wraps IStorage for byte handling, persists metadata,
 // audit-logs every mutation. SHA-256 captured for dedup detection.
 
-import { and, desc, eq, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { db } from '@/lib/db/client';
@@ -139,9 +139,8 @@ export async function listDocuments(
       : [filter.status as DocumentStatus];
     if (statuses.length === 1) {
       conditions.push(eq(documents.status, statuses[0]!));
-    } else {
-      // No inArray import here — quick chain
-      // (but we already have inArray in other files; use it directly)
+    } else if (statuses.length > 1) {
+      conditions.push(inArray(documents.status, statuses));
     }
   } else if (filter.includeArchived !== true) {
     conditions.push(notArchivedCondition());
@@ -346,7 +345,6 @@ function extractExtension(filename: string): string {
   return /^\.[a-z0-9._-]{1,16}$/i.test(ext) ? ext : '';
 }
 
-import { ne } from 'drizzle-orm';
 function notArchivedCondition() {
   return ne(documents.status, 'archived');
 }
