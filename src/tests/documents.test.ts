@@ -155,6 +155,31 @@ describe('listDocuments + getDocument + streamDocument', () => {
     expect(all.map((d) => d.id).sort()).toEqual([a.document.id, b.document.id].sort());
   });
 
+  it('multi-status filter actually narrows (regression for empty-else bug)', async () => {
+    const s = await setup();
+    const a = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'a.txt',
+      body: Buffer.from('a'),
+    });
+    const b = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'b.txt',
+      body: Buffer.from('b'),
+    });
+    await archiveDocument(ctx(s.workspaceA, s.ownerA), a.document.id);
+
+    // ['ready','archived'] should return both; ['failed','uploading'] should return none.
+    const both = await listDocuments(ctx(s.workspaceA, s.ownerA), {
+      status: ['ready', 'archived'],
+    });
+    expect(both.map((d) => d.id).sort()).toEqual(
+      [a.document.id, b.document.id].sort(),
+    );
+    const none = await listDocuments(ctx(s.workspaceA, s.ownerA), {
+      status: ['failed', 'uploading'],
+    });
+    expect(none).toEqual([]);
+  });
+
   it('does not leak across workspaces', async () => {
     const s = await setup();
     const a = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
