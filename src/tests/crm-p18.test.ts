@@ -19,7 +19,7 @@ import {
   pushThreadAsNotes,
 } from '@/lib/services/crm';
 import { reviewItems } from '@/lib/db/schema/review';
-import { mailMessages, mailThreads } from '@/lib/db/schema/mailing';
+import { mailThreads } from '@/lib/db/schema/mailing';
 import {
   type CrmDealPayload,
   type CrmNotePayload,

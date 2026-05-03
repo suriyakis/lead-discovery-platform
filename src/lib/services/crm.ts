@@ -17,14 +17,12 @@ import {
   type CrmConnection,
   type CrmConnectionStatus,
   type CrmSyncEntry,
-  type CrmSyncKind,
   type NewCrmConnection,
   type NewCrmSyncEntry,
 } from '@/lib/db/schema/crm';
 import {
   mailMessages,
   mailThreads,
-  type MailMessage,
   type MailThread,
 } from '@/lib/db/schema/mailing';
 import { contactAssociations } from '@/lib/db/schema/contacts';

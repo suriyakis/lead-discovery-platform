@@ -22,6 +22,7 @@ const PINNED: ReadonlyArray<NavItem> = [
 
 const SECONDARY: ReadonlyArray<NavItem> = [
   { href: '/review', label: 'Review queue', key: 'review' },
+  { href: '/autopilot', label: 'Autopilot', key: 'autopilot' },
   { href: '/products', label: 'Products', key: 'products' },
   { href: '/connectors', label: 'Connectors', key: 'connectors' },
   { href: '/documents', label: 'Documents', key: 'documents' },
