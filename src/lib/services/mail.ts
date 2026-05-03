@@ -17,7 +17,12 @@ import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 import { buildProviderFor } from './mailbox';
 import { attachContact, upsertContact } from './contacts';
-import { isSuppressed } from './suppression';
+import { isSuppressed, recordBounce } from './suppression';
+import {
+  defaultSignature,
+  renderSignatureHtml,
+  renderSignatureText,
+} from './signatures';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -92,6 +97,22 @@ export async function sendMessage(
     headers['References'] = input.references.join(' ');
   }
 
+  // Phase 17: append the default signature for this mailbox to the body
+  // (text + html). Caller-supplied bodies are passed through untouched.
+  let outboundText = input.text;
+  let outboundHtml = input.html;
+  try {
+    const sig = await defaultSignature(ctx, mailbox.id);
+    if (sig) {
+      const sigText = renderSignatureText(sig);
+      const sigHtml = renderSignatureHtml(sig);
+      if (outboundText && sigText) outboundText = `${outboundText}\n\n${sigText}`;
+      if (outboundHtml && sigHtml) outboundHtml = `${outboundHtml}\n${sigHtml}`;
+    }
+  } catch (err) {
+    console.error('[mail.send] signature render failed:', err);
+  }
+
   const out: OutboundMessage = {
     from: { address: mailbox.fromAddress, name: mailbox.fromName ?? undefined },
     to: input.to,
@@ -99,12 +120,39 @@ export async function sendMessage(
     bcc: input.bcc,
     replyTo: mailbox.replyTo ?? undefined,
     subject,
-    text: input.text,
-    html: input.html,
+    text: outboundText,
+    html: outboundHtml,
     headers,
   };
 
-  const sendResult = await provider.send(out);
+  let sendResult;
+  try {
+    sendResult = await provider.send(out);
+  } catch (err) {
+    // Phase 17: SMTP-layer rejection that includes a 5xx response triggers
+    // an auto-bounce-suppress. nodemailer surfaces an `responseCode` on
+    // the error object; we match conservatively to avoid suppressing on
+    // transient network errors.
+    const e = err as { responseCode?: number; message?: string };
+    if (e?.responseCode && e.responseCode >= 500 && e.responseCode < 600) {
+      for (const recipient of input.to) {
+        try {
+          await recordBounce(ctx, recipient.address, 'hard', e.message ?? null);
+        } catch {
+          // best-effort
+        }
+      }
+    } else if (e?.responseCode && e.responseCode >= 400 && e.responseCode < 500) {
+      for (const recipient of input.to) {
+        try {
+          await recordBounce(ctx, recipient.address, 'soft', e.message ?? null);
+        } catch {
+          // best-effort
+        }
+      }
+    }
+    throw err;
+  }
 
   // Resolve / create thread.
   const thread = await ensureThread(ctx, mailbox.id, {

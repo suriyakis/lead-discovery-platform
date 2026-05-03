@@ -1,5 +1,7 @@
-// Suppression list service. Addresses we will NEVER email — checked before
-// every outbound send. Soft suppressions can have a TTL (expires_at).
+// Suppression list service. Phase 17: matches an outbound by EMAIL or
+// DOMAIN or COMPANY. The legacy email-only API still works — addSuppression
+// without `kind` defaults to email; isSuppressed(email) checks email +
+// derived-domain. Soft suppressions can have a TTL (expires_at).
 
 import { and, desc, eq, gt, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -7,8 +9,10 @@ import {
   suppressionList,
   type NewSuppressionEntry,
   type SuppressionEntry,
+  type SuppressionKind,
   type SuppressionReason,
 } from '@/lib/db/schema/mailing';
+import { contacts } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 
@@ -29,10 +33,14 @@ const notFound = () =>
   new SuppressionServiceError('suppression entry not found', 'not_found');
 
 export interface AddSuppressionInput {
-  address: string;
+  /** Phase 17: defaults to 'email'. */
+  kind?: SuppressionKind;
+  /** Either the value (preferred) or `address` for back-compat. */
+  value?: string;
+  /** Back-compat: kind=email + value=address. */
+  address?: string;
   reason: SuppressionReason;
   note?: string | null;
-  /** ISO-string or Date. Soft suppressions are typically TTL'd. */
   expiresAt?: Date | null;
 }
 
@@ -41,30 +49,45 @@ export async function addSuppression(
   input: AddSuppressionInput,
 ): Promise<SuppressionEntry> {
   if (!canWrite(ctx)) throw permissionDenied('suppression.add');
-  const address = normalize(input.address);
-  if (!address || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
-    throw invalid('invalid email address');
+  const kind: SuppressionKind = input.kind ?? 'email';
+  const rawValue = (input.value ?? input.address ?? '').trim();
+  if (!rawValue) throw invalid(`${kind} value required`);
+  const value = normalizeFor(kind, rawValue);
+  if (!isValidFor(kind, value)) {
+    throw invalid(`invalid ${kind}: ${rawValue}`);
   }
 
   const row: NewSuppressionEntry = {
     workspaceId: ctx.workspaceId,
-    address,
+    kind,
+    // address mirrors `value` for kind=email so the legacy
+    // (workspace, address) UNIQUE keeps working; for domain/company we
+    // also stamp address=value so any pre-existing email row with the same
+    // string can't collide with a new domain row of the same string (rare,
+    // but the schema allows it).
+    address: value,
+    value,
     reason: input.reason,
     note: input.note?.trim() || null,
     expiresAt: input.expiresAt ?? null,
     createdBy: ctx.userId,
   };
 
-  // Upsert: re-suppressing an existing address replaces the reason/note/TTL.
+  // Upsert on the canonical (workspace, kind, value) key.
   await db
     .insert(suppressionList)
     .values(row)
     .onConflictDoUpdate({
-      target: [suppressionList.workspaceId, suppressionList.address],
+      target: [
+        suppressionList.workspaceId,
+        suppressionList.kind,
+        suppressionList.value,
+      ],
       set: {
         reason: row.reason,
         note: row.note,
         expiresAt: row.expiresAt,
+        address: row.address,
       },
     });
 
@@ -74,7 +97,8 @@ export async function addSuppression(
     .where(
       and(
         eq(suppressionList.workspaceId, ctx.workspaceId),
-        eq(suppressionList.address, address),
+        eq(suppressionList.kind, kind),
+        eq(suppressionList.value, value),
       ),
     )
     .limit(1);
@@ -89,7 +113,7 @@ export async function addSuppression(
     kind: 'suppression.add',
     entityType: 'suppression_entry',
     entityId: reloaded[0].id,
-    payload: { address, reason: input.reason },
+    payload: { kind, value, reason: input.reason },
   });
 
   return reloaded[0];
@@ -97,43 +121,63 @@ export async function addSuppression(
 
 export async function removeSuppression(
   ctx: WorkspaceContext,
-  address: string,
+  /** Either the row id or — back-compat — the email address (kind=email lookup). */
+  identifier: bigint | string,
+  kind: SuppressionKind = 'email',
 ): Promise<void> {
   if (!canWrite(ctx)) throw permissionDenied('suppression.remove');
-  const normalized = normalize(address);
-  const existed = await db
-    .select()
-    .from(suppressionList)
-    .where(
-      and(
-        eq(suppressionList.workspaceId, ctx.workspaceId),
-        eq(suppressionList.address, normalized),
-      ),
-    )
-    .limit(1);
-  if (!existed[0]) throw notFound();
+
+  let existing: SuppressionEntry | undefined;
+  if (typeof identifier === 'bigint') {
+    const rows = await db
+      .select()
+      .from(suppressionList)
+      .where(
+        and(
+          eq(suppressionList.workspaceId, ctx.workspaceId),
+          eq(suppressionList.id, identifier),
+        ),
+      )
+      .limit(1);
+    existing = rows[0];
+  } else {
+    const value = normalizeFor(kind, identifier);
+    const rows = await db
+      .select()
+      .from(suppressionList)
+      .where(
+        and(
+          eq(suppressionList.workspaceId, ctx.workspaceId),
+          eq(suppressionList.kind, kind),
+          eq(suppressionList.value, value),
+        ),
+      )
+      .limit(1);
+    existing = rows[0];
+  }
+  if (!existing) throw notFound();
   await db
     .delete(suppressionList)
-    .where(
-      and(
-        eq(suppressionList.workspaceId, ctx.workspaceId),
-        eq(suppressionList.address, normalized),
-      ),
-    );
+    .where(eq(suppressionList.id, existing.id));
   await recordAuditEvent(ctx, {
     kind: 'suppression.remove',
     entityType: 'suppression_entry',
-    entityId: existed[0].id,
-    payload: { address: normalized },
+    entityId: existing.id,
+    payload: { kind: existing.kind, value: existing.value },
   });
 }
 
 export async function listSuppressions(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  filter: { reason?: SuppressionReason; limit?: number } = {},
+  filter: {
+    reason?: SuppressionReason;
+    kind?: SuppressionKind;
+    limit?: number;
+  } = {},
 ): Promise<SuppressionEntry[]> {
   const conditions: SQL[] = [eq(suppressionList.workspaceId, ctx.workspaceId)];
   if (filter.reason) conditions.push(eq(suppressionList.reason, filter.reason));
+  if (filter.kind) conditions.push(eq(suppressionList.kind, filter.kind));
   return db
     .select()
     .from(suppressionList)
@@ -143,31 +187,129 @@ export async function listSuppressions(
 }
 
 /**
- * Returns true when the address is on the suppression list AND the
- * suppression is currently effective (no TTL or TTL not yet expired).
+ * Phase 17: matches the recipient against EMAIL, DOMAIN, and COMPANY
+ * suppressions. Email and domain checks are direct table lookups; company
+ * matching looks at the contact's stored companyName (case-insensitive
+ * exact match).
  */
 export async function isSuppressed(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  address: string,
+  email: string,
 ): Promise<boolean> {
-  const normalized = normalize(address);
-  const rows = await db
+  const normalized = normalizeFor('email', email);
+  const domain = deriveDomain(normalized);
+  const ttlOk = or(
+    isNull(suppressionList.expiresAt),
+    gt(suppressionList.expiresAt, new Date()),
+  );
+
+  // 1) email-direct match.
+  const emailRows = await db
     .select()
     .from(suppressionList)
     .where(
       and(
         eq(suppressionList.workspaceId, ctx.workspaceId),
-        eq(suppressionList.address, normalized),
-        or(
-          isNull(suppressionList.expiresAt),
-          gt(suppressionList.expiresAt, new Date()),
-        ),
+        eq(suppressionList.kind, 'email'),
+        eq(suppressionList.value, normalized),
+        ttlOk,
       ),
     )
     .limit(1);
-  return Boolean(rows[0]);
+  if (emailRows[0]) return true;
+
+  // 2) domain match.
+  if (domain) {
+    const domainRows = await db
+      .select()
+      .from(suppressionList)
+      .where(
+        and(
+          eq(suppressionList.workspaceId, ctx.workspaceId),
+          eq(suppressionList.kind, 'domain'),
+          eq(suppressionList.value, domain),
+          ttlOk,
+        ),
+      )
+      .limit(1);
+    if (domainRows[0]) return true;
+  }
+
+  // 3) company match — only if we have a contact for this email with a
+  //    companyName, and there's an active company-kind suppression on it.
+  const contactRows = await db
+    .select()
+    .from(contacts)
+    .where(
+      and(
+        eq(contacts.workspaceId, ctx.workspaceId),
+        eq(contacts.email, normalized),
+      ),
+    )
+    .limit(1);
+  const company = contactRows[0]?.companyName?.trim().toLowerCase() ?? null;
+  if (company) {
+    const companyRows = await db
+      .select()
+      .from(suppressionList)
+      .where(
+        and(
+          eq(suppressionList.workspaceId, ctx.workspaceId),
+          eq(suppressionList.kind, 'company'),
+          eq(suppressionList.value, company),
+          ttlOk,
+        ),
+      )
+      .limit(1);
+    if (companyRows[0]) return true;
+  }
+
+  return false;
 }
 
-function normalize(input: string): string {
-  return input.trim().toLowerCase();
+// ---- internals -----------------------------------------------------
+
+function normalizeFor(kind: SuppressionKind, input: string): string {
+  const v = input.trim().toLowerCase();
+  if (kind === 'company') return v; // preserve spaces; just lowercase
+  return v.replace(/\s+/g, '');
+}
+
+function isValidFor(kind: SuppressionKind, value: string): boolean {
+  if (!value) return false;
+  if (kind === 'email') return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  if (kind === 'domain') return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(value);
+  // company: free-form non-empty, capped 200 chars
+  return value.length <= 200;
+}
+
+function deriveDomain(email: string): string | null {
+  const at = email.indexOf('@');
+  if (at < 0) return null;
+  const d = email.slice(at + 1);
+  return d || null;
+}
+
+/**
+ * Auto-suppress on bounce. Called from the mail-send error path when the
+ * SMTP layer returns a 5xx (hard bounce) or persistent 4xx (soft bounce).
+ * Hard bounces have no TTL; soft bounces expire in 7 days so the address
+ * can be retried later without manual intervention.
+ */
+export async function recordBounce(
+  ctx: WorkspaceContext,
+  email: string,
+  kind: 'hard' | 'soft' = 'hard',
+  detail: string | null = null,
+): Promise<SuppressionEntry> {
+  return addSuppression(ctx, {
+    kind: 'email',
+    value: email,
+    reason: kind === 'hard' ? 'bounce_hard' : 'bounce_soft',
+    note: detail,
+    expiresAt:
+      kind === 'soft'
+        ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        : null,
+  });
 }

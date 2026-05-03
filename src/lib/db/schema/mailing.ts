@@ -275,8 +275,25 @@ export const signatures = pgTable(
     ),
 
     name: text('name').notNull(),
+    /**
+     * Phase 17: structured fields below drive a server-side HTML renderer
+     * (renderSignatureHtml in src/lib/services/signatures.ts). bodyText is
+     * still the authoritative plain-text version. bodyHtml, when set,
+     * overrides the renderer (manual HTML control / legacy migrate path).
+     */
     bodyText: text('body_text').notNull(),
     bodyHtml: text('body_html'),
+    greeting: text('greeting'),
+    fullName: text('full_name'),
+    title: text('title'),
+    company: text('company'),
+    tagline: text('tagline'),
+    website: text('website'),
+    email: text('email'),
+    /** [{label, number}] stored as jsonb. */
+    phones: jsonb('phones').notNull().default(sql`'[]'::jsonb`),
+    /** IStorage key for an uploaded logo (Phase 9 storage). */
+    logoStorageKey: text('logo_storage_key'),
     isDefault: boolean('is_default').notNull().default(false),
 
     createdBy: text('created_by').references(() => users.id, {
@@ -312,6 +329,22 @@ export const suppressionReason = pgEnum('suppression_reason', [
   'manual',
 ]);
 
+/**
+ * Phase 17: suppression entries can target an email, an entire domain, or
+ * a company name. The matcher checks all three when sending.
+ *
+ * Examples:
+ *   kind=email   value=anna@blocked.com    matches anna@blocked.com only
+ *   kind=domain  value=blocked.com         matches *@blocked.com
+ *   kind=company value=acme inc            matches contacts where
+ *                                            companyName ILIKE 'acme inc'
+ */
+export const suppressionKind = pgEnum('suppression_kind', [
+  'email',
+  'domain',
+  'company',
+]);
+
 export const suppressionList = pgTable(
   'suppression_list',
   {
@@ -319,8 +352,14 @@ export const suppressionList = pgTable(
     workspaceId: bigint('workspace_id', { mode: 'bigint' })
       .notNull()
       .references(() => workspaces.id, { onDelete: 'cascade' }),
-    /** Lowercased, no display name. */
-    address: text('address').notNull(),
+    kind: suppressionKind('kind').notNull().default('email'),
+    /** Lowercased + trimmed. address column kept for back-compat with the
+        existing email-only flow; new entries use `value`. */
+    address: text('address').notNull().default(''),
+    /** Phase 17 canonical column. Service layer sets `address` = `value`
+        for kind=email so old queries still work; for domain/company the
+        value lives here. */
+    value: text('value').notNull().default(''),
     reason: suppressionReason('reason').notNull(),
     note: text('note'),
     /** Soft suppressions can have a TTL after which they expire. */
@@ -334,9 +373,17 @@ export const suppressionList = pgTable(
       .defaultNow(),
   },
   (table) => ({
+    /** Legacy uniqueness on (workspace, address) — preserved. New rows for
+        domain/company set address = value so this still de-dupes correctly. */
     workspaceAddressIdx: uniqueIndex('suppression_ws_address_idx').on(
       table.workspaceId,
       table.address,
+    ),
+    /** Phase 17 canonical: dedup per (workspace, kind, value). */
+    workspaceKindValueIdx: uniqueIndex('suppression_ws_kind_value_idx').on(
+      table.workspaceId,
+      table.kind,
+      table.value,
     ),
   }),
 );
@@ -344,6 +391,7 @@ export const suppressionList = pgTable(
 export type SuppressionEntry = typeof suppressionList.$inferSelect;
 export type NewSuppressionEntry = typeof suppressionList.$inferInsert;
 export type SuppressionReason = (typeof suppressionReason.enumValues)[number];
+export type SuppressionKind = (typeof suppressionKind.enumValues)[number];
 
 // Voids to keep dead-imports quiet during early phases (smallint reserved
 // for future quota/score columns).
