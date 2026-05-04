@@ -8,8 +8,10 @@
 
 import { BrandHeader } from './BrandHeader';
 import { Sidebar } from './Sidebar';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { auth } from '@/lib/auth';
 import { signOutAction } from '@/lib/auth-actions';
+import { listMyWorkspaces } from '@/lib/services/workspace';
 
 export interface AppShellProps {
   children: React.ReactNode;
@@ -19,8 +21,8 @@ export interface AppShellProps {
    */
   isSuperAdmin?: boolean;
   /**
-   * Override the header's right slot. Defaults to the signed-in user's
-   * email + Sign-out button.
+   * Override the header's right slot. Defaults to: workspace switcher
+   * (if user has 2+ workspaces) + email + sign-out button.
    */
   rightSlot?: React.ReactNode;
 }
@@ -33,9 +35,30 @@ export async function AppShell({
   const session = await auth();
   const showAdmin =
     isSuperAdmin ?? session?.user?.role === 'super_admin';
+
+  // Phase 28: pull the user's workspaces so the header can render a
+  // switcher when they belong to more than one. Skip the query for
+  // unauthenticated requests (public pages).
+  const myWorkspaces = session?.user?.id
+    ? await listMyWorkspaces(session.user.id)
+    : [];
+
   const slot =
     rightSlot ??
-    (session?.user?.email ? <DefaultRightSlot email={session.user.email} /> : null);
+    (session?.user?.email ? (
+      <DefaultRightSlot
+        email={session.user.email}
+        myWorkspaces={myWorkspaces.map((m) => ({
+          id: m.workspace.id.toString(),
+          name: m.workspace.name,
+          slug: m.workspace.slug,
+          role: m.role,
+          isActive: m.isActive,
+          isArchived: m.workspace.status === 'archived',
+          isDefault: m.workspace.isDefault,
+        }))}
+      />
+    ) : null);
 
   return (
     <div className="app-shell">
@@ -48,9 +71,18 @@ export async function AppShell({
   );
 }
 
-function DefaultRightSlot({ email }: Readonly<{ email: string }>) {
+function DefaultRightSlot({
+  email,
+  myWorkspaces,
+}: Readonly<{
+  email: string;
+  myWorkspaces: React.ComponentProps<typeof WorkspaceSwitcher>['workspaces'];
+}>) {
   return (
     <>
+      {myWorkspaces.length > 1 ? (
+        <WorkspaceSwitcher workspaces={myWorkspaces} />
+      ) : null}
       <span className="who">{email}</span>
       <form action={signOutAction}>
         <button type="submit" className="ghost-btn">

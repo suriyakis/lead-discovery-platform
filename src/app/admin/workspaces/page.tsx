@@ -125,6 +125,7 @@ export default async function AdminWorkspacesPage({
                   >
                     {w.status}
                   </span>
+                  {w.isDefault ? <span className="badge">🔒 default</span> : null}
                 </div>
                 <div className="meta">
                   <span>{w.memberCount} members</span>
@@ -141,7 +142,9 @@ export default async function AdminWorkspacesPage({
                 <div
                   style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}
                 >
-                  {w.status === 'active' ? (
+                  {w.isDefault ? (
+                    <span className="muted">protected — open detail to manage</span>
+                  ) : w.status === 'active' ? (
                     <form action={archive} className="inline-form">
                       <input
                         type="hidden"

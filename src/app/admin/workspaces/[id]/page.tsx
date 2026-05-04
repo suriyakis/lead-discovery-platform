@@ -21,6 +21,7 @@ import {
   listImpersonationSessions,
   restoreWorkspace,
   setFeatureFlag,
+  setWorkspaceDefault,
   startImpersonation,
   updateWorkspaceProfile,
 } from '@/lib/services/admin';
@@ -172,6 +173,23 @@ export default async function AdminWorkspaceDetail({
     }
   }
 
+  async function toggleDefault(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const isDefault = formData.get('isDefault') === 'on';
+    try {
+      await setWorkspaceDefault(c, targetWorkspaceId, isDefault);
+      redirect(
+        `/admin/workspaces/${idStr}?message=${
+          isDefault ? 'Marked+as+default' : 'Unmarked+default'
+        }`,
+      );
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
   async function destroy(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -251,6 +269,7 @@ export default async function AdminWorkspaceDetail({
           <span className={ws.status === 'active' ? 'badge badge-good' : 'badge badge-bad'}>
             {ws.status}
           </span>
+          {ws.isDefault ? <span className="badge"> 🔒 default</span> : null}
         </h1>
         <p className="muted">
           /{ws.slug} · created {ws.createdAt.toLocaleString()}
@@ -292,7 +311,25 @@ export default async function AdminWorkspaceDetail({
             lose access on next sign-in. Super-admins can still see and
             restore it.
           </p>
-          {ws.status === 'active' ? (
+          <form action={toggleDefault} className="inline-form">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                name="isDefault"
+                defaultChecked={ws.isDefault}
+              />
+              <span>
+                🔒 Mark as default — protects from archive + delete
+              </span>
+            </label>
+            <button type="submit">Save</button>
+          </form>
+          {ws.isDefault ? (
+            <p className="muted">
+              This workspace is the default — archive and delete are
+              disabled. Unmark it first to remove either.
+            </p>
+          ) : ws.status === 'active' ? (
             <form action={archive} className="inline-form">
               <label>
                 <span>Reason (optional)</span>

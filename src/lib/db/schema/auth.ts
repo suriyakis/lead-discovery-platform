@@ -1,4 +1,4 @@
-import { integer, pgEnum, pgTable, primaryKey, text, timestamp } from 'drizzle-orm/pg-core';
+import { bigint, integer, pgEnum, pgTable, primaryKey, text, timestamp } from 'drizzle-orm/pg-core';
 
 // Auth.js-compatible schema for the Drizzle adapter.
 // We extend the canonical `users` table with a platform-wide `role` and a
@@ -45,6 +45,14 @@ export const users = pgTable('users', {
     withTimezone: true,
   }),
   accountStatusUpdatedBy: text('accountStatusUpdatedBy'),
+  /**
+   * Phase 28: which workspace the user has selected as "active". When
+   * NULL, getWorkspaceContext falls back to the user's first membership.
+   * Cleared automatically (FK ON DELETE SET NULL) if the workspace is
+   * deleted, and zeroed by services when the user is removed from the
+   * referenced workspace.
+   */
+  activeWorkspaceId: bigint('activeWorkspaceId', { mode: 'bigint' }),
   createdAt: timestamp('createdAt', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),

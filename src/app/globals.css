@@ -392,6 +392,37 @@ main {
   cursor: pointer;
 }
 
+/* ---- Workspace switcher (header) ---- */
+.workspace-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: oklch(0.18 0.02 250 / 0.6);
+  font-size: 0.875rem;
+}
+
+.workspace-switcher-icon {
+  font-size: 0.875rem;
+}
+
+.workspace-switcher select {
+  background: transparent;
+  border: none;
+  color: var(--brand-fg);
+  font: inherit;
+  cursor: pointer;
+  padding: 0.1rem 0.25rem;
+  outline: none;
+}
+
+.workspace-switcher select:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
 /* When the AppShell is in use, the inner main shouldn't max-width itself
    to 72rem — the grid already constrains the column. Override that. */
 .app-main {

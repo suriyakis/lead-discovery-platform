@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users } from '@/lib/db/schema/auth';
 import {
@@ -9,6 +9,7 @@ import {
   type Workspace,
   type WorkspaceMember,
   type WorkspaceMemberRole,
+  type WorkspaceStatus,
 } from '@/lib/db/schema/workspaces';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canOwnWorkspace, type WorkspaceContext } from './context';
@@ -270,4 +271,112 @@ export async function setMemberRole(
 
     return member;
   });
+}
+
+// ---- Phase 28: active workspace + multi-workspace switching --------
+
+export interface MyWorkspaceRow {
+  workspace: {
+    id: bigint;
+    name: string;
+    slug: string;
+    status: WorkspaceStatus;
+    isDefault: boolean;
+  };
+  role: WorkspaceMemberRole;
+  isActive: boolean;
+}
+
+/**
+ * List every workspace the user belongs to, marking which one is currently
+ * active. Used by the header switcher dropdown.
+ */
+export async function listMyWorkspaces(
+  userId: string,
+): Promise<MyWorkspaceRow[]> {
+  const userRows = await db
+    .select({ activeWorkspaceId: users.activeWorkspaceId })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const activeId = userRows[0]?.activeWorkspaceId ?? null;
+
+  const rows = await db
+    .select({
+      workspace: {
+        id: workspaces.id,
+        name: workspaces.name,
+        slug: workspaces.slug,
+        status: workspaces.status,
+        isDefault: workspaces.isDefault,
+      },
+      role: workspaceMembers.role,
+    })
+    .from(workspaceMembers)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+    .where(eq(workspaceMembers.userId, userId))
+    .orderBy(asc(workspaces.name));
+  return rows.map((r) => ({
+    ...r,
+    isActive: activeId !== null && r.workspace.id === activeId,
+  }));
+}
+
+/**
+ * Switch the user's active workspace. Verifies the user is actually a
+ * member; super_admin bypasses the check (god-mode can land anywhere).
+ * Returns the resolved workspace.
+ */
+export async function setActiveWorkspace(
+  userId: string,
+  workspaceId: bigint,
+  options: { allowAnyAsSuperAdmin?: boolean } = {},
+): Promise<Workspace> {
+  const wsRows = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!wsRows[0]) throw notFound('workspace');
+
+  if (!options.allowAnyAsSuperAdmin) {
+    const member = await db
+      .select()
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.userId, userId),
+          eq(workspaceMembers.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!member[0]) {
+      throw new WorkspaceServiceError(
+        'not a member of that workspace',
+        'permission_denied',
+      );
+    }
+  }
+
+  await db
+    .update(users)
+    .set({ activeWorkspaceId: workspaceId })
+    .where(eq(users.id, userId));
+
+  return wsRows[0];
+}
+
+/**
+ * Clear users.activeWorkspaceId on every user pointing at the given
+ * workspace. Used when a workspace is deleted or a member is removed
+ * from it — without this, getWorkspaceContext would resolve to a stale
+ * workspace they can no longer access.
+ */
+export async function clearActiveWorkspaceForUsers(
+  workspaceId: bigint,
+): Promise<void> {
+  await db
+    .update(users)
+    .set({ activeWorkspaceId: null })
+    .where(eq(users.activeWorkspaceId, workspaceId));
 }

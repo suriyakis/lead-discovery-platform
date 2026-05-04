@@ -55,6 +55,7 @@ export interface WorkspaceOverviewRow {
   name: string;
   slug: string;
   status: WorkspaceStatus;
+  isDefault: boolean;
   archivedAt: Date | null;
   archivedReason: string | null;
   memberCount: number;
@@ -100,6 +101,7 @@ export async function listAllWorkspaces(
       name: w.name,
       slug: w.slug,
       status: w.status,
+      isDefault: w.isDefault,
       archivedAt: w.archivedAt ?? null,
       archivedReason: w.archivedReason ?? null,
       memberCount: Number(members?.c ?? 0),
@@ -174,6 +176,9 @@ export async function archiveWorkspace(
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
   if (!rows[0]) throw notFound('workspace');
+  if (rows[0].isDefault) {
+    throw conflict('cannot archive the default workspace');
+  }
   if (rows[0].status === 'archived') throw conflict('already archived');
   const [updated] = await db
     .update(workspaces)
@@ -277,6 +282,39 @@ export async function adminCreateWorkspace(
  * the operator has had a chance to back out. Cascading FKs sweep up every
  * workspace-scoped row.
  */
+export async function setWorkspaceDefault(
+  ctx: WorkspaceContext,
+  workspaceId: bigint,
+  isDefault: boolean,
+): Promise<Workspace> {
+  assertSuperAdmin(ctx, 'admin.workspace.set_default');
+  const rows = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!rows[0]) throw notFound('workspace');
+  if (rows[0].status === 'archived' && isDefault) {
+    throw conflict('cannot mark an archived workspace as default');
+  }
+  const [updated] = await db
+    .update(workspaces)
+    .set({ isDefault, updatedAt: new Date() })
+    .where(eq(workspaces.id, workspaceId))
+    .returning();
+  if (!updated) throw notFound('workspace');
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.workspace.set_default',
+      entityType: 'workspace',
+      entityId: workspaceId,
+      payload: { isDefault },
+    },
+  );
+  return updated;
+}
+
 export async function deleteWorkspace(
   ctx: WorkspaceContext,
   workspaceId: bigint,
@@ -288,6 +326,9 @@ export async function deleteWorkspace(
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
   if (!rows[0]) throw notFound('workspace');
+  if (rows[0].isDefault) {
+    throw conflict('cannot delete the default workspace');
+  }
   if (rows[0].status !== 'archived') {
     throw conflict('archive the workspace before deleting');
   }
@@ -578,6 +619,18 @@ export async function moveUserBetweenWorkspaces(
           eq(workspaceMembers.userId, targetUserId),
         ),
       );
+    // Phase 28: if the user's active workspace was the source we just
+    // removed them from, point them at the destination so they don't
+    // bounce to whichever first-membership remains.
+    await tx
+      .update(users)
+      .set({ activeWorkspaceId: toWorkspaceId })
+      .where(
+        and(
+          eq(users.id, targetUserId),
+          eq(users.activeWorkspaceId, fromWorkspaceId),
+        ),
+      );
     const [created] = await tx
       .insert(workspaceMembers)
       .values({
@@ -646,6 +699,17 @@ export async function adminRemoveUserFromWorkspace(
       and(
         eq(workspaceMembers.workspaceId, workspaceId),
         eq(workspaceMembers.userId, targetUserId),
+      ),
+    );
+  // Phase 28: if the user had this workspace as their active one, clear
+  // it so they don't land on a stale workspace they can no longer reach.
+  await db
+    .update(users)
+    .set({ activeWorkspaceId: null })
+    .where(
+      and(
+        eq(users.id, targetUserId),
+        eq(users.activeWorkspaceId, workspaceId),
       ),
     );
   await recordAuditEvent(

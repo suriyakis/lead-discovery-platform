@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
+  boolean,
   jsonb,
   pgEnum,
   pgTable,
@@ -34,6 +35,12 @@ export const workspaces = pgTable('workspaces', {
   archivedAt: timestamp('archived_at', { mode: 'date', withTimezone: true }),
   archivedBy: text('archived_by'),
   archivedReason: text('archived_reason'),
+  /**
+   * Phase 28: protected workspace flag. Default-flagged workspaces cannot
+   * be archived or deleted — useful as an environment-level "system"
+   * tenant that survives nuking everything else.
+   */
+  isDefault: boolean('is_default').notNull().default(false),
   ownerUserId: text('owner_user_id')
     .notNull()
     .references(() => users.id),

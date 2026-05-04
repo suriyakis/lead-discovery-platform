@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
+import { users } from '@/lib/db/schema/auth';
 import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
 import {
   type WorkspaceContext,
@@ -79,14 +80,27 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
             ),
           );
 
-  const first = memberships[0];
-  if (!first) throw new NoWorkspaceError();
+  if (memberships.length === 0) throw new NoWorkspaceError();
+
+  // Phase 28: prefer the user's activeWorkspaceId when it points at a
+  // workspace they're still a member of. Otherwise fall back to the
+  // first membership.
+  const userRows = await db
+    .select({ activeWorkspaceId: users.activeWorkspaceId })
+    .from(users)
+    .where(eq(users.id, session.user.id))
+    .limit(1);
+  const activeId = userRows[0]?.activeWorkspaceId ?? null;
+  const selected =
+    (activeId !== null
+      ? memberships.find((m) => m.workspaceId === activeId)
+      : null) ?? memberships[0]!;
 
   const role: WorkspaceRole =
-    session.user.role === 'super_admin' ? 'super_admin' : first.role;
+    session.user.role === 'super_admin' ? 'super_admin' : selected.role;
 
   return makeWorkspaceContext({
-    workspaceId: first.workspaceId,
+    workspaceId: selected.workspaceId,
     userId: session.user.id,
     role,
   });
