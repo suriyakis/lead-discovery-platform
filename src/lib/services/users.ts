@@ -605,6 +605,84 @@ export async function deleteUserGlobally(
   await db.delete(users).where(eq(users.id, targetUserId));
 }
 
+// ---- Phase 31: self-service profile + password --------------------
+
+/**
+ * Change your own display name. Email is intentionally not editable
+ * here — that change goes through admin.updateUserProfile so it can be
+ * verified and audited.
+ */
+export async function updateOwnProfile(
+  ctx: WorkspaceContext,
+  input: { name: string | null },
+): Promise<User> {
+  const target = await loadUser(ctx.userId);
+  const name = input.name?.trim() || null;
+  const [updated] = await db
+    .update(users)
+    .set({ name })
+    .where(eq(users.id, ctx.userId))
+    .returning();
+  if (!updated) {
+    throw new UserServiceError(
+      'updateOwnProfile returned no row',
+      'invariant_violation',
+    );
+  }
+  await recordAuditEvent(
+    { workspaceId: ctx.workspaceId, userId: ctx.userId },
+    {
+      kind: 'user.update_own_profile',
+      entityType: 'user',
+      entityId: ctx.userId,
+      payload: { previousName: target.name ?? null, newName: name },
+    },
+  );
+  return updated;
+}
+
+/**
+ * Self-service password change: verifies the old password matches before
+ * writing the new one. Doesn't invalidate the current session — the user
+ * stays logged in. Other sessions ARE invalidated (safer default after
+ * any password change).
+ *
+ * For OAuth-only users (passwordHash IS NULL) this also doubles as
+ * "set initial password" when oldPassword is empty.
+ */
+export async function changeOwnPassword(
+  ctx: WorkspaceContext,
+  oldPassword: string,
+  newPassword: string,
+): Promise<void> {
+  if (newPassword.length < MIN_PASSWORD_LEN) {
+    throw invalid(`password must be at least ${MIN_PASSWORD_LEN} characters`);
+  }
+  const me = await loadUser(ctx.userId);
+  if (me.passwordHash) {
+    const ok = await bcrypt.compare(oldPassword, me.passwordHash);
+    if (!ok) throw new UserServiceError('current password is incorrect', 'invalid_input');
+  } else if (oldPassword.length > 0) {
+    // OAuth user supplied an old password but doesn't have one — surface
+    // an explicit message rather than failing the empty compare.
+    throw invalid('you do not have a password set; leave the old field blank');
+  }
+  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+  await db
+    .update(users)
+    .set({ passwordHash })
+    .where(eq(users.id, ctx.userId));
+  await recordAuditEvent(
+    { workspaceId: ctx.workspaceId, userId: ctx.userId },
+    {
+      kind: 'user.change_own_password',
+      entityType: 'user',
+      entityId: ctx.userId,
+      payload: { setInitial: !me.passwordHash },
+    },
+  );
+}
+
 // ---- internals -----------------------------------------------------
 
 async function loadUser(id: string): Promise<User> {

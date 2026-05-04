@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
+import { UserAvatar } from '@/components/UserAvatar';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -198,7 +199,13 @@ export default async function AdminUserDetail({
         <Link href="/admin">Admin</Link> /{' '}
         <Link href="/admin/users">Users</Link> / {user.name ?? user.email}
       </p>
-      <h1>{user.name ?? user.email}</h1>
+      <h1 style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+        <UserAvatar name={user.name} email={user.email} />
+        {user.name ?? user.email}
+        <span className="badge">
+          {user.passwordHash ? '🔑 password' : '🔵 google'}
+        </span>
+      </h1>
       <p className="muted">
         <code>{user.id.slice(0, 12)}…</code> · platform role{' '}
         <code>{user.role}</code> · created {user.createdAt.toLocaleString()}

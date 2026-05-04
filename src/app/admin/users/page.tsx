@@ -6,6 +6,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { UserAvatar } from '@/components/UserAvatar';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -292,6 +293,8 @@ function UserSection({
     role: string;
     accountStatus: 'pending' | 'active' | 'suspended' | 'rejected';
     accountStatusReason: string | null;
+    passwordHash: string | null;
+    lastSignedInAt: Date | null;
   }>;
   sessionUserId: string;
   setStatus: (formData: FormData) => Promise<void>;
@@ -319,6 +322,7 @@ function UserSection({
           {users.map((u) => (
             <li key={u.id}>
               <div className="lead-row">
+                <UserAvatar name={u.name} email={u.email} />
                 <Link href={`/admin/users/${u.id}`}>
                   <strong>{u.name ?? u.email}</strong>
                 </Link>
@@ -327,6 +331,16 @@ function UserSection({
                 <span className={statusBadge(u.accountStatus)}>
                   {u.accountStatus}
                 </span>
+                <span className="badge">
+                  {u.passwordHash ? '🔑 password' : '🔵 google'}
+                </span>
+              </div>
+              <div className="meta">
+                {u.lastSignedInAt ? (
+                  <span>last sign-in {u.lastSignedInAt.toLocaleString()}</span>
+                ) : (
+                  <span className="muted">never signed in</span>
+                )}
               </div>
               {u.accountStatusReason ? (
                 <p className="muted">Reason: {u.accountStatusReason}</p>

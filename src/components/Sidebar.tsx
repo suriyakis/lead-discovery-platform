@@ -67,6 +67,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     title: 'Administration',
     defaultOpen: false,
     items: [
+      { href: '/settings/account', label: 'My account' },
       { href: '/products', label: 'Products' },
       { href: '/settings/members', label: 'Members' },
       { href: '/settings/integrations', label: 'Integrations' },
