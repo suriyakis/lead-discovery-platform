@@ -378,6 +378,141 @@ credentials).
 
 **Phase 22 complete.**
 
+## Phase 23 — Persistent sidebar + workspace/user admin
+
+- [x] **P23-01.** Schema (migration `0022_p23_workspace_status.sql`): `workspace_status` enum (active|archived) + 4 lifecycle columns on `workspaces`. Archived workspaces denied to non-super-admin members via auth-context filter.
+- [x] **P23-02.** Sidebar reorganized into Discovery / Pipeline / Outreach / Administration / Emergency / Platform sections — client component using `usePathname()` for auto active-highlight. Emergency block visually distinct.
+- [x] **P23-03.** `AppShell` promoted to a server component that fetches the session itself; 39 pages migrated from `BrandHeader+main` → `AppShell` for persistent sidebar.
+- [x] **P23-04.** Super-admin features: workspace lifecycle (`/admin/workspaces` + `/admin/workspaces/[id]` archive/restore), user profile editing with case-insensitive collision check, cross-workspace memberships (`adminAddUserToWorkspace` / `adminRemoveUserFromWorkspace` / `listMembershipsForUser`) + `/admin/users/[id]` detail.
+- [x] **P23-05.** 22 tests in `src/tests/p23.test.ts`. **465/465 total pass.**
+
+**Phase 23 complete.**
+
+## Phase 24 — Audit log viewers
+
+- [x] **P24-01.** `/settings/audit` (workspace-scoped, admin-gated) + `/admin/audit` (platform-wide, super-admin only). Filters by kind / workspace / since / until / limit.
+- [x] **P24-02.** `admin.ts`: `listAuditAcrossWorkspaces(filter)` + `distinctAuditKindsAcross()`. User + workspace names resolved in single round-trip per page.
+- [x] **P24-03.** 6 tests in `src/tests/p24.test.ts`. **471/471 total pass.**
+
+**Phase 24 complete.**
+
+## Phase 25 — Workspace create + hard-delete
+
+- [x] **P25-01.** `/admin/workspaces/new` — name + slug + owner picker. Reuses the bootstrap-path transactional create + emits `admin.workspace.create` audit.
+- [x] **P25-02.** `/admin/workspaces/[id]` danger-zone delete (gated on `archived` status) — type-the-slug confirmation, cascading FKs sweep workspace-scoped tables. Audit-logged BEFORE delete so trail still references the id.
+- [x] **P25-03.** Service: `adminCreateWorkspace` (slug normalization + collision + owner-existence + transactional create) and `deleteWorkspace` (refuses unless archived).
+- [x] **P25-04.** 10 tests in `src/tests/p25.test.ts`. **481/481 total pass.**
+
+**Phase 25 complete.**
+
+## Phase 26 — User/workspace admin polish (Wandizz-inspired)
+
+- [x] **P26-01.** `/admin/users` split into Pending review (amber accent) / Active / Suspended-rejected sections with counts.
+- [x] **P26-02.** `/admin/workspaces/new` auto-derives slug from name as you type until the slug field is touched (`WorkspaceCreateForm` client component).
+- [x] **P26-03.** `/admin/workspaces/[id]` members get inline role select with role icons (👑 owner / 🛡 admin / ⭐ manager / 👤 member / 👁 viewer).
+- [x] **P26-04.** `/admin/users/[id]` 'Move between workspaces' atomic flow (pick source membership + destination + role; one transaction).
+- [x] **P26-05.** Service: `adminSetMemberRole` (super-admin role change scoped by workspace, NOT by ctx) + `moveUserBetweenWorkspaces` (transactional, refuses last-owner moves and identical src+dst).
+- [x] **P26-06.** 10 tests in `src/tests/p26.test.ts`. **491/491 total pass.**
+
+**Phase 26 complete.**
+
+## Phase 27 — Autopilot console redesign + per-product overrides
+
+- [x] **P27-01.** Schema (migration `0023_p27_autopilot_product_overlay.sql`): `autopilot_product_settings` overlay table keyed by `(workspace_id, product_profile_id)` with nullable override columns. Workspace-only steps (sync inbound, drain queue) cannot be overridden.
+- [x] **P27-02.** `/autopilot` redesign — Master strip (global enabled / 🛑 emergency pause / Run now), 7-step autonomous flow visualization, scope picker tabs (Workspace defaults | each product), tri-state (inherit / on / off) form per product, recent-activity log.
+- [x] **P27-03.** Service: `getEffectiveAutopilotSettings(productId)` (merges workspace defaults + product overlay; NULLs inherit), `upsertProductAutopilotSettings`, `getProductAutopilotSettings`, `listProductAutopilotSettings`, `clearProductAutopilotSettings`.
+- [x] **P27-04.** Orchestrator: `stepAutoApproveProjects`, `stepAutoEnqueueOutreach`, `stepAutoCrmContactSync`, `stepAutoCrmDealOnQualified` resolve effective settings per candidate's `productProfileId`. Per-product mailbox override routes outreach through product's preferred mailbox.
+- [x] **P27-05.** 8 tests in `src/tests/p27.test.ts`. **499/499 total pass.**
+
+**Phase 27 complete.**
+
+## Phase 28 — Workspace switcher + default-workspace protection
+
+- [x] **P28-01.** Schema (migration `0024_p28_active_workspace.sql`): `users.activeWorkspaceId` (nullable bigint FK → workspaces, ON DELETE SET NULL) + `workspaces.is_default` boolean.
+- [x] **P28-02.** Auth-context: `getWorkspaceContext()` reads `users.activeWorkspaceId` and uses it when membership is still valid; otherwise falls back to first membership.
+- [x] **P28-03.** Service: `listMyWorkspaces(userId)` (every workspace with `isActive` flag), `setActiveWorkspace(userId, wsId, opts)` (verifies membership; super-admin can pass `allowAnyAsSuperAdmin`).
+- [x] **P28-04.** `setWorkspaceDefault(workspaceId, isDefault)` flips flag with audit, refuses archived workspaces. `archiveWorkspace`/`deleteWorkspace` refuse default workspaces. `adminRemoveUserFromWorkspace` clears stale active pointer; `moveUserBetweenWorkspaces` re-points to destination.
+- [x] **P28-05.** UI: `<WorkspaceSwitcher>` client component in header (renders only if 2+ memberships) + 🔒 default badge on `/admin/workspaces` + 'Mark as default' toggle in lifecycle section.
+- [x] **P28-06.** 11 tests in `src/tests/p28.test.ts`. **510/510 total pass.**
+
+**Phase 28 complete.**
+
+## Phase 29 — God-mode workspace switching for super-admin
+
+- [x] **P29-01.** `listMyWorkspaces` gains `includeAllForSuperAdmin` option — appends every other workspace as a synthetic row with `role='super_admin'` + `isGodMode=true`.
+- [x] **P29-02.** `<WorkspaceSwitcher>` renders memberships first under 'Member of', then 'God mode (other workspaces)' below. Trigger pill gets amber accent + 👁 icon when active workspace is god-mode.
+- [x] **P29-03.** Picking a god-mode workspace prompts `confirm()` + audit-logs in target workspace via new `workspace.god_mode_switch` kind (visible in both `/admin/audit` and target's `/settings/audit`).
+- [x] **P29-04.** 6 tests in `src/tests/p29.test.ts`. **516/516 total pass.**
+
+**Phase 29 complete.**
+
+## Phase 30 — Email + password auth (Wandizz-style team users)
+
+- [x] **P30-01.** Schema (migration `0025_p30_password_hash.sql`): `users.passwordHash` text nullable. NULL = OAuth-only; set = password user. bcrypt 12 rounds via `bcryptjs`.
+- [x] **P30-02.** Service: `createPasswordUser` (super-admin only; refuses dup email / short password / non-super caller; optional immediate workspace + role assignment), `verifyUserPassword` (case-insensitive lookup + bcrypt.compare; refuses non-active accounts), `setUserPassword` (super-admin or self; rotates hash and by default invalidates other sessions), `deleteUserGlobally` (super-admin only; refuses self/super/last-owner targets).
+- [x] **P30-03.** `/api/auth/team-login` route — JSON POST {email, password} mints `sessions` row + sets `authjs.session-token` / `__Secure-authjs.session-token` cookie identical to OAuth path. `teamLoginAction` server action for the form. Shared `session-helpers.ts`: 32-byte token + 30-day expiry + cookie-name detection from `AUTH_URL`.
+- [x] **P30-04.** UI: `/` login page shows email+password form below Google button; `/admin/users` 'Create user with password' panel; `/admin/users/[id]` Password section + Danger zone (type-email-confirm hard delete).
+- [x] **P30-05.** 19 tests in `src/tests/p30.test.ts`. **535/535 total pass.** Deps: `bcryptjs ^3` + `@types/bcryptjs`.
+
+**Phase 30 complete.**
+
+## Phase 31 — Avatars + auth-method badges + self-service /settings/account
+
+- [x] **P31-01.** `<UserAvatar>` component — initial-only circle with deterministic color hashed from email. Used on `/admin/users`, `/admin/users/[id]`, `/settings/account`.
+- [x] **P31-02.** `/admin/users` rows get avatar + last-sign-in timestamp + 🔑 password / 🔵 google badge per row. `/admin/users/[id]` header gets the same.
+- [x] **P31-03.** `/settings/account` self-service page (in Administration sidebar group): change own display name; change own password (verifies current; OAuth-only users can leave old blank to set initial password and unlock email+password sign-in); read-only workspace memberships with active marker + 🔒 default badge.
+- [x] **P31-04.** Service: `updateOwnProfile(ctx, { name })` + `changeOwnPassword(ctx, old, new)` (does NOT invalidate other sessions — user stays signed in).
+- [x] **P31-05.** 8 tests in `src/tests/p31.test.ts`. **543/543 total pass.**
+
+**Phase 31 complete.**
+
+## Phase 32 — BYOK OpenAI key + ctx-aware embeddings provider
+
+- [x] **P32-01.** `getEmbeddingProviderForCtx(ctx)` workspace-aware factory — reads `workspace.openai.apiKey` via `resolveProviderKey()`, constructs fresh `OpenAIEmbeddingProvider` with that key when set; falls back to env-cached singleton. Workspace overrides bypass cache so secret rotations take effect immediately.
+- [x] **P32-02.** `rag.ts` callers updated: `indexDocument`, `indexKnowledgeSource`, `embedLesson`, `embedAllLessons`, `retrieve`, `retrieveLessons` all resolve via the ctx-aware factory.
+- [x] **P32-03.** UI: `/settings/integrations` gets OpenAI section mirroring SerpAPI (effective-source banner / set workspace key / clear key, admin-gated).
+- [x] **P32-04.** 5 tests in `src/tests/p32.test.ts`. **548/548 total pass.** Note: real OpenAI AI provider (chat) still TBD — this only wires embeddings.
+
+**Phase 32 complete.**
+
+## Phase 33 — Real AI providers (OpenAI + Anthropic) with BYOK
+
+- [x] **P33-01.** `OpenAIAIProvider` — `/v1/chat/completions`, default `gpt-4o-mini`, `response_format=json_object` for `generateJson`, cost table for gpt-4o-mini and gpt-4o (Dec 2025 pricing).
+- [x] **P33-02.** `AnthropicAIProvider` — `/v1/messages`, default `claude-haiku-4-5`. `generateJson` augments system prompt + strips stray code fences. Cost table for Haiku 4.5 + Sonnet 4. Both providers: 60s `AbortController` timeout + real token counts from API response.
+- [x] **P33-03.** Factory: `getAIProvider()` switches on `AI_PROVIDER` (mock | openai | anthropic), env-cached. `getAIProviderForCtx(ctx)` workspace-aware variant — when active provider is real AND workspace has BYOK key, build fresh provider with that key. Mock path short-circuits.
+- [x] **P33-04.** Caller wiring: `reply-assistant.ts` uses `getAIProviderForCtx(ctx)`. `outreach.ts composeVerdict` now takes `WorkspaceContext` and resolves provider per workspace; `method='hybrid'` upgrades from rules-fallback to real-AI body.
+- [x] **P33-05.** UI: `/settings/integrations` Anthropic section mirroring OpenAI block. Page also shows active `AI_PROVIDER`. Note: prod env still on `AI_PROVIDER=mock` after deploy — operator-controlled flip.
+- [x] **P33-06.** 14 tests in `src/tests/p33.test.ts`. **562/562 total pass.**
+
+**Phase 33 complete.**
+
+### Phase 33.5 — Paste-HTML signature option
+
+- [x] **P33.5-01.** `/mailbox/signatures` New-signature form gets 'Custom HTML signature' textarea — when set, structured fields are ignored and exact markup is used in outbound HTML.
+- [x] **P33.5-02.** Each existing signature row gets expandable 'Edit / replace custom HTML' panel showing current `bodyHtml` in monospace; saves via new `updateHtml` server action. Empty save reverts to auto-rendered.
+- [x] **P33.5-03.** Signatures with custom HTML get a 'custom HTML' badge on the list. Drop a stray `@ts-expect-error` in `p33.test.ts` that didn't fire.
+
+**Phase 33.5 complete.**
+
+## Phase 34 — Background workers + repeatable cron ticks
+
+- [x] **P34-01.** Three repeatable handlers: `autopilot.tick` (every 5 min), `outreach.drain.tick` (every 30 sec), `mail.imap.tick` (every 2 min). Each fans out across active workspaces serially and swallows per-tenant errors so one stuck workspace can't block the platform.
+- [x] **P34-02.** Queue interface: `IJobQueue.enqueueRepeatable(type, payload, { everyMs, jobId })`. `InMemoryJobQueue` uses `setInterval` with `.unref` (test-safe). `BullMQJobQueue` uses `repeat: { every }` + removes prior repeatables on re-register so cadence changes take effect at next boot.
+- [x] **P34-03.** Boot: Next.js `instrumentation.ts` calls `registerJobHandlers()` + `registerRepeatableJobs()` on every cold start. Skipped via `SCHEDULE_BACKGROUND_JOBS=0` for ephemeral CI / migration pods. Loud warning when `NODE_ENV=production` and `JOB_QUEUE_PROVIDER!=bullmq`.
+- [x] **P34-04.** 7 tests in `src/tests/p34.test.ts`. **569/569 total pass.** Note: prod env still on `JOB_QUEUE_PROVIDER=memory` — durable scheduling needs `JOB_QUEUE_PROVIDER=bullmq` + `REDIS_URL=...` flip on agregat.
+
+**Phase 34 complete.**
+
+## Phase 35 — List-Unsubscribe header + public unsubscribe endpoint
+
+- [x] **P35-01.** Outbound mail (`mail.ts sendMessage`): per-message unsubscribe URL reuses existing `trackingToken` (no new schema column). Two new headers on every send: `List-Unsubscribe: <https://.../api/unsubscribe/<token>>, <mailto:...?subject=unsubscribe>` + `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. HTTPS first so Gmail/Yahoo prefer it.
+- [x] **P35-02.** Visible footer rendered into both text + HTML bodies (CAN-SPAM requires conspicuous link). Plain-text gets separator + `Unsubscribe: <url>`; HTML gets a small grey link in a top-bordered footer.
+- [x] **P35-03.** Public endpoint `/api/unsubscribe/[token]`: POST = RFC 8058 one-click (empty 200 on success or unknown token — never leaks token validity). GET = browser click; renders self-contained confirmation page listing suppressed addresses, no app shell.
+- [x] **P35-04.** Service: `recordUnsubscribeByToken(token)` resolves token via `mailMessages.trackingToken`, lowercases recipients, upserts into `suppressionList` with `reason='unsubscribe'`. Idempotent via existing `(workspace, kind, value)` UNIQUE. Direct `audit_log` insert with `userId=null` (unauthenticated actor).
+- [x] **P35-05.** 6 tests in `src/tests/p35.test.ts`. **575/575 total pass.** Deployed to prod 2026-05-04 after disk-full cleanup recovered 53GB.
+
+**Phase 35 complete.**
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
