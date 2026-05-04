@@ -119,10 +119,32 @@ export async function sendMessage(
   // /api/track/<token>.gif. We embed it ONLY when the caller supplied an
   // HTML body (text-only emails skip the pixel).
   const trackingToken = randomUUID().replace(/-/g, '');
+  const appUrl = (process.env.APP_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
   if (outboundHtml) {
-    const appUrl = process.env.APP_URL ?? 'http://localhost:3000';
-    const pixelUrl = `${appUrl.replace(/\/+$/, '')}/api/track/${trackingToken}.gif`;
+    const pixelUrl = `${appUrl}/api/track/${trackingToken}.gif`;
     outboundHtml = `${outboundHtml}<img src="${pixelUrl}" width="1" height="1" alt="" style="display:block;margin:0;padding:0;border:0" />`;
+  }
+
+  // Phase 35: RFC 8058 one-click unsubscribe. Same trackingToken doubles
+  // as the unsubscribe token (workspace-scoped, single-use, opaque). The
+  // public route lives at /api/unsubscribe/<token> and adds the
+  // recipient address(es) to the suppression list.
+  const unsubUrl = `${appUrl}/api/unsubscribe/${trackingToken}`;
+  const unsubMailto = `mailto:${mailbox.fromAddress}?subject=unsubscribe`;
+  // Two-value List-Unsubscribe: HTTPS first (preferred by Gmail/Yahoo),
+  // mailto: as a fallback for old clients. Plus List-Unsubscribe-Post
+  // for the one-click POST handshake (RFC 8058).
+  headers['List-Unsubscribe'] = `<${unsubUrl}>, <${unsubMailto}>`;
+  headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+
+  // Render a visible unsubscribe footer in the body. CAN-SPAM requires
+  // the link be conspicuous; modern bulk senders also do this for
+  // engagement reasons.
+  const footerText = `\n\n---\nDon't want these messages? Unsubscribe: ${unsubUrl}`;
+  const footerHtml = `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#888;font-family:Arial,sans-serif"><a href="${unsubUrl}" style="color:#888;text-decoration:underline">Unsubscribe</a></div>`;
+  outboundText = (outboundText ?? '') + footerText;
+  if (outboundHtml) {
+    outboundHtml = outboundHtml + footerHtml;
   }
 
   const out: OutboundMessage = {

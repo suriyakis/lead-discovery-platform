@@ -44,6 +44,95 @@ export interface AddSuppressionInput {
   expiresAt?: Date | null;
 }
 
+/**
+ * Phase 35: token-backed unsubscribe. Public unsubscribe endpoints don't
+ * carry a session, so we resolve the request to a workspace via the
+ * outbound mail_message's trackingToken and add the recipient(s) to
+ * the suppression list without going through the canWrite gate.
+ *
+ * Returns the addresses that were suppressed (or already suppressed).
+ * Returns an empty array if the token is unknown or malformed — the
+ * public endpoint always responds 200 either way to avoid leaking
+ * token validity.
+ */
+export async function recordUnsubscribeByToken(
+  trackingToken: string,
+): Promise<{ workspaceId: bigint | null; addresses: string[] }> {
+  if (!/^[a-f0-9]{16,64}$/i.test(trackingToken)) {
+    return { workspaceId: null, addresses: [] };
+  }
+  // Local imports to avoid a top-of-file circular dependency between the
+  // suppression service and the mailing schema's other services.
+  const { mailMessages } = await import('@/lib/db/schema/mailing');
+  const rows = await db
+    .select({
+      workspaceId: mailMessages.workspaceId,
+      toAddresses: mailMessages.toAddresses,
+    })
+    .from(mailMessages)
+    .where(eq(mailMessages.trackingToken, trackingToken))
+    .limit(1);
+  const msg = rows[0];
+  if (!msg) return { workspaceId: null, addresses: [] };
+
+  const suppressed: string[] = [];
+  for (const raw of msg.toAddresses ?? []) {
+    const value = (raw ?? '').trim().toLowerCase();
+    if (!value || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) continue;
+    try {
+      await db
+        .insert(suppressionList)
+        .values({
+          workspaceId: msg.workspaceId,
+          kind: 'email',
+          address: value,
+          value,
+          reason: 'unsubscribe',
+          note: 'one-click unsubscribe via List-Unsubscribe',
+          expiresAt: null,
+          createdBy: null,
+        })
+        .onConflictDoUpdate({
+          target: [
+            suppressionList.workspaceId,
+            suppressionList.kind,
+            suppressionList.value,
+          ],
+          set: {
+            reason: 'unsubscribe',
+            note: 'one-click unsubscribe via List-Unsubscribe',
+            expiresAt: null,
+          },
+        });
+      suppressed.push(value);
+    } catch (err) {
+      // best-effort — keep going on any per-address failure
+      console.error(`[unsubscribe] insert failed for ${value}:`, err);
+    }
+  }
+
+  if (suppressed.length > 0) {
+    // Direct insert into audit_log — the actor is unauthenticated so we
+    // pass userId=null (audit_log.user_id is nullable). The service-layer
+    // recordAuditEvent doesn't accept a null userId.
+    try {
+      const { auditLog } = await import('@/lib/db/schema/audit');
+      await db.insert(auditLog).values({
+        workspaceId: msg.workspaceId,
+        userId: null,
+        kind: 'suppression.unsubscribe_via_token',
+        entityType: 'mail_message',
+        entityId: trackingToken,
+        payload: { addresses: suppressed },
+      });
+    } catch (err) {
+      console.error('[unsubscribe] audit log insert failed:', err);
+    }
+  }
+
+  return { workspaceId: msg.workspaceId, addresses: suppressed };
+}
+
 export async function addSuppression(
   ctx: WorkspaceContext,
   input: AddSuppressionInput,
