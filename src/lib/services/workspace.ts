@@ -283,16 +283,30 @@ export interface MyWorkspaceRow {
     status: WorkspaceStatus;
     isDefault: boolean;
   };
-  role: WorkspaceMemberRole;
+  /** Workspace role when the user is a member; 'super_admin' for god-mode rows. */
+  role: WorkspaceMemberRole | 'super_admin';
   isActive: boolean;
+  /**
+   * Phase 29: true when the row exists because the caller is super_admin
+   * and this workspace is NOT one they're a member of. False for genuine
+   * memberships. Used by the UI to put god-mode workspaces in their
+   * own optgroup.
+   */
+  isGodMode: boolean;
 }
 
 /**
  * List every workspace the user belongs to, marking which one is currently
  * active. Used by the header switcher dropdown.
+ *
+ * When `includeAllForSuperAdmin: true`, the result also contains every
+ * other workspace on the platform with `role='super_admin'` and
+ * `isGodMode=true`. The caller must actually be a super-admin — this
+ * function does not check; it just opts in to the wider listing.
  */
 export async function listMyWorkspaces(
   userId: string,
+  options: { includeAllForSuperAdmin?: boolean } = {},
 ): Promise<MyWorkspaceRow[]> {
   const userRows = await db
     .select({ activeWorkspaceId: users.activeWorkspaceId })
@@ -301,7 +315,7 @@ export async function listMyWorkspaces(
     .limit(1);
   const activeId = userRows[0]?.activeWorkspaceId ?? null;
 
-  const rows = await db
+  const memberRows = await db
     .select({
       workspace: {
         id: workspaces.id,
@@ -316,16 +330,48 @@ export async function listMyWorkspaces(
     .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
     .where(eq(workspaceMembers.userId, userId))
     .orderBy(asc(workspaces.name));
-  return rows.map((r) => ({
-    ...r,
+
+  const memberships: MyWorkspaceRow[] = memberRows.map((r) => ({
+    workspace: r.workspace,
+    role: r.role as WorkspaceMemberRole,
     isActive: activeId !== null && r.workspace.id === activeId,
+    isGodMode: false,
   }));
+
+  if (!options.includeAllForSuperAdmin) return memberships;
+
+  const memberIds = new Set(memberships.map((m) => m.workspace.id.toString()));
+  const allOthers = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      slug: workspaces.slug,
+      status: workspaces.status,
+      isDefault: workspaces.isDefault,
+    })
+    .from(workspaces)
+    .orderBy(asc(workspaces.name));
+
+  const godModeRows: MyWorkspaceRow[] = allOthers
+    .filter((w) => !memberIds.has(w.id.toString()))
+    .map((w) => ({
+      workspace: w,
+      role: 'super_admin' as const,
+      isActive: activeId !== null && w.id === activeId,
+      isGodMode: true,
+    }));
+
+  return [...memberships, ...godModeRows];
 }
 
 /**
  * Switch the user's active workspace. Verifies the user is actually a
- * member; super_admin bypasses the check (god-mode can land anywhere).
- * Returns the resolved workspace.
+ * member; super_admin can pass `allowAnyAsSuperAdmin` to bypass the check
+ * (god-mode can land anywhere). Returns the resolved workspace.
+ *
+ * Every god-mode switch into a non-member workspace is audit-logged into
+ * the target workspace so the trail is visible from /admin/audit and
+ * /settings/audit.
  */
 export async function setActiveWorkspace(
   userId: string,
@@ -339,18 +385,21 @@ export async function setActiveWorkspace(
     .limit(1);
   if (!wsRows[0]) throw notFound('workspace');
 
-  if (!options.allowAnyAsSuperAdmin) {
-    const member = await db
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.userId, userId),
-          eq(workspaceMembers.workspaceId, workspaceId),
-        ),
-      )
-      .limit(1);
-    if (!member[0]) {
+  // Verify membership unless caller has explicitly opted into super-admin
+  // bypass. Track whether this counts as a god-mode switch for audit.
+  const member = await db
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.userId, userId),
+        eq(workspaceMembers.workspaceId, workspaceId),
+      ),
+    )
+    .limit(1);
+  const isMember = Boolean(member[0]);
+  if (!isMember) {
+    if (!options.allowAnyAsSuperAdmin) {
       throw new WorkspaceServiceError(
         'not a member of that workspace',
         'permission_denied',
@@ -362,6 +411,20 @@ export async function setActiveWorkspace(
     .update(users)
     .set({ activeWorkspaceId: workspaceId })
     .where(eq(users.id, userId));
+
+  if (!isMember && options.allowAnyAsSuperAdmin) {
+    // God-mode switch — log it under the TARGET workspace so anyone
+    // reviewing that workspace's audit can see the super-admin entered.
+    await recordAuditEvent(
+      { workspaceId, userId },
+      {
+        kind: 'workspace.god_mode_switch',
+        entityType: 'workspace',
+        entityId: workspaceId,
+        payload: { actorUserId: userId },
+      },
+    );
+  }
 
   return wsRows[0];
 }

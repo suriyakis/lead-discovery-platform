@@ -36,11 +36,13 @@ export async function AppShell({
   const showAdmin =
     isSuperAdmin ?? session?.user?.role === 'super_admin';
 
-  // Phase 28: pull the user's workspaces so the header can render a
-  // switcher when they belong to more than one. Skip the query for
-  // unauthenticated requests (public pages).
+  // Phase 28+29: pull the user's workspaces so the header can render a
+  // switcher when they belong to more than one. Super-admins also see
+  // every other workspace as a god-mode option for support.
   const myWorkspaces = session?.user?.id
-    ? await listMyWorkspaces(session.user.id)
+    ? await listMyWorkspaces(session.user.id, {
+        includeAllForSuperAdmin: session.user.role === 'super_admin',
+      })
     : [];
 
   const slot =
@@ -56,6 +58,7 @@ export async function AppShell({
           isActive: m.isActive,
           isArchived: m.workspace.status === 'archived',
           isDefault: m.workspace.isDefault,
+          isGodMode: m.isGodMode,
         }))}
       />
     ) : null);

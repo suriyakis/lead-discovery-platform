@@ -423,6 +423,15 @@ main {
   cursor: progress;
 }
 
+.workspace-switcher-god {
+  border-color: oklch(0.78 0.17 50 / 0.6);
+  background: oklch(0.78 0.17 50 / 0.08);
+}
+
+.workspace-switcher-god .workspace-switcher-icon {
+  color: oklch(0.85 0.16 60);
+}
+
 /* When the AppShell is in use, the inner main shouldn't max-width itself
    to 72rem — the grid already constrains the column. Override that. */
 .app-main {
