@@ -21,6 +21,8 @@ const SERPAPI_SECRET_KEY = 'serpapi.apiKey';
 const SERPAPI_ENV = 'SERPAPI_KEY';
 const OPENAI_SECRET_KEY = 'openai.apiKey';
 const OPENAI_ENV = 'OPENAI_API_KEY';
+const ANTHROPIC_SECRET_KEY = 'anthropic.apiKey';
+const ANTHROPIC_ENV = 'ANTHROPIC_API_KEY';
 
 export default async function IntegrationsPage({
   searchParams,
@@ -36,6 +38,8 @@ export default async function IntegrationsPage({
   let platformHasKey = false;
   let workspaceHasOpenai = false;
   let platformHasOpenai = false;
+  let workspaceHasAnthropic = false;
+  let platformHasAnthropic = false;
   try {
     ctx = await getWorkspaceContext();
     workspaceHasKey = await hasSecret(ctx, SERPAPI_SECRET_KEY);
@@ -43,6 +47,9 @@ export default async function IntegrationsPage({
     workspaceHasOpenai = await hasSecret(ctx, OPENAI_SECRET_KEY);
     platformHasOpenai =
       !!process.env[OPENAI_ENV] && process.env[OPENAI_ENV]!.trim() !== '';
+    workspaceHasAnthropic = await hasSecret(ctx, ANTHROPIC_SECRET_KEY);
+    platformHasAnthropic =
+      !!process.env[ANTHROPIC_ENV] && process.env[ANTHROPIC_ENV]!.trim() !== '';
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -69,6 +76,12 @@ export default async function IntegrationsPage({
     : platformHasOpenai
       ? 'platform'
       : 'none';
+  const anthropicEffectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasAnthropic
+    ? 'workspace'
+    : platformHasAnthropic
+      ? 'platform'
+      : 'none';
+  const aiProvider = process.env.AI_PROVIDER ?? 'mock';
 
   // ---- server actions ----
   async function saveKey(formData: FormData) {
@@ -127,6 +140,39 @@ export default async function IntegrationsPage({
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=openai`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function saveAnthropic(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const value = String(formData.get('apiKey') ?? '').trim();
+    try {
+      await setSecret(c, ANTHROPIC_SECRET_KEY, value);
+      redirect('/settings/integrations?ok=saved&provider=anthropic');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=anthropic`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function clearAnthropic() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await deleteSecret(c, ANTHROPIC_SECRET_KEY);
+      redirect('/settings/integrations?ok=cleared&provider=anthropic');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=anthropic`,
         );
       }
       throw err;
@@ -321,6 +367,99 @@ export default async function IntegrationsPage({
                 <form action={clearOpenai} style={{ marginTop: '0.5rem' }}>
                   <button type="submit" className="ghost-btn">
                     Clear workspace OpenAI key
+                  </button>
+                </form>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted">
+              Only workspace admins and owners can manage integration keys.
+            </p>
+          )}
+        </section>
+
+        <section>
+          <h2>Anthropic</h2>
+          <p className="muted">
+            Powers the AI provider when{' '}
+            <code>AI_PROVIDER=anthropic</code> (default model{' '}
+            <code>claude-haiku-4-5</code>). Used for outreach drafts,
+            qualification reasoning, reply classification, and the
+            RAG-grounded reply assistant. Per workspace you can either
+            bring your own Anthropic key or use the platform default.
+          </p>
+          <p className="muted">
+            <strong>Active AI provider:</strong>{' '}
+            <code>{aiProvider}</code>
+            {aiProvider === 'mock' ? (
+              <>
+                {' '}
+                — mock provider returns deterministic placeholder text;
+                set <code>AI_PROVIDER=openai</code> or{' '}
+                <code>AI_PROVIDER=anthropic</code> in the server env to
+                enable real AI.
+              </>
+            ) : null}
+          </p>
+
+          <dl>
+            <dt>Effective key source</dt>
+            <dd>
+              {anthropicEffectiveSource === 'workspace' ? (
+                <>
+                  <span className="badge badge-good">Workspace key</span>
+                  <span className="muted"> — your Anthropic account is charged.</span>
+                </>
+              ) : anthropicEffectiveSource === 'platform' ? (
+                <>
+                  <span className="badge">Platform default</span>
+                  <span className="muted"> — platform-provided key in use.</span>
+                </>
+              ) : (
+                <>
+                  <span className="badge badge-bad">Not configured</span>
+                  <span className="muted">
+                    {' '}
+                    — AI calls will fail with no_key when AI_PROVIDER=anthropic.
+                  </span>
+                </>
+              )}
+            </dd>
+            <dt>Workspace key</dt>
+            <dd>{workspaceHasAnthropic ? <code>••• stored</code> : <code>not set</code>}</dd>
+            <dt>Platform default</dt>
+            <dd>
+              {platformHasAnthropic ? (
+                <code>configured (server env)</code>
+              ) : (
+                <code>not configured</code>
+              )}
+            </dd>
+          </dl>
+
+          {isAdmin ? (
+            <>
+              <form action={saveAnthropic} className="inline-form">
+                <label>
+                  <span>Set workspace Anthropic key</span>
+                  <input
+                    name="apiKey"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder="sk-ant-..."
+                    minLength={1}
+                    maxLength={4096}
+                    required
+                  />
+                </label>
+                <button type="submit" className="primary-btn">
+                  Save
+                </button>
+              </form>
+              {workspaceHasAnthropic ? (
+                <form action={clearAnthropic} style={{ marginTop: '0.5rem' }}>
+                  <button type="submit" className="ghost-btn">
+                    Clear workspace Anthropic key
                   </button>
                 </form>
               ) : null}

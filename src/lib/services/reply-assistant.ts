@@ -9,7 +9,7 @@ import { mailMessages, mailThreads, type MailMessage } from '@/lib/db/schema/mai
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 import { retrieve, retrieveLessons } from './rag';
-import { getAIProvider, type IAIProvider } from '@/lib/ai';
+import { getAIProviderForCtx, type IAIProvider } from '@/lib/ai';
 import type { IEmbeddingProvider } from '@/lib/embeddings';
 
 export class ReplyAssistantError extends Error {
@@ -96,7 +96,7 @@ export async function suggestReply(
   ]);
 
   const prompt = buildPrompt(thread[0].subject, lastInbound, chunks, lessons);
-  const ai = input.ai ?? getAIProvider();
+  const ai = input.ai ?? (await getAIProviderForCtx(ctx));
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
     { temperature: 0.3, mockSeed: prompt.mockSeed },

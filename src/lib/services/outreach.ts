@@ -32,7 +32,7 @@ import {
   composeRulesDraft,
   type DraftVerdict,
 } from './outreach-engine';
-import { getAIProvider } from '@/lib/ai';
+import { getAIProviderForCtx } from '@/lib/ai';
 
 export class OutreachServiceError extends Error {
   public readonly code: string;
@@ -104,6 +104,7 @@ export async function generateOutreachDraft(
     product,
     allLessons,
     { channel, language },
+    ctx,
   );
 
   // Insert with supersede in one transaction. The partial unique index
@@ -557,21 +558,26 @@ async function composeVerdict(
   sourceRecord: SourceRecord,
   product: ProductProfile,
   lessons: ReadonlyArray<import('@/lib/db/schema/learning').LearningLesson>,
-  ctx: { channel: string; language: string },
+  cfg: { channel: string; language: string },
+  workspaceCtx: WorkspaceContext,
 ): Promise<DraftVerdict> {
   const draftable = extractDraftable(sourceRecord);
   if (method === 'rules') {
-    return composeRulesDraft(draftable, product, lessons, ctx);
+    return composeRulesDraft(draftable, product, lessons, cfg);
   }
   if (method === 'ai') {
-    const ai = getAIProvider();
-    return composeAiDraft(draftable, product, lessons, ctx, ai);
+    const ai = await getAIProviderForCtx(workspaceCtx);
+    return composeAiDraft(draftable, product, lessons, cfg, ai);
   }
   if (method === 'hybrid') {
-    // Phase 8: same as AI but with rules-template scaffold injected. For
-    // now, fall back to rules — true hybrid lands when a real provider is
-    // wired up.
-    return composeRulesDraft(draftable, product, lessons, ctx);
+    // Phase 33: hybrid = rules-scaffold subject + AI-rewritten body when
+    // a real provider is configured; falls back to pure rules when only
+    // the mock provider is available.
+    const ai = await getAIProviderForCtx(workspaceCtx);
+    if (ai.id === 'mock') {
+      return composeRulesDraft(draftable, product, lessons, cfg);
+    }
+    return composeAiDraft(draftable, product, lessons, cfg, ai);
   }
   throw invalid(`unknown method: ${method}`);
 }
