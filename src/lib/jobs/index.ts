@@ -28,11 +28,28 @@ export type JobHandler<P extends JobPayload = JobPayload> = (
   ctx: { jobId: JobId },
 ) => Promise<unknown> | unknown;
 
+export interface RepeatableJobOptions {
+  /** Period in milliseconds. */
+  everyMs: number;
+  /** Stable suffix so re-registration replaces an existing repeatable. */
+  jobId: string;
+}
+
 export interface IJobQueue {
   enqueue<P extends JobPayload>(type: string, payload: P, options?: JobOptions): Promise<JobId>;
   status(id: JobId): Promise<JobStatus>;
   cancel(id: JobId): Promise<void>;
   on<P extends JobPayload>(type: string, handler: JobHandler<P>): void;
+  /**
+   * Schedule a repeatable. The queue owns the cadence; the handler runs once
+   * per period until the queue is shut down. Re-registering with the same
+   * `jobId` replaces the existing schedule.
+   */
+  enqueueRepeatable<P extends JobPayload>(
+    type: string,
+    payload: P,
+    options: RepeatableJobOptions,
+  ): Promise<void>;
 }
 
 // ---- in-memory implementation ------------------------------------------
@@ -49,6 +66,7 @@ export class InMemoryJobQueue implements IJobQueue {
   private nextId = 1;
   private jobs = new Map<JobId, InternalJob>();
   private handlers = new Map<string, JobHandler>();
+  private timers = new Map<string, NodeJS.Timeout>();
 
   async enqueue<P extends JobPayload>(
     type: string,
@@ -105,6 +123,26 @@ export class InMemoryJobQueue implements IJobQueue {
 
   on<P extends JobPayload>(type: string, handler: JobHandler<P>): void {
     this.handlers.set(type, handler as JobHandler);
+  }
+
+  /**
+   * In-memory repeatable: setInterval-backed. Lost on restart — fine
+   * for dev. Production must run JOB_QUEUE_PROVIDER=bullmq.
+   */
+  async enqueueRepeatable<P extends JobPayload>(
+    type: string,
+    payload: P,
+    options: RepeatableJobOptions,
+  ): Promise<void> {
+    const key = `${type}:${options.jobId}`;
+    const existing = this.timers.get(key);
+    if (existing) clearInterval(existing);
+    const timer = setInterval(() => {
+      void this.enqueue(type, payload);
+    }, options.everyMs);
+    // Don't keep the event loop alive solely for repeatable jobs.
+    if (typeof timer.unref === 'function') timer.unref();
+    this.timers.set(key, timer);
   }
 }
 
