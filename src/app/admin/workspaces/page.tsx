@@ -91,7 +91,10 @@ export default async function AdminWorkspacesPage({
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <p>
+      <p style={{ display: 'flex', gap: '0.5rem' }}>
+        <Link href="/admin/workspaces/new" className="primary-btn">
+          + New workspace
+        </Link>
         {showArchived ? (
           <Link href="/admin/workspaces" className="ghost-btn">
             Hide archived

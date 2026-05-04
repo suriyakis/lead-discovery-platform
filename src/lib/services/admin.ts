@@ -199,6 +199,111 @@ export async function archiveWorkspace(
   return updated;
 }
 
+/**
+ * Super-admin create. Reuses the workspace.ts createWorkspace transaction
+ * (creates workspace + owner member + workspace_settings row) and logs
+ * the action as a platform admin event.
+ */
+export interface AdminCreateWorkspaceInput {
+  name: string;
+  slug: string;
+  ownerUserId: string;
+}
+
+export async function adminCreateWorkspace(
+  ctx: WorkspaceContext,
+  input: AdminCreateWorkspaceInput,
+): Promise<Workspace> {
+  assertSuperAdmin(ctx, 'admin.workspace.create');
+  const name = input.name.trim();
+  if (!name) throw invalid('name is required');
+  const slug = input.slug.trim().toLowerCase();
+  if (!SLUG_RE.test(slug)) throw invalid('slug must be lowercase a-z0-9-');
+  // Conflict check up-front for a cleaner error than the unique constraint.
+  const dup = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.slug, slug))
+    .limit(1);
+  if (dup[0]) throw conflict('slug already in use');
+  const ownerRows = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, input.ownerUserId))
+    .limit(1);
+  if (!ownerRows[0]) throw notFound('owner user');
+
+  // Inline the create + member + settings transaction so we can audit-log
+  // it as an admin event (the workspace.ts version doesn't audit-log,
+  // since it's also called from the bootstrap path).
+  const created = await db.transaction(async (tx) => {
+    const insertedWs = await tx
+      .insert(workspaces)
+      .values({ name, slug, ownerUserId: input.ownerUserId })
+      .returning();
+    const ws = insertedWs[0];
+    if (!ws) {
+      throw new AdminServiceError(
+        'workspace insert returned no row',
+        'invariant_violation',
+      );
+    }
+    await tx.insert(workspaceMembers).values({
+      workspaceId: ws.id,
+      userId: input.ownerUserId,
+      role: 'owner',
+    });
+    // workspace_settings is provisioned lazily by other code paths, but
+    // matching the regular createWorkspace behaviour:
+    const { workspaceSettings } = await import('@/lib/db/schema/workspaces');
+    await tx.insert(workspaceSettings).values({ workspaceId: ws.id });
+    return ws;
+  });
+
+  await recordAuditEvent(
+    { workspaceId: created.id, userId: ctx.userId },
+    {
+      kind: 'admin.workspace.create',
+      entityType: 'workspace',
+      entityId: created.id,
+      payload: { name, slug, ownerUserId: input.ownerUserId },
+    },
+  );
+  return created;
+}
+
+/**
+ * Super-admin hard delete. Requires the workspace to be archived first so
+ * the operator has had a chance to back out. Cascading FKs sweep up every
+ * workspace-scoped row.
+ */
+export async function deleteWorkspace(
+  ctx: WorkspaceContext,
+  workspaceId: bigint,
+): Promise<void> {
+  assertSuperAdmin(ctx, 'admin.workspace.delete');
+  const rows = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!rows[0]) throw notFound('workspace');
+  if (rows[0].status !== 'archived') {
+    throw conflict('archive the workspace before deleting');
+  }
+  // Audit BEFORE delete so the trail still references the doomed id.
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.workspace.delete',
+      entityType: 'workspace',
+      entityId: workspaceId,
+      payload: { name: rows[0].name, slug: rows[0].slug },
+    },
+  );
+  await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
+}
+
 export async function restoreWorkspace(
   ctx: WorkspaceContext,
   workspaceId: bigint,

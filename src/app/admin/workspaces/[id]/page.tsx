@@ -14,6 +14,7 @@ import {
   adminAddUserToWorkspace,
   adminRemoveUserFromWorkspace,
   archiveWorkspace,
+  deleteWorkspace,
   endImpersonation,
   listFeatureFlags,
   listImpersonationSessions,
@@ -170,6 +171,26 @@ export default async function AdminWorkspaceDetail({
     }
   }
 
+  async function destroy(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const confirm = String(formData.get('confirm') ?? '').trim();
+    if (confirm !== ws.slug) {
+      redirect(
+        `/admin/workspaces/${idStr}?error=${encodeURIComponent(
+          `Type the slug "${ws.slug}" to confirm`,
+        )}`,
+      );
+    }
+    try {
+      await deleteWorkspace(c, targetWorkspaceId);
+      redirect('/admin/workspaces?message=Workspace+deleted');
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
   async function addUser(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -267,11 +288,37 @@ export default async function AdminWorkspaceDetail({
               </button>
             </form>
           ) : (
-            <form action={restore}>
-              <button type="submit" className="primary-btn">
-                Restore workspace
-              </button>
-            </form>
+            <>
+              <form action={restore}>
+                <button type="submit" className="primary-btn">
+                  Restore workspace
+                </button>
+              </form>
+              <p
+                className="muted"
+                style={{ marginTop: '1.5rem', borderTop: '1px solid var(--brand-border)', paddingTop: '1rem' }}
+              >
+                <strong>Danger zone.</strong> Permanent delete cascades
+                across every workspace-scoped table — leads, drafts,
+                threads, contacts, knowledge, etc. This cannot be undone.
+                Type the workspace slug to confirm.
+              </p>
+              <form action={destroy} className="inline-form">
+                <label>
+                  <span>Confirm slug</span>
+                  <input
+                    type="text"
+                    name="confirm"
+                    placeholder={ws.slug}
+                    autoComplete="off"
+                    required
+                  />
+                </label>
+                <button type="submit" className="ghost-btn">
+                  Permanently delete
+                </button>
+              </form>
+            </>
           )}
         </section>
 
