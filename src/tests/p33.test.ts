@@ -176,7 +176,6 @@ describe('AnthropicAIProvider.generateJson', () => {
   it('strips a ```json fence the model might add', async () => {
     // Stub the network call by subclassing.
     class Stub extends AnthropicAIProvider {
-      // @ts-expect-error override private for test
       override async generateText() {
         return {
           text: '```json\n{"name": "ok"}\n```',

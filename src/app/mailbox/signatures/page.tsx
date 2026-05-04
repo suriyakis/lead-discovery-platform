@@ -65,6 +65,7 @@ export default async function SignaturesPage() {
     await createSignature(c, {
       name: String(formData.get('name') ?? '').trim(),
       bodyText: String(formData.get('bodyText') ?? ''),
+      bodyHtml: String(formData.get('bodyHtml') ?? '').trim() || null,
       mailboxId: /^\d+$/.test(mailboxIdRaw) ? BigInt(mailboxIdRaw) : null,
       isDefault: formData.get('isDefault') === 'on',
       greeting: String(formData.get('greeting') ?? '').trim() || null,
@@ -76,6 +77,15 @@ export default async function SignaturesPage() {
       email: String(formData.get('email') ?? '').trim() || null,
       phones,
     });
+    redirect('/mailbox/signatures');
+  }
+
+  async function updateHtml(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const id = BigInt(String(formData.get('id')));
+    const bodyHtml = String(formData.get('bodyHtml') ?? '').trim();
+    await updateSignature(c, id, { bodyHtml: bodyHtml || null });
     redirect('/mailbox/signatures');
   }
 
@@ -169,6 +179,28 @@ export default async function SignaturesPage() {
               <span>Plain-text fallback body (required)</span>
               <textarea name="bodyText" rows={4} required maxLength={4000} />
             </label>
+            <fieldset className="ks-kind-fields">
+              <legend className="muted">
+                Custom HTML signature (optional — overrides the structured renderer)
+              </legend>
+              <p className="muted" style={{ fontSize: '0.825rem', marginTop: 0 }}>
+                Paste an existing HTML signature (e.g. from your current
+                mail client). When set, this exact markup is used in
+                outbound HTML and the structured fields above are
+                ignored. Leave blank to use the auto-rendered version.
+              </p>
+              <label>
+                <span>HTML</span>
+                <textarea
+                  name="bodyHtml"
+                  rows={6}
+                  maxLength={20000}
+                  placeholder={'<table>\n  <tr><td>...</td></tr>\n</table>'}
+                  spellCheck={false}
+                  style={{ fontFamily: 'var(--brand-mono)', fontSize: '0.825rem' }}
+                />
+              </label>
+            </fieldset>
             <label className="checkbox-row">
               <input type="checkbox" name="isDefault" />
               <span>Set as default at this scope</span>
@@ -187,7 +219,12 @@ export default async function SignaturesPage() {
           <>
             <section>
               <h2>Workspace-wide</h2>
-              <SignatureList items={byMailbox(null)} setDefault={setDefault} destroy={destroy} />
+              <SignatureList
+                items={byMailbox(null)}
+                setDefault={setDefault}
+                destroy={destroy}
+                updateHtml={updateHtml}
+              />
             </section>
             {mailboxes.map((m) => (
               <section key={m.id.toString()}>
@@ -197,7 +234,12 @@ export default async function SignaturesPage() {
                     ({m.fromAddress})
                   </span>
                 </h2>
-                <SignatureList items={byMailbox(m.id)} setDefault={setDefault} destroy={destroy} />
+                <SignatureList
+                  items={byMailbox(m.id)}
+                  setDefault={setDefault}
+                  destroy={destroy}
+                  updateHtml={updateHtml}
+                />
               </section>
             ))}
           </>
@@ -210,10 +252,12 @@ function SignatureList({
   items,
   setDefault,
   destroy,
+  updateHtml,
 }: {
   items: Signature[];
   setDefault: (formData: FormData) => Promise<void>;
   destroy: (formData: FormData) => Promise<void>;
+  updateHtml: (formData: FormData) => Promise<void>;
 }) {
   if (items.length === 0) return <p className="muted">None at this scope.</p>;
   return (
@@ -223,8 +267,48 @@ function SignatureList({
           <div className="lead-row">
             <strong>{s.name}</strong>
             {s.isDefault ? <span className="badge badge-good">default</span> : null}
+            {s.bodyHtml ? (
+              <span className="badge" title="Outbound HTML uses this exact markup">
+                custom HTML
+              </span>
+            ) : null}
           </div>
           <pre className="draft-body" style={{ marginTop: '0.5rem' }}>{s.bodyText}</pre>
+
+          <details style={{ marginTop: '0.5rem' }}>
+            <summary className="muted" style={{ cursor: 'pointer' }}>
+              {s.bodyHtml ? 'Edit / replace custom HTML' : 'Paste custom HTML'}
+            </summary>
+            <form
+              action={updateHtml}
+              style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
+            >
+              <input type="hidden" name="id" value={s.id.toString()} />
+              <textarea
+                name="bodyHtml"
+                rows={8}
+                maxLength={20000}
+                defaultValue={s.bodyHtml ?? ''}
+                placeholder={'<table>\n  <tr><td>...</td></tr>\n</table>'}
+                spellCheck={false}
+                style={{
+                  fontFamily: 'var(--brand-mono)',
+                  fontSize: '0.825rem',
+                  width: '100%',
+                }}
+              />
+              <p className="muted" style={{ fontSize: '0.75rem', margin: 0 }}>
+                Leave blank and save to revert to the auto-rendered HTML
+                from the structured fields.
+              </p>
+              <div>
+                <button type="submit" className="primary-btn">
+                  Save HTML
+                </button>
+              </div>
+            </form>
+          </details>
+
           <div className="action-row" style={{ marginTop: '0.5rem' }}>
             {!s.isDefault ? (
               <form action={setDefault}>
