@@ -18,6 +18,7 @@ import {
   adminAddUserToWorkspace,
   adminRemoveUserFromWorkspace,
   listMembershipsForUser,
+  moveUserBetweenWorkspaces,
   updateUserProfile,
 } from '@/lib/services/admin';
 import {
@@ -126,6 +127,27 @@ export default async function AdminUserDetail({
     try {
       await adminRemoveUserFromWorkspace(c, targetUserId, workspaceId);
       redirect(`/admin/users/${targetUserId}?message=Removed+from+workspace`);
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function moveBetween(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const fromWorkspaceId = BigInt(String(formData.get('fromWorkspaceId')));
+    const toWorkspaceId = BigInt(String(formData.get('toWorkspaceId')));
+    const role = String(formData.get('role') ?? 'member') as WorkspaceMemberRole;
+    try {
+      await moveUserBetweenWorkspaces(
+        c,
+        targetUserId,
+        fromWorkspaceId,
+        toWorkspaceId,
+        role,
+      );
+      redirect(`/admin/users/${targetUserId}?message=Moved+between+workspaces`);
     } catch (err) {
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
@@ -247,6 +269,44 @@ export default async function AdminUserDetail({
             ))}
           </ul>
         )}
+        {memberships.length > 0 && candidateWorkspaces.length > 0 ? (
+          <form action={moveBetween} className="inline-form" style={{ marginTop: '1rem' }}>
+            <label>
+              <span>Move</span>
+              <select name="fromWorkspaceId" required>
+                {memberships.map((m) => (
+                  <option key={m.workspace.id.toString()} value={m.workspace.id.toString()}>
+                    {m.workspace.name} ({m.role})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>→ to</span>
+              <select name="toWorkspaceId" required>
+                {candidateWorkspaces.map((w) => (
+                  <option key={w.id.toString()} value={w.id.toString()}>
+                    {w.name} (/{w.slug})
+                    {w.status === 'archived' ? ' — archived' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>As</span>
+              <select name="role" defaultValue="member">
+                <option value="owner">owner</option>
+                <option value="admin">admin</option>
+                <option value="manager">manager</option>
+                <option value="member">member</option>
+                <option value="viewer">viewer</option>
+              </select>
+            </label>
+            <button type="submit" className="primary-btn">
+              Move
+            </button>
+          </form>
+        ) : null}
         {candidateWorkspaces.length > 0 ? (
           <form action={addToWorkspace} className="inline-form" style={{ marginTop: '1rem' }}>
             <label>

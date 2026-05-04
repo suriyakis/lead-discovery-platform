@@ -173,10 +173,77 @@ export default async function AdminUsersPage({
         ) : null}
       </section>
 
-      <section>
-        <h2>All users ({allUsers.length})</h2>
+      <UserSection
+        title="Pending review"
+        emphasize
+        users={allUsers.filter((u) => u.accountStatus === 'pending')}
+        sessionUserId={session.user.id}
+        setStatus={setStatus}
+        emptyText="No pending users."
+      />
+
+      <UserSection
+        title="Active"
+        users={allUsers.filter((u) => u.accountStatus === 'active')}
+        sessionUserId={session.user.id}
+        setStatus={setStatus}
+        emptyText="No active users."
+      />
+
+      <UserSection
+        title="Suspended / rejected"
+        users={allUsers.filter(
+          (u) => u.accountStatus === 'suspended' || u.accountStatus === 'rejected',
+        )}
+        sessionUserId={session.user.id}
+        setStatus={setStatus}
+        emptyText="No suspended or rejected users."
+      />
+    </AppShell>
+  );
+}
+
+function UserSection({
+  title,
+  users,
+  sessionUserId,
+  setStatus,
+  emphasize = false,
+  emptyText,
+}: Readonly<{
+  title: string;
+  users: ReadonlyArray<{
+    id: string;
+    name: string | null;
+    email: string;
+    role: string;
+    accountStatus: 'pending' | 'active' | 'suspended' | 'rejected';
+    accountStatusReason: string | null;
+  }>;
+  sessionUserId: string;
+  setStatus: (formData: FormData) => Promise<void>;
+  emphasize?: boolean;
+  emptyText: string;
+}>) {
+  return (
+    <section
+      style={
+        emphasize && users.length > 0
+          ? {
+              borderLeft: '3px solid oklch(0.82 0.16 75)',
+              paddingLeft: '0.75rem',
+            }
+          : undefined
+      }
+    >
+      <h2>
+        {title} ({users.length})
+      </h2>
+      {users.length === 0 ? (
+        <p className="muted">{emptyText}</p>
+      ) : (
         <ul className="profile-list">
-          {allUsers.map((u) => (
+          {users.map((u) => (
             <li key={u.id}>
               <div className="lead-row">
                 <Link href={`/admin/users/${u.id}`}>
@@ -191,7 +258,7 @@ export default async function AdminUsersPage({
               {u.accountStatusReason ? (
                 <p className="muted">Reason: {u.accountStatusReason}</p>
               ) : null}
-              {u.id === session.user.id ? (
+              {u.id === sessionUserId ? (
                 <p className="muted">— this is you</p>
               ) : (
                 <form
@@ -222,8 +289,8 @@ export default async function AdminUsersPage({
             </li>
           ))}
         </ul>
-      </section>
-    </AppShell>
+      )}
+    </section>
   );
 }
 

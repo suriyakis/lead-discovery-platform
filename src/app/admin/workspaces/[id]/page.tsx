@@ -13,6 +13,7 @@ import {
   AdminServiceError,
   adminAddUserToWorkspace,
   adminRemoveUserFromWorkspace,
+  adminSetMemberRole,
   archiveWorkspace,
   deleteWorkspace,
   endImpersonation,
@@ -218,6 +219,20 @@ export default async function AdminWorkspaceDetail({
     }
   }
 
+  async function changeRole(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const targetUserId = String(formData.get('targetUserId') ?? '');
+    const role = String(formData.get('role') ?? 'member') as WorkspaceMemberRole;
+    try {
+      await adminSetMemberRole(c, targetWorkspaceId, targetUserId, role);
+      redirect(`/admin/workspaces/${idStr}?message=Role+updated`);
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
   // Users not yet in this workspace, for the add-member dropdown.
   const memberIds = new Set(members.map((m) => m.user.id));
   const candidateUsers = (
@@ -328,8 +343,14 @@ export default async function AdminWorkspaceDetail({
             {members.map(({ member, user }) => (
               <li key={member.id.toString()}>
                 <div className="lead-row">
-                  <strong>{user.name ?? user.email ?? user.id}</strong>
-                  <span className="badge">{member.role}</span>
+                  <strong>
+                    <Link href={`/admin/users/${user.id}`}>
+                      {user.name ?? user.email ?? user.id}
+                    </Link>
+                  </strong>
+                  <span className="badge">
+                    {roleIcon(member.role)} {member.role}
+                  </span>
                 </div>
                 <div className="meta">
                   <span>{user.email}</span>
@@ -338,6 +359,20 @@ export default async function AdminWorkspaceDetail({
                 <div
                   style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}
                 >
+                  <form action={changeRole} className="inline-form">
+                    <input type="hidden" name="targetUserId" value={user.id} />
+                    <label>
+                      <span>Role</span>
+                      <select name="role" defaultValue={member.role}>
+                        <option value="owner">👑 owner</option>
+                        <option value="admin">🛡 admin</option>
+                        <option value="manager">⭐ manager</option>
+                        <option value="member">👤 member</option>
+                        <option value="viewer">👁 viewer</option>
+                      </select>
+                    </label>
+                    <button type="submit">Apply</button>
+                  </form>
                   {!activeMine ? (
                     <form action={startImp} className="inline-form">
                       <input type="hidden" name="targetUserId" value={user.id} />
@@ -455,4 +490,21 @@ export default async function AdminWorkspaceDetail({
         </section>
       </AppShell>
   );
+}
+
+function roleIcon(role: string): string {
+  switch (role) {
+    case 'owner':
+      return '👑';
+    case 'admin':
+      return '🛡';
+    case 'manager':
+      return '⭐';
+    case 'member':
+      return '👤';
+    case 'viewer':
+      return '👁';
+    default:
+      return '';
+  }
 }

@@ -18,6 +18,7 @@ import {
 } from '@/lib/services/admin';
 import { db } from '@/lib/db/client';
 import { users } from '@/lib/db/schema/auth';
+import { WorkspaceCreateForm } from '@/components/WorkspaceCreateForm';
 
 export default async function AdminCreateWorkspacePage({
   searchParams,
@@ -87,50 +88,13 @@ export default async function AdminCreateWorkspacePage({
       <h1>Create workspace</h1>
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <form action={create} className="edit-draft-form">
-        <label>
-          <span>Name</span>
-          <input
-            type="text"
-            name="name"
-            defaultValue={sp.name ?? ''}
-            required
-            maxLength={120}
-          />
-        </label>
-        <label>
-          <span>Slug</span>
-          <input
-            type="text"
-            name="slug"
-            defaultValue={sp.slug ?? ''}
-            required
-            maxLength={64}
-            pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]"
-            title="lowercase letters, numbers, hyphens"
-            placeholder="acme-co"
-          />
-        </label>
-        <label>
-          <span>Owner</span>
-          <select name="ownerUserId" defaultValue={sp.owner ?? ''} required>
-            <option value="">— pick a user —</option>
-            {allUsers.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name ? `${u.name} <${u.email}>` : u.email}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="action-row">
-          <button type="submit" className="primary-btn">
-            Create
-          </button>
-          <Link href="/admin/workspaces" className="ghost-btn">
-            Cancel
-          </Link>
-        </div>
-      </form>
+      <WorkspaceCreateForm
+        action={create}
+        users={allUsers}
+        initialName={sp.name ?? ''}
+        initialSlug={sp.slug ?? ''}
+        initialOwner={sp.owner ?? ''}
+      />
     </AppShell>
   );
 }

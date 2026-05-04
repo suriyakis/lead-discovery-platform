@@ -444,6 +444,173 @@ export async function adminAddUserToWorkspace(
   return created;
 }
 
+/**
+ * Super-admin set-member-role. The regular workspace.ts setMemberRole
+ * scopes the query by ctx.workspaceId — that's wrong when a super-admin
+ * is editing a workspace they don't belong to. This variant takes the
+ * target workspaceId explicitly.
+ */
+export async function adminSetMemberRole(
+  ctx: WorkspaceContext,
+  workspaceId: bigint,
+  targetUserId: string,
+  role: WorkspaceMemberRole,
+): Promise<WorkspaceMember> {
+  assertSuperAdmin(ctx, 'admin.user.set_member_role');
+  const existing = await db
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, targetUserId),
+      ),
+    )
+    .limit(1);
+  if (!existing[0]) throw notFound('workspace_member');
+  // Don't let the last owner be demoted.
+  if (existing[0].role === 'owner' && role !== 'owner') {
+    const owners = await db
+      .select()
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, workspaceId),
+          eq(workspaceMembers.role, 'owner'),
+        ),
+      );
+    if (owners.length <= 1) throw conflict('cannot demote the last owner');
+  }
+  const [updated] = await db
+    .update(workspaceMembers)
+    .set({ role, updatedAt: new Date() })
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, targetUserId),
+      ),
+    )
+    .returning();
+  if (!updated) {
+    throw new AdminServiceError(
+      'workspace_members update returned no row',
+      'invariant_violation',
+    );
+  }
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.user.set_member_role',
+      entityType: 'workspace_member',
+      entityId: updated.id,
+      payload: { targetUserId, role, prior: existing[0].role },
+    },
+  );
+  return updated;
+}
+
+/**
+ * Atomic move: remove user from `fromWorkspaceId` and add them to
+ * `toWorkspaceId` at the requested role in one transaction. Used by
+ * /admin/users/[id] "Move to workspace" flow.
+ */
+export async function moveUserBetweenWorkspaces(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+  fromWorkspaceId: bigint,
+  toWorkspaceId: bigint,
+  role: WorkspaceMemberRole = 'member',
+): Promise<WorkspaceMember> {
+  assertSuperAdmin(ctx, 'admin.user.move');
+  if (fromWorkspaceId === toWorkspaceId) {
+    throw invalid('source and destination workspaces are the same');
+  }
+  return db.transaction(async (tx) => {
+    const existing = await tx
+      .select()
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, fromWorkspaceId),
+          eq(workspaceMembers.userId, targetUserId),
+        ),
+      )
+      .limit(1);
+    if (!existing[0]) throw notFound('workspace_member (source)');
+    if (existing[0].role === 'owner') {
+      const owners = await tx
+        .select()
+        .from(workspaceMembers)
+        .where(
+          and(
+            eq(workspaceMembers.workspaceId, fromWorkspaceId),
+            eq(workspaceMembers.role, 'owner'),
+          ),
+        );
+      if (owners.length <= 1) {
+        throw conflict('cannot move the last owner out of the source workspace');
+      }
+    }
+    const dest = await tx
+      .select()
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, toWorkspaceId),
+          eq(workspaceMembers.userId, targetUserId),
+        ),
+      )
+      .limit(1);
+    if (dest[0]) throw conflict('user is already a member of the destination');
+    // Verify both workspaces exist.
+    const wsRows = await tx
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, toWorkspaceId))
+      .limit(1);
+    if (!wsRows[0]) throw notFound('destination workspace');
+
+    await tx
+      .delete(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, fromWorkspaceId),
+          eq(workspaceMembers.userId, targetUserId),
+        ),
+      );
+    const [created] = await tx
+      .insert(workspaceMembers)
+      .values({
+        workspaceId: toWorkspaceId,
+        userId: targetUserId,
+        role,
+      })
+      .returning();
+    if (!created) {
+      throw new AdminServiceError(
+        'workspace_members insert returned no row',
+        'invariant_violation',
+      );
+    }
+    await recordAuditEvent(
+      { workspaceId: toWorkspaceId, userId: ctx.userId },
+      {
+        kind: 'admin.user.move',
+        entityType: 'workspace_member',
+        entityId: created.id,
+        payload: {
+          targetUserId,
+          from: fromWorkspaceId.toString(),
+          to: toWorkspaceId.toString(),
+          role,
+          formerRole: existing[0].role,
+        },
+      },
+    );
+    return created;
+  });
+}
+
 export async function adminRemoveUserFromWorkspace(
   ctx: WorkspaceContext,
   targetUserId: string,
