@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq, desc } from 'drizzle-orm';
-import { BrandHeader } from '@/components/BrandHeader';
-import { auth, signOut } from '@/lib/auth';
+import { AppShell } from '@/components/AppShell';
+import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { connectorRuns } from '@/lib/db/schema/connectors';
 import {
@@ -44,15 +44,12 @@ export default async function ConnectorsPage() {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
-        <>
-          <BrandHeader />
-          <main>
+        <AppShell>
             <h1>Connectors</h1>
             <section>
               <p>You don&apos;t belong to a workspace yet.</p>
             </section>
-          </main>
-        </>
+          </AppShell>
       );
     }
     throw err;
@@ -61,25 +58,7 @@ export default async function ConnectorsPage() {
   const isAdmin = canAdminWorkspace(ctx);
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <div className="page-header">
           <div>
             <p className="muted">
@@ -132,7 +111,6 @@ export default async function ConnectorsPage() {
             </ul>
           )}
         </section>
-      </main>
-    </>
+      </AppShell>
   );
 }

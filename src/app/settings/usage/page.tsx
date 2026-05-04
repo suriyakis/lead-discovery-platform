@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { SettingsNav } from '@/components/SettingsNav';
-import { auth, signOut } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -41,15 +41,12 @@ export default async function UsagePage({
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
-        <>
-          <BrandHeader />
-          <main>
+        <AppShell>
             <h1>Usage</h1>
             <section>
               <p>You don&apos;t belong to a workspace yet.</p>
             </section>
-          </main>
-        </>
+          </AppShell>
       );
     }
     throw err;
@@ -59,30 +56,12 @@ export default async function UsagePage({
   const totalEvents = totals.reduce((acc, r) => acc + r.eventCount, 0);
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> / Settings
         </p>
         <h1>Settings</h1>
-        <SettingsNav active="usage" />
+        <SettingsNav />
 
         <div className="state-tabs">
           {RANGES.map((r) => (
@@ -186,8 +165,7 @@ export default async function UsagePage({
             </table>
           </section>
         ) : null}
-      </main>
-    </>
+      </AppShell>
   );
 }
 

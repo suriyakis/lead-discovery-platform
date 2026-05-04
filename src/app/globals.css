@@ -264,6 +264,19 @@ main {
   content: '▸';
 }
 
+/* Emergency section — visually distinct so the operator can find the
+   autopilot kill switch without hunting. */
+.sidebar-group-emphasize {
+  border-top: 1px solid oklch(0.6 0.18 25 / 0.4);
+  background: oklch(0.6 0.18 25 / 0.06);
+  border-radius: var(--brand-radius);
+  padding: 0.25rem;
+}
+
+.sidebar-group-emphasize > summary {
+  color: oklch(0.78 0.16 25);
+}
+
 /* When the AppShell is in use, the inner main shouldn't max-width itself
    to 72rem — the grid already constrains the column. Override that. */
 .app-main {

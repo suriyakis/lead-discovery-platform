@@ -2,10 +2,17 @@
 // canSuperAdmin(ctx) before doing anything; failure to do so is the same
 // security mistake as forgetting workspace_id in a query.
 
-import { and, count, desc, eq, isNull, sum, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, isNull, sql, sum, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users, type User } from '@/lib/db/schema/auth';
-import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
+import {
+  workspaceMembers,
+  workspaces,
+  type Workspace,
+  type WorkspaceMember,
+  type WorkspaceMemberRole,
+  type WorkspaceStatus,
+} from '@/lib/db/schema/workspaces';
 import { auditLog, usageLog } from '@/lib/db/schema/audit';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import {
@@ -47,6 +54,9 @@ export interface WorkspaceOverviewRow {
   workspaceId: bigint;
   name: string;
   slug: string;
+  status: WorkspaceStatus;
+  archivedAt: Date | null;
+  archivedReason: string | null;
   memberCount: number;
   leadCount: number;
   totalUsageCost: number;
@@ -55,12 +65,19 @@ export interface WorkspaceOverviewRow {
 
 export async function listAllWorkspaces(
   ctx: WorkspaceContext,
+  filter: { includeArchived?: boolean } = {},
 ): Promise<WorkspaceOverviewRow[]> {
   assertSuperAdmin(ctx, 'admin.list_workspaces');
-  const wsRows = await db
-    .select()
-    .from(workspaces)
-    .orderBy(desc(workspaces.createdAt));
+  const wsRows = filter.includeArchived
+    ? await db
+        .select()
+        .from(workspaces)
+        .orderBy(desc(workspaces.createdAt))
+    : await db
+        .select()
+        .from(workspaces)
+        .where(eq(workspaces.status, 'active'))
+        .orderBy(desc(workspaces.createdAt));
 
   // Cheap parallel counts. For large deployments we'd switch to a single
   // aggregating query, but Phase 14 is admin-only and infrequent.
@@ -82,6 +99,9 @@ export async function listAllWorkspaces(
       workspaceId: w.id,
       name: w.name,
       slug: w.slug,
+      status: w.status,
+      archivedAt: w.archivedAt ?? null,
+      archivedReason: w.archivedReason ?? null,
       memberCount: Number(members?.c ?? 0),
       leadCount: Number(leads?.c ?? 0),
       totalUsageCost: Number(usageTotal?.s ?? 0),
@@ -89,6 +109,299 @@ export async function listAllWorkspaces(
     });
   }
   return out;
+}
+
+// ---- workspace lifecycle (super-admin) -----------------------------
+
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+export interface UpdateWorkspaceProfileInput {
+  name?: string;
+  slug?: string;
+}
+
+export async function updateWorkspaceProfile(
+  ctx: WorkspaceContext,
+  workspaceId: bigint,
+  input: UpdateWorkspaceProfileInput,
+): Promise<Workspace> {
+  assertSuperAdmin(ctx, 'admin.workspace.update');
+  const updates: Partial<Workspace> & { updatedAt: Date } = { updatedAt: new Date() };
+  if (input.name !== undefined) {
+    const n = input.name.trim();
+    if (!n) throw invalid('name cannot be empty');
+    updates.name = n;
+  }
+  if (input.slug !== undefined) {
+    const s = input.slug.trim().toLowerCase();
+    if (!SLUG_RE.test(s)) throw invalid('slug must be lowercase a-z0-9-');
+    // Reject conflict with another workspace's slug.
+    const dup = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.slug, s))
+      .limit(1);
+    if (dup[0] && dup[0].id !== workspaceId) throw conflict('slug already in use');
+    updates.slug = s;
+  }
+  const [updated] = await db
+    .update(workspaces)
+    .set(updates)
+    .where(eq(workspaces.id, workspaceId))
+    .returning();
+  if (!updated) throw notFound('workspace');
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.workspace.update',
+      entityType: 'workspace',
+      entityId: workspaceId,
+      payload: { name: updates.name ?? null, slug: updates.slug ?? null },
+    },
+  );
+  return updated;
+}
+
+export async function archiveWorkspace(
+  ctx: WorkspaceContext,
+  workspaceId: bigint,
+  reason: string | null = null,
+): Promise<Workspace> {
+  assertSuperAdmin(ctx, 'admin.workspace.archive');
+  const rows = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!rows[0]) throw notFound('workspace');
+  if (rows[0].status === 'archived') throw conflict('already archived');
+  const [updated] = await db
+    .update(workspaces)
+    .set({
+      status: 'archived',
+      archivedAt: new Date(),
+      archivedBy: ctx.userId,
+      archivedReason: reason?.trim() || null,
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, workspaceId))
+    .returning();
+  if (!updated) throw notFound('workspace');
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.workspace.archive',
+      entityType: 'workspace',
+      entityId: workspaceId,
+      payload: { reason: reason ?? null },
+    },
+  );
+  return updated;
+}
+
+export async function restoreWorkspace(
+  ctx: WorkspaceContext,
+  workspaceId: bigint,
+): Promise<Workspace> {
+  assertSuperAdmin(ctx, 'admin.workspace.restore');
+  const rows = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!rows[0]) throw notFound('workspace');
+  if (rows[0].status === 'active') throw conflict('not archived');
+  const [updated] = await db
+    .update(workspaces)
+    .set({
+      status: 'active',
+      archivedAt: null,
+      archivedBy: null,
+      archivedReason: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, workspaceId))
+    .returning();
+  if (!updated) throw notFound('workspace');
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.workspace.restore',
+      entityType: 'workspace',
+      entityId: workspaceId,
+    },
+  );
+  return updated;
+}
+
+// ---- user profile + cross-workspace membership (super-admin) -------
+
+export interface UpdateUserProfileInput {
+  name?: string | null;
+  email?: string;
+}
+
+export async function updateUserProfile(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+  input: UpdateUserProfileInput,
+): Promise<User> {
+  assertSuperAdmin(ctx, 'admin.user.update_profile');
+  const updates: Partial<User> = {};
+  if (input.name !== undefined) {
+    updates.name = input.name === null ? null : input.name.trim() || null;
+  }
+  if (input.email !== undefined) {
+    const e = input.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw invalid('invalid email');
+    // Case-insensitive collision check — historical user rows may have
+    // mixed-case emails on disk.
+    const dup = await db
+      .select()
+      .from(users)
+      .where(sql`lower(${users.email}) = ${e}`)
+      .limit(1);
+    if (dup[0] && dup[0].id !== targetUserId) throw conflict('email already in use');
+    updates.email = e;
+  }
+  if (Object.keys(updates).length === 0) {
+    const rows = await db.select().from(users).where(eq(users.id, targetUserId)).limit(1);
+    if (!rows[0]) throw notFound('user');
+    return rows[0];
+  }
+  const [updated] = await db
+    .update(users)
+    .set(updates)
+    .where(eq(users.id, targetUserId))
+    .returning();
+  if (!updated) throw notFound('user');
+  await recordAuditEvent(
+    { workspaceId: ctx.workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.user.update_profile',
+      entityType: 'user',
+      entityId: targetUserId,
+      payload: {
+        name: updates.name === undefined ? null : (updates.name ?? ''),
+        email: updates.email ?? null,
+      },
+    },
+  );
+  return updated;
+}
+
+/**
+ * Super-admin add: drop a user into any workspace at any role. Bypasses
+ * the workspace-admin gate that the regular `users.addMember` enforces,
+ * and accepts `owner` as a role (the regular path doesn't).
+ */
+export async function adminAddUserToWorkspace(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+  workspaceId: bigint,
+  role: WorkspaceMemberRole = 'member',
+): Promise<WorkspaceMember> {
+  assertSuperAdmin(ctx, 'admin.user.add_to_workspace');
+  const userRows = await db.select().from(users).where(eq(users.id, targetUserId)).limit(1);
+  if (!userRows[0]) throw notFound('user');
+  const wsRows = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
+  if (!wsRows[0]) throw notFound('workspace');
+  const existing = await db
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, targetUserId),
+      ),
+    )
+    .limit(1);
+  if (existing[0]) throw conflict('already a member');
+  const [created] = await db
+    .insert(workspaceMembers)
+    .values({ workspaceId, userId: targetUserId, role })
+    .returning();
+  if (!created) {
+    throw new AdminServiceError(
+      'workspace_members insert returned no row',
+      'invariant_violation',
+    );
+  }
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.user.add_to_workspace',
+      entityType: 'workspace_member',
+      entityId: created.id,
+      payload: { targetUserId, role },
+    },
+  );
+  return created;
+}
+
+export async function adminRemoveUserFromWorkspace(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+  workspaceId: bigint,
+): Promise<void> {
+  assertSuperAdmin(ctx, 'admin.user.remove_from_workspace');
+  const existing = await db
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, targetUserId),
+      ),
+    )
+    .limit(1);
+  if (!existing[0]) throw notFound('workspace_member');
+  if (existing[0].role === 'owner') {
+    const owners = await db
+      .select()
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, workspaceId),
+          eq(workspaceMembers.role, 'owner'),
+        ),
+      );
+    if (owners.length <= 1) throw conflict('cannot remove the last owner');
+  }
+  await db
+    .delete(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, targetUserId),
+      ),
+    );
+  await recordAuditEvent(
+    { workspaceId, userId: ctx.userId },
+    {
+      kind: 'admin.user.remove_from_workspace',
+      entityType: 'workspace_member',
+      entityId: existing[0].id,
+      payload: { targetUserId, formerRole: existing[0].role },
+    },
+  );
+}
+
+export async function listMembershipsForUser(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+): Promise<Array<{ workspace: Workspace; role: WorkspaceMemberRole }>> {
+  assertSuperAdmin(ctx, 'admin.user.list_memberships');
+  const rows = await db
+    .select({
+      workspace: workspaces,
+      role: workspaceMembers.role,
+    })
+    .from(workspaceMembers)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+    .where(eq(workspaceMembers.userId, targetUserId))
+    .orderBy(workspaces.name);
+  return rows;
 }
 
 // ---- impersonation --------------------------------------------------

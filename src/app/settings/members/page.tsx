@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { SettingsNav } from '@/components/SettingsNav';
-import { auth, signOut } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
   AuthRequiredError,
@@ -42,10 +42,10 @@ export default async function MembersPage({
   if (!canAdminWorkspace(ctx)) {
     return (
       <AppShell
-        active="settings.members"
+
         isSuperAdmin={session.user.role === 'super_admin'}
       >
-        <SettingsNav active="members" />
+        <SettingsNav />
         <h1>Members</h1>
         <p className="form-error">Workspace admin access required.</p>
       </AppShell>
@@ -96,30 +96,12 @@ export default async function MembersPage({
   }
 
   return (
-    <AppShell
-      active="settings.members"
-      isSuperAdmin={session.user.role === 'super_admin'}
-      rightSlot={
-        <>
-          <span className="who">{session.user.email}</span>
-          <form
-            action={async () => {
-              'use server';
-              await signOut({ redirectTo: '/' });
-            }}
-          >
-            <button type="submit" className="ghost-btn">
-              Sign out
-            </button>
-          </form>
-        </>
-      }
-    >
+    <AppShell>
       <p className="muted">
         <Link href="/dashboard">Dashboard</Link> /{' '}
         <Link href="/settings/integrations">Settings</Link> / Members
       </p>
-      <SettingsNav active="members" />
+      <SettingsNav />
       <h1>Workspace members</h1>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}

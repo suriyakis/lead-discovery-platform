@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { SettingsNav } from '@/components/SettingsNav';
-import { auth, signOut } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -40,15 +40,12 @@ export default async function IntegrationsPage({
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
-        <>
-          <BrandHeader />
-          <main>
+        <AppShell>
             <h1>Integrations</h1>
             <section>
               <p>You don&apos;t belong to a workspace yet.</p>
             </section>
-          </main>
-        </>
+          </AppShell>
       );
     }
     throw err;
@@ -106,30 +103,12 @@ export default async function IntegrationsPage({
   }
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> / Settings
         </p>
         <h1>Settings</h1>
-        <SettingsNav active="/settings/integrations" />
+        <SettingsNav />
 
         {sp.ok ? (
           <p className="form-success">
@@ -241,7 +220,6 @@ export default async function IntegrationsPage({
             The same BYOK-or-platform-default pattern applies.
           </p>
         </section>
-      </main>
-    </>
+      </AppShell>
   );
 }

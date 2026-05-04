@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
-import { auth, signOut } from '@/lib/auth';
+import { AppShell } from '@/components/AppShell';
+import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -42,13 +42,10 @@ export default async function NewKnowledgeSourcePage({
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
-        <>
-          <BrandHeader />
-          <main>
+        <AppShell>
             <h1>New knowledge source</h1>
             <p>You don&apos;t belong to a workspace yet.</p>
-          </main>
-        </>
+          </AppShell>
       );
     }
     throw err;
@@ -123,25 +120,7 @@ export default async function NewKnowledgeSourcePage({
   }
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/knowledge">Knowledge</Link> / New
@@ -248,7 +227,6 @@ export default async function NewKnowledgeSourcePage({
             </Link>
           </div>
         </form>
-      </main>
-    </>
+      </AppShell>
   );
 }

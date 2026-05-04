@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -71,9 +71,7 @@ export default async function NewProductPage({
   }
 
   return (
-    <>
-      <BrandHeader />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/products">Products</Link> / New
@@ -82,7 +80,6 @@ export default async function NewProductPage({
         <form action={create} className="card-form">
           <ProductFields formError={sp.error ?? null} submitLabel="Create" />
         </form>
-      </main>
-    </>
+      </AppShell>
   );
 }

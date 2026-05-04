@@ -19,10 +19,21 @@ export const workspaceMemberRole = pgEnum('workspace_member_role', [
   'viewer',
 ]);
 
+/**
+ * Phase 23: workspace lifecycle. `archived` workspaces deny access to all
+ * members (super-admins can still see + restore them). Used as the
+ * super-admin "off" toggle for workspaces.
+ */
+export const workspaceStatus = pgEnum('workspace_status', ['active', 'archived']);
+
 export const workspaces = pgTable('workspaces', {
   id: bigserial('id', { mode: 'bigint' }).primaryKey(),
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
+  status: workspaceStatus('status').notNull().default('active'),
+  archivedAt: timestamp('archived_at', { mode: 'date', withTimezone: true }),
+  archivedBy: text('archived_by'),
+  archivedReason: text('archived_reason'),
   ownerUserId: text('owner_user_id')
     .notNull()
     .references(() => users.id),
@@ -75,3 +86,4 @@ export type NewWorkspace = typeof workspaces.$inferInsert;
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type NewWorkspaceMember = typeof workspaceMembers.$inferInsert;
 export type WorkspaceMemberRole = (typeof workspaceMemberRole.enumValues)[number];
+export type WorkspaceStatus = (typeof workspaceStatus.enumValues)[number];

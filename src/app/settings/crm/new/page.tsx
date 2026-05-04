@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { SettingsNav } from '@/components/SettingsNav';
-import { auth, signOut } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -51,30 +51,12 @@ export default async function NewCrmConnectionPage({
   }
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/settings/crm">CRM</Link> / New
         </p>
-        <SettingsNav active="crm" />
+        <SettingsNav />
         <h1>New CRM connection</h1>
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
@@ -107,7 +89,6 @@ export default async function NewCrmConnectionPage({
             </Link>
           </div>
         </form>
-      </main>
-    </>
+      </AppShell>
   );
 }

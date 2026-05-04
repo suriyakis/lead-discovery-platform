@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
-import { BrandHeader } from '@/components/BrandHeader';
-import { auth, signOut } from '@/lib/auth';
+import { AppShell } from '@/components/AppShell';
+import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -11,12 +11,18 @@ import {
 import { isSuperAdmin } from '@/lib/services/context';
 import {
   AdminServiceError,
+  adminAddUserToWorkspace,
+  adminRemoveUserFromWorkspace,
+  archiveWorkspace,
   endImpersonation,
   listFeatureFlags,
   listImpersonationSessions,
+  restoreWorkspace,
   setFeatureFlag,
   startImpersonation,
+  updateWorkspaceProfile,
 } from '@/lib/services/admin';
+import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { db } from '@/lib/db/client';
 import { workspaces, workspaceMembers } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
@@ -53,13 +59,10 @@ export default async function AdminWorkspaceDetail({
   }
   if (!isSuperAdmin(ctx)) {
     return (
-      <>
-        <BrandHeader />
-        <main>
+      <AppShell>
           <h1>Admin</h1>
           <p className="form-error">Super-admin only.</p>
-        </main>
-      </>
+        </AppShell>
     );
   }
 
@@ -125,36 +128,152 @@ export default async function AdminWorkspaceDetail({
     redirect(`/admin/workspaces/${idStr}?message=Flag+${key}+${enabled ? 'enabled' : 'disabled'}`);
   }
 
+  async function saveProfile(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const name = String(formData.get('name') ?? '').trim();
+    const slug = String(formData.get('slug') ?? '').trim().toLowerCase();
+    try {
+      await updateWorkspaceProfile(c, targetWorkspaceId, {
+        name: name || undefined,
+        slug: slug || undefined,
+      });
+      redirect(`/admin/workspaces/${idStr}?message=Profile+saved`);
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function archive(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const reason = String(formData.get('reason') ?? '').trim() || null;
+    try {
+      await archiveWorkspace(c, targetWorkspaceId, reason);
+      redirect(`/admin/workspaces/${idStr}?message=Workspace+archived`);
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function restore() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await restoreWorkspace(c, targetWorkspaceId);
+      redirect(`/admin/workspaces/${idStr}?message=Workspace+restored`);
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function addUser(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const targetUserId = String(formData.get('targetUserId') ?? '');
+    const role = String(formData.get('role') ?? 'member') as WorkspaceMemberRole;
+    try {
+      await adminAddUserToWorkspace(c, targetUserId, targetWorkspaceId, role);
+      redirect(`/admin/workspaces/${idStr}?message=Member+added`);
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function removeUser(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const targetUserId = String(formData.get('targetUserId') ?? '');
+    try {
+      await adminRemoveUserFromWorkspace(c, targetUserId, targetWorkspaceId);
+      redirect(`/admin/workspaces/${idStr}?message=Member+removed`);
+    } catch (err) {
+      const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  // Users not yet in this workspace, for the add-member dropdown.
+  const memberIds = new Set(members.map((m) => m.user.id));
+  const candidateUsers = (
+    await db.select().from(users).where(eq(users.accountStatus, 'active'))
+  ).filter((u) => !memberIds.has(u.id));
+
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
-          <Link href="/admin">Admin</Link> / {ws.name}
+          <Link href="/admin">Admin</Link> /{' '}
+          <Link href="/admin/workspaces">Workspaces</Link> / {ws.name}
         </p>
-        <h1>{ws.name}</h1>
+        <h1>
+          {ws.name}{' '}
+          <span className={ws.status === 'active' ? 'badge badge-good' : 'badge badge-bad'}>
+            {ws.status}
+          </span>
+        </h1>
         <p className="muted">
           /{ws.slug} · created {ws.createdAt.toLocaleString()}
+          {ws.archivedAt
+            ? ` · archived ${ws.archivedAt.toLocaleString()}${ws.archivedReason ? ` (${ws.archivedReason})` : ''}`
+            : ''}
         </p>
         {sp.message ? <p className="form-message">{sp.message}</p> : null}
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
+
+        <section>
+          <h2>Profile</h2>
+          <form action={saveProfile} className="inline-form">
+            <label>
+              <span>Name</span>
+              <input type="text" name="name" defaultValue={ws.name} maxLength={120} />
+            </label>
+            <label>
+              <span>Slug</span>
+              <input
+                type="text"
+                name="slug"
+                defaultValue={ws.slug}
+                maxLength={64}
+                pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]"
+                title="lowercase letters, numbers, hyphens"
+              />
+            </label>
+            <button type="submit" className="primary-btn">
+              Save
+            </button>
+          </form>
+        </section>
+
+        <section>
+          <h2>Lifecycle</h2>
+          <p className="muted">
+            Archiving the workspace turns it &ldquo;off&rdquo; — its members
+            lose access on next sign-in. Super-admins can still see and
+            restore it.
+          </p>
+          {ws.status === 'active' ? (
+            <form action={archive} className="inline-form">
+              <label>
+                <span>Reason (optional)</span>
+                <input type="text" name="reason" maxLength={200} />
+              </label>
+              <button type="submit" className="ghost-btn">
+                Archive workspace
+              </button>
+            </form>
+          ) : (
+            <form action={restore}>
+              <button type="submit" className="primary-btn">
+                Restore workspace
+              </button>
+            </form>
+          )}
+        </section>
 
         <section>
           <h2>Members ({members.length})</h2>
@@ -169,26 +288,65 @@ export default async function AdminWorkspaceDetail({
                   <span>{user.email}</span>
                   <span>added {member.createdAt.toLocaleDateString()}</span>
                 </div>
-                {!activeMine ? (
-                  <form
-                    action={startImp}
-                    style={{ marginTop: '0.5rem' }}
-                    className="inline-form"
-                  >
-                    <input type="hidden" name="targetUserId" value={user.id} />
-                    <input
-                      type="text"
-                      name="reason"
-                      placeholder="Reason (audit trail)"
-                      required
-                      maxLength={200}
-                    />
-                    <button type="submit">Impersonate</button>
-                  </form>
-                ) : null}
+                <div
+                  style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}
+                >
+                  {!activeMine ? (
+                    <form action={startImp} className="inline-form">
+                      <input type="hidden" name="targetUserId" value={user.id} />
+                      <input
+                        type="text"
+                        name="reason"
+                        placeholder="Reason (audit trail)"
+                        required
+                        maxLength={200}
+                      />
+                      <button type="submit">Impersonate</button>
+                    </form>
+                  ) : null}
+                  {member.role !== 'owner' || members.filter((m) => m.member.role === 'owner').length > 1 ? (
+                    <form action={removeUser}>
+                      <input type="hidden" name="targetUserId" value={user.id} />
+                      <button type="submit" className="ghost-btn">
+                        Remove from workspace
+                      </button>
+                    </form>
+                  ) : (
+                    <span className="muted">last owner — cannot remove</span>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
+          {candidateUsers.length > 0 ? (
+            <form action={addUser} className="inline-form" style={{ marginTop: '1rem' }}>
+              <label>
+                <span>Add user</span>
+                <select name="targetUserId" required>
+                  {candidateUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name ? `${u.name} <${u.email}>` : u.email}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Role</span>
+                <select name="role" defaultValue="member">
+                  <option value="owner">owner</option>
+                  <option value="admin">admin</option>
+                  <option value="manager">manager</option>
+                  <option value="member">member</option>
+                  <option value="viewer">viewer</option>
+                </select>
+              </label>
+              <button type="submit" className="primary-btn">
+                Add member
+              </button>
+            </form>
+          ) : (
+            <p className="muted">All active users are already members.</p>
+          )}
         </section>
 
         {activeMine ? (
@@ -248,7 +406,6 @@ export default async function AdminWorkspaceDetail({
             })}
           </ul>
         </section>
-      </main>
-    </>
+      </AppShell>
   );
 }

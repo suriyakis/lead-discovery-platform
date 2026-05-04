@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -105,9 +105,7 @@ export default async function EditProductPage({
   }
 
   return (
-    <>
-      <BrandHeader />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/products">Products</Link> / {profile.name}
@@ -138,7 +136,6 @@ export default async function EditProductPage({
             </form>
           </section>
         ) : null}
-      </main>
-    </>
+      </AppShell>
   );
 }

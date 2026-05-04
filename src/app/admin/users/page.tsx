@@ -1,7 +1,12 @@
+// Phase 23: super-admin user list. Each row links to /admin/users/[id]
+// for full editing (name, email, status, workspace memberships). The
+// list itself focuses on quick visibility + status updates + the
+// pre-authorize flow.
+
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
-import { auth, signOut } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
   AuthRequiredError,
@@ -19,7 +24,7 @@ import {
 } from '@/lib/services/users';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
-import type { AccountStatus, User } from '@/lib/db/schema/auth';
+import type { AccountStatus } from '@/lib/db/schema/auth';
 
 export default async function AdminUsersPage({
   searchParams,
@@ -41,7 +46,7 @@ export default async function AdminUsersPage({
   }
   if (!isSuperAdmin(ctx)) {
     return (
-      <AppShell active="admin.users">
+      <AppShell>
         <h1>Users</h1>
         <p className="form-error">Super-admin only.</p>
       </AppShell>
@@ -95,25 +100,7 @@ export default async function AdminUsersPage({
   }
 
   return (
-    <AppShell
-      active="admin.users"
-      isSuperAdmin
-      rightSlot={
-        <>
-          <span className="who">{session.user.email}</span>
-          <form
-            action={async () => {
-              'use server';
-              await signOut({ redirectTo: '/' });
-            }}
-          >
-            <button type="submit" className="ghost-btn">
-              Sign out
-            </button>
-          </form>
-        </>
-      }
-    >
+    <AppShell>
       <p className="muted">
         <Link href="/dashboard">Dashboard</Link> /{' '}
         <Link href="/admin">Admin</Link> / Users
@@ -192,7 +179,9 @@ export default async function AdminUsersPage({
           {allUsers.map((u) => (
             <li key={u.id}>
               <div className="lead-row">
-                <strong>{u.name ?? u.email}</strong>
+                <Link href={`/admin/users/${u.id}`}>
+                  <strong>{u.name ?? u.email}</strong>
+                </Link>
                 <span className="muted">{u.email}</span>
                 <span className="badge">{u.role}</span>
                 <span className={statusBadge(u.accountStatus)}>
@@ -205,43 +194,36 @@ export default async function AdminUsersPage({
               {u.id === session.user.id ? (
                 <p className="muted">— this is you</p>
               ) : (
-                <UserStatusForms user={u} setStatus={setStatus} />
+                <form
+                  action={setStatus}
+                  className="inline-form"
+                  style={{ marginTop: '0.5rem' }}
+                >
+                  <input type="hidden" name="userId" value={u.id} />
+                  <label>
+                    <span>Status</span>
+                    <select name="status" defaultValue={u.accountStatus}>
+                      <option value="active">active</option>
+                      <option value="pending">pending</option>
+                      <option value="suspended">suspended</option>
+                      <option value="rejected">rejected</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Reason</span>
+                    <input type="text" name="reason" maxLength={200} />
+                  </label>
+                  <button type="submit">Apply</button>
+                  <Link href={`/admin/users/${u.id}`} className="ghost-btn">
+                    Edit profile + memberships →
+                  </Link>
+                </form>
               )}
             </li>
           ))}
         </ul>
       </section>
     </AppShell>
-  );
-}
-
-function UserStatusForms({
-  user,
-  setStatus,
-}: {
-  user: User;
-  setStatus: (formData: FormData) => Promise<void>;
-}) {
-  const targets: AccountStatus[] = ['active', 'pending', 'suspended', 'rejected'];
-  return (
-    <form action={setStatus} className="inline-form" style={{ marginTop: '0.5rem' }}>
-      <input type="hidden" name="userId" value={user.id} />
-      <label>
-        <span>Status</span>
-        <select name="status" defaultValue={user.accountStatus}>
-          {targets.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>Reason</span>
-        <input type="text" name="reason" maxLength={200} />
-      </label>
-      <button type="submit">Apply</button>
-    </form>
   );
 }
 

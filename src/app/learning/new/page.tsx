@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -58,9 +58,7 @@ export default async function NewLessonPage({
   }
 
   return (
-    <>
-      <BrandHeader />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/learning">Learning</Link> / New
@@ -125,7 +123,6 @@ export default async function NewLessonPage({
             </div>
           </div>
         </form>
-      </main>
-    </>
+      </AppShell>
   );
 }

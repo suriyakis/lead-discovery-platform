@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
-import { auth, signOut } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
   AuthRequiredError,
@@ -93,25 +93,7 @@ export default async function AutopilotPage({
   }
 
   return (
-    <AppShell
-      active="autopilot"
-      isSuperAdmin={session.user.role === 'super_admin'}
-      rightSlot={
-        <>
-          <span className="who">{session.user.email}</span>
-          <form
-            action={async () => {
-              'use server';
-              await signOut({ redirectTo: '/' });
-            }}
-          >
-            <button type="submit" className="ghost-btn">
-              Sign out
-            </button>
-          </form>
-        </>
-      }
-    >
+    <AppShell>
       <p className="muted">
         <Link href="/dashboard">Dashboard</Link> / Autopilot
       </p>

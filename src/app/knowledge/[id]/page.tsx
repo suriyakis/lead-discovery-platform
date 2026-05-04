@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
-import { auth, signOut } from '@/lib/auth';
+import { AppShell } from '@/components/AppShell';
+import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -122,25 +122,7 @@ export default async function KnowledgeSourceDetail({
   }
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/knowledge">Knowledge</Link> / {source.title}
@@ -310,7 +292,6 @@ export default async function KnowledgeSourceDetail({
             </form>
           </section>
         ) : null}
-      </main>
-    </>
+      </AppShell>
   );
 }

@@ -155,6 +155,13 @@
       "when": 1777848434660,
       "tag": "0021_mean_maginty",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1777874355460,
+      "tag": "0022_p23_workspace_status",
+      "breakpoints": true
     }
   ]
 }

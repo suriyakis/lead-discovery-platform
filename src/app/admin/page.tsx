@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
-import { auth, signOut } from '@/lib/auth';
+import { AppShell } from '@/components/AppShell';
+import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -25,13 +25,10 @@ export default async function AdminPage() {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
-        <>
-          <BrandHeader />
-          <main>
+        <AppShell>
             <h1>Admin (god mode)</h1>
             <p>You don&apos;t belong to a workspace yet.</p>
-          </main>
-        </>
+          </AppShell>
       );
     }
     throw err;
@@ -39,9 +36,7 @@ export default async function AdminPage() {
 
   if (!isSuperAdmin(ctx)) {
     return (
-      <>
-        <BrandHeader />
-        <main>
+      <AppShell>
           <p className="muted">
             <Link href="/dashboard">Dashboard</Link>
           </p>
@@ -49,8 +44,7 @@ export default async function AdminPage() {
           <p className="form-error">
             This area is for platform super-admins only.
           </p>
-        </main>
-      </>
+        </AppShell>
     );
   }
 
@@ -61,25 +55,7 @@ export default async function AdminPage() {
   ]);
 
   return (
-    <>
-      <BrandHeader
-        rightSlot={
-          <>
-            <span className="who">{session.user.email}</span>
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/' });
-              }}
-            >
-              <button type="submit" className="ghost-btn">
-                Sign out
-              </button>
-            </form>
-          </>
-        }
-      />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> / Admin
         </p>
@@ -149,7 +125,6 @@ export default async function AdminPage() {
             </ul>
           )}
         </section>
-      </main>
-    </>
+      </AppShell>
   );
 }

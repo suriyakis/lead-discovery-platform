@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { BrandHeader } from '@/components/BrandHeader';
+import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -65,9 +65,7 @@ export default async function RecipeDetailPage({
   }
 
   return (
-    <>
-      <BrandHeader />
-      <main>
+    <AppShell>
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/connectors">Connectors</Link> /{' '}
@@ -108,7 +106,6 @@ export default async function RecipeDetailPage({
             </form>
           </section>
         ) : null}
-      </main>
-    </>
+      </AppShell>
   );
 }

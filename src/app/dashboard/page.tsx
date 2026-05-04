@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
-import { auth, signOut } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
 
@@ -33,25 +33,7 @@ export default async function Dashboard() {
   const primary = memberships[0];
 
   return (
-    <AppShell
-      active="dashboard"
-      isSuperAdmin={session.user.role === 'super_admin'}
-      rightSlot={
-        <>
-          <span className="who">{session.user.email}</span>
-          <form
-            action={async () => {
-              'use server';
-              await signOut({ redirectTo: '/' });
-            }}
-          >
-            <button type="submit" className="ghost-btn">
-              Sign out
-            </button>
-          </form>
-        </>
-      }
-    >
+    <AppShell>
       <h1>Dashboard</h1>
 
         <section>

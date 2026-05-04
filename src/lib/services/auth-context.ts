@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
-import { workspaceMembers } from '@/lib/db/schema/workspaces';
+import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
 import {
   type WorkspaceContext,
   type WorkspaceRole,
@@ -59,10 +59,25 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
     throw new AccountInactiveError(session.user.accountStatus);
   }
 
-  const memberships = await db
-    .select()
-    .from(workspaceMembers)
-    .where(eq(workspaceMembers.userId, session.user.id));
+  // Phase 23: filter out archived workspaces — they're "off" until a
+  // super-admin restores them. super_admin sees archived ones too so the
+  // restore action is reachable.
+  const memberships =
+    session.user.role === 'super_admin'
+      ? await db
+          .select({ workspaceId: workspaceMembers.workspaceId, role: workspaceMembers.role })
+          .from(workspaceMembers)
+          .where(eq(workspaceMembers.userId, session.user.id))
+      : await db
+          .select({ workspaceId: workspaceMembers.workspaceId, role: workspaceMembers.role })
+          .from(workspaceMembers)
+          .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+          .where(
+            and(
+              eq(workspaceMembers.userId, session.user.id),
+              eq(workspaces.status, 'active'),
+            ),
+          );
 
   const first = memberships[0];
   if (!first) throw new NoWorkspaceError();
