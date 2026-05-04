@@ -277,6 +277,121 @@ main {
   color: oklch(0.78 0.16 25);
 }
 
+/* ---- Autopilot console ---- */
+.autopilot-flow {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.autopilot-flow > li {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.flow-step {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-radius: var(--brand-radius);
+  border: 1px solid var(--brand-border);
+  background: oklch(0.18 0.02 250 / 0.4);
+}
+
+.flow-step-on {
+  border-color: oklch(0.7 0.16 150 / 0.5);
+  background: oklch(0.7 0.16 150 / 0.08);
+}
+
+.flow-step-off {
+  opacity: 0.6;
+}
+
+.flow-step-inline {
+  border-color: oklch(0.72 0.14 220 / 0.5);
+  background: oklch(0.72 0.14 220 / 0.06);
+}
+
+.flow-step-manual {
+  border-style: dashed;
+}
+
+.flow-step-icon {
+  font-size: 1.25rem;
+  width: 1.5rem;
+  text-align: center;
+}
+
+.flow-arrow {
+  display: block;
+  text-align: center;
+  color: var(--brand-muted);
+  font-size: 1rem;
+  padding: 0.25rem 0;
+}
+
+.scope-tabs {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--brand-border);
+  padding: 0.25rem 0;
+  margin: 0.5rem 0 1rem;
+}
+
+.scope-tabs a {
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--brand-radius) var(--brand-radius) 0 0;
+  text-decoration: none;
+  color: var(--brand-fg);
+  font-size: 0.875rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+}
+
+.scope-tabs a:hover {
+  background: oklch(0.25 0.02 250 / 0.5);
+}
+
+.scope-tabs a.active {
+  background: oklch(0.18 0.02 250);
+  border-color: var(--brand-border);
+  color: var(--brand-primary);
+  margin-bottom: -1px;
+}
+
+.tri-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px dashed var(--brand-border);
+}
+
+.tri-toggle-label {
+  font-size: 0.875rem;
+}
+
+.tri-toggle-options {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.825rem;
+  color: var(--brand-muted);
+}
+
+.tri-toggle-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+}
+
 /* When the AppShell is in use, the inner main shouldn't max-width itself
    to 72rem — the grid already constrains the column. Override that. */
 .app-main {

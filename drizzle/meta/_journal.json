@@ -162,6 +162,13 @@
       "when": 1777874355460,
       "tag": "0022_p23_workspace_status",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1777884199522,
+      "tag": "0023_p27_autopilot_product_overlay",
+      "breakpoints": true
     }
   ]
 }

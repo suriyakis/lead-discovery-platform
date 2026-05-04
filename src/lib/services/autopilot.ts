@@ -12,9 +12,12 @@ import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import {
   autopilotLog,
+  autopilotProductSettings,
   autopilotSettings,
   type AutopilotLogEntry,
+  type AutopilotProductSettings,
   type AutopilotSettings,
+  type NewAutopilotProductSettings,
   type NewAutopilotSettings,
 } from '@/lib/db/schema/autopilot';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
@@ -151,6 +154,212 @@ export async function updateAutopilotSettings(
 function clampInt(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
   return Math.max(lo, Math.min(hi, Math.floor(n)));
+}
+
+// ---- per-product overlay (Phase 27) -------------------------------
+
+/**
+ * Effective settings for a given product. Workspace defaults, then any
+ * non-null column from the product overlay wins. Workspace-only fields
+ * (max*PerRun, defaultCrmConnectionId, default mailbox fallback when
+ * overlay omits) are always taken from the workspace row.
+ */
+export type EffectiveAutopilotSettings = AutopilotSettings;
+
+export async function getEffectiveAutopilotSettings(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  productProfileId: bigint,
+): Promise<EffectiveAutopilotSettings> {
+  const base = await getAutopilotSettings(ctx);
+  const overlayRows = await db
+    .select()
+    .from(autopilotProductSettings)
+    .where(
+      and(
+        eq(autopilotProductSettings.workspaceId, ctx.workspaceId),
+        eq(autopilotProductSettings.productProfileId, productProfileId),
+      ),
+    )
+    .limit(1);
+  const overlay = overlayRows[0];
+  if (!overlay) return base;
+  return {
+    ...base,
+    autopilotEnabled: overlay.autopilotEnabled ?? base.autopilotEnabled,
+    emergencyPause: overlay.emergencyPause ?? base.emergencyPause,
+    enableAutoApproveProjects:
+      overlay.enableAutoApproveProjects ?? base.enableAutoApproveProjects,
+    autoApproveThreshold:
+      overlay.autoApproveThreshold ?? base.autoApproveThreshold,
+    enableAutoEnqueueOutreach:
+      overlay.enableAutoEnqueueOutreach ?? base.enableAutoEnqueueOutreach,
+    enableAutoCrmContactSync:
+      overlay.enableAutoCrmContactSync ?? base.enableAutoCrmContactSync,
+    enableAutoCrmDealOnQualified:
+      overlay.enableAutoCrmDealOnQualified ?? base.enableAutoCrmDealOnQualified,
+    defaultMailboxId: overlay.defaultMailboxId ?? base.defaultMailboxId,
+  };
+}
+
+export async function listProductAutopilotSettings(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<AutopilotProductSettings[]> {
+  return db
+    .select()
+    .from(autopilotProductSettings)
+    .where(eq(autopilotProductSettings.workspaceId, ctx.workspaceId));
+}
+
+export async function getProductAutopilotSettings(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  productProfileId: bigint,
+): Promise<AutopilotProductSettings | null> {
+  const rows = await db
+    .select()
+    .from(autopilotProductSettings)
+    .where(
+      and(
+        eq(autopilotProductSettings.workspaceId, ctx.workspaceId),
+        eq(autopilotProductSettings.productProfileId, productProfileId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export interface UpsertProductAutopilotSettingsInput {
+  productProfileId: bigint;
+  /** Pass null to clear an override; pass a value to set it. Omit to leave alone. */
+  autopilotEnabled?: boolean | null;
+  emergencyPause?: boolean | null;
+  enableAutoApproveProjects?: boolean | null;
+  autoApproveThreshold?: number | null;
+  enableAutoEnqueueOutreach?: boolean | null;
+  enableAutoCrmContactSync?: boolean | null;
+  enableAutoCrmDealOnQualified?: boolean | null;
+  defaultMailboxId?: bigint | null;
+}
+
+export async function upsertProductAutopilotSettings(
+  ctx: WorkspaceContext,
+  input: UpsertProductAutopilotSettingsInput,
+): Promise<AutopilotProductSettings> {
+  if (!canAdminWorkspace(ctx)) throw denied('autopilot.product_settings.update');
+  const existing = await getProductAutopilotSettings(ctx, input.productProfileId);
+  const merged: NewAutopilotProductSettings = {
+    workspaceId: ctx.workspaceId,
+    productProfileId: input.productProfileId,
+    autopilotEnabled:
+      input.autopilotEnabled !== undefined
+        ? input.autopilotEnabled
+        : existing?.autopilotEnabled ?? null,
+    emergencyPause:
+      input.emergencyPause !== undefined
+        ? input.emergencyPause
+        : existing?.emergencyPause ?? null,
+    enableAutoApproveProjects:
+      input.enableAutoApproveProjects !== undefined
+        ? input.enableAutoApproveProjects
+        : existing?.enableAutoApproveProjects ?? null,
+    autoApproveThreshold:
+      input.autoApproveThreshold !== undefined
+        ? input.autoApproveThreshold === null
+          ? null
+          : clampInt(input.autoApproveThreshold, 0, 100)
+        : existing?.autoApproveThreshold ?? null,
+    enableAutoEnqueueOutreach:
+      input.enableAutoEnqueueOutreach !== undefined
+        ? input.enableAutoEnqueueOutreach
+        : existing?.enableAutoEnqueueOutreach ?? null,
+    enableAutoCrmContactSync:
+      input.enableAutoCrmContactSync !== undefined
+        ? input.enableAutoCrmContactSync
+        : existing?.enableAutoCrmContactSync ?? null,
+    enableAutoCrmDealOnQualified:
+      input.enableAutoCrmDealOnQualified !== undefined
+        ? input.enableAutoCrmDealOnQualified
+        : existing?.enableAutoCrmDealOnQualified ?? null,
+    defaultMailboxId:
+      input.defaultMailboxId !== undefined
+        ? input.defaultMailboxId
+        : existing?.defaultMailboxId ?? null,
+    updatedBy: ctx.userId,
+    updatedAt: new Date(),
+  };
+  // jsonb can't serialize bigint — render to string for the audit payload.
+  const auditPayload: Record<string, unknown> = {
+    productProfileId: input.productProfileId.toString(),
+    autopilotEnabled: input.autopilotEnabled ?? null,
+    emergencyPause: input.emergencyPause ?? null,
+    enableAutoApproveProjects: input.enableAutoApproveProjects ?? null,
+    autoApproveThreshold: input.autoApproveThreshold ?? null,
+    enableAutoEnqueueOutreach: input.enableAutoEnqueueOutreach ?? null,
+    enableAutoCrmContactSync: input.enableAutoCrmContactSync ?? null,
+    enableAutoCrmDealOnQualified: input.enableAutoCrmDealOnQualified ?? null,
+    defaultMailboxId:
+      input.defaultMailboxId === undefined
+        ? undefined
+        : input.defaultMailboxId === null
+          ? null
+          : input.defaultMailboxId.toString(),
+  };
+  if (existing) {
+    const [updated] = await db
+      .update(autopilotProductSettings)
+      .set(merged)
+      .where(eq(autopilotProductSettings.id, existing.id))
+      .returning();
+    if (!updated) {
+      throw new AutopilotError(
+        'product settings update returned no row',
+        'invariant_violation',
+      );
+    }
+    await recordAuditEvent(ctx, {
+      kind: 'autopilot.product_settings.update',
+      entityType: 'product_profile',
+      entityId: input.productProfileId,
+      payload: auditPayload,
+    });
+    return updated;
+  }
+  const [created] = await db
+    .insert(autopilotProductSettings)
+    .values(merged)
+    .returning();
+  if (!created) {
+    throw new AutopilotError(
+      'product settings insert returned no row',
+      'invariant_violation',
+    );
+  }
+  await recordAuditEvent(ctx, {
+    kind: 'autopilot.product_settings.create',
+    entityType: 'product_profile',
+    entityId: input.productProfileId,
+    payload: auditPayload,
+  });
+  return created;
+}
+
+export async function clearProductAutopilotSettings(
+  ctx: WorkspaceContext,
+  productProfileId: bigint,
+): Promise<void> {
+  if (!canAdminWorkspace(ctx)) throw denied('autopilot.product_settings.clear');
+  await db
+    .delete(autopilotProductSettings)
+    .where(
+      and(
+        eq(autopilotProductSettings.workspaceId, ctx.workspaceId),
+        eq(autopilotProductSettings.productProfileId, productProfileId),
+      ),
+    );
+  await recordAuditEvent(ctx, {
+    kind: 'autopilot.product_settings.clear',
+    entityType: 'product_profile',
+    entityId: productProfileId,
+  });
 }
 
 // ---- run ---------------------------------------------------------
@@ -293,7 +502,11 @@ async function stepAutoApproveProjects(
 
   let approved = 0;
   for (const row of candidates) {
-    if (row.q.relevanceScore < settings.autoApproveThreshold) continue;
+    // Per-product overlay: if the product disables auto-approve or sets a
+    // higher threshold, honor that.
+    const eff = await getEffectiveAutopilotSettings(ctx, row.q.productProfileId);
+    if (!eff.enableAutoApproveProjects) continue;
+    if (row.q.relevanceScore < eff.autoApproveThreshold) continue;
     try {
       await approveReviewItem(ctx, row.ri.id);
       approved++;
@@ -302,7 +515,7 @@ async function stepAutoApproveProjects(
         runId,
         'auto_approve_projects',
         'success',
-        `score=${row.q.relevanceScore}`,
+        `score=${row.q.relevanceScore} product=${row.q.productProfileId}`,
         'review_item',
         row.ri.id.toString(),
       );
@@ -364,6 +577,11 @@ async function stepAutoEnqueueOutreach(
 
   let enqueued = 0;
   for (const row of candidates) {
+    // Per-product overlay: skip if this product opts out of auto-enqueue.
+    const eff = await getEffectiveAutopilotSettings(ctx, row.q.productProfileId);
+    if (!eff.enableAutoEnqueueOutreach) continue;
+    const productMailboxId = eff.defaultMailboxId ?? mailboxId;
+
     // Skip if this (review_item, product) already has a non-superseded draft.
     const existing = await db
       .select({ id: outreachDrafts.id })
@@ -385,14 +603,18 @@ async function stepAutoEnqueueOutreach(
         productProfileId: row.q.productProfileId,
         method: 'rules',
       });
-      await enqueueDraft(ctx, { draftId: draft.id, mailboxId, delayMode: 'random' });
+      await enqueueDraft(ctx, {
+        draftId: draft.id,
+        mailboxId: productMailboxId,
+        delayMode: 'random',
+      });
       enqueued++;
       await recordStep(
         ctx,
         runId,
         'auto_enqueue_outreach',
         'success',
-        null,
+        `product=${row.q.productProfileId}`,
         'outreach_draft',
         draft.id.toString(),
       );
@@ -476,6 +698,9 @@ async function stepAutoCrmContactSync(
 
   let synced = 0;
   for (const lead of candidates) {
+    // Per-product overlay: skip if the lead's product opts out.
+    const eff = await getEffectiveAutopilotSettings(ctx, lead.productProfileId);
+    if (!eff.enableAutoCrmContactSync) continue;
     try {
       const r = await pushLeadToCrm(ctx, {
         connectionId: conn.id,
@@ -542,6 +767,9 @@ async function stepAutoCrmDealOnQualified(
 
   let created = 0;
   for (const lead of candidates) {
+    // Per-product overlay.
+    const eff = await getEffectiveAutopilotSettings(ctx, lead.productProfileId);
+    if (!eff.enableAutoCrmDealOnQualified) continue;
     try {
       const r = await pushDeal(ctx, {
         connectionId: conn.id,

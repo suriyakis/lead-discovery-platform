@@ -9,6 +9,7 @@ import {
   smallint,
   text,
   timestamp,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { users } from './auth';
 import { workspaces } from './workspaces';
@@ -58,6 +59,52 @@ export const autopilotSettings = pgTable('autopilot_settings', {
 
 export type AutopilotSettings = typeof autopilotSettings.$inferSelect;
 export type NewAutopilotSettings = typeof autopilotSettings.$inferInsert;
+
+/**
+ * Phase 27: per-product autopilot overlay. A row here exists when a
+ * specific product profile wants to override the workspace defaults for
+ * any product-scoped step (auto-approve, auto-enqueue, CRM contact sync,
+ * CRM deal-on-qualified). Workspace-wide steps (sync inbound, drain
+ * queue) stay strictly workspace-level.
+ *
+ * NULL columns mean "fall through to workspace defaults"; non-NULL
+ * columns are the explicit per-product override. The resolution helper
+ * `getEffectiveAutopilotSettings(ctx, productId)` handles the merge.
+ */
+export const autopilotProductSettings = pgTable(
+  'autopilot_product_settings',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    productProfileId: bigint('product_profile_id', { mode: 'bigint' }).notNull(),
+
+    // Override columns — NULL means inherit.
+    autopilotEnabled: boolean('autopilot_enabled'),
+    emergencyPause: boolean('emergency_pause'),
+    enableAutoApproveProjects: boolean('enable_auto_approve_projects'),
+    autoApproveThreshold: smallint('auto_approve_threshold'),
+    enableAutoEnqueueOutreach: boolean('enable_auto_enqueue_outreach'),
+    enableAutoCrmContactSync: boolean('enable_auto_crm_contact_sync'),
+    enableAutoCrmDealOnQualified: boolean('enable_auto_crm_deal_on_qualified'),
+    defaultMailboxId: bigint('default_mailbox_id', { mode: 'bigint' }),
+
+    updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    workspaceProductIdx: uniqueIndex('autopilot_product_settings_ws_product_idx').on(
+      table.workspaceId,
+      table.productProfileId,
+    ),
+  }),
+);
+
+export type AutopilotProductSettings = typeof autopilotProductSettings.$inferSelect;
+export type NewAutopilotProductSettings = typeof autopilotProductSettings.$inferInsert;
 
 /**
  * Phase 21: per-step audit log. Append-only; never trimmed automatically
