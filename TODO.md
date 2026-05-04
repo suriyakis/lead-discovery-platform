@@ -513,6 +513,14 @@ credentials).
 
 **Phase 35 complete.**
 
+## Phase 36 — Deliverability dashboard
+
+- [x] **P36-01.** `src/lib/services/deliverability.ts` — pure read service. `getDeliverabilityReport(ctx, { sinceDays })` joins outbound `mail_messages` (sent/delivered/bounced/failed + open_count), inbound `mail_messages` (replies + reply_classification), workspace `suppression_list` (unsubscribe / bounce_hard / bounce_soft in window), and terminal `outreach_queue` rows (sent / skipped / failed). Per-mailbox breakdown + workspace totals + reply-classification roll-up. Window clamped to [1, 365] days.
+- [x] **P36-02.** UI `/mailbox/deliverability` (linked from sidebar Outreach group). Window selector (7 / 30 / 90 days), workspace stat cards (sent / opens / replies / bounced / failed / unsubscribed / queue skipped / queue failed), per-mailbox table with rates, reply-classification cards, footer notes explaining what each metric means and the privacy-mode caveat for opens.
+- [x] **P36-03.** 8 tests in `src/tests/p36.test.ts`. **583/583 total tests pass.** Coverage: empty workspace, per-mailbox aggregation, reply classification + unclassified bucket, suppression-by-reason, queue terminal-state counting (excludes queued/cancelled), time-window filtering, sinceDays clamp, workspace isolation.
+
+**Phase 36 complete.**
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

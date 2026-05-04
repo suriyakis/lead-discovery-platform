@@ -61,6 +61,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
       { href: '/mailbox/queue', label: 'Send queue' },
       { href: '/mailbox/signatures', label: 'Signatures' },
       { href: '/mailbox/suppression', label: 'Suppression' },
+      { href: '/mailbox/deliverability', label: 'Deliverability' },
     ],
   },
   {
