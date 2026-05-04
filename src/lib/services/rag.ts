@@ -33,7 +33,7 @@ import { canWrite, type WorkspaceContext } from './context';
 import { getStorage, type IStorage } from '@/lib/storage';
 import {
   EMBEDDING_DIM,
-  getEmbeddingProvider,
+  getEmbeddingProviderForCtx,
   type IEmbeddingProvider,
 } from '@/lib/embeddings';
 
@@ -207,7 +207,7 @@ export async function indexDocument(
   try {
     const text = await extractDocumentText(doc, deps);
     const chunks = chunkText(text);
-    const embedder = deps.embedder ?? getEmbeddingProvider();
+    const embedder = deps.embedder ?? (await getEmbeddingProviderForCtx(ctx));
     const inserted = await embedAndPersist(ctx, embedder, chunks, {
       documentId,
       knowledgeSourceId: null,
@@ -278,7 +278,7 @@ export async function indexKnowledgeSource(
       throw invalid(`knowledge_source ${ks.id} produced no extractable text`);
     }
     const chunks = chunkText(text);
-    const embedder = deps.embedder ?? getEmbeddingProvider();
+    const embedder = deps.embedder ?? (await getEmbeddingProviderForCtx(ctx));
     const inserted = await embedAndPersist(ctx, embedder, chunks, {
       documentId: null,
       knowledgeSourceId,
@@ -429,7 +429,7 @@ export async function embedLesson(
   if (!rows[0]) throw notFound('learning_lesson');
   const lesson = rows[0];
 
-  const embedderInst = embedder ?? getEmbeddingProvider();
+  const embedderInst = embedder ?? (await getEmbeddingProviderForCtx(ctx));
   const result = await embedderInst.embed({ texts: [lesson.rule] });
   const [updated] = await db
     .update(learningLessons)
@@ -459,7 +459,7 @@ export async function embedAllLessons(
         eq(learningLessons.enabled, true),
       ),
     );
-  const embedderInst = embedder ?? getEmbeddingProvider();
+  const embedderInst = embedder ?? (await getEmbeddingProviderForCtx(ctx));
   let embedded = 0;
   // Single batch per workspace; most workspaces will have well under 64
   // active lessons so this round-trips once.
@@ -518,7 +518,7 @@ export async function retrieve(
   options: RetrieveOptions = {},
 ): Promise<RetrievedChunk[]> {
   if (!query.trim()) return [];
-  const embedder = options.embedder ?? getEmbeddingProvider();
+  const embedder = options.embedder ?? (await getEmbeddingProviderForCtx(ctx));
   const result = await embedder.embed({ texts: [query] });
   const queryVec = result.embeddings[0]!;
   const literal = vectorLiteral(queryVec);
@@ -587,7 +587,7 @@ export async function retrieveLessons(
   options: RetrieveOptions = {},
 ): Promise<RetrievedLesson[]> {
   if (!query.trim()) return [];
-  const embedder = options.embedder ?? getEmbeddingProvider();
+  const embedder = options.embedder ?? (await getEmbeddingProviderForCtx(ctx));
   const result = await embedder.embed({ texts: [query] });
   const queryVec = result.embeddings[0]!;
   const literal = vectorLiteral(queryVec);

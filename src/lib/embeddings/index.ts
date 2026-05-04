@@ -208,6 +208,37 @@ export function _setEmbeddingProviderForTests(provider: IEmbeddingProvider | nul
   cached = provider;
 }
 
+/**
+ * Phase 32: workspace-aware factory. When a workspace has set its own
+ * `openai.apiKey` secret, return a provider that uses it. Otherwise fall
+ * back to the platform default via getEmbeddingProvider() (env-based).
+ *
+ * Only meaningful when EMBEDDING_PROVIDER=openai. For mock or
+ * unconfigured providers this just returns the cached singleton —
+ * BYOK has no effect since the mock doesn't make remote calls.
+ */
+export async function getEmbeddingProviderForCtx(
+  ctx: { workspaceId: bigint },
+): Promise<IEmbeddingProvider> {
+  const id = process.env.EMBEDDING_PROVIDER ?? 'mock';
+  if (id !== 'openai') return getEmbeddingProvider();
+  const { resolveProviderKey } = await import('@/lib/services/secrets');
+  const resolved = await resolveProviderKey(
+    ctx,
+    'openai.apiKey',
+    'OPENAI_API_KEY',
+  );
+  if (resolved && resolved.source === 'workspace') {
+    return new OpenAIEmbeddingProvider({
+      apiKey: resolved.key,
+      model: process.env.EMBEDDING_MODEL,
+      baseUrl: process.env.OPENAI_BASE_URL,
+    });
+  }
+  // Workspace has no key — use the cached env-based singleton.
+  return getEmbeddingProvider();
+}
+
 // ---- helpers exported for service callers ---------------------------
 
 /** Cosine similarity in [-1, 1]. Inputs assumed to be the same dimension. */

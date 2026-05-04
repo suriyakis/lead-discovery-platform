@@ -19,11 +19,13 @@ import { getSearchProvider } from '@/lib/search';
 
 const SERPAPI_SECRET_KEY = 'serpapi.apiKey';
 const SERPAPI_ENV = 'SERPAPI_KEY';
+const OPENAI_SECRET_KEY = 'openai.apiKey';
+const OPENAI_ENV = 'OPENAI_API_KEY';
 
 export default async function IntegrationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; err?: string; tested?: string }>;
+  searchParams: Promise<{ ok?: string; err?: string; tested?: string; provider?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -32,10 +34,15 @@ export default async function IntegrationsPage({
   let ctx;
   let workspaceHasKey = false;
   let platformHasKey = false;
+  let workspaceHasOpenai = false;
+  let platformHasOpenai = false;
   try {
     ctx = await getWorkspaceContext();
     workspaceHasKey = await hasSecret(ctx, SERPAPI_SECRET_KEY);
     platformHasKey = !!process.env[SERPAPI_ENV] && process.env[SERPAPI_ENV]!.trim() !== '';
+    workspaceHasOpenai = await hasSecret(ctx, OPENAI_SECRET_KEY);
+    platformHasOpenai =
+      !!process.env[OPENAI_ENV] && process.env[OPENAI_ENV]!.trim() !== '';
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -55,6 +62,11 @@ export default async function IntegrationsPage({
   const effectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasKey
     ? 'workspace'
     : platformHasKey
+      ? 'platform'
+      : 'none';
+  const openaiEffectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasOpenai
+    ? 'workspace'
+    : platformHasOpenai
       ? 'platform'
       : 'none';
 
@@ -83,6 +95,39 @@ export default async function IntegrationsPage({
     } catch (err) {
       if (err instanceof SecretsServiceError) {
         redirect(`/settings/integrations?err=${encodeURIComponent(err.code)}`);
+      }
+      throw err;
+    }
+  }
+
+  async function saveOpenai(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const value = String(formData.get('apiKey') ?? '').trim();
+    try {
+      await setSecret(c, OPENAI_SECRET_KEY, value);
+      redirect('/settings/integrations?ok=saved&provider=openai');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=openai`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function clearOpenai() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await deleteSecret(c, OPENAI_SECRET_KEY);
+      redirect('/settings/integrations?ok=cleared&provider=openai');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=openai`,
+        );
       }
       throw err;
     }
@@ -204,6 +249,81 @@ export default async function IntegrationsPage({
                   <button type="submit">Test connection</button>
                 </form>
               </div>
+            </>
+          ) : (
+            <p className="muted">
+              Only workspace admins and owners can manage integration keys.
+            </p>
+          )}
+        </section>
+
+        <section>
+          <h2>OpenAI</h2>
+          <p className="muted">
+            Powers the embedding provider (RAG retrieval) when{' '}
+            <code>EMBEDDING_PROVIDER=openai</code>. Per workspace you can
+            either bring your own OpenAI key (charges go to your account)
+            or use the platform default (charges go to the platform owner).
+          </p>
+
+          <dl>
+            <dt>Effective key source</dt>
+            <dd>
+              {openaiEffectiveSource === 'workspace' ? (
+                <>
+                  <span className="badge badge-good">Workspace key</span>
+                  <span className="muted"> — your OpenAI account is charged.</span>
+                </>
+              ) : openaiEffectiveSource === 'platform' ? (
+                <>
+                  <span className="badge">Platform default</span>
+                  <span className="muted"> — platform-provided key in use.</span>
+                </>
+              ) : (
+                <>
+                  <span className="badge badge-bad">Not configured</span>
+                  <span className="muted"> — embedding calls will fail with no_key.</span>
+                </>
+              )}
+            </dd>
+            <dt>Workspace key</dt>
+            <dd>{workspaceHasOpenai ? <code>••• stored</code> : <code>not set</code>}</dd>
+            <dt>Platform default</dt>
+            <dd>
+              {platformHasOpenai ? (
+                <code>configured (server env)</code>
+              ) : (
+                <code>not configured</code>
+              )}
+            </dd>
+          </dl>
+
+          {isAdmin ? (
+            <>
+              <form action={saveOpenai} className="inline-form">
+                <label>
+                  <span>Set workspace OpenAI key</span>
+                  <input
+                    name="apiKey"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder="sk-..."
+                    minLength={1}
+                    maxLength={4096}
+                    required
+                  />
+                </label>
+                <button type="submit" className="primary-btn">
+                  Save
+                </button>
+              </form>
+              {workspaceHasOpenai ? (
+                <form action={clearOpenai} style={{ marginTop: '0.5rem' }}>
+                  <button type="submit" className="ghost-btn">
+                    Clear workspace OpenAI key
+                  </button>
+                </form>
+              ) : null}
             </>
           ) : (
             <p className="muted">
