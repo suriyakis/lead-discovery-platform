@@ -176,6 +176,13 @@
       "when": 1777886123115,
       "tag": "0024_p28_active_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1777889973838,
+      "tag": "0025_p30_password_hash",
+      "breakpoints": true
     }
   ]
 }

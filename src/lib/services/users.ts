@@ -2,10 +2,13 @@
 // (account lifecycle, pre-authorize) and workspace-admin per-workspace
 // ops (add/remove member, change role). Every mutation is audit-logged.
 
-import { and, eq, isNull } from 'drizzle-orm';
+import bcrypt from 'bcryptjs';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
+  accounts,
   preauthorizedEmails,
+  sessions,
   users,
   type AccountStatus,
   type PreauthorizedEmail,
@@ -381,6 +384,227 @@ export async function addMember(
   return created;
 }
 
+// ---- Phase 30: password auth ---------------------------------------
+
+const BCRYPT_ROUNDS = 12;
+const MIN_PASSWORD_LEN = 8;
+
+export interface CreatePasswordUserInput {
+  email: string;
+  password: string;
+  name?: string | null;
+  /** Defaults to 'member'. */
+  platformRole?: 'member' | 'super_admin';
+  /** Defaults to 'active'. */
+  accountStatus?: AccountStatus;
+  /** Optional workspace to drop into immediately. */
+  workspaceId?: bigint | null;
+  /** Workspace role for that workspace. Defaults to 'member'. */
+  workspaceRole?: WorkspaceMemberRole;
+}
+
+/**
+ * Super-admin creates a password-auth user. Hashes the password with
+ * bcrypt(12 rounds), inserts the user row, and optionally adds them to
+ * a workspace at the given role. Mirrors the Wandizz "team user" flow.
+ */
+export async function createPasswordUser(
+  ctx: WorkspaceContext,
+  input: CreatePasswordUserInput,
+): Promise<User> {
+  if (!isSuperAdmin(ctx)) throw denied('users.create_password_user');
+  const email = normalizeEmail(input.email);
+  if (!EMAIL_RE.test(email)) throw invalid('invalid email');
+  if (input.password.length < MIN_PASSWORD_LEN) {
+    throw invalid(`password must be at least ${MIN_PASSWORD_LEN} characters`);
+  }
+
+  // Refuse if any user already has this email (case-insensitive).
+  const dup = await db
+    .select()
+    .from(users)
+    .where(sql`lower(${users.email}) = ${email}`)
+    .limit(1);
+  if (dup[0]) throw conflict('email already in use');
+
+  const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
+
+  const [created] = await db
+    .insert(users)
+    .values({
+      email,
+      name: input.name?.trim() || null,
+      role: input.platformRole ?? 'member',
+      accountStatus: input.accountStatus ?? 'active',
+      accountStatusUpdatedAt: new Date(),
+      accountStatusUpdatedBy: ctx.userId,
+      passwordHash,
+    })
+    .returning();
+  if (!created) {
+    throw new UserServiceError(
+      'createPasswordUser insert returned no row',
+      'invariant_violation',
+    );
+  }
+
+  // Optional immediate workspace assignment.
+  if (input.workspaceId) {
+    await db.insert(workspaceMembers).values({
+      workspaceId: input.workspaceId,
+      userId: created.id,
+      role: input.workspaceRole ?? 'member',
+    });
+  }
+
+  await recordAuditEvent(
+    { workspaceId: ctx.workspaceId, userId: ctx.userId },
+    {
+      kind: 'user.create_password_user',
+      entityType: 'user',
+      entityId: created.id,
+      payload: {
+        email,
+        platformRole: input.platformRole ?? 'member',
+        workspaceId: input.workspaceId?.toString() ?? null,
+        workspaceRole: input.workspaceRole ?? null,
+      },
+    },
+  );
+
+  return created;
+}
+
+/**
+ * Set or rotate a user's password. Super-admin can change anyone's;
+ * a user can change their own (caller should pre-verify the existing
+ * password if that's the policy). Rotating logs the user out of every
+ * existing session as a side effect.
+ */
+export async function setUserPassword(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+  newPassword: string,
+  options: { invalidateExistingSessions?: boolean } = {},
+): Promise<void> {
+  const isSelf = targetUserId === ctx.userId;
+  if (!isSelf && !isSuperAdmin(ctx)) {
+    throw denied('users.set_password');
+  }
+  if (newPassword.length < MIN_PASSWORD_LEN) {
+    throw invalid(`password must be at least ${MIN_PASSWORD_LEN} characters`);
+  }
+  const target = await loadUser(targetUserId);
+  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+  await db
+    .update(users)
+    .set({ passwordHash })
+    .where(eq(users.id, targetUserId));
+
+  // Invalidate every existing session by default — the safer option for
+  // password resets. Skip via opts when called from a self-flow that
+  // wants to keep the current session.
+  if (options.invalidateExistingSessions !== false) {
+    await db.delete(sessions).where(eq(sessions.userId, targetUserId));
+  }
+
+  await recordAuditEvent(
+    { workspaceId: ctx.workspaceId, userId: ctx.userId },
+    {
+      kind: 'user.set_password',
+      entityType: 'user',
+      entityId: targetUserId,
+      payload: { wasSelf: isSelf },
+    },
+  );
+  void target;
+}
+
+/**
+ * Verify an email + password against the users table. Returns the user
+ * row if the password matches AND the user is active; null in every
+ * other case. Used by the custom team-login endpoint — never call from
+ * route handlers that should be protected by the general auth gate.
+ */
+export async function verifyUserPassword(
+  email: string,
+  password: string,
+): Promise<User | null> {
+  const e = normalizeEmail(email);
+  if (!EMAIL_RE.test(e)) return null;
+  const rows = await db
+    .select()
+    .from(users)
+    .where(sql`lower(${users.email}) = ${e}`)
+    .limit(1);
+  const user = rows[0];
+  if (!user || !user.passwordHash) return null;
+  const ok = await bcrypt.compare(password, user.passwordHash);
+  if (!ok) return null;
+  if (user.accountStatus !== 'active' && user.role !== 'super_admin') {
+    // Don't grant a session to a pending/suspended/rejected account.
+    return null;
+  }
+  return user;
+}
+
+/**
+ * Hard-delete a user. Cascades through every FK that references users.id
+ * with ON DELETE CASCADE (sessions, accounts, workspace_members, etc.)
+ * and clears any FKs configured ON DELETE SET NULL.
+ *
+ * Super-admin only; refuses to delete yourself or any other super-admin
+ * (lock-out protection — demote them first).
+ */
+export async function deleteUserGlobally(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+): Promise<void> {
+  if (!isSuperAdmin(ctx)) throw denied('users.delete');
+  if (targetUserId === ctx.userId) {
+    throw conflict('cannot delete yourself');
+  }
+  const target = await loadUser(targetUserId);
+  if (target.role === 'super_admin') {
+    throw conflict('cannot delete a super-admin — demote first');
+  }
+
+  // Audit BEFORE delete so the trail still references the doomed id.
+  await recordAuditEvent(
+    { workspaceId: ctx.workspaceId, userId: ctx.userId },
+    {
+      kind: 'user.delete',
+      entityType: 'user',
+      entityId: targetUserId,
+      payload: { email: target.email, name: target.name ?? null },
+    },
+  );
+
+  // Sessions + accounts cascade via FK. workspace_members cascades.
+  // workspaces.owner_user_id has no ON DELETE so we'd hit a constraint
+  // if this user owns any workspace — guard upfront.
+  const ownedRows = await db
+    .select()
+    .from(workspaceMembers)
+    .where(eq(workspaceMembers.userId, targetUserId));
+  void ownedRows;
+  // workspaces.ownerUserId references users.id without ON DELETE. If the
+  // target owns any workspace, the delete would FK-fail. We pre-check
+  // and refuse with a useful message rather than letting Postgres throw.
+  const { workspaces } = await import('@/lib/db/schema/workspaces');
+  const ownsRows = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.ownerUserId, targetUserId));
+  if (ownsRows.length > 0) {
+    throw conflict(
+      `user owns ${ownsRows.length} workspace(s) — transfer ownership before delete`,
+    );
+  }
+
+  await db.delete(users).where(eq(users.id, targetUserId));
+}
+
 // ---- internals -----------------------------------------------------
 
 async function loadUser(id: string): Promise<User> {
@@ -388,3 +612,5 @@ async function loadUser(id: string): Promise<User> {
   if (!rows[0]) throw notFound('user');
   return rows[0];
 }
+
+void accounts;

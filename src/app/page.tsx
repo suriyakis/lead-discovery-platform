@@ -1,12 +1,24 @@
 import { redirect } from 'next/navigation';
 import { BrandHeader } from '@/components/BrandHeader';
 import { auth, signIn } from '@/lib/auth';
+import { teamLoginAction } from '@/lib/auth-actions';
 
-export default async function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
   const session = await auth();
   if (session?.user) {
     redirect('/dashboard');
   }
+  const sp = await searchParams;
+  const errorMsg =
+    sp.error === 'invalid_credentials'
+      ? 'Email or password is incorrect.'
+      : sp.error === 'missing_credentials'
+        ? 'Both fields are required.'
+        : null;
 
   return (
     <>
@@ -29,6 +41,43 @@ export default async function Home() {
           >
             <button type="submit" className="signin-btn">
               Sign in with Google
+            </button>
+          </form>
+
+          <p className="muted small" style={{ marginTop: '1rem' }}>
+            — or sign in with email + password —
+          </p>
+          {errorMsg ? (
+            <p className="form-error" style={{ marginTop: '0.5rem' }}>
+              {errorMsg}
+            </p>
+          ) : null}
+          <form
+            action={teamLoginAction}
+            className="login-form"
+            style={{ marginTop: '0.5rem' }}
+          >
+            <label>
+              <span>Email</span>
+              <input
+                type="email"
+                name="email"
+                required
+                autoComplete="email"
+                placeholder="you@example.com"
+              />
+            </label>
+            <label>
+              <span>Password</span>
+              <input
+                type="password"
+                name="password"
+                required
+                autoComplete="current-password"
+              />
+            </label>
+            <button type="submit" className="signin-btn signin-btn-secondary">
+              Sign in
             </button>
           </form>
         </section>

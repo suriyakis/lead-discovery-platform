@@ -16,6 +16,7 @@ import {
 import { isSuperAdmin } from '@/lib/services/context';
 import {
   UserServiceError,
+  createPasswordUser,
   listAllUsers,
   listPreauthorizedEmails,
   preauthorizeEmail,
@@ -25,6 +26,7 @@ import {
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import type { AccountStatus } from '@/lib/db/schema/auth';
+import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 
 export default async function AdminUsersPage({
   searchParams,
@@ -99,6 +101,30 @@ export default async function AdminUsersPage({
     redirect('/admin/users?message=Revoked');
   }
 
+  async function createPwUser(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const email = String(formData.get('email') ?? '').trim();
+    const password = String(formData.get('password') ?? '');
+    const name = String(formData.get('name') ?? '').trim() || null;
+    const wsRaw = String(formData.get('workspaceId') ?? '');
+    const workspaceId = /^\d+$/.test(wsRaw) ? BigInt(wsRaw) : null;
+    const workspaceRole = String(formData.get('workspaceRole') ?? 'member') as WorkspaceMemberRole;
+    try {
+      await createPasswordUser(c, {
+        email,
+        password,
+        name,
+        workspaceId,
+        workspaceRole,
+      });
+      redirect(`/admin/users?message=${encodeURIComponent(`Created ${email}`)}`);
+    } catch (err) {
+      const m = err instanceof UserServiceError ? err.message : 'failed';
+      redirect(`/admin/users?error=${encodeURIComponent(m)}`);
+    }
+  }
+
   return (
     <AppShell>
       <p className="muted">
@@ -108,6 +134,53 @@ export default async function AdminUsersPage({
       <h1>Users</h1>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
+
+      <section>
+        <h2>Create user with password</h2>
+        <p className="muted">
+          Provision a password-auth user immediately. They sign in via
+          email + password on the / page; no OAuth round-trip needed.
+          Useful for clients who don&apos;t have / don&apos;t want to use Google.
+        </p>
+        <form action={createPwUser} className="inline-form">
+          <label>
+            <span>Email</span>
+            <input type="email" name="email" required />
+          </label>
+          <label>
+            <span>Name</span>
+            <input type="text" name="name" maxLength={120} />
+          </label>
+          <label>
+            <span>Password</span>
+            <input type="password" name="password" required minLength={8} />
+          </label>
+          <label>
+            <span>Workspace</span>
+            <select name="workspaceId" defaultValue="">
+              <option value="">— none —</option>
+              {allWorkspaces.map((w) => (
+                <option key={w.id.toString()} value={w.id.toString()}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Workspace role</span>
+            <select name="workspaceRole" defaultValue="member">
+              <option value="owner">owner</option>
+              <option value="admin">admin</option>
+              <option value="manager">manager</option>
+              <option value="member">member</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </label>
+          <button type="submit" className="primary-btn">
+            Create
+          </button>
+        </form>
+      </section>
 
       <section>
         <h2>Pre-authorize</h2>

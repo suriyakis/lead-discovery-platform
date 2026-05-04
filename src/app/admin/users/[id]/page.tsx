@@ -23,7 +23,9 @@ import {
 } from '@/lib/services/admin';
 import {
   UserServiceError,
+  deleteUserGlobally,
   setAccountStatus,
+  setUserPassword,
 } from '@/lib/services/users';
 import { db } from '@/lib/db/client';
 import { users, type AccountStatus } from '@/lib/db/schema/auth';
@@ -116,6 +118,41 @@ export default async function AdminUserDetail({
       redirect(`/admin/users/${targetUserId}?message=Added+to+workspace`);
     } catch (err) {
       const m = err instanceof AdminServiceError ? err.message : 'failed';
+      redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function resetPassword(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const password = String(formData.get('password') ?? '');
+    try {
+      await setUserPassword(c, targetUserId, password);
+      redirect(
+        `/admin/users/${targetUserId}?message=Password+reset+%E2%80%94+all+sessions+invalidated`,
+      );
+    } catch (err) {
+      const m = err instanceof UserServiceError ? err.message : 'failed';
+      redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function destroyUser(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const confirm = String(formData.get('confirm') ?? '').trim();
+    if (confirm !== user.email) {
+      redirect(
+        `/admin/users/${targetUserId}?error=${encodeURIComponent(
+          `Type the user's email "${user.email}" to confirm`,
+        )}`,
+      );
+    }
+    try {
+      await deleteUserGlobally(c, targetUserId);
+      redirect('/admin/users?message=User+deleted');
+    } catch (err) {
+      const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }
   }
@@ -336,6 +373,57 @@ export default async function AdminUserDetail({
           </form>
         ) : null}
       </section>
+
+      <section>
+        <h2>Password</h2>
+        <p className="muted">
+          {user.passwordHash
+            ? 'This user signs in with email + password. Resetting also invalidates every existing session.'
+            : 'No password set — this user signs in via OAuth (Google). Setting a password also enables email + password sign-in.'}
+        </p>
+        {isSelf ? (
+          <p className="muted">
+            Resetting your own password here will sign you out of every
+            other session and require you to sign in again.
+          </p>
+        ) : null}
+        <form action={resetPassword} className="inline-form">
+          <label>
+            <span>New password</span>
+            <input type="password" name="password" required minLength={8} />
+          </label>
+          <button type="submit">
+            {user.passwordHash ? 'Reset password' : 'Set password'}
+          </button>
+        </form>
+      </section>
+
+      {!isSelf && user.role !== 'super_admin' ? (
+        <section>
+          <h2>Danger zone</h2>
+          <p className="muted">
+            Permanently delete this user. Cascades through sessions, OAuth
+            accounts, and workspace memberships. Workspaces this user
+            owns must have ownership transferred first. Type the user&apos;s
+            email to confirm.
+          </p>
+          <form action={destroyUser} className="inline-form">
+            <label>
+              <span>Confirm email</span>
+              <input
+                type="text"
+                name="confirm"
+                placeholder={user.email}
+                autoComplete="off"
+                required
+              />
+            </label>
+            <button type="submit" className="ghost-btn">
+              Permanently delete user
+            </button>
+          </form>
+        </section>
+      ) : null}
     </AppShell>
   );
 }

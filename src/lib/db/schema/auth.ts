@@ -53,6 +53,13 @@ export const users = pgTable('users', {
    * referenced workspace.
    */
   activeWorkspaceId: bigint('activeWorkspaceId', { mode: 'bigint' }),
+  /**
+   * Phase 30: bcrypt hash for users that sign in via email + password
+   * (super-admin pre-provisioned). NULL for OAuth-only users. Auth.js
+   * never sees this column — verification happens in our custom
+   * /api/auth/team-login route which mints a session row directly.
+   */
+  passwordHash: text('passwordHash'),
   createdAt: timestamp('createdAt', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),
