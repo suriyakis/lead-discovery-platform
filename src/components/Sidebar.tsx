@@ -72,6 +72,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
       { href: '/settings/integrations', label: 'Integrations' },
       { href: '/settings/crm', label: 'CRM & Export' },
       { href: '/settings/usage', label: 'Usage' },
+      { href: '/settings/audit', label: 'Audit log' },
     ],
   },
   {
@@ -88,6 +89,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
       { href: '/admin', label: 'God mode' },
       { href: '/admin/workspaces', label: 'Workspaces' },
       { href: '/admin/users', label: 'Users' },
+      { href: '/admin/audit', label: 'Audit log' },
     ],
   },
 ];

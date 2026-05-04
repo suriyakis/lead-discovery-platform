@@ -671,3 +671,47 @@ export async function recentAuditAcrossWorkspaces(
     .orderBy(desc(auditLog.createdAt))
     .limit(Math.min(limit, 1000));
 }
+
+export interface AuditAcrossWorkspacesFilter {
+  workspaceId?: bigint;
+  kind?: string;
+  since?: Date;
+  until?: Date;
+  limit?: number;
+}
+
+export async function listAuditAcrossWorkspaces(
+  ctx: WorkspaceContext,
+  filter: AuditAcrossWorkspacesFilter = {},
+) {
+  assertSuperAdmin(ctx, 'admin.list_audit_across');
+  const conds: SQL[] = [];
+  if (filter.workspaceId !== undefined) {
+    conds.push(eq(auditLog.workspaceId, filter.workspaceId));
+  }
+  if (filter.kind) conds.push(eq(auditLog.kind, filter.kind));
+  if (filter.since) {
+    conds.push(sql`${auditLog.createdAt} >= ${filter.since}`);
+  }
+  if (filter.until) {
+    conds.push(sql`${auditLog.createdAt} <= ${filter.until}`);
+  }
+  const limit = Math.min(filter.limit ?? 100, 1000);
+  return db
+    .select()
+    .from(auditLog)
+    .where(conds.length ? and(...conds) : undefined)
+    .orderBy(desc(auditLog.createdAt))
+    .limit(limit);
+}
+
+export async function distinctAuditKindsAcross(
+  ctx: WorkspaceContext,
+): Promise<string[]> {
+  assertSuperAdmin(ctx, 'admin.distinct_audit_kinds');
+  const rows = await db
+    .selectDistinct({ kind: auditLog.kind })
+    .from(auditLog)
+    .orderBy(auditLog.kind);
+  return rows.map((r) => r.kind);
+}
