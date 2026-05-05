@@ -241,6 +241,13 @@ export const mailMessages = pgTable(
     trackingToken: text('tracking_token'),
     openCount: integer('open_count').notNull().default(0),
     firstOpenedAt: timestamp('first_opened_at', { mode: 'date', withTimezone: true }),
+    /** Phase 41: cached English translation of bodyText for inbound foreign
+        messages. NULL until the operator clicks 'Translate to English' on
+        the thread view (or until a future auto-translate worker fills it).
+        translatedFromLanguage holds the ISO code the translator detected. */
+    bodyTextEn: text('body_text_en'),
+    translatedFromLanguage: text('translated_from_language'),
+    translatedAt: timestamp('translated_at', { mode: 'date', withTimezone: true }),
 
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',

@@ -556,6 +556,25 @@ credentials).
 
 **Phase 40 complete.**
 
+## Phase 41 — Translation system (kompas port)
+
+- [x] **P41a-01.** `src/lib/i18n/language.ts` — pure module, no DB / AI / server-only imports. `LANGUAGE_NAMES` (31 ISO codes), `getLanguageName()` with region-tag stripping + fallback, `isKnownLanguage()`, `detectLanguageFromText()` (regex word-frequency markers for pl/en/de/fr/es/it/ro + diacritic boosts for pl/de/fr/ro, confidence floor 6, 20-char minimum), `resolveProfileLanguage()` cascade (fullDescription → shortDescription → outreachInstructions → negativeOutreachInstructions → explicit `language` → `'en'`). Detection BEATS the explicit field by design — kompas's reproducer was operators pasting a foreign description but forgetting to flip the dropdown.
+- [x] **P41a-02.** `outreach-engine.ts` and `outreach.ts` now resolve language via `resolveProfileLanguage()` and pass the human-readable language name (e.g. 'Polish (pl)') into the LLM system prompt with an explicit fluency + proper-noun-preservation rule mirroring the kompas prompt.
+- [x] **P41a-03.** `src/app/products/_form.tsx`: free-form `<input>` for language replaced with a `<select>` of every supported language (alphabetised by name). New `<LanguageHint>` component renders under the picker showing what the detector reads from the description; when detector and explicit field disagree the hint flips amber.
+- [x] **P41a-04.** 21 tests in `src/tests/language.test.ts`. **583/583 → 604/604 total tests pass.**
+
+- [x] **P41b-01.** Schema (migration `0026_mixed_colleen_wing.sql`): adds `mail_messages.body_text_en` + `translated_from_language` + `translated_at` for cached inbound translations. No table changes — single ALTER on the existing mail_messages table.
+- [x] **P41b-02.** `src/lib/services/translation.ts` — `translateToEnglish(ctx, { text, sourceLanguageHint? })` (stateless, audit-logged), `translateFromEnglish(ctx, { text, targetLanguage })` (stateless, short-circuits when target is `en`/`en-*`, audit-logged), `translateInboundToEnglish(ctx, messageId)` (cached on the row, idempotent — second call is a no-op no-bill, refuses outbound messages and empty bodies and cross-workspace access). All routes use `getAIProviderForCtx(ctx)` so workspace BYOK keys are honoured.
+- [x] **P41b-03.** `/mailbox/threads/[id]` UI: per-inbound-message 'Translate to English' button (calls `translateInboundToEnglish` server action). When the cache is hit, renders an expandable `<details>` titled e.g. 'English translation from Polish' below the original. Reply form gets a 'Translate before send' second submit button (using `formAction` to route to a separate server action) + a target-language dropdown; on click the form posts to `translateReply` which redirects with `?translatedReply=...&translatedTo=...` and pre-fills the textarea. New CSS: `.msg-translation`, `.msg-translation-icon`, `.draft-body-translated`, `.translate-inline`.
+- [x] **P41b-04.** 12 tests in `src/tests/translation.test.ts` covering toEnglish (audit emit, empty + oversized rejection), fromEnglish (real translate, en short-circuit, en-GB short-circuit, lowercase normalisation), translateInboundToEnglish (cache populates, second-call no-op, outbound refusal, empty refusal, cross-workspace refusal). **604/604 → 616/616 total tests pass.**
+
+**Phase 41 complete.**
+
+Note: language-aware outreach generation (P41a-02) ships immediately on
+deploy. Translation-on-demand (P41b) requires `AI_PROVIDER` to be flipped
+from `mock` to `openai` or `anthropic` on prod for the actual translations
+to be useful — currently the mock returns the input unchanged.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

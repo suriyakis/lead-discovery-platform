@@ -1,0 +1,284 @@
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { db } from '@/lib/db/client';
+import { auditLog } from '@/lib/db/schema/audit';
+import {
+  mailMessages,
+  mailThreads,
+  mailboxes,
+} from '@/lib/db/schema/mailing';
+import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
+import {
+  type WorkspaceContext,
+  makeWorkspaceContext,
+} from '@/lib/services/context';
+import {
+  TranslationError,
+  translateFromEnglish,
+  translateInboundToEnglish,
+  translateToEnglish,
+} from '@/lib/services/translation';
+import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+
+interface Setup {
+  workspaceA: bigint;
+  ownerA: string;
+  mailboxId: bigint;
+  threadId: bigint;
+}
+
+async function setup(): Promise<Setup> {
+  const ownerA = await seedUser({ email: 'ownerA-trans@test.local' });
+  const workspaceA = await seedWorkspace({ name: 'A-trans', ownerUserId: ownerA });
+  const [mb] = await db
+    .insert(mailboxes)
+    .values({
+      workspaceId: workspaceA,
+      name: 'sales',
+      fromAddress: 'sales@nulife.pl',
+      smtpHost: 'smtp.x',
+      smtpUser: 'sales@nulife.pl',
+      smtpPasswordSecretKey: 'mailbox.smtpPassword_translation_tests',
+      imapFolder: 'INBOX',
+      status: 'active',
+      isDefault: true,
+    })
+    .returning();
+  const [thread] = await db
+    .insert(mailThreads)
+    .values({
+      workspaceId: workspaceA,
+      mailboxId: mb!.id,
+      subject: 'hi',
+      externalThreadKey: `subj:trans-${Date.now()}`,
+      participants: ['anna@target.com', 'sales@nulife.pl'],
+    })
+    .returning();
+  return { workspaceA, ownerA, mailboxId: mb!.id, threadId: thread!.id };
+}
+
+async function seedInbound(s: Setup, body: string): Promise<bigint> {
+  const [m] = await db
+    .insert(mailMessages)
+    .values({
+      workspaceId: s.workspaceA,
+      mailboxId: s.mailboxId,
+      threadId: s.threadId,
+      direction: 'inbound',
+      status: 'received',
+      messageId: `<inbound-${Math.random().toString(36).slice(2)}@x>`,
+      fromAddress: 'anna@target.com',
+      toAddresses: ['sales@nulife.pl'],
+      subject: 'hi',
+      bodyText: body,
+    })
+    .returning();
+  return m!.id;
+}
+
+async function seedOutbound(s: Setup, body: string): Promise<bigint> {
+  const [m] = await db
+    .insert(mailMessages)
+    .values({
+      workspaceId: s.workspaceA,
+      mailboxId: s.mailboxId,
+      threadId: s.threadId,
+      direction: 'outbound',
+      status: 'sent',
+      messageId: `<outbound-${Math.random().toString(36).slice(2)}@x>`,
+      fromAddress: 'sales@nulife.pl',
+      toAddresses: ['anna@target.com'],
+      subject: 'hi',
+      bodyText: body,
+    })
+    .returning();
+  return m!.id;
+}
+
+function ctx(workspaceId: bigint, userId: string): WorkspaceContext {
+  return makeWorkspaceContext({ workspaceId, userId, role: 'owner' });
+}
+
+/**
+ * Stub AI provider that echoes a deterministic translation back so tests
+ * can assert what was passed without spending tokens. The generateJson
+ * impl returns the schema-compatible shape the translation service
+ * expects.
+ */
+const stubAi: IAIProvider = {
+  id: 'stub',
+  async generateText() {
+    throw new Error('generateText not used by translation');
+  },
+  async generateJson(input) {
+    const isFromEnglish = input.system?.includes('Translate the user-supplied English text');
+    if (isFromEnglish) {
+      return { translatedText: `[FR] ${input.prompt}` } as never;
+    }
+    return {
+      translatedText: `[EN] ${input.prompt}`,
+      detectedLanguage: 'pl',
+      isAlreadyEnglish: false,
+    } as never;
+  },
+  estimateCost() {
+    return 0;
+  },
+  async healthCheck() {
+    return { ok: true };
+  },
+};
+
+beforeEach(async () => {
+  _setAIProviderForTests(stubAi);
+  await truncateAll();
+});
+
+afterEach(() => {
+  _setAIProviderForTests(null);
+});
+
+afterAll(async () => {
+  await (db.$client as unknown as { end: () => Promise<void> }).end();
+});
+
+// ─── translateToEnglish ────────────────────────────────────────────────
+
+describe('translateToEnglish', () => {
+  it('translates text and emits an audit event', async () => {
+    const s = await setup();
+    const result = await translateToEnglish(ctx(s.workspaceA, s.ownerA), {
+      text: 'Dzień dobry, jesteśmy zainteresowani waszą ofertą.',
+    });
+    expect(result.translatedText).toContain('[EN]');
+    expect(result.detectedLanguage).toBe('pl');
+    expect(result.isAlreadyEnglish).toBe(false);
+
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.workspaceId, s.workspaceA));
+    const translateRow = audits.find((a) => a.kind === 'translation.to_english');
+    expect(translateRow).toBeTruthy();
+    const payload = translateRow!.payload as Record<string, unknown>;
+    expect(payload.detectedLanguage).toBe('pl');
+    expect(payload.provider).toBe('stub');
+  });
+
+  it('rejects empty text', async () => {
+    const s = await setup();
+    await expect(
+      translateToEnglish(ctx(s.workspaceA, s.ownerA), { text: '   ' }),
+    ).rejects.toThrow(TranslationError);
+  });
+
+  it('rejects oversized text', async () => {
+    const s = await setup();
+    await expect(
+      translateToEnglish(ctx(s.workspaceA, s.ownerA), {
+        text: 'a'.repeat(50_001),
+      }),
+    ).rejects.toThrow(/exceeds/);
+  });
+});
+
+// ─── translateFromEnglish ─────────────────────────────────────────────
+
+describe('translateFromEnglish', () => {
+  it('translates English to a target language', async () => {
+    const s = await setup();
+    const result = await translateFromEnglish(ctx(s.workspaceA, s.ownerA), {
+      text: 'Good morning, we are interested in your offer.',
+      targetLanguage: 'fr',
+    });
+    expect(result.translatedText).toContain('[FR]');
+    expect(result.targetLanguage).toBe('fr');
+
+    const audits = await db.select().from(auditLog).where(eq(auditLog.workspaceId, s.workspaceA));
+    expect(audits.some((a) => a.kind === 'translation.from_english')).toBe(true);
+  });
+
+  it('skips translation when target is English', async () => {
+    const s = await setup();
+    const result = await translateFromEnglish(ctx(s.workspaceA, s.ownerA), {
+      text: 'Hello world',
+      targetLanguage: 'en',
+    });
+    expect(result.translatedText).toBe('Hello world');
+    // No-op should NOT touch the AI provider, so no audit entry either.
+    const audits = await db.select().from(auditLog).where(eq(auditLog.workspaceId, s.workspaceA));
+    expect(audits.some((a) => a.kind === 'translation.from_english')).toBe(false);
+  });
+
+  it('also short-circuits regional English (en-GB)', async () => {
+    const s = await setup();
+    const result = await translateFromEnglish(ctx(s.workspaceA, s.ownerA), {
+      text: 'Hello world',
+      targetLanguage: 'en-GB',
+    });
+    expect(result.translatedText).toBe('Hello world');
+  });
+
+  it('lowercases the target language for storage', async () => {
+    const s = await setup();
+    const result = await translateFromEnglish(ctx(s.workspaceA, s.ownerA), {
+      text: 'Hello',
+      targetLanguage: 'FR',
+    });
+    expect(result.targetLanguage).toBe('fr');
+  });
+});
+
+// ─── translateInboundToEnglish ────────────────────────────────────────
+
+describe('translateInboundToEnglish', () => {
+  it('translates an inbound message and persists the cache', async () => {
+    const s = await setup();
+    const mid = await seedInbound(s, 'Dzień dobry, witam was serdecznie.');
+
+    const r1 = await translateInboundToEnglish(ctx(s.workspaceA, s.ownerA), mid);
+    expect(r1.freshlyTranslated).toBe(true);
+    expect(r1.message.bodyTextEn).toContain('[EN]');
+    expect(r1.message.translatedFromLanguage).toBe('pl');
+    expect(r1.message.translatedAt).toBeInstanceOf(Date);
+  });
+
+  it('returns the cached translation without re-billing on second call', async () => {
+    const s = await setup();
+    const mid = await seedInbound(s, 'cześć');
+
+    await translateInboundToEnglish(ctx(s.workspaceA, s.ownerA), mid);
+    const r2 = await translateInboundToEnglish(ctx(s.workspaceA, s.ownerA), mid);
+    expect(r2.freshlyTranslated).toBe(false);
+
+    const audits = await db.select().from(auditLog).where(eq(auditLog.workspaceId, s.workspaceA));
+    // Exactly one to_english audit entry — second call hit the cache.
+    expect(audits.filter((a) => a.kind === 'translation.to_english')).toHaveLength(1);
+  });
+
+  it('refuses outbound messages', async () => {
+    const s = await setup();
+    const mid = await seedOutbound(s, 'we sent this');
+    await expect(
+      translateInboundToEnglish(ctx(s.workspaceA, s.ownerA), mid),
+    ).rejects.toThrow(/inbound/);
+  });
+
+  it('refuses empty bodies', async () => {
+    const s = await setup();
+    const mid = await seedInbound(s, '');
+    await expect(
+      translateInboundToEnglish(ctx(s.workspaceA, s.ownerA), mid),
+    ).rejects.toThrow(/no plain-text body/);
+  });
+
+  it('refuses cross-workspace access', async () => {
+    const s = await setup();
+    const mid = await seedInbound(s, 'witam');
+    const otherUser = await seedUser({ email: 'other@test.local' });
+    const otherWorkspace = await seedWorkspace({ name: 'Other', ownerUserId: otherUser });
+    await expect(
+      translateInboundToEnglish(ctx(otherWorkspace, otherUser), mid),
+    ).rejects.toThrow(TranslationError);
+  });
+});

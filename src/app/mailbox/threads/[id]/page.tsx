@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { Languages } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
@@ -13,13 +14,26 @@ import {
   ReplyAssistantError,
   suggestReply,
 } from '@/lib/services/reply-assistant';
+import {
+  TranslationError,
+  translateFromEnglish,
+  translateInboundToEnglish,
+} from '@/lib/services/translation';
+import { getLanguageName } from '@/lib/i18n/language';
 
 export default async function ThreadDetail({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; suggestion?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    suggestion?: string;
+    /** When set, the reply textarea pre-fills with the translated text. */
+    translatedReply?: string;
+    /** Target language used for the most recent reply translation. */
+    translatedTo?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -68,6 +82,46 @@ export default async function ThreadDetail({
       const m =
         err instanceof ReplyAssistantError ? err.message :
         err instanceof Error ? err.message : 'suggest failed';
+      redirect(`/mailbox/threads/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function translateMessage(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const midRaw = String(formData.get('messageId') ?? '');
+    if (!/^\d+$/.test(midRaw)) return;
+    try {
+      await translateInboundToEnglish(c, BigInt(midRaw));
+      redirect(`/mailbox/threads/${id}`);
+    } catch (err) {
+      const m =
+        err instanceof TranslationError ? err.message :
+        err instanceof Error ? err.message : 'translate failed';
+      redirect(`/mailbox/threads/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function translateReply(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const text = String(formData.get('body') ?? '').trim();
+    const target = String(formData.get('targetLanguage') ?? '').trim();
+    if (!text || !target) return;
+    try {
+      const result = await translateFromEnglish(c, {
+        text,
+        targetLanguage: target,
+      });
+      const params = new URLSearchParams({
+        translatedReply: result.translatedText,
+        translatedTo: result.targetLanguage,
+      });
+      redirect(`/mailbox/threads/${id}?${params.toString()}`);
+    } catch (err) {
+      const m =
+        err instanceof TranslationError ? err.message :
+        err instanceof Error ? err.message : 'translate failed';
       redirect(`/mailbox/threads/${id}?error=${encodeURIComponent(m)}`);
     }
   }
@@ -136,6 +190,33 @@ export default async function ThreadDetail({
                   <p className="muted">Subject: {m.subject}</p>
                 ) : null}
                 <pre className="draft-body">{m.bodyText ?? '(no plain-text body)'}</pre>
+
+                {m.direction === 'inbound' && m.bodyText ? (
+                  m.bodyTextEn ? (
+                    <details className="msg-translation" open>
+                      <summary>
+                        <Languages className="msg-translation-icon" aria-hidden="true" />
+                        <span>
+                          English translation
+                          {m.translatedFromLanguage
+                            ? ` from ${getLanguageName(m.translatedFromLanguage)}`
+                            : ''}
+                        </span>
+                      </summary>
+                      <pre className="draft-body draft-body-translated">
+                        {m.bodyTextEn}
+                      </pre>
+                    </details>
+                  ) : (
+                    <form action={translateMessage} className="msg-translate-form">
+                      <input type="hidden" name="messageId" value={m.id.toString()} />
+                      <button type="submit" className="ghost-btn">
+                        <Languages className="msg-translation-icon" aria-hidden="true" />
+                        <span>Translate to English</span>
+                      </button>
+                    </form>
+                  )
+                ) : null}
               </li>
             ))}
           </ul>
@@ -177,13 +258,41 @@ export default async function ThreadDetail({
                   rows={10}
                   required
                   maxLength={50000}
-                  defaultValue={sp.suggestion ?? ''}
+                  defaultValue={sp.translatedReply ?? sp.suggestion ?? ''}
                 />
               </label>
+              {sp.translatedTo ? (
+                <p className="muted small">
+                  Translated to {getLanguageName(sp.translatedTo)} (
+                  {sp.translatedTo}). Review before sending.
+                </p>
+              ) : null}
               <div className="action-row">
                 <button type="submit" className="primary-btn">
                   Send reply
                 </button>
+                {/* Same form, second action via formAction. Operator
+                    picks the target language; clicking Translate
+                    submits the form to translateReply, which redirects
+                    back with ?translatedReply=... pre-filled. */}
+                <span className="translate-inline">
+                  <select name="targetLanguage" defaultValue="pl" aria-label="Target language">
+                    <option value="pl">Polish</option>
+                    <option value="de">German</option>
+                    <option value="fr">French</option>
+                    <option value="es">Spanish</option>
+                    <option value="it">Italian</option>
+                    <option value="ro">Romanian</option>
+                    <option value="cs">Czech</option>
+                    <option value="uk">Ukrainian</option>
+                    <option value="nl">Dutch</option>
+                    <option value="pt">Portuguese</option>
+                  </select>
+                  <button type="submit" formAction={translateReply} className="ghost-btn">
+                    <Languages className="msg-translation-icon" aria-hidden="true" />
+                    <span>Translate before send</span>
+                  </button>
+                </span>
               </div>
             </form>
           </section>

@@ -2785,3 +2785,86 @@ button.primary-btn {
 .metric-notes p {
   margin: 0;
 }
+
+/* ---- Translation UI (Phase 41) -------------------------------- */
+
+.msg-translation {
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  background: oklch(0.72 0.12 180 / 0.08);
+  border: 1px solid oklch(0.72 0.12 180 / 0.3);
+  border-radius: 0.5rem;
+}
+
+.msg-translation > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--brand-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--brand-accent-teal);
+}
+
+.msg-translation > summary::-webkit-details-marker {
+  display: none;
+}
+
+.msg-translation > summary::after {
+  content: '▾';
+  margin-left: 0.4rem;
+  color: var(--brand-muted);
+  font-size: 0.7rem;
+}
+
+.msg-translation:not([open]) > summary::after {
+  content: '▸';
+}
+
+.msg-translation-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.draft-body-translated {
+  margin-top: 0.5rem;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.msg-translate-form {
+  margin-top: 0.5rem;
+}
+
+.msg-translate-form button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.translate-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+.translate-inline select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: var(--brand-input);
+  color: var(--brand-fg);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.translate-inline button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
