@@ -75,15 +75,15 @@ export default async function DraftsPage({
 
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Drafts
-        </p>
-        <h1>Outreach drafts</h1>
-        <p className="muted">
-          Generated from review items, scoped to a product profile. Edit, approve,
-          or reject. Approved drafts are queued for the (future) sending phase —
-          nothing sends from here.
-        </p>
+        <header className="page-intro" style={{ marginBottom: '1.25rem' }}>
+          <p className="page-eyebrow">Outreach</p>
+          <h1 className="page-title">Drafts</h1>
+          <p className="page-lede">
+            Generated from review items, scoped to a product profile. Edit,
+            approve, or reject. Approved drafts get queued from the draft
+            detail page — nothing sends from this list.
+          </p>
+        </header>
 
         <form className="leads-controls" method="get">
           <label>

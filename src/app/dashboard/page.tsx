@@ -163,7 +163,7 @@ export default async function Dashboard() {
   return (
     <AppShell>
       <div className="dashboard-wrap">
-        <header className="page-header">
+        <header className="page-intro">
           <p className="page-eyebrow">Workspace overview</p>
           <h1 className="page-title">
             Welcome back{session.user.name ? `, ${session.user.name.split(' ')[0]}` : ''}.

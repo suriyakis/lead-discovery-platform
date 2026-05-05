@@ -735,6 +735,7 @@ code {
 .primary-btn {
   display: inline-flex;
   align-items: center;
+  gap: 0.4rem;
   padding: 0.5rem 1rem;
   background: var(--brand-primary);
   color: var(--brand-primary-foreground);
@@ -746,13 +747,21 @@ code {
   cursor: pointer;
   transition:
     background 0.15s ease,
-    box-shadow 0.15s ease;
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
   box-shadow: 0 0 0 1px oklch(0.72 0.14 220 / 0.25), 0 4px 16px -4px oklch(0.72 0.14 220 / 0.4);
 }
 
 .primary-btn:hover {
   background: oklch(0.78 0.13 220);
   text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.primary-btn-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
 }
 
 button.primary-btn {
@@ -1848,7 +1857,11 @@ button.primary-btn {
   }
 }
 
-.page-header {
+/* Hero-style page intro (eyebrow + title + lede). Distinct from the
+   pre-existing .page-header which is a horizontal title-left / CTA-right
+   bar; .page-intro stacks vertically and is meant for landing surfaces
+   like /dashboard. */
+.page-intro {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -2421,4 +2434,331 @@ button.primary-btn {
   padding: 1.75rem 1.5rem;
   border-top: 1px solid var(--brand-border);
   background: oklch(0.16 0.02 250 / 0.6);
+}
+
+/* ---- Window tabs (deliverability + future filtered views) ------- */
+.window-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.window-tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.95rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: var(--brand-card);
+  color: var(--brand-muted);
+  border: 1px solid var(--brand-border);
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.window-tab:hover {
+  background: var(--brand-card-elevated);
+  color: var(--brand-fg);
+  text-decoration: none;
+}
+
+.window-tab.active {
+  background: var(--brand-primary);
+  color: var(--brand-primary-foreground);
+  border-color: var(--brand-primary);
+  font-weight: 600;
+}
+
+/* ---- Metric cards (deliverability + future dashboards) --------- */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.metric-card {
+  position: relative;
+  padding: 0.95rem 1.05rem;
+  background: linear-gradient(
+    160deg,
+    var(--brand-card-elevated) 0%,
+    var(--brand-card) 100%
+  );
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  overflow: hidden;
+}
+
+.metric-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 80% 50% at 100% 0%,
+    var(--metric-glow, transparent),
+    transparent 60%
+  );
+}
+
+.metric-card > * {
+  position: relative;
+}
+
+.metric-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.metric-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 0.45rem;
+  background: oklch(0.26 0.02 250 / 0.6);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-muted);
+}
+
+.metric-card-icon svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.metric-card-label {
+  font-family: var(--brand-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--brand-muted);
+}
+
+.metric-card-value {
+  font-size: 1.65rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-card-sub {
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+}
+
+.metric-card-primary {
+  --metric-glow: oklch(0.72 0.14 220 / 0.18);
+}
+.metric-card-primary .metric-card-icon {
+  background: oklch(0.72 0.14 220 / 0.14);
+  border-color: oklch(0.72 0.14 220 / 0.4);
+  color: var(--brand-primary);
+}
+
+.metric-card-teal {
+  --metric-glow: oklch(0.72 0.12 180 / 0.18);
+}
+.metric-card-teal .metric-card-icon {
+  background: oklch(0.72 0.12 180 / 0.14);
+  border-color: oklch(0.72 0.12 180 / 0.4);
+  color: var(--brand-accent-teal);
+}
+
+.metric-card-amber {
+  --metric-glow: oklch(0.78 0.13 75 / 0.18);
+}
+.metric-card-amber .metric-card-icon {
+  background: oklch(0.78 0.13 75 / 0.14);
+  border-color: oklch(0.78 0.13 75 / 0.4);
+  color: var(--brand-accent-amber);
+}
+
+.metric-card-violet {
+  --metric-glow: oklch(0.65 0.18 305 / 0.18);
+}
+.metric-card-violet .metric-card-icon {
+  background: oklch(0.65 0.18 305 / 0.14);
+  border-color: oklch(0.65 0.18 305 / 0.4);
+  color: oklch(0.78 0.16 305);
+}
+
+.metric-card-warn {
+  --metric-glow: oklch(0.65 0.16 25 / 0.2);
+}
+.metric-card-warn .metric-card-icon {
+  background: oklch(0.65 0.16 25 / 0.14);
+  border-color: oklch(0.65 0.16 25 / 0.45);
+  color: oklch(0.8 0.16 25);
+}
+.metric-card-warn .metric-card-value {
+  color: oklch(0.84 0.15 25);
+}
+
+/* ---- Data table (used on /mailbox/deliverability and similar) -- */
+.data-table-wrap {
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+  overflow: auto;
+  box-shadow: var(--brand-shadow);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table thead tr {
+  background: oklch(0.21 0.02 250 / 0.7);
+}
+
+.data-table th {
+  text-align: left;
+  padding: 0.7rem 0.95rem;
+  font-family: var(--brand-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brand-muted);
+  border-bottom: 1px solid var(--brand-border);
+}
+
+.data-table th.num,
+.data-table td.num {
+  text-align: right;
+}
+
+.data-table tbody tr {
+  border-top: 1px solid var(--brand-border);
+  transition: background 0.15s ease;
+}
+
+.data-table tbody tr:hover {
+  background: oklch(0.22 0.02 250 / 0.4);
+}
+
+.data-table td {
+  padding: 0.7rem 0.95rem;
+  vertical-align: top;
+}
+
+.data-table .num-sub {
+  display: inline-block;
+  margin-left: 0.35rem;
+  color: var(--brand-muted);
+  font-size: 0.78rem;
+}
+
+.data-table .num-warn {
+  color: oklch(0.84 0.15 25);
+}
+
+.mailbox-name {
+  font-weight: 500;
+}
+
+.mailbox-from {
+  color: var(--brand-muted);
+  font-size: 0.78rem;
+  margin-top: 0.15rem;
+}
+
+.mailbox-status {
+  margin-left: 0.35rem;
+  color: var(--brand-accent-amber);
+}
+
+/* ---- Reply classification card grid --------------------------- */
+.reply-class-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.5rem;
+}
+
+.reply-class-card {
+  padding: 0.75rem 0.95rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.reply-class-label {
+  font-family: var(--brand-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--brand-muted);
+}
+
+.reply-class-count {
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.reply-class-pct {
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+}
+
+/* ---- Empty state pattern --------------------------------------- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.85rem;
+  padding: 2.5rem 1.5rem;
+  background: var(--brand-card);
+  border: 1px dashed var(--brand-border);
+  border-radius: 0.7rem;
+  color: var(--brand-muted);
+}
+
+.empty-state-icon {
+  width: 2rem;
+  height: 2rem;
+  color: var(--brand-muted);
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 0.95rem;
+  max-width: 38ch;
+  line-height: 1.55;
+}
+
+.empty-state a {
+  color: var(--brand-primary);
+}
+
+.metric-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: var(--brand-muted);
+  font-size: 0.825rem;
+  line-height: 1.55;
+  padding: 1rem 1.25rem;
+  background: oklch(0.21 0.02 250 / 0.5);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+}
+
+.metric-notes p {
+  margin: 0;
 }

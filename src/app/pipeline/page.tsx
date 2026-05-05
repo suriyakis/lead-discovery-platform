@@ -108,14 +108,15 @@ export default async function PipelinePage({
 
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Pipeline
-        </p>
-        <h1>Qualified leads pipeline</h1>
-        <p className="muted">
-          Commercial pipeline on top of the discovery / classification stack.
-          A lead lands here once it crosses into <code>relevant</code>.
-        </p>
+        <header className="page-intro" style={{ marginBottom: '1.25rem' }}>
+          <p className="page-eyebrow">Pipeline</p>
+          <h1 className="page-title">Qualified leads pipeline</h1>
+          <p className="page-lede">
+            Commercial pipeline on top of the discovery / classification
+            stack. A lead lands here once it crosses into{' '}
+            <code>relevant</code>.
+          </p>
+        </header>
 
         <form className="leads-controls" method="get">
           <label>

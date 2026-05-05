@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { Plus } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
@@ -38,17 +39,17 @@ export default async function ProductsPage() {
   return (
     <AppShell>
         <div className="page-header">
-          <div>
-            <p className="muted">
-              <Link href="/dashboard">Dashboard</Link> / Products
-            </p>
-            <h1>Product profiles</h1>
-            <p className="muted">
-              Define what you sell. Discovery, qualification, and outreach all read from these.
+          <div className="page-intro">
+            <p className="page-eyebrow">Catalog</p>
+            <h1 className="page-title">Product profiles</h1>
+            <p className="page-lede">
+              Define what you sell. Discovery, qualification, and outreach
+              all read from these.
             </p>
           </div>
           <Link href="/products/new" className="primary-btn">
-            + New product
+            <Plus className="primary-btn-icon" aria-hidden="true" />
+            <span>New product</span>
           </Link>
         </div>
 
