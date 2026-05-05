@@ -33,6 +33,7 @@ import {
   type DraftVerdict,
 } from './outreach-engine';
 import { getAIProviderForCtx } from '@/lib/ai';
+import { resolveProfileLanguage } from '@/lib/i18n/language';
 
 export class OutreachServiceError extends Error {
   public readonly code: string;
@@ -95,7 +96,9 @@ export async function generateOutreachDraft(
   const allLessons = [...lessons, ...wsLessons];
 
   const channel = input.channel?.trim() || 'email';
-  const language = input.language?.trim() || product.language || 'en';
+  // Detector cascade: input override → product description / instructions →
+  // explicit product.language → 'en'. See src/lib/i18n/language.ts.
+  const language = input.language?.trim() || resolveProfileLanguage(product);
   const method: OutreachDraftMethod = input.method ?? 'rules';
 
   const verdict = await composeVerdict(

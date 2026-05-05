@@ -13,6 +13,7 @@ import type { ProductProfile } from '@/lib/db/schema/products';
 import type { LearningLesson } from '@/lib/db/schema/learning';
 import type { OutreachDraftMethod } from '@/lib/db/schema/outreach';
 import type { IAIProvider } from '@/lib/ai';
+import { getLanguageName, resolveProfileLanguage } from '@/lib/i18n/language';
 
 export interface DraftableRecord {
   title?: string | null;
@@ -247,8 +248,15 @@ function buildAiPrompt(
       ? `Forbidden phrases (NEVER include any of these, in any form):\n${product.forbiddenPhrases.map((p) => `- ${p}`).join('\n')}`
       : '';
 
+  // Prefer the caller's language when set, otherwise resolve via the
+  // detector cascade (profile description text often beats the explicit
+  // `language` field — see resolveProfileLanguage).
+  const effectiveLang =
+    (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
+  const langName = getLanguageName(effectiveLang);
+
   const system = [
-    `You are an outreach assistant drafting a ${ctx.channel} in ${ctx.language || product.language || 'en'}.`,
+    `You are an outreach assistant drafting a ${ctx.channel} in ${langName} (${effectiveLang}). Produce fluent, natural ${langName} that reads as if originally written in ${langName} — preserve any proper nouns and brand names verbatim.`,
     `You write for the product "${product.name}".`,
     product.outreachInstructions ? `Style guidance: ${product.outreachInstructions.trim()}` : '',
     product.negativeOutreachInstructions

@@ -3,6 +3,11 @@
 // is supplied by the parent page (a server action that calls the service).
 
 import type { ProductProfile } from '@/lib/db/schema/products';
+import {
+  LANGUAGE_NAMES,
+  detectLanguageFromText,
+  getLanguageName,
+} from '@/lib/i18n/language';
 
 type Props = {
   profile?: ProductProfile;
@@ -190,13 +195,16 @@ export function ProductFields({ profile, formError, submitLabel }: Readonly<Prop
         <legend>Settings</legend>
         <label>
           <span>Language</span>
-          <input
-            name="language"
-            type="text"
-            pattern="[a-z]{2}(-[A-Z]{2})?"
-            defaultValue={v?.language ?? 'en'}
-          />
-          <small>BCP 47 short tag, e.g. en, en-GB, pl.</small>
+          <select name="language" defaultValue={v?.language ?? 'en'}>
+            {Object.entries(LANGUAGE_NAMES)
+              .sort((a, b) => a[1].localeCompare(b[1]))
+              .map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name} ({code})
+                </option>
+              ))}
+          </select>
+          <LanguageHint profile={v} />
         </label>
       </fieldset>
 
@@ -206,6 +214,53 @@ export function ProductFields({ profile, formError, submitLabel }: Readonly<Prop
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Renders a small hint under the language picker showing what the
+ * description-based detector would pick. If detection disagrees with the
+ * currently-set field, nudges the user to consider switching. Pure server
+ * render — no live re-detection on description typing (that would need a
+ * client component; deferred to a follow-up).
+ */
+function LanguageHint({ profile }: { profile?: ProductProfile }) {
+  if (!profile) {
+    return (
+      <small>
+        Drives the AI outreach prompt. Change after pasting a description in
+        another language.
+      </small>
+    );
+  }
+  const detected = detectLanguageFromText(
+    [profile.fullDescription, profile.shortDescription, profile.outreachInstructions]
+      .filter(Boolean)
+      .join('\n'),
+  );
+  if (!detected) {
+    return (
+      <small>
+        Drives the AI outreach prompt. The description text is too short for
+        auto-detection.
+      </small>
+    );
+  }
+  if (detected === profile.language) {
+    return (
+      <small>
+        Detector agrees: description reads as{' '}
+        <strong>{getLanguageName(detected)}</strong>.
+      </small>
+    );
+  }
+  return (
+    <small style={{ color: 'var(--brand-accent-amber)' }}>
+      Detector reads the description as{' '}
+      <strong>{getLanguageName(detected)}</strong> ({detected}). Outreach
+      generation will follow the detector unless the field is set
+      explicitly — consider matching them.
+    </small>
   );
 }
 
