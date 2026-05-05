@@ -13,10 +13,39 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import {
+  AlertOctagon,
+  AtSign,
+  BookOpen,
+  Crown,
+  FileText,
+  Inbox,
+  KanbanSquare,
+  Key,
+  LayoutDashboard,
+  ListChecks,
+  Lightbulb,
+  type LucideIcon,
+  Mail,
+  MailWarning,
+  Network,
+  Package,
+  PencilLine,
+  Receipt,
+  Send,
+  ShieldCheck,
+  ShoppingBag,
+  Sparkles,
+  UserCircle,
+  Users,
+  Users2,
+  Workflow,
+} from 'lucide-react';
 
 interface NavItem {
   href: string;
   label: string;
+  icon: LucideIcon;
   /** Match-prefix list. The first href is also the click target. */
   match?: ReadonlyArray<string>;
 }
@@ -36,68 +65,68 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     title: 'Discovery',
     defaultOpen: true,
     items: [
-      { href: '/connectors', label: 'Connectors' },
-      { href: '/review', label: 'Review queue' },
-      { href: '/leads', label: 'Leads' },
-      { href: '/knowledge', label: 'Knowledge' },
-      { href: '/documents', label: 'Documents' },
-      { href: '/learning', label: 'Learning memory' },
+      { href: '/connectors', label: 'Connectors', icon: Network },
+      { href: '/review', label: 'Review queue', icon: ListChecks },
+      { href: '/leads', label: 'Leads', icon: Sparkles },
+      { href: '/knowledge', label: 'Knowledge', icon: BookOpen },
+      { href: '/documents', label: 'Documents', icon: FileText },
+      { href: '/learning', label: 'Learning memory', icon: Lightbulb },
     ],
   },
   {
     title: 'Pipeline',
     defaultOpen: true,
     items: [
-      { href: '/pipeline', label: 'Pipeline' },
-      { href: '/contacts', label: 'Contacts' },
+      { href: '/pipeline', label: 'Pipeline', icon: KanbanSquare },
+      { href: '/contacts', label: 'Contacts', icon: Users2 },
     ],
   },
   {
     title: 'Outreach',
     defaultOpen: true,
     items: [
-      { href: '/drafts', label: 'Drafts' },
-      { href: '/mailbox', label: 'Mailbox', match: ['/mailbox'] },
-      { href: '/mailbox/queue', label: 'Send queue' },
-      { href: '/mailbox/signatures', label: 'Signatures' },
-      { href: '/mailbox/suppression', label: 'Suppression' },
-      { href: '/mailbox/deliverability', label: 'Deliverability' },
+      { href: '/drafts', label: 'Drafts', icon: PencilLine },
+      { href: '/mailbox', label: 'Mailbox', icon: Inbox, match: ['/mailbox'] },
+      { href: '/mailbox/queue', label: 'Send queue', icon: Send },
+      { href: '/mailbox/signatures', label: 'Signatures', icon: AtSign },
+      { href: '/mailbox/suppression', label: 'Suppression', icon: MailWarning },
+      { href: '/mailbox/deliverability', label: 'Deliverability', icon: Mail },
     ],
   },
   {
     title: 'Administration',
     defaultOpen: false,
     items: [
-      { href: '/settings/account', label: 'My account' },
-      { href: '/products', label: 'Products' },
-      { href: '/settings/members', label: 'Members' },
-      { href: '/settings/integrations', label: 'Integrations' },
-      { href: '/settings/crm', label: 'CRM & Export' },
-      { href: '/settings/usage', label: 'Usage' },
-      { href: '/settings/audit', label: 'Audit log' },
+      { href: '/settings/account', label: 'My account', icon: UserCircle },
+      { href: '/products', label: 'Products', icon: ShoppingBag },
+      { href: '/settings/members', label: 'Members', icon: Users },
+      { href: '/settings/integrations', label: 'Integrations', icon: Key },
+      { href: '/settings/crm', label: 'CRM & Export', icon: Workflow },
+      { href: '/settings/usage', label: 'Usage', icon: Receipt },
+      { href: '/settings/audit', label: 'Audit log', icon: ShieldCheck },
     ],
   },
   {
     title: 'Emergency',
     defaultOpen: true,
     emphasize: true,
-    items: [{ href: '/autopilot', label: 'Autopilot control' }],
+    items: [{ href: '/autopilot', label: 'Autopilot control', icon: AlertOctagon }],
   },
   {
     title: 'Platform',
     defaultOpen: false,
     superAdminOnly: true,
     items: [
-      { href: '/admin', label: 'God mode' },
-      { href: '/admin/workspaces', label: 'Workspaces' },
-      { href: '/admin/users', label: 'Users' },
-      { href: '/admin/audit', label: 'Audit log' },
+      { href: '/admin', label: 'God mode', icon: Crown },
+      { href: '/admin/workspaces', label: 'Workspaces', icon: Package },
+      { href: '/admin/users', label: 'Users', icon: Users },
+      { href: '/admin/audit', label: 'Audit log', icon: ShieldCheck },
     ],
   },
 ];
 
 const PINNED: ReadonlyArray<NavItem> = [
-  { href: '/dashboard', label: 'Dashboard' },
+  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
 ];
 
 export interface SidebarProps {
@@ -172,18 +201,22 @@ function SidebarList({
 }: Readonly<{ items: ReadonlyArray<NavItem>; activeHref: string | null }>) {
   return (
     <ul className="sidebar-list">
-      {items.map((it) => (
-        <li key={it.href}>
-          <Link
-            href={it.href}
-            className={
-              activeHref === it.href ? 'sidebar-link active' : 'sidebar-link'
-            }
-          >
-            {it.label}
-          </Link>
-        </li>
-      ))}
+      {items.map((it) => {
+        const Icon = it.icon;
+        return (
+          <li key={it.href}>
+            <Link
+              href={it.href}
+              className={
+                activeHref === it.href ? 'sidebar-link active' : 'sidebar-link'
+              }
+            >
+              <Icon className="sidebar-link-icon" aria-hidden="true" />
+              <span>{it.label}</span>
+            </Link>
+          </li>
+        );
+      })}
     </ul>
   );
 }
