@@ -2136,3 +2136,289 @@ button.primary-btn {
   border-color: oklch(0.65 0.18 305 / 0.4);
   color: oklch(0.78 0.16 305);
 }
+
+/* Static variant — for landing-page tiles that aren't anchors. */
+.module-tile-static {
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---- Landing page (Phase 38) ----------------------------------- */
+.landing-main {
+  padding: 0;
+  max-width: none;
+  margin: 0;
+}
+
+.landing-hero {
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid var(--brand-border);
+  isolation: isolate;
+}
+
+.landing-hero-bg-grid {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(to right, var(--brand-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--brand-grid-line) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(
+    ellipse 60% 50% at 50% 30%,
+    #000 30%,
+    transparent 75%
+  );
+  -webkit-mask-image: radial-gradient(
+    ellipse 60% 50% at 50% 30%,
+    #000 30%,
+    transparent 75%
+  );
+  opacity: 0.6;
+}
+
+.landing-hero-glow {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      ellipse 60% 40% at 50% 0%,
+      oklch(0.72 0.14 220 / 0.28),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 30% 30% at 80% 30%,
+      oklch(0.72 0.12 180 / 0.18),
+      transparent 60%
+    );
+}
+
+.landing-hero-inner {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 5.5rem 1.5rem 6rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.4rem;
+}
+
+@media (max-width: 800px) {
+  .landing-hero-inner {
+    padding: 3.5rem 1.25rem 4rem;
+  }
+}
+
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--brand-border);
+  background: oklch(0.215 0.025 250 / 0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-family: var(--brand-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brand-muted);
+}
+
+.hero-badge-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--brand-accent-teal);
+  box-shadow: 0 0 0 0 oklch(0.72 0.12 180 / 0.55);
+  animation: hero-pulse 2s infinite;
+}
+
+@keyframes hero-pulse {
+  0% {
+    box-shadow: 0 0 0 0 oklch(0.72 0.12 180 / 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 8px oklch(0.72 0.12 180 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 oklch(0.72 0.12 180 / 0);
+  }
+}
+
+.hero-h1 {
+  margin: 0;
+  font-size: clamp(2.25rem, 5vw, 3.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-weight: 600;
+  max-width: 22ch;
+  text-wrap: balance;
+}
+
+.hero-lede {
+  margin: 0;
+  font-size: clamp(1rem, 1.4vw, 1.125rem);
+  line-height: 1.55;
+  color: var(--brand-muted);
+  max-width: 60ch;
+  text-wrap: balance;
+}
+
+.hero-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.hero-cta-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 1.25rem;
+  border-radius: var(--brand-radius);
+  background: var(--brand-fg);
+  color: var(--brand-primary-foreground);
+  border: 1px solid var(--brand-fg);
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.hero-cta-primary:hover {
+  background: oklch(0.92 0.005 250);
+  border-color: oklch(0.92 0.005 250);
+  transform: translateY(-1px);
+}
+
+.hero-cta-arrow {
+  width: 0.95rem;
+  height: 0.95rem;
+  transition: transform 0.15s ease;
+}
+
+.hero-cta-primary:hover .hero-cta-arrow {
+  transform: translateX(2px);
+}
+
+.hero-cta-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 1.1rem;
+  border-radius: var(--brand-radius);
+  border: 1px solid var(--brand-border);
+  background: oklch(0.215 0.025 250 / 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: var(--brand-fg);
+  font-size: 0.95rem;
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.hero-cta-secondary:hover {
+  background: var(--brand-card-elevated);
+  border-color: oklch(0.45 0.05 250);
+  text-decoration: none;
+}
+
+.hero-cta-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  color: var(--brand-muted);
+}
+
+.hero-team-login {
+  margin-top: 0.5rem;
+  width: 100%;
+  max-width: 24rem;
+  text-align: left;
+}
+
+.hero-team-login summary {
+  list-style: none;
+  cursor: pointer;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--brand-muted);
+  padding: 0.5rem 0;
+  transition: color 0.15s ease;
+}
+
+.hero-team-login summary::-webkit-details-marker {
+  display: none;
+}
+
+.hero-team-login summary:hover {
+  color: var(--brand-fg);
+}
+
+.hero-team-login[open] summary {
+  margin-bottom: 0.5rem;
+}
+
+.hero-team-login .login-form {
+  margin: 0 auto;
+  padding: 1rem 1.1rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.75rem;
+  box-shadow: var(--brand-shadow);
+}
+
+/* Landing modules section ---------------------------------------- */
+.landing-modules {
+  padding: 4.5rem 1.5rem 3.5rem;
+}
+
+.landing-modules-inner {
+  max-width: 76rem;
+  margin: 0 auto;
+}
+
+.landing-modules-header {
+  text-align: center;
+  margin-bottom: 2.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.landing-modules-title {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.5vw, 2rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.landing-modules-sub {
+  margin: 0;
+  color: var(--brand-muted);
+  max-width: 46rem;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.landing-module-grid {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+/* Slim down the brand-footer-band when used at the end of the
+   landing page (extra breathing room). */
+.landing-main .brand-footer-band {
+  margin-top: 0;
+  padding: 1.75rem 1.5rem;
+  border-top: 1px solid var(--brand-border);
+  background: oklch(0.16 0.02 250 / 0.6);
+}
