@@ -59,14 +59,14 @@ export default async function ReviewPage({
 
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Review
-        </p>
-        <h1>Review queue</h1>
-        <p className="muted">
-          Records harvested by connectors land here. Approve, reject, or comment to feed the
-          learning layer.
-        </p>
+        <header className="page-intro" style={{ marginBottom: '1.25rem' }}>
+          <p className="page-eyebrow">Discovery</p>
+          <h1 className="page-title">Review queue</h1>
+          <p className="page-lede">
+            Records harvested by connectors land here. Approve, reject, or
+            comment to feed the learning layer.
+          </p>
+        </header>
 
         <div className="state-tabs">
           {STATE_FILTERS.map((f) => {

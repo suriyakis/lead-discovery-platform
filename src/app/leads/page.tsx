@@ -78,14 +78,14 @@ export default async function LeadsPage({
 
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Leads
-        </p>
-        <h1>Leads</h1>
-        <p className="muted">
-          Records the classification engine flagged as relevant against one of your product
-          profiles. Highest relevance first.
-        </p>
+        <header className="page-intro" style={{ marginBottom: '1.25rem' }}>
+          <p className="page-eyebrow">Discovery</p>
+          <h1 className="page-title">Leads</h1>
+          <p className="page-lede">
+            Records the classification engine flagged as relevant against
+            one of your product profiles. Highest relevance first.
+          </p>
+        </header>
 
         <form className="leads-controls" method="get">
           <label>

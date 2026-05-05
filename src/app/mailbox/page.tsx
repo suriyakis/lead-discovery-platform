@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { Inbox, Plus } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
@@ -33,34 +34,31 @@ export default async function MailboxIndex() {
 
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Mailbox
-        </p>
         <div className="page-header">
-          <h1>Mailbox</h1>
+          <div className="page-intro">
+            <p className="page-eyebrow">Outreach</p>
+            <h1 className="page-title">Mailbox</h1>
+            <p className="page-lede">
+              Configure SMTP/IMAP accounts for outbound + inbound mail.
+              Sending is always manual; drafts go through human approval.
+              Approved outreach drafts can be sent from here once a mailbox
+              is configured.
+            </p>
+          </div>
           <Link href="/mailbox/new" className="primary-btn">
-            Add mailbox
+            <Plus className="primary-btn-icon" aria-hidden="true" />
+            <span>Add mailbox</span>
           </Link>
         </div>
-        <p className="muted">
-          Configure SMTP/IMAP accounts for outbound + inbound mail. Sending is
-          always manual; drafts go through human approval. Approved outreach
-          drafts can be sent from here once a mailbox is configured.
-        </p>
-
-        <p className="muted" style={{ marginTop: '0.75rem' }}>
-          <Link href="/mailbox/signatures">Signatures →</Link>
-          {'  ·  '}
-          <Link href="/mailbox/suppression">Suppression list →</Link>
-        </p>
 
         {mailboxes.length === 0 ? (
-          <section>
-            <p className="muted">
-              No mailboxes yet. <Link href="/mailbox/new">Add one</Link> to start
-              sending and receiving mail.
+          <div className="empty-state">
+            <Inbox className="empty-state-icon" aria-hidden="true" />
+            <p>
+              No mailboxes yet. <Link href="/mailbox/new">Add one</Link> to
+              start sending and receiving mail.
             </p>
-          </section>
+          </div>
         ) : (
           <section>
             <ul className="profile-list">

@@ -770,24 +770,38 @@ button.primary-btn {
   font-size: 0.875rem;
 }
 
-/* ---- Profile list ---- */
+/* ---- Profile list — used as a generic list-of-things on /products,
+   /admin/users, /admin/workspaces, /connectors/.../runs, etc. Each
+   item is a self-contained card with a hover lift. ---- */
 .profile-list {
   list-style: none;
   padding: 0;
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .profile-list li {
-  padding: 1rem 0;
-  border-bottom: 1px solid var(--brand-border);
+  position: relative;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 0.6rem;
+  background: var(--brand-card);
+  transition: background 0.15s ease, border-color 0.15s ease,
+    transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-.profile-list li:last-child {
-  border-bottom: 0;
+.profile-list li:hover {
+  background: var(--brand-card-elevated);
+  border-color: oklch(0.45 0.05 250);
+  transform: translateY(-1px);
+  box-shadow: var(--brand-shadow);
 }
 
 .profile-list li.archived {
-  opacity: 0.6;
+  opacity: 0.65;
+  background: oklch(0.21 0.02 250 / 0.5);
 }
 
 .profile-list a {
