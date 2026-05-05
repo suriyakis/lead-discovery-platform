@@ -575,6 +575,15 @@ deploy. Translation-on-demand (P41b) requires `AI_PROVIDER` to be flipped
 from `mock` to `openai` or `anthropic` on prod for the actual translations
 to be useful — currently the mock returns the input unchanged.
 
+## Phase 42 — Auto-translate inbound + draft translate-and-save
+
+- [x] **P42-01.** `maybeAutoTranslateInbound(ctx, messageId)` in `translation.ts`. Heuristic-gated using `detectLanguageFromText` so English mail short-circuits without billing the AI. Returns a typed outcome union (`translated` / `skipped:already_translated` / `skipped:already_english` / `skipped:undetermined` / `skipped:no_body` / `skipped:not_inbound` / `skipped:disabled` / `skipped:not_found`) so callers and tests can assert which branch fired. Honours `AUTO_TRANSLATE_INBOUND=0` env kill switch. Failures NEVER throw — runs inline with mail receipt and must not break the receive path.
+- [x] **P42-02.** Wired into `mail.persistInbound` directly after the Phase 20 `analyseReply` call, sharing the same best-effort try/catch envelope. Console-logs but doesn't break receive on translator failures.
+- [x] **P42-03.** `/drafts/[id]` UI: 'Translate to {language} & save' second submit button on the edit form (only renders when product's effective language is non-English). Server action calls `translateFromEnglish` with `resolveProfileLanguage(product)` as target then `editOutreachDraft` with the translated body, redirects with `?msg=translated-to-{lang}` for a teal info banner. `?msg=already-english` short-circuit when target resolves to English. `?error={msg}` on failure shows the existing `.form-error` style. New `.form-info` CSS class for the success banner.
+- [x] **P42-04.** 6 tests added in `src/tests/translation.test.ts` covering `maybeAutoTranslateInbound`: translates Polish inbound, skips English (no audit emitted), skips ambiguous short text, skips outbound, skips when cache populated, honours the kill switch. **616/616 → 622/622 total tests pass.**
+
+**Phase 42 complete.**
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

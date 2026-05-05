@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import { mailMessages, type MailMessage } from '@/lib/db/schema/mailing';
 import { getAIProviderForCtx } from '@/lib/ai';
-import { getLanguageName } from '@/lib/i18n/language';
+import { detectLanguageFromText, getLanguageName } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
 import type { WorkspaceContext } from './context';
 
@@ -212,6 +212,76 @@ export async function translateFromEnglish(
     translatedText: parsed.translatedText,
     targetLanguage: targetLang,
   };
+}
+
+/**
+ * Auto-translation outcomes. Returned by maybeAutoTranslateInbound so
+ * callers (and tests) can assert which branch fired.
+ */
+export type AutoTranslateOutcome =
+  | 'translated'
+  | 'skipped:already_translated'
+  | 'skipped:already_english'
+  | 'skipped:undetermined'
+  | 'skipped:no_body'
+  | 'skipped:not_inbound'
+  | 'skipped:disabled'
+  | 'skipped:not_found';
+
+/**
+ * Best-effort auto-translate for an inbound message. Wired into
+ * mail.persistInbound so foreign-language replies arrive pre-translated
+ * and the operator sees the English version on first open.
+ *
+ * Decisions before billing:
+ *   - AUTO_TRANSLATE_INBOUND=0 in env disables globally.
+ *   - Outbound messages and rows that already have body_text_en are
+ *     no-ops.
+ *   - The heuristic language detector runs first. If it reads the body
+ *     as English or can't decide (too short / mixed), we skip — both
+ *     conditions cost nothing and matter most because most B2B inbound
+ *     mail is English.
+ *
+ * Failures are surfaced via the return type, NOT by throwing — this
+ * runs inline with mail receipt and must never break the receive path.
+ */
+export async function maybeAutoTranslateInbound(
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  messageId: bigint,
+): Promise<AutoTranslateOutcome> {
+  if (process.env.AUTO_TRANSLATE_INBOUND === '0') {
+    return 'skipped:disabled';
+  }
+
+  const [row] = await db
+    .select()
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.id, messageId),
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+      ),
+    )
+    .limit(1);
+  if (!row) return 'skipped:not_found';
+  if (row.direction !== 'inbound') return 'skipped:not_inbound';
+  if (!row.bodyText || !row.bodyText.trim()) return 'skipped:no_body';
+  if (row.bodyTextEn && row.bodyTextEn.trim()) return 'skipped:already_translated';
+
+  // Heuristic gate: skip the AI call entirely if the body reads as
+  // English or the detector is uncertain. This is a 0-cost short-circuit
+  // for the common case (most B2B inbound mail).
+  const detected = detectLanguageFromText(row.bodyText);
+  if (detected === null) return 'skipped:undetermined';
+  if (detected === 'en') return 'skipped:already_english';
+
+  try {
+    await translateInboundToEnglish(ctx, messageId);
+    return 'translated';
+  } catch (err) {
+    console.error('[translation.maybeAutoTranslateInbound] failed:', err);
+    return 'skipped:undetermined';
+  }
 }
 
 /**

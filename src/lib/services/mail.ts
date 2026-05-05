@@ -24,6 +24,7 @@ import {
   renderSignatureText,
 } from './signatures';
 import { analyseReply } from './reply-classifier';
+import { maybeAutoTranslateInbound } from './translation';
 import { randomUUID } from 'node:crypto';
 import {
   type IMailProvider,
@@ -399,6 +400,9 @@ async function persistInbound(
   await touchThread(thread.id);
 
   // Phase 20: classify the inbound + run auto-actions inline. Best-effort.
+  // Phase 42: auto-translate non-English bodies inline so the operator
+  // sees the English version on first thread open. Heuristic-gated so
+  // English mail never bills the AI.
   try {
     const insertedRows = await db
       .select({ id: mailMessages.id })
@@ -412,9 +416,10 @@ async function persistInbound(
       .limit(1);
     if (insertedRows[0]) {
       await analyseReply(ctx, insertedRows[0].id);
+      await maybeAutoTranslateInbound(ctx, insertedRows[0].id);
     }
   } catch (err) {
-    console.error('[mail.persistInbound] reply classification failed:', err);
+    console.error('[mail.persistInbound] post-receive hooks failed:', err);
   }
 
   return false;

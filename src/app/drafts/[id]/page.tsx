@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { Languages } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
@@ -19,18 +20,29 @@ import {
 } from '@/lib/services/outreach';
 import { enqueueDraft } from '@/lib/services/outreach-queue';
 import { listMailboxes } from '@/lib/services/mailbox';
+import {
+  TranslationError,
+  translateFromEnglish,
+} from '@/lib/services/translation';
+import {
+  getLanguageName,
+  resolveProfileLanguage,
+} from '@/lib/i18n/language';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 
 export default async function DraftDetail({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ msg?: string; error?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
   const { id: idStr } = await params;
   if (!/^\d+$/.test(idStr)) redirect('/drafts');
   const id = BigInt(idStr);
+  const sp = await searchParams;
 
   let ctx;
   try {
@@ -72,6 +84,36 @@ export default async function DraftDetail({
     const body = String(formData.get('body') ?? '');
     await editOutreachDraft(c, id, { subject, body });
     redirect(`/drafts/${id}`);
+  }
+  async function translateAndSave(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const body = String(formData.get('body') ?? '');
+    if (!body.trim()) redirect(`/drafts/${id}`);
+    const targetLang = resolveProfileLanguage(product);
+    if (targetLang === 'en' || targetLang.startsWith('en-')) {
+      // Already English — no-op, but persist any pending edits.
+      const subject = String(formData.get('subject') ?? '').trim() || null;
+      await editOutreachDraft(c, id, { subject, body });
+      redirect(`/drafts/${id}?msg=already-english`);
+    }
+    try {
+      const result = await translateFromEnglish(c, {
+        text: body,
+        targetLanguage: targetLang,
+      });
+      const subject = String(formData.get('subject') ?? '').trim() || null;
+      await editOutreachDraft(c, id, { subject, body: result.translatedText });
+      redirect(`/drafts/${id}?msg=translated-to-${targetLang}`);
+    } catch (err) {
+      const m =
+        err instanceof TranslationError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'translate failed';
+      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
   async function enqueueForSend(formData: FormData) {
     'use server';
@@ -126,6 +168,20 @@ export default async function DraftDetail({
     redirect('/drafts');
   }
 
+  const banner = sp.error
+    ? { tone: 'error' as const, text: sp.error }
+    : sp.msg === 'already-english'
+      ? {
+          tone: 'info' as const,
+          text: "Product language is English — kept the body as-is.",
+        }
+      : sp.msg?.startsWith('translated-to-')
+        ? {
+            tone: 'info' as const,
+            text: `Body translated to ${getLanguageName(sp.msg.replace('translated-to-', ''))} and saved. Review before approving.`,
+          }
+        : null;
+
   return (
     <AppShell>
         <p className="muted">
@@ -133,6 +189,14 @@ export default async function DraftDetail({
           <Link href="/drafts">Drafts</Link> / Draft {draft.id.toString()}
         </p>
         <h1>{draft.subject ?? `Draft ${draft.id}`}</h1>
+        {banner ? (
+          <p
+            className={banner.tone === 'error' ? 'form-error' : 'form-info'}
+            style={{ marginBottom: '1rem' }}
+          >
+            {banner.text}
+          </p>
+        ) : null}
         <p>
           <span className={statusBadgeClass(draft.status)}>
             {draft.status.replace('_', ' ')}
@@ -224,6 +288,20 @@ export default async function DraftDetail({
                 <button type="submit" className="primary-btn">
                   Save edits
                 </button>
+                {(() => {
+                  const target = resolveProfileLanguage(product);
+                  if (target === 'en' || target.startsWith('en-')) return null;
+                  return (
+                    <button
+                      type="submit"
+                      formAction={translateAndSave}
+                      className="ghost-btn translate-draft-btn"
+                    >
+                      <Languages className="primary-btn-icon" aria-hidden="true" />
+                      <span>Translate to {getLanguageName(target)} &amp; save</span>
+                    </button>
+                  );
+                })()}
               </div>
             </form>
           )}

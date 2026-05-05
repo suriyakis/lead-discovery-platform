@@ -14,6 +14,7 @@ import {
 } from '@/lib/services/context';
 import {
   TranslationError,
+  maybeAutoTranslateInbound,
   translateFromEnglish,
   translateInboundToEnglish,
   translateToEnglish,
@@ -280,5 +281,88 @@ describe('translateInboundToEnglish', () => {
     await expect(
       translateInboundToEnglish(ctx(otherWorkspace, otherUser), mid),
     ).rejects.toThrow(TranslationError);
+  });
+});
+
+// ─── maybeAutoTranslateInbound ────────────────────────────────────────
+
+describe('maybeAutoTranslateInbound', () => {
+  it('translates a non-English inbound', async () => {
+    const s = await setup();
+    const mid = await seedInbound(
+      s,
+      'Vetrofluid to innowacyjny system uszczelniający dla betonu, który zapewnia trwałą ochronę przed wodą i wilgocią. Nasz produkt jest stosowany w budownictwie komercyjnym.',
+    );
+    const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+    expect(outcome).toBe('translated');
+
+    const [row] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.id, mid));
+    expect(row!.bodyTextEn).toContain('[EN]');
+  });
+
+  it('skips an English inbound without billing the AI', async () => {
+    const s = await setup();
+    const mid = await seedInbound(
+      s,
+      'Hello, we are interested in your offer for the construction project at our headquarters site.',
+    );
+    const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+    expect(outcome).toBe('skipped:already_english');
+    const [row] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.id, mid));
+    expect(row!.bodyTextEn).toBeNull();
+    // No translation audit row.
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.workspaceId, s.workspaceA));
+    expect(audits.some((a) => a.kind === 'translation.to_english')).toBe(false);
+  });
+
+  it('skips short/ambiguous inbound (heuristic too uncertain)', async () => {
+    const s = await setup();
+    const mid = await seedInbound(s, 'OK thanks');
+    const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+    expect(outcome).toBe('skipped:undetermined');
+  });
+
+  it('skips outbound messages', async () => {
+    const s = await setup();
+    const mid = await seedOutbound(s, 'we sent this');
+    const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+    expect(outcome).toBe('skipped:not_inbound');
+  });
+
+  it('skips when body_text_en is already populated', async () => {
+    const s = await setup();
+    const mid = await seedInbound(s, 'cześć, mam pytanie odnośnie projektu budowlanego');
+    await db
+      .update(mailMessages)
+      .set({ bodyTextEn: 'pre-existing' })
+      .where(eq(mailMessages.id, mid));
+    const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+    expect(outcome).toBe('skipped:already_translated');
+  });
+
+  it('honours the AUTO_TRANSLATE_INBOUND=0 env kill switch', async () => {
+    const s = await setup();
+    const mid = await seedInbound(
+      s,
+      'Vetrofluid to innowacyjny system uszczelniający dla betonu, który zapewnia trwałą ochronę przed wodą i wilgocią.',
+    );
+    const prior = process.env.AUTO_TRANSLATE_INBOUND;
+    process.env.AUTO_TRANSLATE_INBOUND = '0';
+    try {
+      const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+      expect(outcome).toBe('skipped:disabled');
+    } finally {
+      if (prior === undefined) delete process.env.AUTO_TRANSLATE_INBOUND;
+      else process.env.AUTO_TRANSLATE_INBOUND = prior;
+    }
   });
 });
