@@ -521,6 +521,41 @@ credentials).
 
 **Phase 36 complete.**
 
+## Phase 37 — Visual polish: lucide icons in sidebar + dashboard rewrite
+
+- [x] **P37-01.** `lucide-react` added as a dependency (peer-deps clean for the project; nodemailer warning is pre-existing). Use `lucide-react` for all in-app iconography from here on.
+- [x] **P37-02.** Sidebar: every NavItem now carries a topic-relevant Lucide icon. Active item gets a 2px accent rail on the left edge + tinted icon. Hover lifts icon colour from muted → fg.
+- [x] **P37-03.** Dashboard rewrite: `<dl>` + `<ul>` replaced with `.page-intro` (eyebrow + title + lede) + `.profile-cards` row (paired elevated cards with role pills + radial accent) + 14-tile `.module-tile-grid`. Each module tile has a Lucide icon, tone-coloured icon pill, and hover-on-arrow microreaction.
+- [x] **P37-04.** Reusable patterns added in globals.css: `.page-intro` / `.page-eyebrow` / `.page-title` / `.page-lede` / `.section-header` / `.section-title` / `.section-sub` / `.role-pill-{role}` / `.module-tile-grid` / `.module-tile` / `.module-tile-{tone}`. Subsequent pages adopt incrementally without churn.
+
+**Phase 37 complete.**
+
+## Phase 38 — Landing page hero pass
+
+- [x] **P38-01.** `.landing-hero-bg-grid` (64px line grid masked by a radial fade) + `.landing-hero-glow` (two stacked radial gradients in primary blue + accent teal) for the public landing page.
+- [x] **P38-02.** `.hero-badge` rounded pill with pulsing teal dot (`hero-pulse` 2s keyframe) + uppercased mono eyebrow text.
+- [x] **P38-03.** `.hero-h1` grew to clamp(2.25rem, 5vw, 3.75rem) with `text-wrap: balance` for clean line breaks; `.hero-lede` similarly balanced.
+- [x] **P38-04.** `.hero-cta-row`: primary 'Sign in with Google' (white pill with arrow that translates on hover) + secondary 'What\\'s inside' (border + backdrop-blur card style). Email/password sign-in folded into a `<details>` below the primary CTAs (`.hero-team-login`).
+- [x] **P38-05.** Modules grid converted from 8 unstyled `.module-card` boxes to the same `.module-tile-grid` + `.module-tile-static` pattern as the dashboard, with Lucide icons per module (Network, ListChecks, Sparkles, PencilLine, Inbox, KanbanSquare, BookOpen, Download).
+
+**Phase 38 complete.**
+
+## Phase 39 — Page-intro pattern + lifted metric cards + data-table
+
+- [x] **P39-01.** Naming reconciliation: `.page-header` (pre-existing) is the horizontal title-left / CTA-right flex bar — kept untouched. `.page-intro` (new) is the vertical eyebrow + title + lede stack — used inside `.page-header` on title-with-CTA pages or standalone on landing-style pages.
+- [x] **P39-02.** Page-intro applied to /products (with Lucide Plus icon on the 'New product' CTA), /pipeline, /drafts, /dashboard.
+- [x] **P39-03.** /mailbox/deliverability rewrite: inline styles replaced with `.metric-grid` + `<MetricCard>` (Lucide icons + tone tokens) + `.data-table` (uppercase mono headers, hover row tint, tabular-nums, `.num` right-align utility) + `.reply-class-grid` + `.empty-state` + `.metric-notes`. Bounce/Failed/Queue-failed cards flip to warn tone when non-zero.
+- [x] **P39-04.** Shared patterns added to globals.css: `.metric-card` / `.metric-card-{tone}` (6 tones: primary, teal, amber, violet, warn, muted), `.data-table`, `.empty-state`, `.window-tabs` / `.window-tab`, `.reply-class-grid` / `.reply-class-card`, `.metric-notes`. `.primary-btn` flexes children with gap so an icon + label render cleanly side-by-side; hover gains `transform: translateY(-1px)`.
+
+**Phase 39 complete.**
+
+## Phase 40 — Profile-list as cards + leads/review/mailbox page-intro
+
+- [x] **P40-01.** `.profile-list` reskin: each `<li>` is now a self-contained card (soft border + brand-card bg + hover lift). Touches every list-of-things view (/products, /admin/users, /admin/users/[id], /admin/workspaces, /admin/workspaces/[id], /admin, /connectors/.../runs/[runId], /mailbox). No markup change — child shape preserved so all consumers benefit without per-page rewrites. Same hover-lift treatment also applied to `.lead-list li`.
+- [x] **P40-02.** Page-intro applied to /leads, /review, /mailbox so they match dashboard / pipeline / drafts. /mailbox keeps its CTA pattern: `.page-header` outer flex with `.page-intro` on the title side and a `.primary-btn` (now with Plus icon) on the right. Empty state replaced with the `.empty-state` card pattern + Inbox icon.
+
+**Phase 40 complete.**
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

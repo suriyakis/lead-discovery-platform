@@ -1401,9 +1401,18 @@ button.primary-btn {
 
 .lead-list li {
   border: 1px solid var(--brand-border);
-  border-radius: var(--brand-radius);
+  border-radius: 0.6rem;
   padding: 0.875rem 1rem;
   background: var(--brand-card);
+  transition: background 0.15s ease, border-color 0.15s ease,
+    transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lead-list li:hover {
+  background: var(--brand-card-elevated);
+  border-color: oklch(0.45 0.05 250);
+  transform: translateY(-1px);
+  box-shadow: var(--brand-shadow);
 }
 
 .lead-row {
