@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { SignatureForm } from '@/components/SignatureForm';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -120,97 +121,14 @@ export default async function SignaturesPage() {
 
         <section>
           <h2>New signature</h2>
-          <form action={create} className="edit-draft-form">
-            <label>
-              <span>Name</span>
-              <input type="text" name="name" required maxLength={120} />
-            </label>
-            <label>
-              <span>Mailbox (leave unset for workspace-wide)</span>
-              <select name="mailboxId" defaultValue="">
-                <option value="">— workspace-wide —</option>
-                {mailboxes.map((m) => (
-                  <option key={m.id.toString()} value={m.id.toString()}>
-                    {m.name} ({m.fromAddress})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <fieldset className="ks-kind-fields">
-              <legend className="muted">Structured fields (drive the HTML renderer)</legend>
-              <label>
-                <span>Greeting</span>
-                <input type="text" name="greeting" placeholder="Pozdrawiam / Kind regards" maxLength={120} />
-              </label>
-              <label>
-                <span>Full name</span>
-                <input type="text" name="fullName" maxLength={120} />
-              </label>
-              <label>
-                <span>Title</span>
-                <input type="text" name="title" maxLength={120} />
-              </label>
-              <label>
-                <span>Company</span>
-                <input type="text" name="company" maxLength={120} />
-              </label>
-              <label>
-                <span>Tagline</span>
-                <input type="text" name="tagline" maxLength={200} />
-              </label>
-              <label>
-                <span>Website</span>
-                <input type="url" name="website" placeholder="https://..." />
-              </label>
-              <label>
-                <span>Email</span>
-                <input type="email" name="email" />
-              </label>
-              <label>
-                <span>Phones (one per line, &quot;label: number&quot;)</span>
-                <textarea
-                  name="phones"
-                  rows={3}
-                  placeholder={'mob: +48 555 123 456\noffice: +48 22 555 1234'}
-                />
-              </label>
-            </fieldset>
-            <label>
-              <span>Plain-text fallback body (required)</span>
-              <textarea name="bodyText" rows={4} required maxLength={4000} />
-            </label>
-            <fieldset className="ks-kind-fields">
-              <legend className="muted">
-                Custom HTML signature (optional — overrides the structured renderer)
-              </legend>
-              <p className="muted" style={{ fontSize: '0.825rem', marginTop: 0 }}>
-                Paste an existing HTML signature (e.g. from your current
-                mail client). When set, this exact markup is used in
-                outbound HTML and the structured fields above are
-                ignored. Leave blank to use the auto-rendered version.
-              </p>
-              <label>
-                <span>HTML</span>
-                <textarea
-                  name="bodyHtml"
-                  rows={6}
-                  maxLength={20000}
-                  placeholder={'<table>\n  <tr><td>...</td></tr>\n</table>'}
-                  spellCheck={false}
-                  style={{ fontFamily: 'var(--brand-mono)', fontSize: '0.825rem' }}
-                />
-              </label>
-            </fieldset>
-            <label className="checkbox-row">
-              <input type="checkbox" name="isDefault" />
-              <span>Set as default at this scope</span>
-            </label>
-            <div className="action-row">
-              <button type="submit" className="primary-btn">
-                Create
-              </button>
-            </div>
-          </form>
+          <SignatureForm
+            action={create}
+            mailboxes={mailboxes.map((m) => ({
+              id: m.id.toString(),
+              name: m.name,
+              fromAddress: m.fromAddress,
+            }))}
+          />
         </section>
 
         {signatures.length === 0 ? (

@@ -1682,3 +1682,107 @@ button.primary-btn {
 .brand-footer-band .small {
   font-size: 0.825rem;
 }
+
+/* ---- /mailbox/signatures live preview ----------------------------- */
+.signature-form-grid {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .signature-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.signature-preview {
+  position: sticky;
+  top: 1rem;
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-border);
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.signature-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.signature-preview-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+  padding: 2px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.signature-preview-tabs button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--brand-muted);
+  padding: 0.3rem 0.7rem;
+  font-size: 0.78rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.signature-preview-tabs button.active {
+  background: var(--brand-orange, #e87b1f);
+  color: #0b1220;
+  font-weight: 600;
+}
+
+.signature-preview-frame {
+  background: #ffffff;
+  color: #1f2937;
+  border-radius: 6px;
+  padding: 1rem;
+  min-height: 6rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: auto;
+}
+
+.signature-preview-frame img {
+  max-width: 100%;
+  height: auto;
+}
+
+.signature-preview-text {
+  background: #0b1220;
+  color: #e5e7eb;
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  margin: 0;
+  font-family: var(--brand-mono);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  min-height: 6rem;
+  overflow: auto;
+}
+
+.signature-preview-empty {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px dashed var(--brand-border);
+  border-radius: 6px;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--brand-muted);
+  font-size: 0.85rem;
+  min-height: 6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
