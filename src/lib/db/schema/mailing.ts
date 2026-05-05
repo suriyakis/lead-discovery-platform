@@ -441,6 +441,85 @@ export type ReplyAutoActions = typeof replyAutoActions.$inferSelect;
 export type NewReplyAutoActions = typeof replyAutoActions.$inferInsert;
 
 /**
+ * Phase 43: per-mailbox sending policy. Keyed 1:1 to mailboxes (PK = mailbox_id).
+ *
+ * Holds everything a queue dispatcher needs to decide *when* a queued
+ * outbound message is allowed to send: rate caps (per day / hour / domain),
+ * delay envelope (min..max seconds between sends), the daily working
+ * window (business hours + weekday allowlist + timezone), and calendar-
+ * level skips (weekends, public holidays for a country). Also caches
+ * "sent today / this hour" counters so the gate doesn't have to scan
+ * mail_messages for every tick.
+ *
+ * Workspace-level outreach_send_settings still owns the emergency_pause
+ * kill switch and the workspace-default delay mode; per-mailbox rows
+ * take precedence for everything they cover.
+ */
+export const mailboxSendingLimits = pgTable('mailbox_sending_limits', {
+  mailboxId: bigint('mailbox_id', { mode: 'bigint' })
+    .primaryKey()
+    .references(() => mailboxes.id, { onDelete: 'cascade' }),
+  workspaceId: bigint('workspace_id', { mode: 'bigint' })
+    .notNull()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+
+  /** Hard cap on the number of outbound sends in a calendar day (local tz). */
+  maxPerDay: integer('max_per_day').notNull().default(50),
+  /** Cap per clock hour (resets on the hour, local tz). */
+  maxPerHour: integer('max_per_hour').notNull().default(10),
+  /** Cap per recipient domain in the trailing 24h, before the queue
+      will allow another send to the same domain. Distinct from the
+      Phase 19 domainCooldownHours (which is the *interval* between
+      sends to the same domain). Both apply. */
+  maxPerDomain: integer('max_per_domain').notNull().default(5),
+
+  /** Minimum and maximum random delay between consecutive sends from
+      this mailbox, in seconds. Drives scheduledSendAt at enqueue time. */
+  minDelaySeconds: integer('min_delay_seconds').notNull().default(60),
+  maxDelaySeconds: integer('max_delay_seconds').notNull().default(300),
+
+  /** When true, only send during the business window (start..end on
+      a weekday in businessDays). When false, the window controls are
+      ignored and only quantity caps apply. Default off so existing
+      mailboxes don't suddenly stall the queue overnight; operator
+      flips it on from the settings page when ready. */
+  businessHoursOnly: boolean('business_hours_only').notNull().default(false),
+  /** 0..23. End hour is exclusive: 8..17 means 08:00–16:59. */
+  businessStartHour: smallint('business_start_hour').notNull().default(8),
+  businessEndHour: smallint('business_end_hour').notNull().default(17),
+  /** ISO weekdays where 1=Monday .. 7=Sunday, default Mon–Fri. */
+  businessDays: integer('business_days')
+    .array()
+    .notNull()
+    .default(sql`ARRAY[1,2,3,4,5]::int[]`),
+  /** IANA timezone for evaluating local time. */
+  timezone: text('timezone').notNull().default('Europe/Warsaw'),
+
+  /** Skip Saturday & Sunday regardless of businessDays (legacy toggle —
+      can be redundant with businessDays but keeps the UI simple). */
+  respectWeekends: boolean('respect_weekends').notNull().default(true),
+  /** Skip public holidays in holidayCountry. */
+  respectHolidays: boolean('respect_holidays').notNull().default(true),
+  /** ISO 3166-1 alpha-2 country code driving the holiday set. */
+  holidayCountry: text('holiday_country').notNull().default('PL'),
+
+  /** Counters; reset by the gate on day/hour rollover. */
+  sentToday: integer('sent_today').notNull().default(0),
+  sentThisHour: integer('sent_this_hour').notNull().default(0),
+  /** YYYY-MM-DD of the day sentToday is counting. */
+  lastResetDate: text('last_reset_date'),
+  /** 0..23 — hour sentThisHour is counting. */
+  lastResetHour: smallint('last_reset_hour'),
+
+  updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type MailboxSendingLimits = typeof mailboxSendingLimits.$inferSelect;
+export type NewMailboxSendingLimits = typeof mailboxSendingLimits.$inferInsert;
+
+/**
  * Phase 22: open-tracking pixel events. Each row = one tracking-pixel
  * fetch; multiple opens of the same message produce multiple rows.
  */

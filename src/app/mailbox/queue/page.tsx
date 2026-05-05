@@ -248,8 +248,24 @@ export default async function QueuePage({
                   <span>scheduled {e.scheduledSendAt.toLocaleString()}</span>
                   <span>delay: {e.delayMode}</span>
                   <span>attempts: {e.attemptCount}</span>
-                  {e.lastError ? <span className="warn">{e.lastError.slice(0, 200)}</span> : null}
                 </div>
+                {e.lastError ? (
+                  <p
+                    className={
+                      e.status === 'queued'
+                        ? 'queue-reason queue-reason-info'
+                        : 'queue-reason queue-reason-warn'
+                    }
+                  >
+                    {e.status === 'queued' ? (
+                      <>
+                        <strong>Why scheduled here:</strong> {e.lastError}
+                      </>
+                    ) : (
+                      e.lastError.slice(0, 400)
+                    )}
+                  </p>
+                ) : null}
                 {e.status === 'queued' ? (
                   <div className="action-row" style={{ marginTop: '0.5rem' }}>
                     <form action={cancel}>

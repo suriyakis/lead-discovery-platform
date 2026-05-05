@@ -29,6 +29,12 @@ import {
 } from './context';
 import { sendMessage } from './mail';
 import { isSuppressed } from './suppression';
+import {
+  canSendNow,
+  evaluateBusinessWindow,
+  getOrCreateMailboxSendingLimits,
+  recordSendCounter,
+} from './sending-policy';
 import type { IMailProvider } from '@/lib/mail';
 
 export class OutreachQueueError extends Error {
@@ -188,8 +194,24 @@ export async function enqueueDraft(
 
   const settings = await getSendSettings(ctx);
   const delayMode = input.delayMode ?? settings.defaultDelayMode;
-  const scheduledSendAt =
+
+  // Phase 43: respect the per-mailbox business window when computing
+  // scheduledSendAt. The base computation honours the workspace delay
+  // mode; if the resulting instant falls outside the mailbox's working
+  // window we push it to the next window opening. Caller-supplied
+  // overrides (scheduledSendAt) bypass the policy gate.
+  let scheduledSendAt =
     input.scheduledSendAt ?? computeScheduledAt(delayMode, settings);
+  if (!input.scheduledSendAt) {
+    const limits = await getOrCreateMailboxSendingLimits(
+      ctx.workspaceId,
+      input.mailboxId,
+    );
+    const window = evaluateBusinessWindow(limits, scheduledSendAt);
+    if (!window.allowed && window.retryAfter) {
+      scheduledSendAt = window.retryAfter;
+    }
+  }
 
   // Resolve recipient from the lead.
   // For Phase 19 simplicity we pull from outreach_drafts.evidence.contactEmail
@@ -449,6 +471,34 @@ async function processEntry(
       }
     }
 
+    // Phase 43: per-mailbox sending policy. Checks business window
+    // (timezone-aware), daily/hourly counters, and per-domain 24h cap.
+    // On a denial we re-queue with scheduledSendAt=retryAfter and set
+    // last_error to the human-readable reason — the entry stays as
+    // 'queued' so it'll be picked up again at retryAfter rather than
+    // marked 'skipped' permanently.
+    const primaryDomain = entry.toAddresses[0]?.split('@')[1]?.toLowerCase() ?? null;
+    const policy = await canSendNow({
+      workspaceId: ctx.workspaceId,
+      mailboxId: entry.mailboxId,
+      recipientDomain: primaryDomain,
+      now,
+    });
+    if (!policy.allowed) {
+      await db
+        .update(outreachQueue)
+        .set({
+          status: 'queued',
+          // De-claim — back into the queue at retryAfter.
+          attemptCount: entry.attemptCount, // undo the +1 from claim
+          scheduledSendAt: policy.retryAfter ?? new Date(now.getTime() + 60 * 60 * 1000),
+          lastError: policy.reason ?? 'sending policy blocked',
+          updatedAt: new Date(),
+        })
+        .where(eq(outreachQueue.id, entry.id));
+      return 'skipped';
+    }
+
     // Domain cooldown: any prior outbound to this domain in the last
     // domainCooldownHours triggers skip.
     if (settings.domainCooldownHours > 0) {
@@ -517,6 +567,17 @@ async function processEntry(
         updatedAt: new Date(),
       })
       .where(eq(outreachQueue.id, entry.id));
+    // Phase 43: bump the per-mailbox counters so subsequent canSendNow
+    // calls see the updated sentToday/sentThisHour. Best-effort.
+    try {
+      await recordSendCounter({
+        workspaceId: ctx.workspaceId,
+        mailboxId: entry.mailboxId,
+        now,
+      });
+    } catch (counterErr) {
+      console.error('[outreach-queue] recordSendCounter failed:', counterErr);
+    }
     return 'sent';
   } catch (err) {
     await db

@@ -1,7 +1,10 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { eq } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
+import { db } from '@/lib/db/client';
+import { mailboxSendingLimits } from '@/lib/db/schema/mailing';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -15,6 +18,11 @@ import {
   testMailboxConnection,
 } from '@/lib/services/mailbox';
 import { listThreads, syncInbound } from '@/lib/services/mail';
+import { getOrCreateMailboxSendingLimits } from '@/lib/services/sending-policy';
+import {
+  SUPPORTED_HOLIDAY_COUNTRIES,
+  type HolidayCountry,
+} from '@/lib/i18n/holidays';
 
 export default async function MailboxDetail({
   params,
@@ -90,6 +98,47 @@ export default async function MailboxDetail({
     redirect('/mailbox');
   }
 
+  async function saveSendingPolicy(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    if (!canAdminWorkspace(c)) {
+      redirect(`/mailbox/${id}?error=${encodeURIComponent('admin only')}`);
+    }
+    const businessDays = (formData.getAll('businessDays') as string[])
+      .map((s) => Number(s))
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= 7);
+    const updates = {
+      maxPerDay: clampInt(formData.get('maxPerDay'), 0, 10_000),
+      maxPerHour: clampInt(formData.get('maxPerHour'), 0, 10_000),
+      maxPerDomain: clampInt(formData.get('maxPerDomain'), 0, 10_000),
+      minDelaySeconds: clampInt(formData.get('minDelaySeconds'), 0, 86_400),
+      maxDelaySeconds: clampInt(formData.get('maxDelaySeconds'), 0, 86_400),
+      businessHoursOnly: formData.get('businessHoursOnly') === 'on',
+      businessStartHour: clampInt(formData.get('businessStartHour'), 0, 23),
+      businessEndHour: clampInt(formData.get('businessEndHour'), 1, 24),
+      businessDays: businessDays.length > 0 ? businessDays : [1, 2, 3, 4, 5],
+      timezone: String(formData.get('timezone') ?? 'Europe/Warsaw').trim() || 'Europe/Warsaw',
+      respectWeekends: formData.get('respectWeekends') === 'on',
+      respectHolidays: formData.get('respectHolidays') === 'on',
+      holidayCountry: String(formData.get('holidayCountry') ?? 'PL'),
+      updatedAt: new Date(),
+    };
+    // Lazy-create then update.
+    await getOrCreateMailboxSendingLimits(c.workspaceId, id);
+    await db
+      .update(mailboxSendingLimits)
+      .set(updates)
+      .where(eq(mailboxSendingLimits.mailboxId, id));
+    redirect(
+      `/mailbox/${id}?message=${encodeURIComponent('Sending policy saved.')}`,
+    );
+  }
+
+  // Read current policy for the form.
+  const limits = canAdminWorkspace(ctx)
+    ? await getOrCreateMailboxSendingLimits(ctx.workspaceId, id)
+    : null;
+
   return (
     <AppShell>
         <p className="muted">
@@ -158,6 +207,122 @@ export default async function MailboxDetail({
           </div>
         </section>
 
+        {limits ? (
+          <section>
+            <h2>Sending policy</h2>
+            <p className="muted small">
+              Outreach queue consults this before every send. Counters reset
+              per local day / hour in {limits.timezone}. Holiday calendar
+              uses {limits.holidayCountry}.
+            </p>
+            <form action={saveSendingPolicy} className="edit-draft-form">
+              <fieldset className="ks-kind-fields">
+                <legend className="muted">Quantity caps</legend>
+                <label>
+                  <span>Max per day</span>
+                  <input type="number" name="maxPerDay" min="0" max="10000" defaultValue={limits.maxPerDay} />
+                </label>
+                <label>
+                  <span>Max per hour</span>
+                  <input type="number" name="maxPerHour" min="0" max="10000" defaultValue={limits.maxPerHour} />
+                </label>
+                <label>
+                  <span>Max per recipient domain (rolling 24h)</span>
+                  <input type="number" name="maxPerDomain" min="0" max="10000" defaultValue={limits.maxPerDomain} />
+                </label>
+              </fieldset>
+
+              <fieldset className="ks-kind-fields">
+                <legend className="muted">Send delay (between consecutive sends)</legend>
+                <label>
+                  <span>Min delay (seconds)</span>
+                  <input type="number" name="minDelaySeconds" min="0" max="86400" defaultValue={limits.minDelaySeconds} />
+                </label>
+                <label>
+                  <span>Max delay (seconds)</span>
+                  <input type="number" name="maxDelaySeconds" min="0" max="86400" defaultValue={limits.maxDelaySeconds} />
+                </label>
+              </fieldset>
+
+              <fieldset className="ks-kind-fields">
+                <legend className="muted">Business window</legend>
+                <label className="checkbox-row">
+                  <input type="checkbox" name="businessHoursOnly" defaultChecked={limits.businessHoursOnly} />
+                  <span>Only send during business hours</span>
+                </label>
+                <label>
+                  <span>Start hour (0–23)</span>
+                  <input type="number" name="businessStartHour" min="0" max="23" defaultValue={limits.businessStartHour} />
+                </label>
+                <label>
+                  <span>End hour (1–24, exclusive)</span>
+                  <input type="number" name="businessEndHour" min="1" max="24" defaultValue={limits.businessEndHour} />
+                </label>
+                <label>
+                  <span>Business days</span>
+                  <span className="business-days">
+                    {[
+                      { iso: 1, label: 'Mon' },
+                      { iso: 2, label: 'Tue' },
+                      { iso: 3, label: 'Wed' },
+                      { iso: 4, label: 'Thu' },
+                      { iso: 5, label: 'Fri' },
+                      { iso: 6, label: 'Sat' },
+                      { iso: 7, label: 'Sun' },
+                    ].map((d) => (
+                      <label key={d.iso} className="business-day-pill">
+                        <input
+                          type="checkbox"
+                          name="businessDays"
+                          value={d.iso}
+                          defaultChecked={limits.businessDays.includes(d.iso)}
+                        />
+                        <span>{d.label}</span>
+                      </label>
+                    ))}
+                  </span>
+                </label>
+                <label>
+                  <span>Timezone (IANA)</span>
+                  <input type="text" name="timezone" defaultValue={limits.timezone} placeholder="Europe/Warsaw" />
+                </label>
+              </fieldset>
+
+              <fieldset className="ks-kind-fields">
+                <legend className="muted">Calendar</legend>
+                <label className="checkbox-row">
+                  <input type="checkbox" name="respectWeekends" defaultChecked={limits.respectWeekends} />
+                  <span>Skip weekends</span>
+                </label>
+                <label className="checkbox-row">
+                  <input type="checkbox" name="respectHolidays" defaultChecked={limits.respectHolidays} />
+                  <span>Skip public holidays</span>
+                </label>
+                <label>
+                  <span>Holiday country</span>
+                  <select name="holidayCountry" defaultValue={limits.holidayCountry}>
+                    {SUPPORTED_HOLIDAY_COUNTRIES.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.name} ({c.code})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </fieldset>
+
+              <p className="muted small">
+                Counters now: <strong>{limits.sentToday}</strong> sent today,{' '}
+                <strong>{limits.sentThisHour}</strong> sent this hour
+                {limits.lastResetDate ? <> · last reset {limits.lastResetDate}</> : null}.
+              </p>
+
+              <div className="action-row">
+                <button type="submit" className="primary-btn">Save policy</button>
+              </div>
+            </form>
+          </section>
+        ) : null}
+
         <section>
           <h2>Threads ({threads.length})</h2>
           {threads.length === 0 ? (
@@ -200,4 +365,12 @@ function statusBadge(status: string): string {
   if (status === 'active') return 'badge badge-good';
   if (status === 'failing' || status === 'archived') return 'badge badge-bad';
   return 'badge';
+}
+
+function clampInt(raw: FormDataEntryValue | null, min: number, max: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return min;
+  if (n < min) return min;
+  if (n > max) return max;
+  return Math.floor(n);
 }

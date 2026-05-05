@@ -584,6 +584,22 @@ to be useful — currently the mock returns the input unchanged.
 
 **Phase 42 complete.**
 
+## Phase 43 — Mailbox sending policy (kompas-style)
+
+- [x] **P43-01.** Schema (migration `0027_crazy_frank_castle.sql`, idempotent CREATE TABLE IF NOT EXISTS + DO-block constraint adders + ALTER COLUMN converger): new `mailbox_sending_limits` table keyed 1:1 to mailboxes. Holds quantity caps (`maxPerDay`, `maxPerHour`, `maxPerDomain`), delay envelope (`minDelaySeconds`..`maxDelaySeconds`), business window (`businessHoursOnly`, `businessStartHour`/`businessEndHour`, `businessDays` int[] of ISO weekdays, `timezone`), calendar (`respectWeekends`, `respectHolidays`, `holidayCountry`), and counters (`sentToday`, `sentThisHour`, `lastResetDate`, `lastResetHour`). `businessHoursOnly` defaults to `false` so existing setups behave unchanged until the operator opts in.
+- [x] **P43-02.** `src/lib/i18n/holidays.ts` — pure module. Anonymous Gregorian Easter algorithm, builders for PL (Polish bank holidays incl. Wielkanoc / Boże Ciało / Wszystkich Świętych / Wigilia), GB (England+Wales bank holidays with weekend-substitute rule for Christmas/New Year), US (federal holidays incl. nth-weekday + Sat→Fri / Sun→Mon observance), DE (federal holidays incl. Karfreitag / Pfingstmontag / Tag der Deutschen Einheit). `getHolidaysForYear(country, year)`, `isHoliday(country, date)`, `isNonWorkingDay(date, opts)`. Per-year cache.
+- [x] **P43-03.** `src/lib/services/sending-policy.ts` — pure window/counter evaluators + DB-backed orchestrator. `evaluateBusinessWindow(limits, now)` (timezone-aware via `Intl.DateTimeFormat` so DST is automatic), `evaluateCounters(limits, now)`, `pickRandomDelaySeconds(limits)`. `canSendNow({workspaceId, mailboxId, recipientDomain?, now?})` reads limits row + folds in per-domain count query. `recordSendCounter` atomically bumps the counters with day/hour rollover. `getOrCreateMailboxSendingLimits` lazy-creates the row on first read.
+- [x] **P43-04.** `outreach-queue.ts` integration: `enqueueDraft` consults `evaluateBusinessWindow` and pushes `scheduledSendAt` to `retryAfter` when the chosen instant falls outside the window. `processEntry` calls `canSendNow` BEFORE suppression / cooldown checks; on a denial the entry is **re-queued** with `scheduledSendAt = retryAfter` and `lastError = reason` (status stays `queued`, attempt counter rolled back) so the operator sees scheduled items with their reason rather than failed sends. `recordSendCounter` runs after each successful send.
+- [x] **P43-05.** UI (admin only): `/mailbox/[id]` Sending Policy section with form covering all knobs + holiday-country picker (PL/GB/US/DE) + business-day pill selector (`.business-day-pill` with `:has(input:checked)` styling). Shows current counter state ('5 sent today, 2 sent this hour'). `/mailbox/queue` re-styles `lastError` rendering: queued entries show a teal `.queue-reason-info` 'Why scheduled here: ...' note, while truly failed entries show the existing amber `.queue-reason-warn` block.
+- [x] **P43-06.** 25 tests in `src/tests/sending-policy.test.ts` covering: easterSunday for 2024–2027; PL/GB/US/DE holiday sets including Christmas weekend substitutes and observed-day rules; isNonWorkingDay weekend + holiday gates; evaluateBusinessWindow happy path + before/after hours + weekend + holiday + respectHolidays-off bypass + retryAfter computation across timezones; evaluateCounters daily/hourly cap with stale-day reset; pickRandomDelaySeconds bounds + inverted-range clamp. **622/622 → 647/647 total tests pass.**
+
+**Phase 43 complete.**
+
+Note: per-mailbox policy ships with `businessHoursOnly=false` by default
+so behaviour is unchanged after deploy. Operator turns the policy ON
+from /mailbox/[id] when ready. The migration is idempotent so a stale
+dev DB recovers automatically.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
