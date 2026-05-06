@@ -23,6 +23,10 @@ const OPENAI_SECRET_KEY = 'openai.apiKey';
 const OPENAI_ENV = 'OPENAI_API_KEY';
 const ANTHROPIC_SECRET_KEY = 'anthropic.apiKey';
 const ANTHROPIC_ENV = 'ANTHROPIC_API_KEY';
+const GEMINI_SECRET_KEY = 'gemini.apiKey';
+const GEMINI_ENV = 'GEMINI_API_KEY';
+const PERPLEXITY_SECRET_KEY = 'perplexity.apiKey';
+const PERPLEXITY_ENV = 'PERPLEXITY_API_KEY';
 
 export default async function IntegrationsPage({
   searchParams,
@@ -40,6 +44,10 @@ export default async function IntegrationsPage({
   let platformHasOpenai = false;
   let workspaceHasAnthropic = false;
   let platformHasAnthropic = false;
+  let workspaceHasGemini = false;
+  let platformHasGemini = false;
+  let workspaceHasPerplexity = false;
+  let platformHasPerplexity = false;
   try {
     ctx = await getWorkspaceContext();
     workspaceHasKey = await hasSecret(ctx, SERPAPI_SECRET_KEY);
@@ -50,6 +58,12 @@ export default async function IntegrationsPage({
     workspaceHasAnthropic = await hasSecret(ctx, ANTHROPIC_SECRET_KEY);
     platformHasAnthropic =
       !!process.env[ANTHROPIC_ENV] && process.env[ANTHROPIC_ENV]!.trim() !== '';
+    workspaceHasGemini = await hasSecret(ctx, GEMINI_SECRET_KEY);
+    platformHasGemini =
+      !!process.env[GEMINI_ENV] && process.env[GEMINI_ENV]!.trim() !== '';
+    workspaceHasPerplexity = await hasSecret(ctx, PERPLEXITY_SECRET_KEY);
+    platformHasPerplexity =
+      !!process.env[PERPLEXITY_ENV] && process.env[PERPLEXITY_ENV]!.trim() !== '';
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -81,7 +95,19 @@ export default async function IntegrationsPage({
     : platformHasAnthropic
       ? 'platform'
       : 'none';
+  const geminiEffectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasGemini
+    ? 'workspace'
+    : platformHasGemini
+      ? 'platform'
+      : 'none';
+  const perplexityEffectiveSource: 'workspace' | 'platform' | 'none' =
+    workspaceHasPerplexity
+      ? 'workspace'
+      : platformHasPerplexity
+        ? 'platform'
+        : 'none';
   const aiProvider = process.env.AI_PROVIDER ?? 'mock';
+  const researchProvider = process.env.RESEARCH_PROVIDER ?? 'mock';
 
   // ---- server actions ----
   async function saveKey(formData: FormData) {
@@ -173,6 +199,72 @@ export default async function IntegrationsPage({
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=anthropic`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function saveGemini(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const value = String(formData.get('apiKey') ?? '').trim();
+    try {
+      await setSecret(c, GEMINI_SECRET_KEY, value);
+      redirect('/settings/integrations?ok=saved&provider=gemini');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=gemini`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function clearGemini() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await deleteSecret(c, GEMINI_SECRET_KEY);
+      redirect('/settings/integrations?ok=cleared&provider=gemini');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=gemini`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function savePerplexity(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const value = String(formData.get('apiKey') ?? '').trim();
+    try {
+      await setSecret(c, PERPLEXITY_SECRET_KEY, value);
+      redirect('/settings/integrations?ok=saved&provider=perplexity');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=perplexity`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function clearPerplexity() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await deleteSecret(c, PERPLEXITY_SECRET_KEY);
+      redirect('/settings/integrations?ok=cleared&provider=perplexity');
+    } catch (err) {
+      if (err instanceof SecretsServiceError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=perplexity`,
         );
       }
       throw err;
@@ -472,11 +564,188 @@ export default async function IntegrationsPage({
         </section>
 
         <section>
+          <h2>Gemini (Research)</h2>
+          <p className="muted">
+            Powers grounded research when{' '}
+            <code>RESEARCH_PROVIDER=gemini</code>. Gemini calls Google
+            Search internally and returns an LLM-grounded answer with
+            citations — used by the Research panel on{' '}
+            <Link href="/pipeline">/pipeline/[id]</Link>. Per workspace
+            you can either bring your own Gemini API key (charges go to
+            your Google AI account) or use the platform default.
+          </p>
+          <p className="muted">
+            <strong>Active research provider:</strong>{' '}
+            <code>{researchProvider}</code>
+            {researchProvider === 'mock' ? (
+              <>
+                {' '}
+                — mock provider returns deterministic placeholder text;
+                set <code>RESEARCH_PROVIDER=gemini</code> or{' '}
+                <code>RESEARCH_PROVIDER=perplexity</code> in the server
+                env to enable real grounded research.
+              </>
+            ) : null}
+          </p>
+
+          <dl>
+            <dt>Effective key source</dt>
+            <dd>
+              {geminiEffectiveSource === 'workspace' ? (
+                <>
+                  <span className="badge badge-good">Workspace key</span>
+                  <span className="muted"> — your Google AI account is charged.</span>
+                </>
+              ) : geminiEffectiveSource === 'platform' ? (
+                <>
+                  <span className="badge">Platform default</span>
+                  <span className="muted"> — platform-provided key in use.</span>
+                </>
+              ) : (
+                <>
+                  <span className="badge badge-bad">Not configured</span>
+                  <span className="muted">
+                    {' '}
+                    — research calls will fail with no_key when
+                    RESEARCH_PROVIDER=gemini.
+                  </span>
+                </>
+              )}
+            </dd>
+            <dt>Workspace key</dt>
+            <dd>{workspaceHasGemini ? <code>••• stored</code> : <code>not set</code>}</dd>
+            <dt>Platform default</dt>
+            <dd>
+              {platformHasGemini ? (
+                <code>configured (server env)</code>
+              ) : (
+                <code>not configured</code>
+              )}
+            </dd>
+          </dl>
+
+          {isAdmin ? (
+            <>
+              <form action={saveGemini} className="inline-form">
+                <label>
+                  <span>Set workspace Gemini key</span>
+                  <input
+                    name="apiKey"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder="AIza..."
+                    minLength={1}
+                    maxLength={4096}
+                    required
+                  />
+                </label>
+                <button type="submit" className="primary-btn">
+                  Save
+                </button>
+              </form>
+              {workspaceHasGemini ? (
+                <form action={clearGemini} style={{ marginTop: '0.5rem' }}>
+                  <button type="submit" className="ghost-btn">
+                    Clear workspace Gemini key
+                  </button>
+                </form>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted">
+              Only workspace admins and owners can manage integration keys.
+            </p>
+          )}
+        </section>
+
+        <section>
+          <h2>Perplexity (Research)</h2>
+          <p className="muted">
+            Powers grounded research when{' '}
+            <code>RESEARCH_PROVIDER=perplexity</code>. Perplexity Sonar
+            returns a cited answer drawn from live web search; the Pro
+            tier exposes richer citations (title + snippet). Per
+            workspace you can either bring your own Perplexity API key
+            or use the platform default.
+          </p>
+
+          <dl>
+            <dt>Effective key source</dt>
+            <dd>
+              {perplexityEffectiveSource === 'workspace' ? (
+                <>
+                  <span className="badge badge-good">Workspace key</span>
+                  <span className="muted"> — your Perplexity account is charged.</span>
+                </>
+              ) : perplexityEffectiveSource === 'platform' ? (
+                <>
+                  <span className="badge">Platform default</span>
+                  <span className="muted"> — platform-provided key in use.</span>
+                </>
+              ) : (
+                <>
+                  <span className="badge badge-bad">Not configured</span>
+                  <span className="muted">
+                    {' '}
+                    — research calls will fail with no_key when
+                    RESEARCH_PROVIDER=perplexity.
+                  </span>
+                </>
+              )}
+            </dd>
+            <dt>Workspace key</dt>
+            <dd>{workspaceHasPerplexity ? <code>••• stored</code> : <code>not set</code>}</dd>
+            <dt>Platform default</dt>
+            <dd>
+              {platformHasPerplexity ? (
+                <code>configured (server env)</code>
+              ) : (
+                <code>not configured</code>
+              )}
+            </dd>
+          </dl>
+
+          {isAdmin ? (
+            <>
+              <form action={savePerplexity} className="inline-form">
+                <label>
+                  <span>Set workspace Perplexity key</span>
+                  <input
+                    name="apiKey"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder="pplx-..."
+                    minLength={1}
+                    maxLength={4096}
+                    required
+                  />
+                </label>
+                <button type="submit" className="primary-btn">
+                  Save
+                </button>
+              </form>
+              {workspaceHasPerplexity ? (
+                <form action={clearPerplexity} style={{ marginTop: '0.5rem' }}>
+                  <button type="submit" className="ghost-btn">
+                    Clear workspace Perplexity key
+                  </button>
+                </form>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted">
+              Only workspace admins and owners can manage integration keys.
+            </p>
+          )}
+        </section>
+
+        <section>
           <h2>Future integrations</h2>
           <p className="muted">
-            Email (SMTP/IMAP), CRM (HubSpot, Pipedrive), additional search providers (Gemini
-            Search Grounding) and AI models will land here as their respective phases ship.
-            The same BYOK-or-platform-default pattern applies.
+            Email (SMTP/IMAP), CRM (Pipedrive, Salesforce) and
+            additional model providers will land here as their
+            respective phases ship. The same BYOK-or-platform-default
+            pattern applies.
           </p>
         </section>
       </AppShell>
