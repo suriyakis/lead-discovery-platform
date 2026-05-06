@@ -209,34 +209,48 @@ export function _setEmbeddingProviderForTests(provider: IEmbeddingProvider | nul
 }
 
 /**
- * Phase 32: workspace-aware factory. When a workspace has set its own
- * `openai.apiKey` secret, return a provider that uses it. Otherwise fall
- * back to the platform default via getEmbeddingProvider() (env-based).
+ * Workspace-aware factory.
  *
- * Only meaningful when EMBEDDING_PROVIDER=openai. For mock or
- * unconfigured providers this just returns the cached singleton —
- * BYOK has no effect since the mock doesn't make remote calls.
+ * Phase 45 cascade for the active provider id:
+ *   1. workspace_provider_settings.embedding_provider (when set)
+ *   2. process.env.EMBEDDING_PROVIDER
+ *   3. 'mock'
+ *
+ * Phase 32 cascade for the API key:
+ *   1. workspace BYOK (`openai.apiKey`)
+ *   2. platform env (OPENAI_API_KEY)
+ *   3. throw — required when id is real
+ *
+ * Mock id short-circuits — returns a fresh MockEmbeddingProvider.
  */
 export async function getEmbeddingProviderForCtx(
   ctx: { workspaceId: bigint },
 ): Promise<IEmbeddingProvider> {
-  const id = process.env.EMBEDDING_PROVIDER ?? 'mock';
-  if (id !== 'openai') return getEmbeddingProvider();
-  const { resolveProviderKey } = await import('@/lib/services/secrets');
-  const resolved = await resolveProviderKey(
-    ctx,
-    'openai.apiKey',
-    'OPENAI_API_KEY',
-  );
-  if (resolved && resolved.source === 'workspace') {
+  // Test injection wins — `_setEmbeddingProviderForTests(stub)`.
+  if (cached) return cached;
+  const { resolveActiveProvider } = await import('@/lib/services/provider-settings');
+  const active = await resolveActiveProvider(ctx, 'embedding', process.env.EMBEDDING_PROVIDER);
+  const id = active.id;
+  if (id === 'mock') return new MockEmbeddingProvider();
+  if (id === 'openai') {
+    const { resolveProviderKey } = await import('@/lib/services/secrets');
+    const resolved = await resolveProviderKey(
+      ctx,
+      'openai.apiKey',
+      'OPENAI_API_KEY',
+    );
+    if (!resolved) {
+      throw new Error(
+        'Embedding provider=openai but no key configured (workspace or platform).',
+      );
+    }
     return new OpenAIEmbeddingProvider({
       apiKey: resolved.key,
       model: process.env.EMBEDDING_MODEL,
       baseUrl: process.env.OPENAI_BASE_URL,
     });
   }
-  // Workspace has no key — use the cached env-based singleton.
-  return getEmbeddingProvider();
+  throw new Error(`Unknown embedding provider id from cascade: ${id}`);
 }
 
 // ---- helpers exported for service callers ---------------------------

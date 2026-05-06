@@ -16,6 +16,20 @@ import {
   setSecret,
 } from '@/lib/services/secrets';
 import { getSearchProvider } from '@/lib/search';
+import {
+  ALLOWED_AI_PROVIDERS,
+  ALLOWED_EMBEDDING_PROVIDERS,
+  ALLOWED_RESEARCH_PROVIDERS,
+  ALLOWED_SEARCH_PROVIDERS,
+  ProviderSettingsError,
+  getProviderSettings,
+  resolveActiveProvider,
+  updateProviderSettings,
+  type AiProviderId,
+  type EmbeddingProviderId,
+  type ResearchProviderId,
+  type SearchProviderId,
+} from '@/lib/services/provider-settings';
 
 const SERPAPI_SECRET_KEY = 'serpapi.apiKey';
 const SERPAPI_ENV = 'SERPAPI_KEY';
@@ -106,8 +120,30 @@ export default async function IntegrationsPage({
       : platformHasPerplexity
         ? 'platform'
         : 'none';
-  const aiProvider = process.env.AI_PROVIDER ?? 'mock';
-  const researchProvider = process.env.RESEARCH_PROVIDER ?? 'mock';
+  const aiProviderEnv = process.env.AI_PROVIDER ?? 'mock';
+  const researchProviderEnv = process.env.RESEARCH_PROVIDER ?? 'mock';
+
+  // Phase 45: per-workspace provider selection. Read the row + resolve
+  // each capability so the UI shows both "what you've configured" and
+  // "what's actually active" (which may differ when workspace is null
+  // and env is set, or vice versa).
+  const providerSettings = await getProviderSettings(ctx);
+  const aiActive = await resolveActiveProvider(ctx, 'ai', aiProviderEnv);
+  const embeddingActive = await resolveActiveProvider(
+    ctx,
+    'embedding',
+    process.env.EMBEDDING_PROVIDER,
+  );
+  const researchActive = await resolveActiveProvider(
+    ctx,
+    'research',
+    researchProviderEnv,
+  );
+  const searchActive = await resolveActiveProvider(
+    ctx,
+    'search',
+    process.env.SEARCH_PROVIDER,
+  );
 
   // ---- server actions ----
   async function saveKey(formData: FormData) {
@@ -255,6 +291,33 @@ export default async function IntegrationsPage({
     }
   }
 
+  async function saveActiveProviders(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const ai = String(formData.get('aiProvider') ?? '');
+    const embedding = String(formData.get('embeddingProvider') ?? '');
+    const research = String(formData.get('researchProvider') ?? '');
+    const search = String(formData.get('searchProvider') ?? '');
+    const aiPick = ai === '__env__' ? null : (ai as AiProviderId);
+    const embeddingPick = embedding === '__env__' ? null : (embedding as EmbeddingProviderId);
+    const researchPick = research === '__env__' ? null : (research as ResearchProviderId);
+    const searchPick = search === '__env__' ? null : (search as SearchProviderId);
+    try {
+      await updateProviderSettings(c, {
+        aiProvider: aiPick,
+        embeddingProvider: embeddingPick,
+        researchProvider: researchPick,
+        searchProvider: searchPick,
+      });
+      redirect('/settings/integrations?ok=providers-saved');
+    } catch (err) {
+      if (err instanceof ProviderSettingsError) {
+        redirect(`/settings/integrations?err=${encodeURIComponent(err.code)}&provider=active`);
+      }
+      throw err;
+    }
+  }
+
   async function clearPerplexity() {
     'use server';
     const c = await getWorkspaceContext();
@@ -299,7 +362,9 @@ export default async function IntegrationsPage({
               ? 'Workspace key saved.'
               : sp.ok === 'cleared'
                 ? 'Workspace key cleared.'
-                : 'Done.'}
+                : sp.ok === 'providers-saved'
+                  ? 'Active providers saved.'
+                  : 'Done.'}
           </p>
         ) : null}
         {sp.err ? <p className="form-error">Error: {sp.err}</p> : null}
@@ -312,6 +377,62 @@ export default async function IntegrationsPage({
                 : `Connection failed.`}
           </p>
         ) : null}
+
+        <section>
+          <h2>Active providers</h2>
+          <p className="muted">
+            Pick which provider drives each capability for this workspace.
+            Choose <em>inherit env default</em> to fall back to the
+            platform-level setting (`AI_PROVIDER` / `RESEARCH_PROVIDER`
+            / etc.). The actual API key for the chosen provider is set
+            in the per-provider sections below.
+          </p>
+          {isAdmin ? (
+            <form action={saveActiveProviders} className="active-providers-grid">
+              <ProviderSelect
+                label="AI provider"
+                name="aiProvider"
+                workspaceValue={providerSettings.aiProvider}
+                envFallback={aiProviderEnv}
+                resolved={aiActive}
+                options={ALLOWED_AI_PROVIDERS}
+              />
+              <ProviderSelect
+                label="Embedding provider"
+                name="embeddingProvider"
+                workspaceValue={providerSettings.embeddingProvider}
+                envFallback={process.env.EMBEDDING_PROVIDER ?? 'mock'}
+                resolved={embeddingActive}
+                options={ALLOWED_EMBEDDING_PROVIDERS}
+              />
+              <ProviderSelect
+                label="Research provider"
+                name="researchProvider"
+                workspaceValue={providerSettings.researchProvider}
+                envFallback={researchProviderEnv}
+                resolved={researchActive}
+                options={ALLOWED_RESEARCH_PROVIDERS}
+              />
+              <ProviderSelect
+                label="Search provider"
+                name="searchProvider"
+                workspaceValue={providerSettings.searchProvider}
+                envFallback={process.env.SEARCH_PROVIDER ?? 'mock'}
+                resolved={searchActive}
+                options={ALLOWED_SEARCH_PROVIDERS}
+              />
+              <div className="action-row" style={{ gridColumn: '1 / -1' }}>
+                <button type="submit" className="primary-btn">
+                  Save active providers
+                </button>
+              </div>
+            </form>
+          ) : (
+            <p className="muted">
+              Only workspace admins and owners can change active providers.
+            </p>
+          )}
+        </section>
 
         <section>
           <h2>SerpAPI</h2>
@@ -482,14 +603,14 @@ export default async function IntegrationsPage({
           </p>
           <p className="muted">
             <strong>Active AI provider:</strong>{' '}
-            <code>{aiProvider}</code>
-            {aiProvider === 'mock' ? (
+            <code>{aiActive.id}</code>{' '}
+            <span className="muted small">(via {aiActive.source})</span>
+            {aiActive.id === 'mock' ? (
               <>
                 {' '}
-                — mock provider returns deterministic placeholder text;
-                set <code>AI_PROVIDER=openai</code> or{' '}
-                <code>AI_PROVIDER=anthropic</code> in the server env to
-                enable real AI.
+                — mock returns deterministic placeholder text. Pick a
+                real provider in <em>Active providers</em> at the top, or
+                set <code>AI_PROVIDER</code> in the server env.
               </>
             ) : null}
           </p>
@@ -576,14 +697,13 @@ export default async function IntegrationsPage({
           </p>
           <p className="muted">
             <strong>Active research provider:</strong>{' '}
-            <code>{researchProvider}</code>
-            {researchProvider === 'mock' ? (
+            <code>{researchActive.id}</code>{' '}
+            <span className="muted small">(via {researchActive.source})</span>
+            {researchActive.id === 'mock' ? (
               <>
                 {' '}
-                — mock provider returns deterministic placeholder text;
-                set <code>RESEARCH_PROVIDER=gemini</code> or{' '}
-                <code>RESEARCH_PROVIDER=perplexity</code> in the server
-                env to enable real grounded research.
+                — mock returns deterministic stubs. Pick a real provider
+                in <em>Active providers</em> at the top.
               </>
             ) : null}
           </p>
@@ -749,5 +869,41 @@ export default async function IntegrationsPage({
           </p>
         </section>
       </AppShell>
+  );
+}
+
+function ProviderSelect({
+  label,
+  name,
+  workspaceValue,
+  envFallback,
+  resolved,
+  options,
+}: {
+  label: string;
+  name: string;
+  workspaceValue: string | null;
+  envFallback: string;
+  resolved: { id: string; source: 'workspace' | 'env' | 'default' };
+  options: ReadonlyArray<string>;
+}) {
+  const value = workspaceValue ?? '__env__';
+  return (
+    <label className="provider-select">
+      <span>
+        {label}{' '}
+        <span className="muted small">
+          (active: <code>{resolved.id}</code> via {resolved.source})
+        </span>
+      </span>
+      <select name={name} defaultValue={value}>
+        <option value="__env__">inherit env default ({envFallback})</option>
+        {options.map((opt) => (
+          <option key={opt} value={opt}>
+            {opt}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

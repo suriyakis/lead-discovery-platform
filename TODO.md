@@ -618,6 +618,24 @@ flipped from `mock` (default) to `gemini` or `perplexity` AND a
 secrets store or as a platform env var. Until the env flip the UI works
 end-to-end but the answers are deterministic mock stubs.
 
+## Phase 45 — Per-workspace provider selection (no more env flips)
+
+- [x] **P45-01.** Schema (migration `0029_bumpy_randall_flagg.sql`): new `workspace_provider_settings` table with nullable columns `ai_provider` / `embedding_provider` / `research_provider` / `search_provider` + `updated_by` / `updated_at`. NULL means "inherit env default" so existing setups behave unchanged.
+- [x] **P45-02.** `src/lib/services/provider-settings.ts`: `getProviderSettings(ctx)` lazy returns NULL row if missing (no insert), `resolveActiveProvider(ctx, capability, envFallback)` performs the cascade workspace → env → 'mock', `updateProviderSettings(ctx, partial)` admin-gated upsert with audit + per-capability allowed-values validation. `ALLOWED_AI_PROVIDERS` / `ALLOWED_EMBEDDING_PROVIDERS` / `ALLOWED_RESEARCH_PROVIDERS` / `ALLOWED_SEARCH_PROVIDERS` exported as readonly tuples for UI.
+- [x] **P45-03.** Factory rewrites: `getAIProviderForCtx` / `getEmbeddingProviderForCtx` / `getResearchProviderForCtx` / `getSearchProviderForCtx` (new) all consult `resolveActiveProvider` first. Test-injection short-circuit (`if (cached) return cached`) preserves existing test patterns. When the cascade resolves to a real provider AND no key is configured (workspace BYOK or platform env), the factory throws with a clear `<provider>=… but no key configured` message instead of silently falling back to mock.
+- [x] **P45-04.** UI on `/settings/integrations`: new "Active providers" section at the top with 4 dropdowns (one per capability). Each shows the resolved active id + source ('via workspace' / 'via env' / 'via default') in the label. Default option is `inherit env default (<env_value>)`. Admin-gated. Existing per-provider key sections updated to use `resolved.source` in their effective-source readout.
+- [x] **P45-05.** 18 tests in `src/tests/provider-settings.test.ts` covering: resolveActiveProvider cascade (workspace > env > default); updateProviderSettings upsert + null-clears + partial preserves + unknown-id rejection + viewer denial + audit emit; getAIProviderForCtx integration with cascade (workspace anthropic + env openai → AnthropicAIProvider, mock override, platform-key fallback, BYOK wins, missing-key throws); getResearchProviderForCtx integration similar.
+- [x] **P45-06.** 2 pre-existing P32/P33 tests updated: 'falls back to env-cached singleton' assertions changed from object-identity to provider-class + key checks since the new factories build fresh per call (the cached singleton was an internal detail; the user-visible contract is "right provider with right key"). **664/664 → 682/682 total tests pass.**
+
+**Phase 45 complete.**
+
+Operator can now flip providers from `/settings/integrations` directly.
+After deploy + migration, the in-app dropdowns supersede `AI_PROVIDER` /
+`RESEARCH_PROVIDER` / `EMBEDDING_PROVIDER` / `SEARCH_PROVIDER` env vars
+without restart. Choosing 'inherit env default' falls back to the env
+value, so existing prod setups keep their behaviour until the operator
+explicitly picks a workspace-level provider.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

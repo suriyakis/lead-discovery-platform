@@ -88,13 +88,13 @@ describe('getEmbeddingProviderForCtx', () => {
     ).toBe('sk-platform');
   });
 
-  it('returns the cached provider (singleton) when no workspace override', async () => {
+  it('uses the platform env key when no workspace override (P45: builds fresh per call)', async () => {
     const s = await setup();
     process.env.EMBEDDING_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'sk-platform';
-    const a = await getEmbeddingProviderForCtx({ workspaceId: s.workspaceA });
-    const b = getEmbeddingProvider();
-    expect(a).toBe(b); // same singleton instance
+    const provider = await getEmbeddingProviderForCtx({ workspaceId: s.workspaceA });
+    expect(provider).toBeInstanceOf(OpenAIEmbeddingProvider);
+    expect((provider as unknown as { apiKey: string }).apiKey).toBe('sk-platform');
   });
 
   it('returns a NEW (uncached) instance per call when workspace overrides', async () => {

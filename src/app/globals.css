@@ -1101,6 +1101,39 @@ button.primary-btn {
   display: inline-flex;
 }
 
+/* ---- Active-providers grid (Phase 45) -------------------------- */
+.active-providers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.provider-select {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.6rem;
+}
+
+.provider-select span:first-child {
+  font-weight: 500;
+  font-size: 0.92rem;
+}
+
+.provider-select select {
+  padding: 0.5rem 0.7rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  color: var(--brand-fg);
+  font: inherit;
+  font-size: 0.88rem;
+}
+
 .badge {
   display: inline-block;
   font-family: var(--brand-mono);

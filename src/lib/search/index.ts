@@ -127,3 +127,31 @@ export function getSearchProvider(): ISearchProvider {
 export function _setSearchProviderForTests(provider: ISearchProvider | null): void {
   cached = provider;
 }
+
+/**
+ * Workspace-aware factory. Cascade for the active provider id:
+ *   1. workspace_provider_settings.search_provider (when set)
+ *   2. process.env.SEARCH_PROVIDER
+ *   3. 'mock'
+ *
+ * The chosen instance is fresh per call (cheap — these classes hold no
+ * mutable state). API keys are resolved per-call inside the provider's
+ * `search(ctx, ...)` method via the existing BYOK path, so we don't
+ * thread keys here.
+ */
+export async function getSearchProviderForCtx(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<ISearchProvider> {
+  // Test injection wins — `_setSearchProviderForTests(stub)`.
+  if (cached) return cached;
+  const { resolveActiveProvider } = await import('@/lib/services/provider-settings');
+  const active = await resolveActiveProvider(ctx, 'search', process.env.SEARCH_PROVIDER);
+  switch (active.id) {
+    case 'mock':
+      return new MockSearchProvider();
+    case 'serpapi':
+      return new SerpAPIProvider();
+    default:
+      throw new Error(`Unknown search provider id from cascade: ${active.id}`);
+  }
+}

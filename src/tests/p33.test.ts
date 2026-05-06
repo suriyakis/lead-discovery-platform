@@ -113,13 +113,13 @@ describe('getAIProviderForCtx', () => {
     expect((provider as unknown as { apiKey: string }).apiKey).toBe('sk-ant-workspace');
   });
 
-  it('falls back to env-cached singleton when no workspace key', async () => {
+  it('falls back to platform key when no workspace key (P45: now builds fresh provider per call)', async () => {
     const s = await setup();
     process.env.AI_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'sk-platform';
-    const a = await getAIProviderForCtx({ workspaceId: s.workspaceA });
-    const b = getAIProvider();
-    expect(a).toBe(b);
+    const provider = await getAIProviderForCtx({ workspaceId: s.workspaceA });
+    expect(provider).toBeInstanceOf(OpenAIAIProvider);
+    expect((provider as unknown as { apiKey: string }).apiKey).toBe('sk-platform');
   });
 });
 

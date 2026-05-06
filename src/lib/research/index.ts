@@ -22,6 +22,9 @@ import type { WorkspaceContext } from '@/lib/services/context';
 import { GeminiResearchProvider } from './gemini';
 import { PerplexityResearchProvider } from './perplexity';
 
+export { GeminiResearchProvider } from './gemini';
+export { PerplexityResearchProvider } from './perplexity';
+
 export interface ResearchOptions {
   /** Country bias for the underlying web search (ISO 3166-1 alpha-2). */
   country?: string;
@@ -160,39 +163,57 @@ export function getResearchProvider(): IResearchProvider {
 }
 
 /**
- * Workspace-aware factory. Mirrors `getAIProviderForCtx`: when the active
- * RESEARCH_PROVIDER is real AND the workspace has set its own BYOK key,
- * build a fresh provider using the workspace key. Otherwise fall back
- * to the env-cached singleton.
+ * Workspace-aware factory.
+ *
+ * Phase 45 cascade for the active provider id:
+ *   1. workspace_provider_settings.research_provider (when set)
+ *   2. process.env.RESEARCH_PROVIDER
+ *   3. 'mock'
+ *
+ * Phase 44 cascade for the API key:
+ *   1. workspace BYOK (`gemini.apiKey` / `perplexity.apiKey`)
+ *   2. platform env (GEMINI_API_KEY / PERPLEXITY_API_KEY)
+ *   3. throw — required when id is real
  */
 export async function getResearchProviderForCtx(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<IResearchProvider> {
-  const id = process.env.RESEARCH_PROVIDER ?? 'mock';
-  if (id === 'mock') return getResearchProvider();
+  // Test injection wins — `_setResearchProviderForTests(stub)`.
+  if (cached) return cached;
+  const { resolveActiveProvider } = await import('@/lib/services/provider-settings');
+  const active = await resolveActiveProvider(ctx, 'research', process.env.RESEARCH_PROVIDER);
+  const id = active.id;
+  if (id === 'mock') return new MockResearchProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
   if (id === 'gemini') {
     const resolved = await resolveProviderKey(ctx, 'gemini.apiKey', 'GEMINI_API_KEY');
-    if (resolved && resolved.source === 'workspace') {
-      return new GeminiResearchProvider({
-        apiKey: resolved.key,
-        model: process.env.RESEARCH_MODEL,
-      });
+    if (!resolved) {
+      throw new Error(
+        'Research provider=gemini but no key configured (workspace or platform).',
+      );
     }
-  } else if (id === 'perplexity') {
+    return new GeminiResearchProvider({
+      apiKey: resolved.key,
+      model: process.env.RESEARCH_MODEL,
+    });
+  }
+  if (id === 'perplexity') {
     const resolved = await resolveProviderKey(
       ctx,
       'perplexity.apiKey',
       'PERPLEXITY_API_KEY',
     );
-    if (resolved && resolved.source === 'workspace') {
-      return new PerplexityResearchProvider({
-        apiKey: resolved.key,
-        model: process.env.RESEARCH_MODEL,
-      });
+    if (!resolved) {
+      throw new Error(
+        'Research provider=perplexity but no key configured (workspace or platform).',
+      );
     }
+    return new PerplexityResearchProvider({
+      apiKey: resolved.key,
+      model: process.env.RESEARCH_MODEL,
+    });
   }
-  return getResearchProvider();
+  throw new Error(`Unknown research provider id from cascade: ${id}`);
 }
 
 /** For tests — inject a stub provider and reset between cases. */

@@ -88,6 +88,36 @@ export const workspaceSettings = pgTable('workspace_settings', {
     .defaultNow(),
 });
 
+/**
+ * Phase 45: per-workspace provider selection. Operator picks the active
+ * AI / embedding / research / search provider from the integrations
+ * page; values stored here override the platform-level env vars
+ * (AI_PROVIDER, EMBEDDING_PROVIDER, RESEARCH_PROVIDER, SEARCH_PROVIDER).
+ *
+ * NULL means "inherit the env default" — preserves prior behaviour for
+ * workspaces that haven't opted in.
+ */
+export const workspaceProviderSettings = pgTable('workspace_provider_settings', {
+  workspaceId: bigint('workspace_id', { mode: 'bigint' })
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  /** 'mock' | 'openai' | 'anthropic' — null inherits env. */
+  aiProvider: text('ai_provider'),
+  /** 'mock' | 'openai' — null inherits env. */
+  embeddingProvider: text('embedding_provider'),
+  /** 'mock' | 'gemini' | 'perplexity' — null inherits env. */
+  researchProvider: text('research_provider'),
+  /** 'mock' | 'serpapi' — null inherits env. */
+  searchProvider: text('search_provider'),
+  updatedBy: text('updated_by'),
+  updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type WorkspaceProviderSettings = typeof workspaceProviderSettings.$inferSelect;
+export type NewWorkspaceProviderSettings = typeof workspaceProviderSettings.$inferInsert;
+
 export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;

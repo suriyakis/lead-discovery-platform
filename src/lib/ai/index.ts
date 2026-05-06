@@ -392,42 +392,62 @@ export function getAIProvider(): IAIProvider {
 }
 
 /**
- * Phase 33: workspace-aware factory. When the active AI_PROVIDER is real
- * AND the workspace has set its own BYOK key (`openai.apiKey` for
- * AI_PROVIDER=openai, `anthropic.apiKey` for AI_PROVIDER=anthropic), build
- * a fresh provider using the workspace key. Otherwise fall back to the
- * env-cached singleton.
+ * Workspace-aware factory.
+ *
+ * Phase 45 cascade for the active provider id:
+ *   1. workspace_provider_settings.ai_provider (when set)
+ *   2. process.env.AI_PROVIDER
+ *   3. 'mock'
+ *
+ * Phase 32/33 cascade for the API key (after the id is resolved):
+ *   1. workspace BYOK secret (`openai.apiKey` / `anthropic.apiKey`)
+ *   2. platform env (OPENAI_API_KEY / ANTHROPIC_API_KEY)
+ *   3. throw — required when id is real
+ *
+ * Mock id short-circuits both: returns the env-cached mock singleton.
  */
 export async function getAIProviderForCtx(
   ctx: { workspaceId: bigint },
 ): Promise<IAIProvider> {
-  const id = process.env.AI_PROVIDER ?? 'mock';
-  if (id === 'mock') return getAIProvider();
+  // Test injection wins — `_setAIProviderForTests(stub)` writes `cached`,
+  // and tests rely on getAIProviderForCtx returning the same stub.
+  if (cached) return cached;
+  const { resolveActiveProvider } = await import('@/lib/services/provider-settings');
+  const active = await resolveActiveProvider(ctx, 'ai', process.env.AI_PROVIDER);
+  const id = active.id;
+  if (id === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
   if (id === 'openai') {
     const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
-    if (resolved && resolved.source === 'workspace') {
-      return new OpenAIAIProvider({
-        apiKey: resolved.key,
-        model: process.env.AI_MODEL,
-        baseUrl: process.env.OPENAI_BASE_URL,
-      });
+    if (!resolved) {
+      throw new Error(
+        'AI provider=openai but no key configured (workspace or platform).',
+      );
     }
-  } else if (id === 'anthropic') {
+    return new OpenAIAIProvider({
+      apiKey: resolved.key,
+      model: process.env.AI_MODEL,
+      baseUrl: process.env.OPENAI_BASE_URL,
+    });
+  }
+  if (id === 'anthropic') {
     const resolved = await resolveProviderKey(
       ctx,
       'anthropic.apiKey',
       'ANTHROPIC_API_KEY',
     );
-    if (resolved && resolved.source === 'workspace') {
-      return new AnthropicAIProvider({
-        apiKey: resolved.key,
-        model: process.env.AI_MODEL,
-        baseUrl: process.env.ANTHROPIC_BASE_URL,
-      });
+    if (!resolved) {
+      throw new Error(
+        'AI provider=anthropic but no key configured (workspace or platform).',
+      );
     }
+    return new AnthropicAIProvider({
+      apiKey: resolved.key,
+      model: process.env.AI_MODEL,
+      baseUrl: process.env.ANTHROPIC_BASE_URL,
+    });
   }
-  return getAIProvider();
+  throw new Error(`Unknown AI provider id from cascade: ${id}`);
 }
 
 /** For tests — inject a stub provider and reset between cases. */
