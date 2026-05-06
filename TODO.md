@@ -600,6 +600,24 @@ so behaviour is unchanged after deploy. Operator turns the policy ON
 from /mailbox/[id] when ready. The migration is idempotent so a stale
 dev DB recovers automatically.
 
+## Phase 44 — Research provider (Gemini grounding + Perplexity Sonar)
+
+- [x] **P44-01.** New capability layer alongside `ISearchProvider` (raw SERP for connectors) and `IAIProvider` (text/JSON completion). `IResearchProvider` takes a question, performs web search internally, returns an LLM-grounded answer + citations. `src/lib/research/index.ts` defines `ResearchOptions` (country/language/freshness/maxCitations/systemPrompt/timeoutMs), `ResearchCitation`, `ResearchUsage` (incl. keySource for BYOK accounting), `ResearchOutcome`, `IResearchProvider`. `MockResearchProvider` returns deterministic stubs for dev/CI. Helpers: `dedupeAndRankCitations`, `extractDomain`. Factory pattern + BYOK identical to `getAIProviderForCtx`.
+- [x] **P44-02.** Real Gemini implementation (`src/lib/research/gemini.ts`). POST `/v1beta/models/{model}:generateContent?key=...` with `tools: [{google_search: {}}]`. Maps `candidates[0].groundingMetadata.{groundingChunks, webSearchQueries}` to citations + `queriesIssued`. Default model `gemini-2.0-flash`. Cost computation covers Flash + Pro pricing as of late 2025. 60s `AbortController` timeout.
+- [x] **P44-03.** Real Perplexity Sonar implementation (`src/lib/research/perplexity.ts`). OpenAI-shape POST `/chat/completions` with Bearer auth. Default model `sonar` (base tier; Pro returns `search_results` with title+snippet, base returns `citations` URLs only — both paths handled). `search_recency_filter` mapped from `options.freshness`. Cost computation covers base + Pro pricing.
+- [x] **P44-04.** Schema (migration `0028_fancy_warbird.sql`): new `lead_research` table keyed `(workspace_id, qualified_lead_id)` with `question`, `question_hash` (sha256 lower-trimmed for cache lookup), `answer` (markdown), `citations` (jsonb), `queries_issued` (text[]), `provider_id`, `cost_estimate_cents`, `created_by`, `created_at`. Indexes on `(workspace, lead, created_at)` and `(workspace, lead, question_hash)` for cache hits.
+- [x] **P44-05.** `src/lib/services/lead-research.ts` — `researchLead(ctx, {qualifiedLeadId, question, options?, refresh?})` checks the cache first (unless `refresh:true`), calls `getResearchProviderForCtx(ctx)` on miss, persists the row, audit-logs `lead_research.run`, and emits a `research.query` `usage_log` entry on every NON-mock call (so /settings/usage rolls research spend up). Cross-workspace, viewer-role, empty/oversized question rejections. `listLeadResearch`, `deleteLeadResearch` (admin-gated, audit-logged).
+- [x] **P44-06.** UI on `/pipeline/[id]`: new Research section between CRM and Timeline with a textarea form + 4 preset buttons (company-overview / recent-news / decision-makers / buying-process). Cached entries render newest-first as gradient cards with the answer (paragraph-split), numbered citation list with title+domain+snippet, Re-run + Delete buttons per entry. Banner messages for `?message=` and `?error=`. New CSS: `.lead-research`, `.research-form`, `.research-presets`, `.research-preset`, `.research-list`, `.research-entry`, `.research-citations`, `.section-icon`, `.inline-form`.
+- [x] **P44-07.** 17 tests in `src/tests/research.test.ts` covering: extractDomain url normalisation; dedupeAndRankCitations url-key dedupe + cap; MockResearchProvider determinism + zero-cost + maxCitations; researchLead persistence + cache hit + refresh-bypass + audit/usage emission (mock vs real provider via stub injector) + empty/oversized rejection + cross-workspace refusal + viewer-role refusal; list (newest first) + delete (audit). **647/647 → 664/664 total tests pass.**
+
+**Phase 44 complete.**
+
+Note: real grounded research only happens when `RESEARCH_PROVIDER` is
+flipped from `mock` (default) to `gemini` or `perplexity` AND a
+`GEMINI_API_KEY` / `PERPLEXITY_API_KEY` is configured in the workspace
+secrets store or as a platform env var. Until the env flip the UI works
+end-to-end but the answers are deterministic mock stubs.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

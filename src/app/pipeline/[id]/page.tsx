@@ -28,6 +28,13 @@ import {
 import { db } from '@/lib/db/client';
 import { mailThreads } from '@/lib/db/schema/mailing';
 import { contactAssociations } from '@/lib/db/schema/contacts';
+import {
+  LeadResearchError,
+  deleteLeadResearch,
+  listLeadResearch,
+  researchLead,
+} from '@/lib/services/lead-research';
+import { Languages, Sparkles, Trash2 } from 'lucide-react';
 import { and, eq, sql } from 'drizzle-orm';
 import type {
   CloseReason,
@@ -140,6 +147,57 @@ export default async function PipelineLeadDetail({
           ),
         )
     : [];
+
+  // Research entries for the side panel.
+  const researchEntries = await listLeadResearch(ctx, id, 25);
+
+  async function runResearch(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const question = String(formData.get('question') ?? '').trim();
+    const refresh = formData.get('refresh') === '1';
+    if (!question) {
+      redirect(`/pipeline/${id}?error=${encodeURIComponent('Question is required')}`);
+    }
+    try {
+      const r = await researchLead(c, {
+        qualifiedLeadId: id,
+        question,
+        refresh,
+      });
+      const msg = r.cached
+        ? 'Loaded cached research.'
+        : `Research run via ${r.outcome?.providerId ?? 'provider'} — ${r.entry.citations ? (r.entry.citations as unknown[]).length : 0} citations.`;
+      redirect(`/pipeline/${id}?message=${encodeURIComponent(msg)}#research-${r.entry.id}`);
+    } catch (err) {
+      const m =
+        err instanceof LeadResearchError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'research failed';
+      redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function dropResearch(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const idRaw = String(formData.get('id') ?? '');
+    if (!/^\d+$/.test(idRaw)) return;
+    try {
+      await deleteLeadResearch(c, BigInt(idRaw));
+      redirect(`/pipeline/${id}?message=${encodeURIComponent('Research entry deleted.')}`);
+    } catch (err) {
+      const m =
+        err instanceof LeadResearchError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'delete failed';
+      redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
 
   async function doTransition(formData: FormData) {
     'use server';
@@ -556,6 +614,119 @@ export default async function PipelineLeadDetail({
               ))}
             </ul>
           ) : null}
+        </section>
+
+        <section className="lead-research">
+          <h2>
+            <Sparkles className="section-icon" aria-hidden="true" /> Research
+          </h2>
+          <p className="muted small">
+            Ask a question; an AI research provider searches the web, writes
+            a grounded answer, and stores citations. Repeat questions hit a
+            cache and don&apos;t re-bill.
+          </p>
+          <form action={runResearch} className="research-form">
+            <textarea
+              name="question"
+              rows={2}
+              maxLength={600}
+              placeholder="What does this company do? Recent news? Decision makers?"
+              required
+            />
+            <div className="action-row">
+              <button type="submit" className="primary-btn">
+                <Sparkles className="primary-btn-icon" aria-hidden="true" />
+                <span>Run research</span>
+              </button>
+              <span className="muted small">
+                Cached questions are free; new questions cost ~1–3¢ via the configured provider.
+              </span>
+            </div>
+            <div className="research-presets">
+              {[
+                'What does this company do, and what are their main products or services?',
+                'What recent news or announcements are there about this company in the last 6 months?',
+                'Who are the key decision makers, executives, or relevant contacts at this company?',
+                'What is this company’s likely buying process, budget signals, or expansion stage?',
+              ].map((q) => (
+                <button
+                  key={q}
+                  type="submit"
+                  name="question"
+                  value={q}
+                  formAction={runResearch}
+                  className="research-preset"
+                  title="Run preset question"
+                >
+                  {q.slice(0, 60)}{q.length > 60 ? '…' : ''}
+                </button>
+              ))}
+            </div>
+          </form>
+
+          {researchEntries.length === 0 ? (
+            <p className="muted">No research yet. Ask a question to start.</p>
+          ) : (
+            <ul className="research-list">
+              {researchEntries.map((r) => {
+                const cites = (r.citations as unknown as Array<{
+                  rank: number;
+                  url: string;
+                  domain: string;
+                  title: string;
+                  snippet?: string;
+                }>) ?? [];
+                return (
+                  <li key={r.id.toString()} id={`research-${r.id.toString()}`} className="research-entry">
+                    <div className="research-entry-head">
+                      <strong>{r.question}</strong>
+                      <span className="muted small">
+                        {r.providerId} · {r.createdAt.toLocaleString()}
+                        {r.costEstimateCents > 0 ? ` · ${(r.costEstimateCents / 100).toFixed(2)}¢` : ''}
+                      </span>
+                    </div>
+                    <div className="research-entry-answer">
+                      {r.answer.split('\n').map((para, idx) => (
+                        <p key={idx}>{para}</p>
+                      ))}
+                    </div>
+                    {cites.length > 0 ? (
+                      <ol className="research-citations">
+                        {cites.map((c) => (
+                          <li key={`${r.id.toString()}-${c.rank}`}>
+                            <a href={c.url} target="_blank" rel="noopener noreferrer">
+                              {c.title || c.domain}
+                            </a>
+                            <span className="muted"> · {c.domain}</span>
+                            {c.snippet ? (
+                              <p className="muted small">{c.snippet}</p>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ol>
+                    ) : null}
+                    <div className="action-row" style={{ marginTop: '0.4rem' }}>
+                      <form action={runResearch} className="inline-form">
+                        <input type="hidden" name="question" value={r.question} />
+                        <input type="hidden" name="refresh" value="1" />
+                        <button type="submit" className="ghost-btn">
+                          <Languages className="primary-btn-icon" aria-hidden="true" />
+                          <span>Re-run</span>
+                        </button>
+                      </form>
+                      <form action={dropResearch}>
+                        <input type="hidden" name="id" value={r.id.toString()} />
+                        <button type="submit" className="ghost-btn">
+                          <Trash2 className="primary-btn-icon" aria-hidden="true" />
+                          <span>Delete</span>
+                        </button>
+                      </form>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </section>
 
         <section>

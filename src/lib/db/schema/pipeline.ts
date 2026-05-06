@@ -192,3 +192,63 @@ export const pipelineEvents = pgTable(
 
 export type PipelineEvent = typeof pipelineEvents.$inferSelect;
 export type NewPipelineEvent = typeof pipelineEvents.$inferInsert;
+
+/**
+ * Phase 44: cached research answers per lead. Each row is an
+ * IResearchProvider call result keyed by (workspace, lead, question hash)
+ * so the same question against the same lead is a cache hit. Citations
+ * stored as jsonb of {rank, url, domain, title, snippet?, excerpt?}.
+ */
+export const leadResearch = pgTable(
+  'lead_research',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    qualifiedLeadId: bigint('qualified_lead_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => qualifiedLeads.id, { onDelete: 'cascade' }),
+
+    /** Operator-supplied question. */
+    question: text('question').notNull(),
+    /** sha256 of the question, lowercased + trimmed. Drives the dedupe
+        index so identical questions hit the cache. */
+    questionHash: text('question_hash').notNull(),
+
+    /** Markdown answer from the provider. */
+    answer: text('answer').notNull(),
+    /** Array of {rank, url, domain, title, snippet?, excerpt?}. */
+    citations: jsonb('citations').notNull().default(sql`'[]'::jsonb`),
+    /** Search queries the provider issued under the hood. */
+    queriesIssued: text('queries_issued')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+
+    providerId: text('provider_id').notNull(),
+    /** Best-effort cents — useful for /settings/usage roll-ups. */
+    costEstimateCents: bigint('cost_estimate_cents', { mode: 'number' }).notNull().default(0),
+
+    createdBy: text('created_by'),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    leadIdx: index('lead_research_lead_idx').on(
+      table.workspaceId,
+      table.qualifiedLeadId,
+      table.createdAt,
+    ),
+    /** Dedupe key: same workspace + lead + question hash. */
+    leadQuestionUnique: index('lead_research_lead_question_idx').on(
+      table.workspaceId,
+      table.qualifiedLeadId,
+      table.questionHash,
+    ),
+  }),
+);
+
+export type LeadResearchEntry = typeof leadResearch.$inferSelect;
+export type NewLeadResearchEntry = typeof leadResearch.$inferInsert;
