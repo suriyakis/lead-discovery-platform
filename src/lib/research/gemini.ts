@@ -55,7 +55,10 @@ export class GeminiResearchProvider implements IResearchProvider {
 
   constructor(config: GeminiResearchConfig) {
     this.apiKey = config.apiKey;
-    this.model = config.model ?? 'gemini-2.0-flash';
+    // gemini-2.5-flash is the current Flash generation that supports
+    // the google_search grounding tool. gemini-2.0-flash was retired
+    // for new users early 2026.
+    this.model = config.model ?? 'gemini-2.5-flash';
     this.baseUrl =
       config.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta';
     this.defaultTimeoutMs = config.timeoutMs ?? 60_000;
@@ -145,17 +148,18 @@ export class GeminiResearchProvider implements IResearchProvider {
     return Math.round(this.computeCost(inputTokens, outputTokens, 1));
   }
 
-  /** Pricing as of late 2025 (cents per call). gemini-2.0-flash:
-   *  $0.10 / 1M input tokens, $0.40 / 1M output tokens, $35 / 1k grounded
-   *  queries. Returns cents (×100). */
+  /** Pricing as of early 2026 (cents per token / per query).
+   *  gemini-2.5-flash: $0.30 / 1M input, $2.50 / 1M output.
+   *  gemini-2.5-pro:   $1.25 / 1M input, $10.00 / 1M output.
+   *  Grounding via google_search: $35 per 1k grounded queries. */
   private computeCost(
     inputTokens: number,
     outputTokens: number,
     searchQueries: number,
   ): number {
-    const isFlash = this.model.includes('flash');
-    const inputRate = isFlash ? 0.00001 : 0.000125; // cents per token
-    const outputRate = isFlash ? 0.00004 : 0.0005;
+    const isPro = this.model.includes('pro');
+    const inputRate = isPro ? 0.000125 : 0.00003; // cents per token
+    const outputRate = isPro ? 0.001 : 0.00025;
     const searchRate = 3.5; // cents per grounded query
     return (
       inputTokens * inputRate +
