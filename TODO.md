@@ -636,6 +636,24 @@ without restart. Choosing 'inherit env default' falls back to the env
 value, so existing prod setups keep their behaviour until the operator
 explicitly picks a workspace-level provider.
 
+## Phase 46 — Research-grounded outreach drafts
+
+- [x] **P46-01.** Schema (migration `0030_messy_leader.sql`): two new columns on `product_profiles` — `enrich_drafts_with_research` (boolean, default `false`, opt-in per product) + `research_question_template` (text, default a B2B-flavoured question with `{company}` / `{domain}` tokens). Default off so existing products are unchanged.
+- [x] **P46-02.** Engine: `composeAiDraft` accepts an optional `researchContext` string and, when present, injects a "Research context" block into the user prompt above the product/lead context. Mock seed includes a `:rN` suffix so enriched drafts are deterministic per (product, record, research) tuple.
+- [x] **P46-03.** Service wiring: `generateOutreachDraft` looks up the qualified lead for `(reviewItem, product)` (when present), templated-renders the research question via `{company}` / `{domain}` substitutions (company derived from source-record title; domain from contact email > source-record domain), calls `researchLead` (cached), formats the answer + top 3 citations as the research context. Best-effort: failures log + draft generation continues without enrichment.
+- [x] **P46-04.** UI: product form gets an 'Outreach research enrichment' fieldset with the on/off checkbox + a textarea for the templated question. New + Edit pages parse both fields. `product-profile.ts` create/update inputs accept `enrichDraftsWithResearch` + `researchQuestionTemplate`.
+- [x] **P46-05.** Draft evidence: every AI draft now records `evidence.researchEntryId` (string of the `lead_research.id` that informed the draft, or `null` when no enrichment ran), so the operator can trace which research entry shaped any given draft.
+- [x] **P46-06.** 5 tests in `src/tests/p46.test.ts` covering: `composeAiDraft` injects "Research context" when supplied + omits when not; `generateOutreachDraft` end-to-end runs research + persists to `lead_research` + threads it through to the prompt + records `researchEntryId`; flag-off skips research entirely; missing-lead skips enrichment gracefully without breaking the draft. **682/682 → 687/687 total tests pass.**
+
+**Phase 46 complete.**
+
+To use: turn on 'Enrich AI-generated drafts with live research' on a product
+profile, ensure your workspace has a real research provider selected at
+`/settings/integrations`, and generate a draft on `/drafts` — the engine
+calls Gemini/Perplexity once per (lead, question) and feeds a grounded
+context block into the prompt. Repeat draft generations for the same
+question hit the cache.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

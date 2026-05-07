@@ -69,6 +69,8 @@ describe('classifyRecord (pure engine)', () => {
       forbiddenPhrases: [],
       language: 'en',
       active: true,
+      enrichDraftsWithResearch: false,
+      researchQuestionTemplate: 'What does {company} ({domain}) do?',
       documentSourceIds: [],
       pricingSnapshotId: null,
       crmMapping: {} as never,

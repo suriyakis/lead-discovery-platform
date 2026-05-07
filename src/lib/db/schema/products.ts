@@ -76,6 +76,23 @@ export const productProfiles = pgTable(
     language: text('language').notNull().default('en'),
     active: boolean('active').notNull().default(true),
 
+    /** Phase 46: when true, AI-generated outreach drafts run a research
+        pre-pass against the lead and inject the answer + citations into
+        the prompt context. Per-product opt-in because every enriched
+        draft costs +1 research call (Gemini / Perplexity). Default off
+        so existing products generate drafts at the same cost as before. */
+    enrichDraftsWithResearch: boolean('enrich_drafts_with_research')
+      .notNull()
+      .default(false),
+    /** The question to ask the research provider when enrichment is on.
+        Templated: literal `{company}` and `{domain}` are replaced from the
+        lead's contact_company / contact_domain at draft time. */
+    researchQuestionTemplate: text('research_question_template')
+      .notNull()
+      .default(
+        'What does {company} ({domain}) do, what are their main products and target customers, and what recent news or projects from the past 6 months would matter for a B2B introduction?',
+      ),
+
     // ---- reserved for future phases (nullable / default-empty) ----
     documentSourceIds: bigint('document_source_ids', { mode: 'bigint' })
       .array()

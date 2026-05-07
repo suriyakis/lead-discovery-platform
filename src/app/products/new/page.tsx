@@ -60,6 +60,9 @@ export default async function NewProductPage({
         ),
         forbiddenPhrases: readArrayField(formData, 'forbiddenPhrases'),
         language: String(formData.get('language') ?? 'en') || 'en',
+        enrichDraftsWithResearch: formData.get('enrichDraftsWithResearch') === 'on',
+        researchQuestionTemplate:
+          String(formData.get('researchQuestionTemplate') ?? '').trim() || undefined,
       });
       redirect(`/products/${profile.id}`);
     } catch (err) {

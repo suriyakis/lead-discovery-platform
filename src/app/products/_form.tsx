@@ -208,6 +208,43 @@ export function ProductFields({ profile, formError, submitLabel }: Readonly<Prop
         </label>
       </fieldset>
 
+      <fieldset>
+        <legend>Outreach research enrichment</legend>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            name="enrichDraftsWithResearch"
+            defaultChecked={v?.enrichDraftsWithResearch ?? false}
+          />
+          <span>
+            Enrich AI-generated drafts with live research about the recipient
+          </span>
+        </label>
+        <small>
+          When on, every <code>ai</code> or <code>hybrid</code> draft runs a
+          Gemini / Perplexity research call against the lead before
+          generation. Adds ~1–3¢ per draft. Cached per (lead, question), so
+          re-generating the same draft is free.
+        </small>
+        <label>
+          <span>Research question (templated)</span>
+          <textarea
+            name="researchQuestionTemplate"
+            rows={2}
+            maxLength={1000}
+            defaultValue={
+              v?.researchQuestionTemplate ??
+              'What does {company} ({domain}) do, what are their main products and target customers, and what recent news or projects from the past 6 months would matter for a B2B introduction?'
+            }
+            placeholder="What does {company} ({domain}) do?"
+          />
+          <small>
+            Tokens <code>{'{company}'}</code> and <code>{'{domain}'}</code>{' '}
+            are replaced with the lead&apos;s details at draft time.
+          </small>
+        </label>
+      </fieldset>
+
       <div className="form-actions">
         <button type="submit" className="primary-btn">
           {submitLabel}

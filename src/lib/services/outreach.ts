@@ -101,6 +101,41 @@ export async function generateOutreachDraft(
   const language = input.language?.trim() || resolveProfileLanguage(product);
   const method: OutreachDraftMethod = input.method ?? 'rules';
 
+  // Phase 46: optional research enrichment. When the product has the
+  // flag on AND we're generating an AI/hybrid draft AND there's a
+  // qualified lead for this (review_item, product), run the research
+  // provider once via the lead-research cache. Best-effort — failures
+  // log + continue without enrichment so generation never breaks.
+  let researchContext: string | null = null;
+  let researchEntryId: bigint | null = null;
+  if (
+    product.enrichDraftsWithResearch &&
+    (method === 'ai' || method === 'hybrid')
+  ) {
+    try {
+      const lead = await findQualifiedLeadForPair(ctx, reviewItem.id, product.id);
+      if (lead) {
+        const question = renderResearchTemplate(
+          product.researchQuestionTemplate,
+          lead,
+          sourceRecord,
+        );
+        const { researchLead } = await import('./lead-research');
+        const r = await researchLead(ctx, {
+          qualifiedLeadId: lead.id,
+          question,
+        });
+        researchContext = formatResearchAsContext(
+          r.entry.answer,
+          r.entry.citations as unknown as Array<{ url: string; title: string; domain: string }>,
+        );
+        researchEntryId = r.entry.id;
+      }
+    } catch (err) {
+      console.error('[outreach] research enrichment failed (best-effort, continuing):', err);
+    }
+  }
+
   const verdict = await composeVerdict(
     method,
     sourceRecord,
@@ -108,6 +143,7 @@ export async function generateOutreachDraft(
     allLessons,
     { channel, language },
     ctx,
+    researchContext,
   );
 
   // Insert with supersede in one transaction. The partial unique index
@@ -138,7 +174,10 @@ export async function generateOutreachDraft(
       confidence: verdict.confidence,
       method: verdict.method,
       model: verdict.model,
-      evidence: serializeEvidence(verdict),
+      evidence: {
+        ...serializeEvidence(verdict),
+        researchEntryId: researchEntryId?.toString() ?? null,
+      },
       forbiddenStripped: verdict.forbiddenStripped,
       matchedLessonIds: verdict.matchedLessonIds,
       createdBy: ctx.userId,
@@ -563,6 +602,7 @@ async function composeVerdict(
   lessons: ReadonlyArray<import('@/lib/db/schema/learning').LearningLesson>,
   cfg: { channel: string; language: string },
   workspaceCtx: WorkspaceContext,
+  researchContext: string | null = null,
 ): Promise<DraftVerdict> {
   const draftable = extractDraftable(sourceRecord);
   if (method === 'rules') {
@@ -570,7 +610,7 @@ async function composeVerdict(
   }
   if (method === 'ai') {
     const ai = await getAIProviderForCtx(workspaceCtx);
-    return composeAiDraft(draftable, product, lessons, cfg, ai);
+    return composeAiDraft(draftable, product, lessons, cfg, ai, researchContext);
   }
   if (method === 'hybrid') {
     // Phase 33: hybrid = rules-scaffold subject + AI-rewritten body when
@@ -580,9 +620,73 @@ async function composeVerdict(
     if (ai.id === 'mock') {
       return composeRulesDraft(draftable, product, lessons, cfg);
     }
-    return composeAiDraft(draftable, product, lessons, cfg, ai);
+    return composeAiDraft(draftable, product, lessons, cfg, ai, researchContext);
   }
   throw invalid(`unknown method: ${method}`);
+}
+
+/** Look up the qualified lead for a (review_item, product) pair, if one
+ *  exists. Returns null when the review item hasn't been promoted yet —
+ *  in that case research enrichment is skipped (no lead to attach the
+ *  cached research to). */
+async function findQualifiedLeadForPair(
+  ctx: WorkspaceContext,
+  reviewItemId: bigint,
+  productProfileId: bigint,
+): Promise<{
+  id: bigint;
+  contactEmail: string | null;
+} | null> {
+  const { qualifiedLeads } = await import('@/lib/db/schema/pipeline');
+  const rows = await db
+    .select({
+      id: qualifiedLeads.id,
+      contactEmail: qualifiedLeads.contactEmail,
+    })
+    .from(qualifiedLeads)
+    .where(
+      and(
+        eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+        eq(qualifiedLeads.reviewItemId, reviewItemId),
+        eq(qualifiedLeads.productProfileId, productProfileId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+function renderResearchTemplate(
+  template: string,
+  lead: { contactEmail: string | null },
+  sourceRecord: SourceRecord,
+): string {
+  const norm = sourceRecord.normalizedData as Record<string, unknown>;
+  const recordDomain =
+    typeof norm.domain === 'string' ? norm.domain : null;
+  const recordTitle =
+    typeof norm.title === 'string' ? norm.title : null;
+  const emailDomain =
+    lead.contactEmail?.split('@')[1]?.trim().toLowerCase() ?? null;
+  const domain =
+    emailDomain || recordDomain || '(domain unknown)';
+  // Best-effort 'company' label: title from the source record (often a
+  // company name on directory hits), else the domain itself.
+  const company = recordTitle?.trim() || domain;
+  return template
+    .replaceAll('{company}', company)
+    .replaceAll('{domain}', domain);
+}
+
+function formatResearchAsContext(
+  answer: string,
+  citations: ReadonlyArray<{ url: string; title?: string; domain?: string }>,
+): string {
+  const top = citations.slice(0, 3);
+  const sources = top
+    .map((c, i) => `  [${i + 1}] ${c.title || c.domain || c.url} — ${c.url}`)
+    .join('\n');
+  if (sources) return `${answer.trim()}\n\nSources:\n${sources}`;
+  return answer.trim();
 }
 
 function serializeEvidence(verdict: DraftVerdict): Record<string, unknown> {

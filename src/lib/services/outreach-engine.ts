@@ -111,6 +111,11 @@ export function composeRulesDraft(
  * AI-mode generation. Builds a structured prompt, calls the provider, and
  * runs forbidden-phrase stripping on the output. Provider failures bubble
  * up — the service layer decides whether to fall back to rules.
+ *
+ * Phase 46: optional `researchContext` is injected into the prompt as a
+ * "Research context" block above the lead/product context, so the model
+ * can reference grounded facts about the recipient (recent news,
+ * positioning, decision makers) instead of generic openings.
  */
 export async function composeAiDraft(
   record: DraftableRecord,
@@ -118,8 +123,9 @@ export async function composeAiDraft(
   lessons: ReadonlyArray<LearningLesson>,
   ctx: DraftContext,
   ai: IAIProvider,
+  researchContext?: string | null,
 ): Promise<DraftVerdict> {
-  const prompt = buildAiPrompt(record, product, lessons, ctx);
+  const prompt = buildAiPrompt(record, product, lessons, ctx, researchContext ?? null);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
     { mockSeed: prompt.mockSeed, temperature: 0.7 },
@@ -238,6 +244,7 @@ function buildAiPrompt(
   product: ProductProfile,
   lessons: ReadonlyArray<LearningLesson>,
   ctx: DraftContext,
+  researchContext: string | null,
 ): AiPrompt {
   const lessonLines = lessons
     .map((l, i) => `${i + 1}. [${l.category}] ${l.rule}`)
@@ -268,6 +275,10 @@ function buildAiPrompt(
     .filter(Boolean)
     .join('\n');
 
+  const researchBlock = researchContext
+    ? `Research context (live web research about the recipient — use these facts to personalize the opener; cite at most one if natural, never as a footnote):\n${researchContext.trim()}\n`
+    : '';
+
   const user = [
     `Lead context:`,
     record.title ? `- Title: ${record.title}` : '',
@@ -275,6 +286,7 @@ function buildAiPrompt(
     record.url ? `- URL: ${record.url}` : '',
     record.snippet ? `- Snippet: ${record.snippet}` : '',
     '',
+    researchBlock,
     `Product:`,
     `- Name: ${product.name}`,
     product.shortDescription ? `- Short: ${product.shortDescription.trim()}` : '',
@@ -290,9 +302,11 @@ function buildAiPrompt(
     .filter(Boolean)
     .join('\n');
 
-  // Stable mock seed: prompt-bound + product id so identical inputs yield
-  // identical mock output across test runs.
-  const mockSeed = `outreach:${product.id}:${record.url ?? record.domain ?? 'noref'}`;
+  // Stable mock seed: prompt-bound + product id + research-context hash
+  // so an enriched draft is deterministic per (product, record, research)
+  // tuple in tests.
+  const researchTag = researchContext ? `:r${researchContext.length}` : '';
+  const mockSeed = `outreach:${product.id}:${record.url ?? record.domain ?? 'noref'}${researchTag}`;
 
   return { system, user, mockSeed };
 }

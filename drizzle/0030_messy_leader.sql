@@ -1,0 +1,2 @@
+ALTER TABLE "product_profiles" ADD COLUMN "enrich_drafts_with_research" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "product_profiles" ADD COLUMN "research_question_template" text DEFAULT 'What does {company} ({domain}) do, what are their main products and target customers, and what recent news or projects from the past 6 months would matter for a B2B introduction?' NOT NULL;

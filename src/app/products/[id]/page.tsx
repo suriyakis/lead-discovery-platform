@@ -80,6 +80,9 @@ export default async function EditProductPage({
         ),
         forbiddenPhrases: readArrayField(formData, 'forbiddenPhrases'),
         language: String(formData.get('language') ?? 'en') || 'en',
+        enrichDraftsWithResearch: formData.get('enrichDraftsWithResearch') === 'on',
+        researchQuestionTemplate:
+          String(formData.get('researchQuestionTemplate') ?? '').trim() || undefined,
       });
       redirect(`/products/${id}?saved=1`);
     } catch (err) {

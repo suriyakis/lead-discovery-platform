@@ -38,6 +38,8 @@ export interface CreateProductProfileInput {
   negativeOutreachInstructions?: string | null;
   forbiddenPhrases?: readonly string[];
   language?: string;
+  enrichDraftsWithResearch?: boolean;
+  researchQuestionTemplate?: string;
 }
 
 export async function createProductProfile(
@@ -71,6 +73,12 @@ export async function createProductProfile(
       negativeOutreachInstructions: input.negativeOutreachInstructions ?? null,
       forbiddenPhrases: [...(input.forbiddenPhrases ?? [])],
       language: input.language ?? 'en',
+      ...(input.enrichDraftsWithResearch !== undefined
+        ? { enrichDraftsWithResearch: input.enrichDraftsWithResearch }
+        : {}),
+      ...(input.researchQuestionTemplate !== undefined
+        ? { researchQuestionTemplate: input.researchQuestionTemplate }
+        : {}),
       createdBy: ctx.userId,
       updatedBy: ctx.userId,
     };
@@ -188,6 +196,10 @@ export async function updateProductProfile(
       updates.forbiddenPhrases = [...patch.forbiddenPhrases];
     if (patch.language !== undefined) updates.language = patch.language;
     if (patch.active !== undefined) updates.active = patch.active;
+    if (patch.enrichDraftsWithResearch !== undefined)
+      updates.enrichDraftsWithResearch = patch.enrichDraftsWithResearch;
+    if (patch.researchQuestionTemplate !== undefined)
+      updates.researchQuestionTemplate = patch.researchQuestionTemplate;
 
     const updated = await tx
       .update(productProfiles)
