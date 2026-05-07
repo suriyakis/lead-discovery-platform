@@ -15,7 +15,7 @@ import {
   hasSecret,
   setSecret,
 } from '@/lib/services/secrets';
-import { getSearchProvider } from '@/lib/search';
+import { getSearchProviderForCtx } from '@/lib/search';
 import {
   ALLOWED_AI_PROVIDERS,
   ALLOWED_EMBEDDING_PROVIDERS,
@@ -337,7 +337,9 @@ export default async function IntegrationsPage({
   async function testConnection() {
     'use server';
     const c = await getWorkspaceContext();
-    const provider = getSearchProvider();
+    // Phase 45: use the per-workspace factory so the dropdown pick on
+    // 'Active providers' is what gets tested, not just the env var.
+    const provider = await getSearchProviderForCtx(c);
     if (provider.id === 'mock') {
       redirect('/settings/integrations?tested=mock');
     }
@@ -371,7 +373,7 @@ export default async function IntegrationsPage({
         {sp.tested ? (
           <p className={sp.tested === 'ok' ? 'form-success' : 'form-error'}>
             {sp.tested === 'mock'
-              ? 'Mock search provider — no live key needed (set SEARCH_PROVIDER=serpapi to test).'
+              ? 'Active search provider is mock — no live key needed. Pick "serpapi" in Active providers above to test the real connection.'
               : sp.tested === 'ok'
                 ? 'Connection ok.'
                 : `Connection failed.`}
