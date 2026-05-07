@@ -16,6 +16,9 @@ import {
   setSecret,
 } from '@/lib/services/secrets';
 import { getSearchProviderForCtx } from '@/lib/search';
+import { getAIProviderForCtx } from '@/lib/ai';
+import { getEmbeddingProviderForCtx } from '@/lib/embeddings';
+import { getResearchProviderForCtx } from '@/lib/research';
 import {
   ALLOWED_AI_PROVIDERS,
   ALLOWED_EMBEDDING_PROVIDERS,
@@ -45,7 +48,13 @@ const PERPLEXITY_ENV = 'PERPLEXITY_API_KEY';
 export default async function IntegrationsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; err?: string; tested?: string; provider?: string }>;
+  searchParams: Promise<{
+    ok?: string;
+    err?: string;
+    tested?: string;
+    provider?: string;
+    detail?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -334,19 +343,91 @@ export default async function IntegrationsPage({
     }
   }
 
-  async function testConnection() {
+  async function testSearchConnection() {
     'use server';
     const c = await getWorkspaceContext();
-    // Phase 45: use the per-workspace factory so the dropdown pick on
-    // 'Active providers' is what gets tested, not just the env var.
     const provider = await getSearchProviderForCtx(c);
     if (provider.id === 'mock') {
-      redirect('/settings/integrations?tested=mock');
+      redirect('/settings/integrations?tested=mock&provider=search');
     }
-    const result = await provider.testConnection(c);
+    let result: { ok: boolean; detail?: string };
+    try {
+      result = await provider.testConnection(c);
+    } catch (err) {
+      result = {
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
     const param = result.ok ? 'ok' : 'fail';
     redirect(
-      `/settings/integrations?tested=${param}&detail=${encodeURIComponent(result.detail ?? '')}`,
+      `/settings/integrations?tested=${param}&provider=search&detail=${encodeURIComponent(result.detail ?? '')}`,
+    );
+  }
+
+  async function testAIConnection() {
+    'use server';
+    const c = await getWorkspaceContext();
+    let result: { ok: boolean; detail?: string };
+    try {
+      const provider = await getAIProviderForCtx(c);
+      if (provider.id === 'mock') {
+        redirect('/settings/integrations?tested=mock&provider=ai');
+      }
+      result = await provider.healthCheck();
+    } catch (err) {
+      result = {
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const param = result.ok ? 'ok' : 'fail';
+    redirect(
+      `/settings/integrations?tested=${param}&provider=ai&detail=${encodeURIComponent(result.detail ?? '')}`,
+    );
+  }
+
+  async function testEmbeddingConnection() {
+    'use server';
+    const c = await getWorkspaceContext();
+    let result: { ok: boolean; detail?: string };
+    try {
+      const provider = await getEmbeddingProviderForCtx(c);
+      if (provider.id === 'mock') {
+        redirect('/settings/integrations?tested=mock&provider=embedding');
+      }
+      result = await provider.healthCheck();
+    } catch (err) {
+      result = {
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const param = result.ok ? 'ok' : 'fail';
+    redirect(
+      `/settings/integrations?tested=${param}&provider=embedding&detail=${encodeURIComponent(result.detail ?? '')}`,
+    );
+  }
+
+  async function testResearchConnection() {
+    'use server';
+    const c = await getWorkspaceContext();
+    let result: { ok: boolean; detail?: string };
+    try {
+      const provider = await getResearchProviderForCtx(c);
+      if (provider.id === 'mock') {
+        redirect('/settings/integrations?tested=mock&provider=research');
+      }
+      result = await provider.testConnection();
+    } catch (err) {
+      result = {
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const param = result.ok ? 'ok' : 'fail';
+    redirect(
+      `/settings/integrations?tested=${param}&provider=research&detail=${encodeURIComponent(result.detail ?? '')}`,
     );
   }
 
@@ -372,11 +453,18 @@ export default async function IntegrationsPage({
         {sp.err ? <p className="form-error">Error: {sp.err}</p> : null}
         {sp.tested ? (
           <p className={sp.tested === 'ok' ? 'form-success' : 'form-error'}>
+            <strong>
+              {sp.provider
+                ? `${sp.provider[0]!.toUpperCase()}${sp.provider.slice(1)} test:`
+                : 'Test:'}
+            </strong>{' '}
             {sp.tested === 'mock'
-              ? 'Active search provider is mock — no live key needed. Pick "serpapi" in Active providers above to test the real connection.'
+              ? `Active ${sp.provider ?? ''} provider is mock — no live key needed. Pick a real provider in Active providers above to test the real connection.`
               : sp.tested === 'ok'
                 ? 'Connection ok.'
-                : `Connection failed.`}
+                : sp.detail
+                  ? `Connection failed — ${sp.detail}`
+                  : 'Connection failed.'}
           </p>
         ) : null}
 
@@ -506,7 +594,7 @@ export default async function IntegrationsPage({
                     </button>
                   </form>
                 ) : null}
-                <form action={testConnection}>
+                <form action={testSearchConnection}>
                   <button type="submit">Test connection</button>
                 </form>
               </div>
@@ -578,13 +666,21 @@ export default async function IntegrationsPage({
                   Save
                 </button>
               </form>
-              {workspaceHasOpenai ? (
-                <form action={clearOpenai} style={{ marginTop: '0.5rem' }}>
-                  <button type="submit" className="ghost-btn">
-                    Clear workspace OpenAI key
-                  </button>
+              <div className="action-row" style={{ marginTop: '0.5rem' }}>
+                {workspaceHasOpenai ? (
+                  <form action={clearOpenai}>
+                    <button type="submit" className="ghost-btn">
+                      Clear workspace OpenAI key
+                    </button>
+                  </form>
+                ) : null}
+                <form action={testEmbeddingConnection}>
+                  <button type="submit">Test embedding key</button>
                 </form>
-              ) : null}
+                <form action={testAIConnection}>
+                  <button type="submit">Test as AI provider</button>
+                </form>
+              </div>
             </>
           ) : (
             <p className="muted">
@@ -671,13 +767,18 @@ export default async function IntegrationsPage({
                   Save
                 </button>
               </form>
-              {workspaceHasAnthropic ? (
-                <form action={clearAnthropic} style={{ marginTop: '0.5rem' }}>
-                  <button type="submit" className="ghost-btn">
-                    Clear workspace Anthropic key
-                  </button>
+              <div className="action-row" style={{ marginTop: '0.5rem' }}>
+                {workspaceHasAnthropic ? (
+                  <form action={clearAnthropic}>
+                    <button type="submit" className="ghost-btn">
+                      Clear workspace Anthropic key
+                    </button>
+                  </form>
+                ) : null}
+                <form action={testAIConnection}>
+                  <button type="submit">Test connection</button>
                 </form>
-              ) : null}
+              </div>
             </>
           ) : (
             <p className="muted">
@@ -765,13 +866,18 @@ export default async function IntegrationsPage({
                   Save
                 </button>
               </form>
-              {workspaceHasGemini ? (
-                <form action={clearGemini} style={{ marginTop: '0.5rem' }}>
-                  <button type="submit" className="ghost-btn">
-                    Clear workspace Gemini key
-                  </button>
+              <div className="action-row" style={{ marginTop: '0.5rem' }}>
+                {workspaceHasGemini ? (
+                  <form action={clearGemini}>
+                    <button type="submit" className="ghost-btn">
+                      Clear workspace Gemini key
+                    </button>
+                  </form>
+                ) : null}
+                <form action={testResearchConnection}>
+                  <button type="submit">Test connection</button>
                 </form>
-              ) : null}
+              </div>
             </>
           ) : (
             <p className="muted">
@@ -846,13 +952,18 @@ export default async function IntegrationsPage({
                   Save
                 </button>
               </form>
-              {workspaceHasPerplexity ? (
-                <form action={clearPerplexity} style={{ marginTop: '0.5rem' }}>
-                  <button type="submit" className="ghost-btn">
-                    Clear workspace Perplexity key
-                  </button>
+              <div className="action-row" style={{ marginTop: '0.5rem' }}>
+                {workspaceHasPerplexity ? (
+                  <form action={clearPerplexity}>
+                    <button type="submit" className="ghost-btn">
+                      Clear workspace Perplexity key
+                    </button>
+                  </form>
+                ) : null}
+                <form action={testResearchConnection}>
+                  <button type="submit">Test connection</button>
                 </form>
-              ) : null}
+              </div>
             </>
           ) : (
             <p className="muted">
