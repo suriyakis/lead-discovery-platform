@@ -285,6 +285,11 @@ export async function synthesizeProfile(
   const parsed = await provider.generateJson(
     { system: SYSTEM_PROMPT, prompt: userPrompt },
     SynthesizedProfileSchema,
+    // Autofill JSON can run 1.5–2k output tokens with rich source
+    // material. Anthropic's default max_tokens is 1024 which truncates
+    // mid-string and yields a JSON-parse error; bump to 4096 so the
+    // model has room. OpenAI ignores the option when not capped.
+    { maxTokens: 4096 },
   );
 
   // Belt-and-braces language sanity check.

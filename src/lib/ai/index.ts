@@ -337,7 +337,11 @@ export class AnthropicAIProvider implements IAIProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       messages: [{ role: 'user', content: input.prompt }],
-      max_tokens: options.maxTokens ?? 1024,
+      // Anthropic's Messages API requires max_tokens. 4096 is a safer
+      // default than 1024 — most callers (drafts, translations,
+      // autofill) want longer-than-1024 output and silent truncation
+      // produces cryptic JSON-parse failures downstream.
+      max_tokens: options.maxTokens ?? 4096,
       temperature: options.temperature ?? 0.4,
     };
     if (input.system) body.system = input.system;
