@@ -11,7 +11,6 @@
 // by total input size (~64 KB).
 
 import { load as loadHtml, type CheerioAPI } from 'cheerio';
-import { PDFParse } from 'pdf-parse';
 import { z } from 'zod';
 import { getAIProviderForCtx } from '@/lib/ai';
 import {
@@ -141,28 +140,29 @@ function extractReadableText(html: string): string {
   return text;
 }
 
-/** Extract text out of a PDF buffer. Throws on encrypted PDFs. */
+/** Extract text out of a PDF buffer. Throws on encrypted PDFs.
+ *  Imported lazily so the page route doesn't pay the pdf-parse +
+ *  pdfjs-dist init cost on URL-only autofill calls. */
 export async function extractFromPdf(
   buffer: Buffer,
   filename: string,
 ): Promise<ExtractedSource> {
+  // pdf-parse v1's default export is a single function (buffer) =>
+  // Promise<{text, numpages, ...}>. The dynamic import keeps the
+  // dependency out of the module-load path so it never breaks page
+  // rendering in production.
+  const mod = (await import('pdf-parse')) as unknown as {
+    default: (buffer: Buffer) => Promise<{ text: string }>;
+  };
   let raw = '';
-  let parser: PDFParse | null = null;
   try {
-    // pdf-parse v2 wants a Uint8Array view (the constructor accepts
-    // Buffer too but the type narrows tighter on Uint8Array).
-    parser = new PDFParse({ data: new Uint8Array(buffer) });
-    const result = await parser.getText();
+    const result = await mod.default(buffer);
     raw = result.text ?? '';
   } catch (err) {
     throw new ProductAutofillError(
       `pdf parse failed for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
       'pdf_parse_failed',
     );
-  } finally {
-    await parser?.destroy().catch(() => {
-      // Releasing the pdfjs handle is best-effort.
-    });
   }
   const text = raw
     .replace(/[ \t]{2,}/g, ' ')
