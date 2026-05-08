@@ -27,6 +27,25 @@ export const workspaceMemberRole = pgEnum('workspace_member_role', [
  */
 export const workspaceStatus = pgEnum('workspace_status', ['active', 'archived']);
 
+/** Phase 47: onboarding state machine. New workspaces start at
+ *  `pending` and the dashboard redirects to /onboarding until the
+ *  operator has completed (or skipped) the setup wizard. */
+export const onboardingStatus = pgEnum('onboarding_status', [
+  'pending',
+  'in_progress',
+  'completed',
+]);
+
+/** Phase 47/48: subscription state. The wizard's Plan step shows
+ *  what the workspace is on today; payments (Stripe) plug in later
+ *  to flip these via webhook. */
+export const subscriptionStatus = pgEnum('subscription_status', [
+  'trial',
+  'active',
+  'past_due',
+  'canceled',
+]);
+
 export const workspaces = pgTable('workspaces', {
   id: bigserial('id', { mode: 'bigint' }).primaryKey(),
   name: text('name').notNull(),
@@ -44,6 +63,29 @@ export const workspaces = pgTable('workspaces', {
   ownerUserId: text('owner_user_id')
     .notNull()
     .references(() => users.id),
+
+  /** Phase 47: where the operator is in the setup wizard. Defaults to
+   *  `completed` so existing workspaces (created before the wizard
+   *  shipped) don't get redirected on next login. New workspaces are
+   *  created with `pending` via the bootstrap path. */
+  onboardingStatus: onboardingStatus('onboarding_status')
+    .notNull()
+    .default('completed'),
+  /** Phase 47/48: current plan. 'trial' is the default until Stripe
+   *  webhook flips it. Free-form text so adding new tiers later
+   *  doesn't require a migration. */
+  plan: text('plan').notNull().default('trial'),
+  /** Phase 47/48: subscription state, written by the (future) Stripe
+   *  webhook handler. Until payments ship, every workspace is `trial`. */
+  subscriptionStatus: subscriptionStatus('subscription_status')
+    .notNull()
+    .default('trial'),
+  /** When the trial ends. Null = no time-bounded trial yet. */
+  trialEndsAt: timestamp('trial_ends_at', { mode: 'date', withTimezone: true }),
+  /** Stripe customer + subscription ids, populated by the webhook. */
+  stripeCustomerId: text('stripe_customer_id'),
+  stripeSubscriptionId: text('stripe_subscription_id'),
+
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),

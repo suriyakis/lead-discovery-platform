@@ -654,6 +654,25 @@ calls Gemini/Perplexity once per (lead, question) and feeds a grounded
 context block into the prompt. Repeat draft generations for the same
 question hit the cache.
 
+## Phase 47 — Onboarding wizard + payment-ready schema
+
+- [x] **P47-01.** Schema (migration `0031_first_maddog.sql`): two new enums (`onboarding_status` = pending|in_progress|completed, `subscription_status` = trial|active|past_due|canceled) + 6 new columns on `workspaces`: `onboarding_status` (default `completed` so legacy workspaces are unaffected), `plan` (text, default `trial`), `subscription_status` (default `trial`), `trial_ends_at` (nullable), `stripe_customer_id` (nullable), `stripe_subscription_id` (nullable). Stripe fields ship empty so the future P48 payment phase can plug Stripe webhook into the same row without another migration.
+- [x] **P47-02.** Bootstrap path (`src/lib/auth.ts`): new bootstrap workspaces created at the OWNER_EMAIL first sign-in start with `onboarding_status='pending'`. Pre-existing prod workspaces use the `completed` schema default — nothing changes for them.
+- [x] **P47-03.** `src/lib/services/onboarding.ts`: `getOnboardingState(ctx)` computes per-step completion (plan / ai / mailbox / product / connector) with auto-detect logic — AI step is done iff active provider is real AND key resolves; mailbox/product/connector steps are done iff at least one active row exists. `markOnboardingStarted(ctx)` moves pending → in_progress (no-op when already in_progress / completed). `markOnboardingComplete(ctx)` admin-gated, audit-logged.
+- [x] **P47-04.** UI `/onboarding` page: 5 numbered step cards with Lucide icons (CreditCard / Sparkles / Inbox / ShoppingBag / Network), state-aware status badges (Done / Next / Pending), per-step CTAs that link to the relevant settings page, optional "why" hint for incomplete steps. The Plan step shows the workspace's `subscriptionStatus` + `plan` codes inline (today: trial / trial — placeholder for Stripe checkout in P48). 'Skip for now' button lets the operator dismiss; the wizard is admin-only for advancement, others can read + skip.
+- [x] **P47-05.** Dashboard redirect: when the user's primary workspace has `onboarding_status != completed`, the dashboard bounces to `/onboarding`. The wizard's first visit promotes pending → in_progress so a stuck-pending workspace doesn't redirect-loop on every reload. Existing workspaces (legacy default `completed`) bypass the redirect entirely.
+- [x] **P47-06.** New CSS: `.onboarding-list`, `.onboarding-step` (with `.next` accent + `.done` muted opacity), `.onboarding-step-icon` (tone-coloured for done/next/pending), `.onboarding-step-body`, `.onboarding-step-head`, `.onboarding-step-blurb`, `.onboarding-step-why` (amber callout for missing-step explanations).
+- [x] **P47-07.** 12 tests in `src/tests/onboarding.test.ts`: 5-step shape; per-step done-detection (AI key reachable / not, mailbox + product + connector existence); effectivelyComplete = all-steps-done OR onboardingStatus='completed'; markOnboardingComplete flips status + admin-gates; markOnboardingStarted pending → in_progress idempotent + does not regress completed. **687/687 → 699/699 total tests pass.**
+
+**Phase 47 complete.**
+
+When P48 (Stripe payments) lands, the wiring is already in place:
+`workspaces.{plan, subscription_status, trial_ends_at, stripe_customer_id,
+stripe_subscription_id}` exist; the wizard's Plan step replaces its
+placeholder copy with a real Stripe Checkout link; the `subscriptionStatus`
+gate in `getOnboardingState` already treats `canceled` / `past_due` as
+not-done so a lapsed customer hits the wizard instead of the dashboard.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

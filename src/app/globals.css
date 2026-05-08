@@ -1134,6 +1134,99 @@ button.primary-btn {
   font-size: 0.88rem;
 }
 
+/* ---- Onboarding wizard (Phase 47) ----------------------------- */
+.onboarding-list {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.onboarding-step {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem 1.15rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.75rem;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.onboarding-step.next {
+  border-color: oklch(0.72 0.14 220 / 0.55);
+  background: linear-gradient(
+    160deg,
+    oklch(0.72 0.14 220 / 0.06) 0%,
+    var(--brand-card) 100%
+  );
+}
+
+.onboarding-step.done {
+  opacity: 0.78;
+}
+
+.onboarding-step-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.55rem;
+  background: oklch(0.26 0.02 250 / 0.6);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-muted);
+}
+
+.onboarding-step-icon svg {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
+.onboarding-step.done .onboarding-step-icon {
+  background: oklch(0.72 0.14 155 / 0.14);
+  border-color: oklch(0.72 0.14 155 / 0.5);
+  color: oklch(0.78 0.16 155);
+}
+
+.onboarding-step.next .onboarding-step-icon {
+  background: oklch(0.72 0.14 220 / 0.14);
+  border-color: oklch(0.72 0.14 220 / 0.5);
+  color: var(--brand-primary);
+}
+
+.onboarding-step-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.onboarding-step-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.onboarding-step-head strong {
+  font-size: 1rem;
+}
+
+.onboarding-step-blurb {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--brand-muted);
+  line-height: 1.5;
+}
+
+.onboarding-step-why {
+  margin: 0;
+  color: oklch(0.78 0.13 75);
+}
+
 .badge {
   display: inline-block;
   font-family: var(--brand-mono);

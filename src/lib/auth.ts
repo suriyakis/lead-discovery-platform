@@ -77,6 +77,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             name: 'Personal',
             slug: `personal-${crypto.randomUUID().slice(0, 8)}`,
             ownerUserId: user.id,
+            // Phase 47: bootstrap workspaces start in onboarding so the
+            // first-time sign-in flow walks the operator through setup.
+            onboardingStatus: 'pending',
           })
           .returning();
 

@@ -157,6 +157,19 @@ export default async function Dashboard() {
     .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
     .where(eq(workspaceMembers.userId, userId));
 
+  // Phase 47: bounce to /onboarding when the active workspace hasn't
+  // been set up yet. The wizard itself sets `in_progress` on first
+  // visit so a stuck-pending workspace doesn't loop on every reload.
+  // Workspaces created before P47 default to `completed` so legacy
+  // setups are unaffected.
+  const primaryForOnboarding = memberships[0];
+  if (
+    primaryForOnboarding &&
+    primaryForOnboarding.workspace.onboardingStatus !== 'completed'
+  ) {
+    redirect('/onboarding');
+  }
+
   const primary = memberships[0];
   const visibleModules = MODULES.filter((m) => !m.superAdminOnly || isSuperAdmin);
 

@@ -218,6 +218,13 @@
       "when": 1778131871777,
       "tag": "0030_messy_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1778223752515,
+      "tag": "0031_first_maddog",
+      "breakpoints": true
     }
   ]
 }
