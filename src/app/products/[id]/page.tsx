@@ -22,7 +22,12 @@ export default async function EditProductPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    saved?: string;
+    autofill?: string;
+    confidence?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -115,6 +120,16 @@ export default async function EditProductPage({
         </p>
         <h1>{profile.name}</h1>
         {!profile.active ? <p className="badge">Archived</p> : null}
+
+        {sp.autofill === 'ok' ? (
+          <p className="form-info">
+            <strong>Autofill complete</strong> · confidence:{' '}
+            <code>{sp.confidence ?? 'medium'}</code>. Review every field
+            below — especially target sectors and keywords — then{' '}
+            <em>Restore</em> to activate.
+          </p>
+        ) : null}
+        {sp.saved === '1' ? <p className="form-info">Changes saved.</p> : null}
 
         <form action={update} className="card-form">
           <ProductFields

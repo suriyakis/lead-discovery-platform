@@ -705,12 +705,35 @@ To go live: set the following env vars on agregat (`/opt/lead-discovery-platform
   - `STRIPE_PRICE_STARTER=price_...`       (Stripe Price ID for the Starter plan)
   - `STRIPE_PRICE_PRO=price_...`           (Stripe Price ID for the Pro plan)
   - optional: `STRIPE_PRICE_STARTER_DISPLAY` / `STRIPE_PRICE_PRO_DISPLAY` to override the displayed price strings.
+  - optional: `STRIPE_TRIAL_DAYS=N` (default 5; set to 0 to disable trials).
 
 Configure the Stripe webhook endpoint to POST to
 `https://discover.nulife.pl/api/stripe/webhook` and subscribe at minimum to:
 `checkout.session.completed`, `customer.subscription.created`,
 `customer.subscription.updated`, `customer.subscription.deleted`,
 `invoice.payment_failed`. Restart the app container after the env flip.
+
+## Phase 49 — Product profile autofill (URL + PDFs → AI-synthesized draft)
+
+- [x] **P49-01.** Deps: `cheerio` (HTML extraction) + `pdf-parse` (PDF text extraction). `@types/pdf-parse` for type bindings.
+- [x] **P49-02.** `src/lib/services/product-autofill.ts`:
+  - `fetchAndExtractWebsite(url)` — http(s)-only with 30s AbortController timeout, 1.5MB byte cap, identifies as `lead-discovery-platform/autofill` UA. cheerio strips script/style/nav/footer/header chrome and prefers `<main>` / `[role=main]` / `<article>` / `<body>` in that order. Returns `ExtractedSource{kind:'website', label, text, originalBytes}`.
+  - `extractFromPdf(buffer, filename)` — uses `pdf-parse` v2 `PDFParse` class, handles encrypted/corrupted PDFs cleanly via try/finally, calls `.destroy()` to release the pdfjs handle. Returns `ExtractedSource{kind:'pdf', ...}`.
+  - `synthesizeProfile(ctx, {sources})` — one AI call via the workspace's active provider with a Zod schema covering name / shortDescription / fullDescription / targetCustomerTypes / targetSectors / targetProjectTypes / includeKeywords / excludeKeywords / qualificationCriteria / outreachInstructions / language / confidence (high|medium|low) / notes (free-form for SPA / paywall flagging). Detector cascade fills language when AI omits it. Per-source 24KB clip + global 64KB budget enforced via proportional trim.
+  - `autofillProductProfileFromSources(ctx, {url?, pdfs?})` — orchestrator: fetch + parse → synthesize → persist via existing `createProductProfile` → audit-log `product_profile.autofill` with confidence + source labels.
+- [x] **P49-03.** UI `/products/autofill` page: form with URL field + multi-select PDF upload + "Generate" button. Server action handles File → Buffer conversion (only accepts `application/pdf` mimetype OR `.pdf` filename), redirects to `/products/[id]?autofill=ok&confidence=...` on success or `/products/autofill?error=<reason>` on failure.
+- [x] **P49-04.** `/products` list page CTA upgrade: primary "Autofill from URL / PDFs" button + secondary ghost "New product (manual)" link. `/products/[id]` shows a teal "Autofill complete · confidence: <level>. Review every field…" banner when arriving via `?autofill=ok`.
+- [x] **P49-05.** 9 tests in `src/tests/product-autofill.test.ts` covering: synthesizeProfile happy-path with stub AI, empty-sources rejection, language-detector fallback when AI omits language; end-to-end autofill (mocks `globalThis.fetch`) — persists the profile + emits audit; rejects no-source input; viewer-role rejection; 404 fetch surfaces cleanly; non-http URL rejection; malformed-URL rejection. **708/708 → 717/717 total tests pass.**
+
+**Phase 49 complete.**
+
+To use: visit `/products` → click **Autofill from URL / PDFs** → paste your
+product page URL and/or upload TDS / spec PDFs → Generate. The engine
+fetches + extracts + asks the workspace's active AI provider to synthesize
+a structured profile, persists it, and lands you on the product detail
+page for review. Cost: ~1–3¢ per autofill against the active AI provider.
+Static fetch only (SPAs return empty text); scanned-image PDFs need OCR
+(future).
 
 ## Discovered along the way
 

@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { Plus, Sparkles } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
@@ -47,10 +47,16 @@ export default async function ProductsPage() {
               all read from these.
             </p>
           </div>
-          <Link href="/products/new" className="primary-btn">
-            <Plus className="primary-btn-icon" aria-hidden="true" />
-            <span>New product</span>
-          </Link>
+          <div className="action-row">
+            <Link href="/products/autofill" className="primary-btn">
+              <Sparkles className="primary-btn-icon" aria-hidden="true" />
+              <span>Autofill from URL / PDFs</span>
+            </Link>
+            <Link href="/products/new" className="ghost-btn">
+              <Plus className="primary-btn-icon" aria-hidden="true" />
+              <span>New product (manual)</span>
+            </Link>
+          </div>
         </div>
 
         <section>
