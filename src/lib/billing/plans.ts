@@ -21,13 +21,28 @@ export interface PlanDefinition {
   pitch: string;
   /** What you get; rendered as a checked list. */
   features: string[];
+  /** Days of free trial Stripe should grant on Checkout. Card is still
+   *  collected upfront — Stripe auto-converts to paid on day N+1. Zero
+   *  disables the trial entirely. */
+  trialDays: number;
 }
 
 const STARTER_PRICE_ENV = 'STRIPE_PRICE_STARTER';
 const PRO_PRICE_ENV = 'STRIPE_PRICE_PRO';
 
+/** Trial length in days for both plans. Default 5; override via
+ *  STRIPE_TRIAL_DAYS env var. Set to '0' to disable trials entirely. */
+function readTrialDays(): number {
+  const raw = process.env.STRIPE_TRIAL_DAYS;
+  if (raw === undefined) return 5;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 5;
+  return Math.floor(n);
+}
+
 /** Resolve plans against the live env. Cheap — does no I/O. */
 export function getPlans(): PlanDefinition[] {
+  const trialDays = readTrialDays();
   return [
     {
       id: 'starter',
@@ -42,6 +57,7 @@ export function getPlans(): PlanDefinition[] {
         '1 product profile, unlimited connectors',
         'Email + Google sign-in, 1 mailbox',
       ],
+      trialDays,
     },
     {
       id: 'pro',
@@ -57,6 +73,7 @@ export function getPlans(): PlanDefinition[] {
         'Workspace BYOK on every provider',
         'Priority support',
       ],
+      trialDays,
     },
   ];
 }

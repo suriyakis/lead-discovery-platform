@@ -126,6 +126,23 @@ export async function createCheckoutSession(
   const { customerId } = await getOrCreateStripeCustomer(ctx);
   const stripe = getStripeClient();
 
+  // Phase 48 trial: Stripe collects card upfront on Checkout (default)
+  // and grants `trial_period_days` of free use before the first charge.
+  // The webhook flips us to subscriptionStatus='trial' for that window
+  // and to 'active' on conversion.
+  const subscriptionData: {
+    metadata: Record<string, string>;
+    trial_period_days?: number;
+  } = {
+    metadata: {
+      workspace_id: ctx.workspaceId.toString(),
+      plan_id: plan.id,
+    },
+  };
+  if (plan.trialDays > 0) {
+    subscriptionData.trial_period_days = plan.trialDays;
+  }
+
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
@@ -133,12 +150,7 @@ export async function createCheckoutSession(
     success_url: input.successUrl,
     cancel_url: input.cancelUrl,
     allow_promotion_codes: true,
-    subscription_data: {
-      metadata: {
-        workspace_id: ctx.workspaceId.toString(),
-        plan_id: plan.id,
-      },
-    },
+    subscription_data: subscriptionData,
     metadata: {
       workspace_id: ctx.workspaceId.toString(),
       plan_id: plan.id,
@@ -297,12 +309,19 @@ export async function applyStripeEvent(event: Stripe.Event): Promise<ApplyResult
       if (!workspaceId) return { workspaceId: null, action: 'no_workspace' };
       const planId =
         (sub.metadata?.plan_id as PlanId | undefined) ?? undefined;
+      // Stripe encodes trial_end as Unix seconds, null when no trial
+      // (or already past trial).
+      const trialEndsAt =
+        typeof sub.trial_end === 'number' && sub.trial_end > 0
+          ? new Date(sub.trial_end * 1000)
+          : null;
       await db
         .update(workspaces)
         .set({
           stripeSubscriptionId: sub.id,
           subscriptionStatus: mapStripeStatus(sub.status),
           ...(planId ? { plan: planId } : {}),
+          trialEndsAt,
           updatedAt: new Date(),
         })
         .where(eq(workspaces.id, workspaceId));

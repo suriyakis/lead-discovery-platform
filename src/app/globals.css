@@ -1283,6 +1283,17 @@ button.primary-btn {
   line-height: 1.45;
 }
 
+.plan-trial-banner {
+  margin: 0;
+  padding: 0.4rem 0.65rem;
+  background: oklch(0.72 0.12 180 / 0.12);
+  border: 1px solid oklch(0.72 0.12 180 / 0.4);
+  border-radius: 0.4rem;
+  color: var(--brand-accent-teal);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
 .plan-features {
   list-style: none;
   padding: 0;

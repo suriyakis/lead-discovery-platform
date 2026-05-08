@@ -245,6 +245,11 @@ function PlanPicker({
               <h3>{p.name}</h3>
               <span className="plan-price">{p.displayPrice}</span>
             </header>
+            {p.trialDays > 0 ? (
+              <p className="plan-trial-banner">
+                {p.trialDays}-day free trial · card required, charged on day {p.trialDays + 1}
+              </p>
+            ) : null}
             <p className="plan-pitch">{p.pitch}</p>
             <ul className="plan-features">
               {p.features.map((f) => (

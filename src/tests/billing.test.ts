@@ -154,6 +154,65 @@ describe('applyStripeEvent', () => {
     expect(result.action).toBe('no_workspace');
   });
 
+  it('subscription.updated writes trialEndsAt when trial_end is present', async () => {
+    const s = await setup();
+    await applyStripeEvent(checkoutCompleted(s.workspaceA, 'pro'));
+    const trialEndUnix = Math.floor(Date.now() / 1000) + 5 * 86400;
+    await applyStripeEvent({
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_test_1',
+          status: 'trialing',
+          trial_end: trialEndUnix,
+          metadata: { workspace_id: s.workspaceA.toString() },
+        } as unknown as Stripe.Subscription,
+      },
+    } as unknown as Stripe.Event);
+    const [ws] = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, s.workspaceA));
+    expect(ws!.subscriptionStatus).toBe('trial');
+    expect(ws!.trialEndsAt).toBeInstanceOf(Date);
+    expect(Math.floor(ws!.trialEndsAt!.getTime() / 1000)).toBe(trialEndUnix);
+  });
+
+  it('subscription.updated clears trialEndsAt when trial_end is null', async () => {
+    const s = await setup();
+    await applyStripeEvent(checkoutCompleted(s.workspaceA, 'pro'));
+    // First put it in trialing with a date.
+    await applyStripeEvent({
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_test_1',
+          status: 'trialing',
+          trial_end: Math.floor(Date.now() / 1000) + 86400,
+          metadata: { workspace_id: s.workspaceA.toString() },
+        } as unknown as Stripe.Subscription,
+      },
+    } as unknown as Stripe.Event);
+    // Then convert to active with no trial_end.
+    await applyStripeEvent({
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_test_1',
+          status: 'active',
+          trial_end: null,
+          metadata: { workspace_id: s.workspaceA.toString() },
+        } as unknown as Stripe.Subscription,
+      },
+    } as unknown as Stripe.Event);
+    const [ws] = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, s.workspaceA));
+    expect(ws!.subscriptionStatus).toBe('active');
+    expect(ws!.trialEndsAt).toBeNull();
+  });
+
   it('ignores unhandled event types (returns 200 to stop retries)', async () => {
     const event = {
       type: 'product.created',
