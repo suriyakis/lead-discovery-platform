@@ -28,6 +28,7 @@ import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import type { AccountStatus } from '@/lib/db/schema/auth';
 import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function AdminUsersPage({
   searchParams,
@@ -42,6 +43,7 @@ export default async function AdminUsersPage({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
@@ -72,6 +74,7 @@ export default async function AdminUsersPage({
       await setAccountStatus(c, targetUserId, status, reason);
       redirect(`/admin/users?message=${encodeURIComponent(`Set ${status}`)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof UserServiceError ? err.message : err instanceof Error ? err.message : 'failed';
       redirect(`/admin/users?error=${encodeURIComponent(m)}`);
@@ -89,6 +92,7 @@ export default async function AdminUsersPage({
       await preauthorizeEmail(c, { email, workspaceId, role });
       redirect(`/admin/users?message=${encodeURIComponent(`Pre-authorized ${email}`)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users?error=${encodeURIComponent(m)}`);
     }
@@ -121,6 +125,7 @@ export default async function AdminUsersPage({
       });
       redirect(`/admin/users?message=${encodeURIComponent(`Created ${email}`)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users?error=${encodeURIComponent(m)}`);
     }

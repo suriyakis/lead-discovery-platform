@@ -23,6 +23,7 @@ import {
 import { listMyWorkspaces } from '@/lib/services/workspace';
 import { db } from '@/lib/db/client';
 import { users } from '@/lib/db/schema/auth';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function AccountSettingsPage({
   searchParams,
@@ -37,6 +38,7 @@ export default async function AccountSettingsPage({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
@@ -61,6 +63,7 @@ export default async function AccountSettingsPage({
       await updateOwnProfile(c, { name });
       redirect('/settings/account?message=Name+saved');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/settings/account?error=${encodeURIComponent(m)}`);
     }
@@ -81,6 +84,7 @@ export default async function AccountSettingsPage({
       await changeOwnPassword(c, oldPassword, newPassword);
       redirect('/settings/account?message=Password+changed');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/settings/account?error=${encodeURIComponent(m)}`);
     }

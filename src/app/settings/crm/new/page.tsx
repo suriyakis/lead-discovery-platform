@@ -9,6 +9,7 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { CrmServiceError, createCrmConnection } from '@/lib/services/crm';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function NewCrmConnectionPage({
   searchParams,
@@ -22,6 +23,7 @@ export default async function NewCrmConnectionPage({
   try {
     await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/settings/crm');
     throw err;
@@ -43,6 +45,7 @@ export default async function NewCrmConnectionPage({
       });
       redirect(`/settings/crm/${created.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof CrmServiceError) {
         redirect(`/settings/crm/new?error=${encodeURIComponent(err.message)}`);
       }

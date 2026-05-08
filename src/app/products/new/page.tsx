@@ -12,6 +12,7 @@ import {
   createProductProfile,
 } from '@/lib/services/product-profile';
 import { ProductFields, readArrayField, readNullableString } from '../_form';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function NewProductPage({
   searchParams,
@@ -28,6 +29,7 @@ export default async function NewProductPage({
     try {
       ctx = await getWorkspaceContext();
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof AuthRequiredError) redirect('/');
       if (err instanceof NoWorkspaceError) redirect('/products?err=no-workspace');
       throw err;
@@ -66,6 +68,7 @@ export default async function NewProductPage({
       });
       redirect(`/products/${profile.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof ProductProfileServiceError) {
         redirect(`/products/new?error=${encodeURIComponent(err.code)}`);
       }

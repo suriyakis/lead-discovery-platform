@@ -17,6 +17,7 @@ import {
   removeMember,
   setMemberRole,
 } from '@/lib/services/users';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 const ROLES = ['owner', 'admin', 'manager', 'member', 'viewer'] as const;
 
@@ -33,6 +34,7 @@ export default async function MembersPage({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
@@ -63,6 +65,7 @@ export default async function MembersPage({
       await setMemberRole(c, targetUserId, role);
       redirect('/settings/members?message=Role+updated');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/settings/members?error=${encodeURIComponent(m)}`);
     }
@@ -76,6 +79,7 @@ export default async function MembersPage({
       await removeMember(c, targetUserId);
       redirect('/settings/members?message=Removed');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/settings/members?error=${encodeURIComponent(m)}`);
     }
@@ -90,6 +94,7 @@ export default async function MembersPage({
       await addMember(c, targetUserId, role);
       redirect('/settings/members?message=Member+added');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/settings/members?error=${encodeURIComponent(m)}`);
     }

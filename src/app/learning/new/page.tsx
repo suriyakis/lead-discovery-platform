@@ -14,6 +14,7 @@ import {
   createLesson,
 } from '@/lib/services/learning';
 import { listProductProfiles } from '@/lib/services/product-profile';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function NewLessonPage({
   searchParams,
@@ -29,6 +30,7 @@ export default async function NewLessonPage({
     const ctx = await getWorkspaceContext();
     products = await listProductProfiles(ctx);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/learning');
     throw err;
@@ -50,6 +52,7 @@ export default async function NewLessonPage({
       });
       redirect(`/learning/${lesson.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof LearningServiceError) {
         redirect(`/learning/new?error=${encodeURIComponent(err.code)}`);
       }

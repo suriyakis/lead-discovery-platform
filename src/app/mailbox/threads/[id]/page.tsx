@@ -20,6 +20,7 @@ import {
   translateInboundToEnglish,
 } from '@/lib/services/translation';
 import { getLanguageName } from '@/lib/i18n/language';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function ThreadDetail({
   params,
@@ -46,6 +47,7 @@ export default async function ThreadDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/mailbox');
     throw err;
@@ -55,6 +57,7 @@ export default async function ThreadDetail({
   try {
     detail = await getThread(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof MailServiceError && err.code === 'not_found') {
       redirect('/mailbox');
     }
@@ -79,6 +82,7 @@ export default async function ThreadDetail({
       const params = new URLSearchParams({ suggestion: result.text });
       redirect(`/mailbox/threads/${id}?${params.toString()}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof ReplyAssistantError ? err.message :
         err instanceof Error ? err.message : 'suggest failed';
@@ -95,6 +99,7 @@ export default async function ThreadDetail({
       await translateInboundToEnglish(c, BigInt(midRaw));
       redirect(`/mailbox/threads/${id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof TranslationError ? err.message :
         err instanceof Error ? err.message : 'translate failed';
@@ -119,6 +124,7 @@ export default async function ThreadDetail({
       });
       redirect(`/mailbox/threads/${id}?${params.toString()}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof TranslationError ? err.message :
         err instanceof Error ? err.message : 'translate failed';
@@ -150,6 +156,7 @@ export default async function ThreadDetail({
       });
       redirect(`/mailbox/threads/${id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof MailServiceError) {
         redirect(`/mailbox/threads/${id}?error=${encodeURIComponent(err.message)}`);
       }

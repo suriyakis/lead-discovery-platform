@@ -13,6 +13,7 @@ import {
   getConnectorRow,
 } from '@/lib/services/connector-run';
 import type { Connector } from '@/lib/db/schema/connectors';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function NewRecipePage({
   params,
@@ -33,6 +34,7 @@ export default async function NewRecipePage({
     const ctx = await getWorkspaceContext();
     connector = await getConnectorRow(ctx, connectorId);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/connectors');
     if (err instanceof ConnectorServiceError && err.code === 'not_found') redirect('/connectors');
@@ -55,6 +57,7 @@ export default async function NewRecipePage({
       });
       redirect(`/connectors/${connectorId}/recipes/${recipe.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof ConnectorServiceError) {
         redirect(
           `/connectors/${connectorId}/recipes/new?error=${encodeURIComponent(err.code)}`,

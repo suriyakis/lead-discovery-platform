@@ -30,6 +30,7 @@ import { listCrmConnections } from '@/lib/services/crm';
 import { listProductProfiles } from '@/lib/services/product-profile';
 import type { AutopilotSettings, AutopilotProductSettings } from '@/lib/db/schema/autopilot';
 import type { ProductProfile } from '@/lib/db/schema/products';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 type FlowStepKey =
   | 'discovery'
@@ -69,6 +70,7 @@ export default async function AutopilotPage({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
@@ -135,6 +137,7 @@ export default async function AutopilotPage({
       });
       redirect('/autopilot?message=Workspace+defaults+saved');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AutopilotError ? err.message : 'failed';
       redirect(`/autopilot?error=${encodeURIComponent(m)}`);
     }
@@ -176,6 +179,7 @@ export default async function AutopilotPage({
       });
       redirect(`/autopilot?scope=${pid}&message=Product+overlay+saved`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AutopilotError ? err.message : 'failed';
       redirect(`/autopilot?scope=${pid}&error=${encodeURIComponent(m)}`);
     }

@@ -12,6 +12,7 @@ import {
   getMailbox,
   updateMailbox,
 } from '@/lib/services/mailbox';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function EditMailboxPage({
   params,
@@ -31,6 +32,7 @@ export default async function EditMailboxPage({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/mailbox');
     throw err;
@@ -40,6 +42,7 @@ export default async function EditMailboxPage({
   try {
     mailbox = await getMailbox(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof MailboxServiceError && err.code === 'not_found') {
       redirect('/mailbox');
     }
@@ -80,6 +83,7 @@ export default async function EditMailboxPage({
       });
       redirect(`/mailbox/${id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof MailboxServiceError) {
         redirect(`/mailbox/${id}/edit?error=${encodeURIComponent(err.message)}`);
       }

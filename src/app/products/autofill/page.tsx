@@ -13,6 +13,7 @@ import {
   ProductAutofillError,
   autofillProductProfileFromSources,
 } from '@/lib/services/product-autofill';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function AutofillPage({
   searchParams,
@@ -26,6 +27,7 @@ export default async function AutofillPage({
   try {
     await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
@@ -65,6 +67,7 @@ export default async function AutofillPage({
         `/products/${result.profile.id}?autofill=ok&confidence=${result.synthesized.confidence}`,
       );
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const message =
         err instanceof ProductAutofillError
           ? err.message

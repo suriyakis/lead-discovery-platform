@@ -23,6 +23,7 @@ import {
   SUPPORTED_HOLIDAY_COUNTRIES,
   type HolidayCountry,
 } from '@/lib/i18n/holidays';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function MailboxDetail({
   params,
@@ -42,6 +43,7 @@ export default async function MailboxDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/mailbox');
     throw err;
@@ -51,6 +53,7 @@ export default async function MailboxDetail({
   try {
     mailbox = await getMailbox(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof MailboxServiceError && err.code === 'not_found') {
       redirect('/mailbox');
     }
@@ -67,6 +70,7 @@ export default async function MailboxDetail({
       const msg = `Synced — fetched ${result.fetched}, new ${result.inserted}, deduped ${result.duplicates}.`;
       redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof MailboxServiceError || err instanceof Error) {
         const m = (err as { message?: string }).message ?? 'sync failed';
         redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
@@ -86,6 +90,7 @@ export default async function MailboxDetail({
         : `SMTP ${result.smtp.ok ? 'ok' : `failed: ${result.smtp.detail}`}; IMAP ${result.imap?.ok ? 'ok' : `failed: ${result.imap?.detail}`}`;
       redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'test failed';
       redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
     }

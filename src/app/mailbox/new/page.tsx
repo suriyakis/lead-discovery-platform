@@ -11,6 +11,7 @@ import {
   MailboxServiceError,
   createMailbox,
 } from '@/lib/services/mailbox';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function NewMailboxPage({
   searchParams,
@@ -24,6 +25,7 @@ export default async function NewMailboxPage({
   try {
     await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
@@ -81,6 +83,7 @@ export default async function NewMailboxPage({
       });
       redirect(`/mailbox/${created.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof MailboxServiceError) {
         redirect(`/mailbox/new?error=${encodeURIComponent(err.message)}`);
       }

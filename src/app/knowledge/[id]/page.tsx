@@ -17,6 +17,7 @@ import {
 } from '@/lib/services/knowledge-sources';
 import { indexKnowledgeSource, listIndexingJobs } from '@/lib/services/rag';
 import type { ProductProfile } from '@/lib/db/schema/products';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function KnowledgeSourceDetail({
   params,
@@ -36,6 +37,7 @@ export default async function KnowledgeSourceDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/knowledge');
     throw err;
@@ -45,6 +47,7 @@ export default async function KnowledgeSourceDetail({
   try {
     detail = await getKnowledgeSource(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof KnowledgeSourceServiceError && err.code === 'not_found') {
       redirect('/knowledge');
     }
@@ -116,6 +119,7 @@ export default async function KnowledgeSourceDetail({
       const result = await indexKnowledgeSource(c, id);
       redirect(`/knowledge/${id}?message=Indexed+${result.chunkCount}+chunks`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'index failed';
       redirect(`/knowledge/${id}?error=${encodeURIComponent(m)}`);
     }

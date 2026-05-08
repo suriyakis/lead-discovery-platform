@@ -14,6 +14,7 @@ import {
   upsertContact,
 } from '@/lib/services/contacts';
 import type { Contact } from '@/lib/db/schema/contacts';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function ContactsPage({
   searchParams,
@@ -40,6 +41,7 @@ export default async function ContactsPage({
       limit: 500,
     });
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) {
@@ -63,6 +65,7 @@ export default async function ContactsPage({
       const created = await upsertContact(c, { email, name, companyName });
       redirect(`/contacts/${created.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof ContactServiceError ? err.message : err instanceof Error ? err.message : 'failed';
       redirect(`/contacts?error=${encodeURIComponent(m)}`);

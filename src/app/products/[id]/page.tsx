@@ -16,6 +16,7 @@ import {
 } from '@/lib/services/product-profile';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { ProductFields, readArrayField, readNullableString } from '../_form';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function EditProductPage({
   params,
@@ -41,6 +42,7 @@ export default async function EditProductPage({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/products');
     throw err;
@@ -50,6 +52,7 @@ export default async function EditProductPage({
   try {
     profile = await getProductProfile(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof ProductProfileServiceError && err.code === 'not_found') {
       redirect('/products');
     }
@@ -91,6 +94,7 @@ export default async function EditProductPage({
       });
       redirect(`/products/${id}?saved=1`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof ProductProfileServiceError) {
         redirect(`/products/${id}?error=${encodeURIComponent(err.code)}`);
       }

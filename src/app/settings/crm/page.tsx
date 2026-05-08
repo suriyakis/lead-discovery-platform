@@ -11,6 +11,7 @@ import { listCrmConnections } from '@/lib/services/crm';
 import { exportLeadsToCsv } from '@/lib/services/crm';
 import { SettingsNav } from '@/components/SettingsNav';
 import type { CrmConnection } from '@/lib/db/schema/crm';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function CrmSettingsPage({
   searchParams,
@@ -26,6 +27,7 @@ export default async function CrmSettingsPage({
     const ctx = await getWorkspaceContext();
     connections = await listCrmConnections(ctx);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
@@ -49,6 +51,7 @@ export default async function CrmSettingsPage({
       });
       redirect(`/settings/crm?${params.toString()}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'export failed';
       redirect(`/settings/crm?error=${encodeURIComponent(m)}`);
     }

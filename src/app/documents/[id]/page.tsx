@@ -17,6 +17,7 @@ import {
 } from '@/lib/services/documents';
 import { listKnowledgeSources } from '@/lib/services/knowledge-sources';
 import { indexDocument, listIndexingJobs } from '@/lib/services/rag';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function DocumentDetail({
   params,
@@ -36,6 +37,7 @@ export default async function DocumentDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/documents');
     throw err;
@@ -45,6 +47,7 @@ export default async function DocumentDetail({
   try {
     detail = await getDocument(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof DocumentServiceError && err.code === 'not_found') {
       redirect('/documents');
     }
@@ -100,6 +103,7 @@ export default async function DocumentDetail({
         `/documents/${id}?message=Indexed+${result.chunkCount}+chunks`,
       );
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'index failed';
       redirect(`/documents/${id}?error=${encodeURIComponent(m)}`);
     }

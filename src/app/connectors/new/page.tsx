@@ -12,6 +12,7 @@ import {
   createConnector,
 } from '@/lib/services/connector-run';
 import type { ConnectorTemplateType } from '@/lib/db/schema/connectors';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 const TEMPLATES: ReadonlyArray<{ key: ConnectorTemplateType; label: string; description: string }> = [
   {
@@ -56,6 +57,7 @@ export default async function NewConnectorPage({
   try {
     await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/connectors');
     throw err;
@@ -78,6 +80,7 @@ export default async function NewConnectorPage({
       });
       redirect(`/connectors/${connector.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof ConnectorServiceError) {
         redirect(`/connectors/new?error=${encodeURIComponent(err.code)}`);
       }

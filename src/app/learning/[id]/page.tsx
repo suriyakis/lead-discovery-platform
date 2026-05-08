@@ -20,6 +20,7 @@ import type { LearningLesson } from '@/lib/db/schema/learning';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import type { WorkspaceContext } from '@/lib/services/context';
 import { listProductProfiles } from '@/lib/services/product-profile';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function EditLessonPage({
   params,
@@ -43,6 +44,7 @@ export default async function EditLessonPage({
     lesson = await getLesson(ctx, id);
     products = await listProductProfiles(ctx);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/learning');
     if (err instanceof LearningServiceError && err.code === 'not_found') redirect('/learning');
@@ -65,6 +67,7 @@ export default async function EditLessonPage({
       });
       redirect(`/learning/${id}?saved=1`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof LearningServiceError) {
         redirect(`/learning/${id}?error=${encodeURIComponent(err.code)}`);
       }

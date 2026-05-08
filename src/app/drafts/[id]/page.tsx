@@ -29,6 +29,7 @@ import {
   resolveProfileLanguage,
 } from '@/lib/i18n/language';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function DraftDetail({
   params,
@@ -48,6 +49,7 @@ export default async function DraftDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/drafts');
     throw err;
@@ -57,6 +59,7 @@ export default async function DraftDetail({
   try {
     row = await getOutreachDraft(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof OutreachServiceError && err.code === 'not_found') {
       redirect('/drafts');
     }
@@ -106,6 +109,7 @@ export default async function DraftDetail({
       await editOutreachDraft(c, id, { subject, body: result.translatedText });
       redirect(`/drafts/${id}?msg=translated-to-${targetLang}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof TranslationError
           ? err.message
@@ -132,6 +136,7 @@ export default async function DraftDetail({
       });
       redirect('/mailbox/queue?message=Enqueued');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'failed';
       redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
     }

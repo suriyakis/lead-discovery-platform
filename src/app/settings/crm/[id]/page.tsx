@@ -17,6 +17,7 @@ import {
   testCrmConnection,
   updateCrmConnection,
 } from '@/lib/services/crm';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function CrmConnectionDetail({
   params,
@@ -36,6 +37,7 @@ export default async function CrmConnectionDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/settings/crm');
     throw err;
@@ -45,6 +47,7 @@ export default async function CrmConnectionDetail({
   try {
     conn = await getCrmConnection(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof CrmServiceError && err.code === 'not_found') {
       redirect('/settings/crm');
     }
@@ -68,6 +71,7 @@ export default async function CrmConnectionDetail({
       });
       redirect(`/settings/crm/${id}?message=Saved`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof CrmServiceError) {
         redirect(`/settings/crm/${id}?error=${encodeURIComponent(err.message)}`);
       }
@@ -85,6 +89,7 @@ export default async function CrmConnectionDetail({
         : `Failed: ${result.detail ?? 'unknown'}`;
       redirect(`/settings/crm/${id}?message=${encodeURIComponent(m)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'test failed';
       redirect(`/settings/crm/${id}?error=${encodeURIComponent(m)}`);
     }

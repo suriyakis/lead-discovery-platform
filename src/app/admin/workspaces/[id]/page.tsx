@@ -29,6 +29,7 @@ import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { db } from '@/lib/db/client';
 import { workspaces, workspaceMembers } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 const KNOWN_FEATURE_KEYS = [
   'crm.hubspot',
@@ -56,6 +57,7 @@ export default async function AdminWorkspaceDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/admin');
     throw err;
@@ -104,6 +106,7 @@ export default async function AdminWorkspaceDetail({
       });
       redirect(`/admin/workspaces/${idStr}?message=Impersonation+started`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof AdminServiceError ? err.message : err instanceof Error ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
@@ -143,6 +146,7 @@ export default async function AdminWorkspaceDetail({
       });
       redirect(`/admin/workspaces/${idStr}?message=Profile+saved`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }
@@ -156,6 +160,7 @@ export default async function AdminWorkspaceDetail({
       await archiveWorkspace(c, targetWorkspaceId, reason);
       redirect(`/admin/workspaces/${idStr}?message=Workspace+archived`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }
@@ -168,6 +173,7 @@ export default async function AdminWorkspaceDetail({
       await restoreWorkspace(c, targetWorkspaceId);
       redirect(`/admin/workspaces/${idStr}?message=Workspace+restored`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }
@@ -185,6 +191,7 @@ export default async function AdminWorkspaceDetail({
         }`,
       );
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }
@@ -205,6 +212,7 @@ export default async function AdminWorkspaceDetail({
       await deleteWorkspace(c, targetWorkspaceId);
       redirect('/admin/workspaces?message=Workspace+deleted');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }
@@ -219,6 +227,7 @@ export default async function AdminWorkspaceDetail({
       await adminAddUserToWorkspace(c, targetUserId, targetWorkspaceId, role);
       redirect(`/admin/workspaces/${idStr}?message=Member+added`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }
@@ -232,6 +241,7 @@ export default async function AdminWorkspaceDetail({
       await adminRemoveUserFromWorkspace(c, targetUserId, targetWorkspaceId);
       redirect(`/admin/workspaces/${idStr}?message=Member+removed`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }
@@ -246,6 +256,7 @@ export default async function AdminWorkspaceDetail({
       await adminSetMemberRole(c, targetWorkspaceId, targetUserId, role);
       redirect(`/admin/workspaces/${idStr}?message=Role+updated`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
     }

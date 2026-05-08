@@ -31,6 +31,7 @@ import {
 import { db } from '@/lib/db/client';
 import { users, type AccountStatus } from '@/lib/db/schema/auth';
 import { workspaces, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function AdminUserDetail({
   params,
@@ -48,6 +49,7 @@ export default async function AdminUserDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
@@ -90,6 +92,7 @@ export default async function AdminUserDetail({
       });
       redirect(`/admin/users/${targetUserId}?message=Profile+saved`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }
@@ -104,6 +107,7 @@ export default async function AdminUserDetail({
       await setAccountStatus(c, targetUserId, status, reason);
       redirect(`/admin/users/${targetUserId}?message=Status+set+to+${status}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }
@@ -118,6 +122,7 @@ export default async function AdminUserDetail({
       await adminAddUserToWorkspace(c, targetUserId, workspaceId, role);
       redirect(`/admin/users/${targetUserId}?message=Added+to+workspace`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }
@@ -133,6 +138,7 @@ export default async function AdminUserDetail({
         `/admin/users/${targetUserId}?message=Password+reset+%E2%80%94+all+sessions+invalidated`,
       );
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }
@@ -153,6 +159,7 @@ export default async function AdminUserDetail({
       await deleteUserGlobally(c, targetUserId);
       redirect('/admin/users?message=User+deleted');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }
@@ -166,6 +173,7 @@ export default async function AdminUserDetail({
       await adminRemoveUserFromWorkspace(c, targetUserId, workspaceId);
       redirect(`/admin/users/${targetUserId}?message=Removed+from+workspace`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }
@@ -187,6 +195,7 @@ export default async function AdminUserDetail({
       );
       redirect(`/admin/users/${targetUserId}?message=Moved+between+workspaces`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
     }

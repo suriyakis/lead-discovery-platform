@@ -18,6 +18,7 @@ import {
   listAllWorkspaces,
   restoreWorkspace,
 } from '@/lib/services/admin';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function AdminWorkspacesPage({
   searchParams,
@@ -33,6 +34,7 @@ export default async function AdminWorkspacesPage({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
@@ -59,6 +61,7 @@ export default async function AdminWorkspacesPage({
       await archiveWorkspace(c, id, reason);
       redirect('/admin/workspaces?message=Workspace+archived');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces?error=${encodeURIComponent(m)}`);
     }
@@ -72,6 +75,7 @@ export default async function AdminWorkspacesPage({
       await restoreWorkspace(c, id);
       redirect('/admin/workspaces?message=Workspace+restored');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       redirect(`/admin/workspaces?error=${encodeURIComponent(m)}`);
     }

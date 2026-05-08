@@ -40,6 +40,7 @@ import type {
   CloseReason,
   PipelineState,
 } from '@/lib/db/schema/pipeline';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 const CLOSE_REASONS: ReadonlyArray<{ key: CloseReason; label: string }> = [
   { key: 'won', label: 'Won' },
@@ -69,6 +70,7 @@ export default async function PipelineLeadDetail({
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/pipeline');
     throw err;
@@ -78,6 +80,7 @@ export default async function PipelineLeadDetail({
   try {
     detail = await getLead(ctx, id);
   } catch (err) {
+    if (isNextRedirectError(err)) throw err;
     if (err instanceof PipelineServiceError && err.code === 'not_found') {
       redirect('/pipeline');
     }
@@ -170,6 +173,7 @@ export default async function PipelineLeadDetail({
         : `Research run via ${r.outcome?.providerId ?? 'provider'} — ${r.entry.citations ? (r.entry.citations as unknown[]).length : 0} citations.`;
       redirect(`/pipeline/${id}?message=${encodeURIComponent(msg)}#research-${r.entry.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof LeadResearchError
           ? err.message
@@ -189,6 +193,7 @@ export default async function PipelineLeadDetail({
       await deleteLeadResearch(c, BigInt(idRaw));
       redirect(`/pipeline/${id}?message=${encodeURIComponent('Research entry deleted.')}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof LeadResearchError
           ? err.message
@@ -212,6 +217,7 @@ export default async function PipelineLeadDetail({
       });
       redirect(`/pipeline/${id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof PipelineServiceError) {
         redirect(`/pipeline/${id}?error=${encodeURIComponent(err.message)}`);
       }
@@ -231,6 +237,7 @@ export default async function PipelineLeadDetail({
       });
       redirect(`/pipeline/${id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof PipelineServiceError) {
         redirect(`/pipeline/${id}?error=${encodeURIComponent(err.message)}`);
       }
@@ -251,6 +258,7 @@ export default async function PipelineLeadDetail({
       });
       redirect(`/pipeline/${id}?message=Contact+updated`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof PipelineServiceError) {
         redirect(`/pipeline/${id}?error=${encodeURIComponent(err.message)}`);
       }
@@ -287,6 +295,7 @@ export default async function PipelineLeadDetail({
       const m = `Notes pushed — inserted ${r.inserted}, skipped ${r.skipped}, failed ${r.failed}`;
       redirect(`/pipeline/${id}?message=${encodeURIComponent(m)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'failed';
       redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
     }
@@ -305,6 +314,7 @@ export default async function PipelineLeadDetail({
           : `Deal push failed: ${r.entry.error ?? 'unknown'}`;
       redirect(`/pipeline/${id}?message=${encodeURIComponent(m)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'failed';
       redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
     }
@@ -328,6 +338,7 @@ export default async function PipelineLeadDetail({
           : `Failed: ${result.entry.error ?? 'unknown'}`;
       redirect(`/pipeline/${id}?message=${encodeURIComponent(m)}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof CrmServiceError ? err.message : err instanceof Error ? err.message : 'push failed';
       redirect(`/pipeline/${id}?error=${encodeURIComponent(m)}`);
