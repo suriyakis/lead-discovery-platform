@@ -147,11 +147,15 @@ export async function extractFromPdf(
   buffer: Buffer,
   filename: string,
 ): Promise<ExtractedSource> {
-  // pdf-parse v1's default export is a single function (buffer) =>
-  // Promise<{text, numpages, ...}>. The dynamic import keeps the
-  // dependency out of the module-load path so it never breaks page
-  // rendering in production.
-  const mod = (await import('pdf-parse')) as unknown as {
+  // pdf-parse v1 has a long-standing bug where its `index.js` runs a
+  // debug self-test that tries to open ./test/data/05-versions-space.pdf
+  // when the module is loaded outside a parent module. Importing the
+  // inner library file directly skips that entry point. Dynamic import
+  // also keeps pdf-parse out of the page module load chain so URL-only
+  // autofill never touches it.
+  // @ts-expect-error pdf-parse v1 has no .d.ts for the inner path; we
+  // hand-type the surface we use.
+  const mod = (await import('pdf-parse/lib/pdf-parse.js')) as unknown as {
     default: (buffer: Buffer) => Promise<{ text: string }>;
   };
   let raw = '';
