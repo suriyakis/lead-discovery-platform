@@ -11,12 +11,17 @@ import {
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
+import { getAvailablePlans, type PlanId } from '@/lib/billing/plans';
 import {
   AccountInactiveError,
   AuthRequiredError,
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
+import {
+  BillingError,
+  createCheckoutSession,
+} from '@/lib/services/billing';
 import { canAdminWorkspace } from '@/lib/services/context';
 import {
   getOnboardingState,
@@ -36,7 +41,7 @@ const STEP_ICONS: Record<OnboardingStepKey, React.ComponentType<{ className?: st
 export default async function OnboardingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ msg?: string }>;
+  searchParams: Promise<{ msg?: string; stripe?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -66,6 +71,39 @@ export default async function OnboardingPage({
     redirect('/dashboard');
   }
 
+  async function startCheckout(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const planId = String(formData.get('planId') ?? '') as PlanId;
+    if (planId !== 'starter' && planId !== 'pro') {
+      redirect(`/onboarding?msg=${encodeURIComponent('Unknown plan id.')}`);
+    }
+    try {
+      const result = await createCheckoutSession(c, {
+        planId,
+        successUrl: 'https://discover.nulife.pl/onboarding?stripe=success',
+        cancelUrl: 'https://discover.nulife.pl/onboarding?stripe=canceled',
+      });
+      redirect(result.url);
+    } catch (err) {
+      const m =
+        err instanceof BillingError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'checkout failed';
+      redirect(`/onboarding?msg=${encodeURIComponent(m)}`);
+    }
+  }
+
+  const availablePlans = getAvailablePlans();
+  const stripeBanner =
+    sp.stripe === 'success'
+      ? 'Subscription started — your workspace is now on a paid plan.'
+      : sp.stripe === 'canceled'
+        ? 'Checkout canceled — you can pick a plan whenever you’re ready.'
+        : null;
+
   const completedSteps = state.steps.filter((s) => s.done).length;
   const totalSteps = state.steps.length;
 
@@ -87,6 +125,11 @@ export default async function OnboardingPage({
         </header>
 
         {sp.msg ? <p className="form-info">{sp.msg}</p> : null}
+        {stripeBanner ? (
+          <p className={sp.stripe === 'success' ? 'form-success' : 'form-info'}>
+            {stripeBanner}
+          </p>
+        ) : null}
 
         <ol className="onboarding-list">
           {state.steps.map((step, i) => {
@@ -115,21 +158,25 @@ export default async function OnboardingPage({
                   {step.why && !step.done ? (
                     <p className="onboarding-step-why muted small">{step.why}</p>
                   ) : null}
-                  <div className="action-row">
-                    <Link
-                      href={step.href}
-                      className={step.done ? 'ghost-btn' : 'primary-btn'}
-                    >
-                      {step.done ? 'Review' : `Open ${step.title}`}{' '}
-                      <ArrowRight className="primary-btn-icon" aria-hidden="true" />
-                    </Link>
-                    {step.key === 'plan' ? (
-                      <span className="muted small" style={{ alignSelf: 'center' }}>
-                        Trial: <code>{state.workspace.subscriptionStatus}</code>{' '}
-                        on plan <code>{state.workspace.plan}</code>
-                      </span>
-                    ) : null}
-                  </div>
+                  {step.key === 'plan' ? (
+                    <PlanPicker
+                      plans={availablePlans}
+                      currentPlan={state.workspace.plan}
+                      currentStatus={state.workspace.subscriptionStatus}
+                      hasSubscription={Boolean(state.workspace.stripeSubscriptionId)}
+                      checkoutAction={startCheckout}
+                    />
+                  ) : (
+                    <div className="action-row">
+                      <Link
+                        href={step.href}
+                        className={step.done ? 'ghost-btn' : 'primary-btn'}
+                      >
+                        {step.done ? 'Review' : `Open ${step.title}`}{' '}
+                        <ArrowRight className="primary-btn-icon" aria-hidden="true" />
+                      </Link>
+                    </div>
+                  )}
                 </div>
               </li>
             );
@@ -161,5 +208,67 @@ export default async function OnboardingPage({
         )}
       </div>
     </AppShell>
+  );
+}
+
+function PlanPicker({
+  plans,
+  currentPlan,
+  currentStatus,
+  hasSubscription,
+  checkoutAction,
+}: {
+  plans: ReturnType<typeof getAvailablePlans>;
+  currentPlan: string;
+  currentStatus: string;
+  hasSubscription: boolean;
+  checkoutAction: (formData: FormData) => Promise<void>;
+}) {
+  if (plans.length === 0) {
+    return (
+      <p className="muted small">
+        Plans are not configured yet (Stripe price IDs missing on the
+        server). Trial mode stays active until billing is wired up.
+      </p>
+    );
+  }
+  return (
+    <div className="plan-picker">
+      {plans.map((p) => {
+        const isCurrent = hasSubscription && currentPlan === p.id;
+        return (
+          <article
+            key={p.id}
+            className={isCurrent ? 'plan-card plan-card-current' : 'plan-card'}
+          >
+            <header className="plan-card-head">
+              <h3>{p.name}</h3>
+              <span className="plan-price">{p.displayPrice}</span>
+            </header>
+            <p className="plan-pitch">{p.pitch}</p>
+            <ul className="plan-features">
+              {p.features.map((f) => (
+                <li key={f}>
+                  <Check className="plan-feature-icon" aria-hidden="true" /> {f}
+                </li>
+              ))}
+            </ul>
+            {isCurrent ? (
+              <p className="muted small">
+                Current plan · status <code>{currentStatus}</code>. Manage from{' '}
+                <Link href="/settings/billing">Billing settings</Link>.
+              </p>
+            ) : (
+              <form action={checkoutAction}>
+                <input type="hidden" name="planId" value={p.id} />
+                <button type="submit" className="primary-btn">
+                  {hasSubscription ? `Switch to ${p.name}` : `Choose ${p.name}`}
+                </button>
+              </form>
+            )}
+          </article>
+        );
+      })}
+    </div>
   );
 }

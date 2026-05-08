@@ -673,6 +673,45 @@ placeholder copy with a real Stripe Checkout link; the `subscriptionStatus`
 gate in `getOnboardingState` already treats `canceled` / `past_due` as
 not-done so a lapsed customer hits the wizard instead of the dashboard.
 
+## Phase 48 — Stripe payments (Checkout + Portal + Webhook)
+
+- [x] **P48-01.** Plan catalogue at `src/lib/billing/plans.ts`. Two tiers: `starter` and `pro`. Each plan resolves its `priceId` from env (`STRIPE_PRICE_STARTER` / `STRIPE_PRICE_PRO`) at request time so price rotations / regional pricing don't need a code change. `getAvailablePlans()` filters out plans whose price id is unset, so unconfigured tiers stay hidden from the UI.
+- [x] **P48-02.** `src/lib/services/billing.ts` — Stripe SDK lazy-cached (`getStripeClient()` throws BillingError(`not_configured`) when `STRIPE_SECRET_KEY` missing, so `/settings/integrations` and the wizard surface a clear error instead of crashing).
+- [x] **P48-03.** `getOrCreateStripeCustomer(ctx)` — finds or creates the workspace's Stripe Customer with `metadata.workspace_id` + `metadata.workspace_slug`. Persists `stripe_customer_id` on the workspace row so subsequent calls are no-ops.
+- [x] **P48-04.** `createCheckoutSession(ctx, {planId, successUrl, cancelUrl})` — admin-gated, audit-logged. Creates a Stripe Checkout Session in subscription mode, threads `workspace_id` + `plan_id` through the session metadata AND the subscription metadata so the webhook can reconcile back to the right row. `allow_promotion_codes: true` in case you want coupons later. Returns `{url, sessionId}` for the caller to redirect.
+- [x] **P48-05.** `createPortalSession(ctx, returnUrl)` — admin-gated. Creates a Stripe Customer Portal session so the operator can switch plans, cancel, update card, and view invoices on Stripe's hosted UI. Returns `{url}`.
+- [x] **P48-06.** `verifyStripeEvent(rawBody, sig)` — verifies the `Stripe-Signature` header against `STRIPE_WEBHOOK_SECRET` using `stripe.webhooks.constructEvent`. Throws `BillingError('webhook_invalid')` on mismatch so the route returns 400 + Stripe retries with backoff.
+- [x] **P48-07.** `applyStripeEvent(event)` — switch on event type:
+  - `checkout.session.completed` → write stripe ids + plan + `subscriptionStatus='active'` + flip `onboardingStatus='completed'` (paying customers don't need the wizard)
+  - `customer.subscription.created` / `.updated` → write `subscriptionStatus = mapStripeStatus(sub.status)` + plan id when the metadata carries one
+  - `customer.subscription.deleted` → `subscriptionStatus='canceled'`
+  - `invoice.payment_failed` → look up workspace by `stripe_customer_id` (invoice metadata is unreliable), set `subscriptionStatus='past_due'`
+  - other types → ignore + return 200 (Stripe sends a lot we don't care about; ignoring stops the retry loop)
+  - Status mapping: `trialing→trial`, `active→active`, `past_due/unpaid/incomplete→past_due`, `canceled/incomplete_expired/paused→canceled`.
+- [x] **P48-08.** Routes:
+  - `POST /api/stripe/checkout` — body `{planId}`, returns `{url}`. Auth-required, admin-gated via the service.
+  - `POST /api/stripe/portal` — returns `{url}`. Same gating.
+  - `POST /api/stripe/webhook` — reads the raw body via `req.text()` (signature verification needs the unparsed bytes), runs `verifyStripeEvent` then `applyStripeEvent`. 400 on signature failure, 200 on every applied / ignored event, 500 on internal DB errors so Stripe retries.
+- [x] **P48-09.** UI: `/onboarding` Plan step replaced its placeholder with a real `<PlanPicker>` rendering each available plan as a card (name + display price + pitch + checked feature list) with a server-action form that POSTs to `createCheckoutSession` and redirects the operator to Stripe Checkout. Stripe success / cancel banners render at the top of the page when returned with `?stripe=success` / `?stripe=canceled`. Current-plan card highlighted with primary-blue accent + "Manage from Billing settings" hint.
+- [x] **P48-10.** New `/settings/billing` page (admin-gated): summary card with plan / status badge / Stripe customer + subscription ids; "Manage subscription" button that opens the Stripe-hosted portal; full plan list with the current plan highlighted; helpful hints when Stripe isn't configured / no customer exists yet / non-admin viewer. New `Billing` link in the sidebar Administration group with the CreditCard icon.
+- [x] **P48-11.** New CSS: `.plan-picker`, `.plan-card`, `.plan-card-current` (primary-blue tinted gradient), `.plan-card-head`, `.plan-price`, `.plan-pitch`, `.plan-features` (with `.plan-feature-icon`), `.billing-summary` (icon + dl grid).
+- [x] **P48-12.** 7 tests in `src/tests/billing.test.ts` covering `applyStripeEvent`: checkout completed → active + onboarding completed + ids written; subscription updated → past_due; deleted → canceled; payment_failed → past_due via customer-id lookup; missing metadata → no_workspace; unhandled event types → ignored; status mapping for trialing + incomplete. **699/699 → 706/706 total tests pass.**
+
+**Phase 48 complete.**
+
+To go live: set the following env vars on agregat (`/opt/lead-discovery-platform/.env`):
+  - `STRIPE_SECRET_KEY=sk_live_...`        (or sk_test_... for test mode)
+  - `STRIPE_WEBHOOK_SECRET=whsec_...`      (from the Stripe webhook endpoint config)
+  - `STRIPE_PRICE_STARTER=price_...`       (Stripe Price ID for the Starter plan)
+  - `STRIPE_PRICE_PRO=price_...`           (Stripe Price ID for the Pro plan)
+  - optional: `STRIPE_PRICE_STARTER_DISPLAY` / `STRIPE_PRICE_PRO_DISPLAY` to override the displayed price strings.
+
+Configure the Stripe webhook endpoint to POST to
+`https://discover.nulife.pl/api/stripe/webhook` and subscribe at minimum to:
+`checkout.session.completed`, `customer.subscription.created`,
+`customer.subscription.updated`, `customer.subscription.deleted`,
+`invoice.payment_failed`. Restart the app container after the env flip.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

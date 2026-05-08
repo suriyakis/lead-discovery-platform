@@ -1227,6 +1227,130 @@ button.primary-btn {
   color: oklch(0.78 0.13 75);
 }
 
+/* ---- Plan picker (Phase 48) -------------------------------- */
+.plan-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.plan-card {
+  padding: 1.1rem 1.2rem;
+  background: linear-gradient(
+    160deg,
+    var(--brand-card-elevated) 0%,
+    var(--brand-card) 100%
+  );
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.plan-card-current {
+  border-color: oklch(0.72 0.14 220 / 0.5);
+  background: linear-gradient(
+    160deg,
+    oklch(0.72 0.14 220 / 0.1) 0%,
+    var(--brand-card) 100%
+  );
+}
+
+.plan-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.plan-card-head h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.plan-price {
+  font-family: var(--brand-mono);
+  font-size: 0.95rem;
+  color: var(--brand-fg);
+}
+
+.plan-pitch {
+  margin: 0;
+  color: var(--brand-muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.plan-features {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.plan-features li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  line-height: 1.45;
+}
+
+.plan-feature-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--brand-accent-teal);
+  flex-shrink: 0;
+}
+
+/* ---- Billing summary (settings/billing) -------------------- */
+.billing-summary {
+  display: flex;
+  gap: 1.2rem;
+  padding: 1.2rem 1.3rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+}
+
+.billing-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.5rem;
+  background: oklch(0.72 0.14 220 / 0.14);
+  border: 1px solid oklch(0.72 0.14 220 / 0.4);
+  color: var(--brand-primary);
+  flex-shrink: 0;
+}
+
+.billing-summary dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
+}
+
+.billing-summary dt {
+  font-family: var(--brand-mono);
+  font-size: 0.72rem;
+  color: var(--brand-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.billing-summary dd {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
 .badge {
   display: inline-block;
   font-family: var(--brand-mono);
