@@ -187,25 +187,46 @@ function clipText(text: string, max: number): string {
 
 // ─── AI synthesis ───────────────────────────────────────────────────
 
+// Every field is tolerant — the AI is allowed to omit anything it
+// can't extract honestly. The orchestrator derives sensible fallbacks
+// (especially `name`, which never can be blank in the DB) so a sparse
+// AI response still produces a useful draft.
 const SynthesizedProfileSchema = z.object({
-  name: z.string().min(1).max(200),
+  name: z.string().max(200).nullable().optional(),
   shortDescription: z.string().max(500).nullable().optional(),
   fullDescription: z.string().max(5000).nullable().optional(),
-  targetCustomerTypes: z.array(z.string()).max(20).default([]),
-  targetSectors: z.array(z.string()).max(20).default([]),
-  targetProjectTypes: z.array(z.string()).max(20).default([]),
-  includeKeywords: z.array(z.string()).max(40).default([]),
-  excludeKeywords: z.array(z.string()).max(40).default([]),
+  targetCustomerTypes: z.array(z.string()).max(20).optional(),
+  targetSectors: z.array(z.string()).max(20).optional(),
+  targetProjectTypes: z.array(z.string()).max(20).optional(),
+  includeKeywords: z.array(z.string()).max(40).optional(),
+  excludeKeywords: z.array(z.string()).max(40).optional(),
   qualificationCriteria: z.string().max(2000).nullable().optional(),
   outreachInstructions: z.string().max(2000).nullable().optional(),
   language: z.string().min(2).max(10).optional(),
   /** Honest signal about how confident the model is in the output. */
-  confidence: z.enum(['high', 'medium', 'low']).default('medium'),
+  confidence: z.enum(['high', 'medium', 'low']).optional(),
   /** Free-form note for the operator — flag SPA / paywall / weird sources. */
   notes: z.string().max(1000).optional(),
 });
 
-export type SynthesizedProfile = z.infer<typeof SynthesizedProfileSchema>;
+/** Output of `synthesizeProfile`. Stricter than the AI's raw response —
+ *  the orchestrator fills in defaults so callers don't have to handle
+ *  `undefined` everywhere. */
+export interface SynthesizedProfile {
+  name: string;
+  shortDescription: string | null;
+  fullDescription: string | null;
+  targetCustomerTypes: string[];
+  targetSectors: string[];
+  targetProjectTypes: string[];
+  includeKeywords: string[];
+  excludeKeywords: string[];
+  qualificationCriteria: string | null;
+  outreachInstructions: string | null;
+  language: string;
+  confidence: 'high' | 'medium' | 'low';
+  notes?: string;
+}
 
 const SYSTEM_PROMPT = `
 You are a B2B product analyst. Given source material about a product
@@ -298,10 +319,16 @@ export async function synthesizeProfile(
       ? parsed.language
       : detectLanguageFromText(sources[0]?.text ?? '') ?? 'en';
 
+  // Name fallback: AI may omit `name` when the source is sparse (SPA
+  // shell, paywall, image-only PDF). Derive something usable from the
+  // source labels so the operator gets a draft they can rename rather
+  // than a hard error after paying for the AI call.
+  const name = (parsed.name ?? '').trim() || deriveNameFromSources(sources);
+
   // Zod's optional fields infer as `T | undefined`; flatten to the
   // SynthesizedProfile shape with concrete defaults.
   return {
-    name: parsed.name,
+    name,
     shortDescription: parsed.shortDescription ?? null,
     fullDescription: parsed.fullDescription ?? null,
     targetCustomerTypes: parsed.targetCustomerTypes ?? [],
@@ -315,6 +342,30 @@ export async function synthesizeProfile(
     confidence: parsed.confidence ?? 'medium',
     notes: parsed.notes,
   };
+}
+
+/** Best-effort fallback when the AI omits `name`. Tries (1) the
+ *  hostname of the website source's URL, (2) the first PDF filename
+ *  with the .pdf extension stripped, (3) a generic "Imported product"
+ *  marker. The operator is expected to rename on review. */
+function deriveNameFromSources(
+  sources: ReadonlyArray<ExtractedSource>,
+): string {
+  const website = sources.find((s) => s.kind === 'website');
+  if (website) {
+    try {
+      const host = new URL(website.label).hostname.replace(/^www\./, '');
+      if (host) return host;
+    } catch {
+      // ignore — fall through to PDF
+    }
+  }
+  const pdf = sources.find((s) => s.kind === 'pdf');
+  if (pdf) {
+    return pdf.label.replace(/\.pdf$/i, '').replace(/[._-]+/g, ' ').trim() ||
+      'Imported product';
+  }
+  return 'Imported product';
 }
 
 // ─── End-to-end orchestrator ─────────────────────────────────────────
