@@ -215,10 +215,11 @@ function clipText(text: string, max: number): string {
 
 // ─── AI synthesis ───────────────────────────────────────────────────
 
-// Every field is tolerant — the AI is allowed to omit anything it
-// can't extract honestly. The orchestrator derives sensible fallbacks
-// (especially `name`, which never can be blank in the DB) so a sparse
-// AI response still produces a useful draft.
+// Schema covers EVERY field that exists on a product profile in the
+// DB. Optional/nullable for resilience against sparse sources, but the
+// SYSTEM_PROMPT below pushes the model to populate everything it has
+// any reasonable signal for. A null is reserved for fields where the
+// source genuinely contains zero signal — not as a default escape.
 const SynthesizedProfileSchema = z.object({
   name: z.string().max(200).nullable().optional(),
   shortDescription: z.string().max(500).nullable().optional(),
@@ -229,7 +230,11 @@ const SynthesizedProfileSchema = z.object({
   includeKeywords: z.array(z.string()).max(40).optional(),
   excludeKeywords: z.array(z.string()).max(40).optional(),
   qualificationCriteria: z.string().max(2000).nullable().optional(),
+  disqualificationCriteria: z.string().max(2000).nullable().optional(),
+  relevanceThreshold: z.number().int().min(0).max(100).optional(),
   outreachInstructions: z.string().max(2000).nullable().optional(),
+  negativeOutreachInstructions: z.string().max(2000).nullable().optional(),
+  forbiddenPhrases: z.array(z.string()).max(20).optional(),
   language: z.string().min(2).max(10).optional(),
   /** Honest signal about how confident the model is in the output. */
   confidence: z.enum(['high', 'medium', 'low']).optional(),
@@ -250,49 +255,100 @@ export interface SynthesizedProfile {
   includeKeywords: string[];
   excludeKeywords: string[];
   qualificationCriteria: string | null;
+  disqualificationCriteria: string | null;
+  relevanceThreshold: number;
   outreachInstructions: string | null;
+  negativeOutreachInstructions: string | null;
+  forbiddenPhrases: string[];
   language: string;
   confidence: 'high' | 'medium' | 'low';
   notes?: string;
 }
 
 const SYSTEM_PROMPT = `
-You are a B2B product analyst. Given source material about a product
-(typically a marketing webpage and/or technical datasheet PDFs),
-extract a structured product profile that a sales operator will use
-to drive lead discovery + qualification + outreach.
+You are a senior B2B product analyst. The operator has handed you raw
+source material about a product (a marketing webpage and/or technical
+datasheets / brochures as PDFs). Your output drives a downstream lead
+discovery pipeline:
 
-Rules:
-- The "name" should be the canonical product name as branded — not the
-  company name unless the product IS the company's headline offering.
-- shortDescription: one sentence, ≤30 words, plain language.
-- fullDescription: 2–5 sentences. What it is, who it's for, what
-  problem it solves.
-- targetCustomerTypes: who buys it (e.g. ["construction GCs",
-  "MEP contractors", "real estate developers"]).
-- targetSectors: industry sectors (e.g. ["commercial construction",
-  "residential", "infrastructure"]).
-- targetProjectTypes: kinds of projects (e.g. ["foundation slabs",
-  "underground parking", "civil tunnels"]).
-- includeKeywords: words/phrases that should appear in a relevant lead
-  description. Lowercase, no duplicates.
-- excludeKeywords: words/phrases that signal a NOT-fit (often industry
-  adjacent but wrong). Empty array if none clear.
-- qualificationCriteria: bullet-style list of criteria a human would
-  use to decide "is this a real prospect?". May be left null.
-- outreachInstructions: tone + angle suggestions for first-touch
-  outreach. May be left null.
-- language: ISO 639-1 of the SOURCE material — "en" / "pl" / "de" /
-  etc. If the page is bilingual, pick the dominant language of the
-  product description.
-- confidence: "high" if the source is clear and rich; "medium" if you
-  inferred some fields; "low" if the source was mostly empty (e.g.
-  client-rendered SPA, paywall, broken link).
-- notes: anything the operator should know — e.g. "page appears to be
-  client-rendered; ran on minimal text" or "source is a competitor
-  comparison page, not the product page itself".
+  1. discovery — includeKeywords/excludeKeywords feed Google search
+     queries that find candidate companies.
+  2. qualification — qualificationCriteria + disqualificationCriteria +
+     relevanceThreshold feed an AI scorer that decides whether each
+     candidate company is worth pursuing (0-100).
+  3. outreach — fullDescription + outreachInstructions +
+     negativeOutreachInstructions + forbiddenPhrases feed a draft-
+     writer that produces the first cold email.
 
-Respond as a JSON object only. No prose, no code fence.
+So every field downstream is consumed by code; sparse output produces
+bad search queries, bad qualification, and bad emails. Your job is to
+populate EVERY field for which the source contains ANY signal. A field
+should be null/empty ONLY when the source has zero relevant content
+for it — not as a default. When in doubt, infer from context.
+
+Field-by-field guidance:
+
+- name (string): canonical product name as branded. NOT the company
+  name unless the product is the company's headline offering. If a
+  PDF datasheet titles the product clearly, prefer that. Required.
+- shortDescription (string): one sentence, ≤30 words, plain language,
+  in the source's language.
+- fullDescription (string): 2–5 sentences. What it is, who it's for,
+  what problem it solves, key technical or commercial differentiators.
+- targetCustomerTypes (string[]): who buys it. Roles or company
+  archetypes. Examples: ["construction GCs", "MEP contractors",
+  "real estate developers", "facility managers"].
+- targetSectors (string[]): industry sectors. Examples: ["commercial
+  construction", "residential", "infrastructure", "industrial real
+  estate"].
+- targetProjectTypes (string[]): kinds of projects where the product
+  is used. Examples: ["foundation slabs", "underground parking",
+  "civil tunnels", "high-rise cores"].
+- includeKeywords (string[]): 8-20 lowercase phrases (1-3 words each)
+  that should appear in a relevant lead's site/description. Mix of
+  product names, project terms, sector terms. No duplicates.
+- excludeKeywords (string[]): 3-15 lowercase phrases that signal a
+  WRONG fit (industry-adjacent but the wrong buyer). Examples for a
+  concrete-additive: ["dry-mix mortar", "DIY", "consumer", "homeowner"].
+  Empty array only if you genuinely cannot think of any.
+- qualificationCriteria (string): bullet-style list of yes/no
+  questions a human would ask: "Is the company's project pipeline
+  ≥X size?", "Do they self-perform structural concrete?", etc. Aim
+  for 4-8 bullets.
+- disqualificationCriteria (string): bullet-style list of red flags
+  that should drop a lead even if other criteria look good. Examples:
+  "company sells the same product (competitor)", "company is a
+  consumer / DIY brand", "company has no public construction
+  project pipeline". Aim for 3-6 bullets.
+- relevanceThreshold (integer 0-100, default 50): the cutoff for an
+  AI relevance score below which leads should NOT be drafted. 50 is
+  a sane default; raise to 65-70 for niche products with a clear
+  ICP, lower to 35-40 for broad horizontal products.
+- outreachInstructions (string): tone + angle for first-touch email.
+  E.g. "Open with a project-specific hook based on a recent permit
+  or news mention. Lead with the technical differentiator, not the
+  brand. Avoid superlatives. Polish, max 120 words."
+- negativeOutreachInstructions (string): explicit DON'Ts for the
+  draft-writer. E.g. "Don't claim partnerships we don't have. Don't
+  use 'revolutionary' / 'game-changing'. Don't pitch features the
+  buyer can't measure."
+- forbiddenPhrases (string[]): 3-10 exact phrases that must never
+  appear in a draft. Examples: ["best-in-class", "synergies",
+  "cutting-edge"]. Includes any over-claims specific to this product.
+- language (ISO 639-1, default "en"): the SOURCE material's dominant
+  language. "en" / "pl" / "de" / "fr" / "es" / etc. If bilingual,
+  pick the language of the product description, not the chrome.
+- confidence: "high" when the source was rich (full marketing page +
+  datasheet, several KB of clear text); "medium" when you inferred
+  some fields; "low" when the source was mostly empty (SPA shell,
+  paywall, scanned-image PDF that yielded no text).
+- notes: short message for the operator. Flag specific gaps —
+  "no datasheet provided, technical fields are inferred from the
+  marketing page only", or "page appears client-rendered; only
+  the homepage hero was extractable".
+
+Output format: a single JSON object. No prose, no code fence, no
+preamble.
 `.trim();
 
 export interface SynthesizeProfileInput {
@@ -334,11 +390,11 @@ export async function synthesizeProfile(
   const parsed = await provider.generateJson(
     { system: SYSTEM_PROMPT, prompt: userPrompt },
     SynthesizedProfileSchema,
-    // Autofill JSON can run 1.5–2k output tokens with rich source
-    // material. Anthropic's default max_tokens is 1024 which truncates
-    // mid-string and yields a JSON-parse error; bump to 4096 so the
-    // model has room. OpenAI ignores the option when not capped.
-    { maxTokens: 4096 },
+    // The expanded schema asks for ~14 populated fields with rich
+    // text in the description / criteria / outreach blocks. 4096
+    // tokens was tight; 8192 leaves headroom for verbose responses
+    // and avoids mid-string truncation that breaks JSON.parse.
+    { maxTokens: 8192 },
   );
 
   // Belt-and-braces language sanity check.
@@ -365,7 +421,11 @@ export async function synthesizeProfile(
     includeKeywords: parsed.includeKeywords ?? [],
     excludeKeywords: parsed.excludeKeywords ?? [],
     qualificationCriteria: parsed.qualificationCriteria ?? null,
+    disqualificationCriteria: parsed.disqualificationCriteria ?? null,
+    relevanceThreshold: parsed.relevanceThreshold ?? 50,
     outreachInstructions: parsed.outreachInstructions ?? null,
+    negativeOutreachInstructions: parsed.negativeOutreachInstructions ?? null,
+    forbiddenPhrases: parsed.forbiddenPhrases ?? [],
     language: langGuess,
     confidence: parsed.confidence ?? 'medium',
     notes: parsed.notes,
@@ -444,7 +504,11 @@ export async function autofillProductProfileFromSources(
     includeKeywords: synth.includeKeywords,
     excludeKeywords: synth.excludeKeywords,
     qualificationCriteria: synth.qualificationCriteria ?? null,
+    disqualificationCriteria: synth.disqualificationCriteria ?? null,
+    relevanceThreshold: synth.relevanceThreshold,
     outreachInstructions: synth.outreachInstructions ?? null,
+    negativeOutreachInstructions: synth.negativeOutreachInstructions ?? null,
+    forbiddenPhrases: synth.forbiddenPhrases,
     language: synth.language ?? 'en',
   };
   const profile = await createProductProfile(ctx, createInput);
