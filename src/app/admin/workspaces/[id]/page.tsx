@@ -131,7 +131,9 @@ export default async function AdminWorkspaceDetail({
       key,
       enabled,
     });
-    redirect(`/admin/workspaces/${idStr}?message=Flag+${key}+${enabled ? 'enabled' : 'disabled'}`);
+    redirect(
+      `/admin/workspaces/${idStr}?message=Flag+${key}+${enabled ? 'enabled' : 'disabled'}#feature-flags`,
+    );
   }
 
   async function saveProfile(formData: FormData) {
@@ -496,7 +498,7 @@ export default async function AdminWorkspaceDetail({
           </section>
         ) : null}
 
-        <section>
+        <section id="feature-flags">
           <h2>Feature flags</h2>
           <p className="muted">
             Per-workspace toggles for premium modules. The application reads
@@ -514,23 +516,21 @@ export default async function AdminWorkspaceDetail({
                     <span className={enabled ? 'badge badge-good' : 'badge'}>
                       {enabled ? 'enabled' : 'disabled'}
                     </span>
-                  </div>
-                  <form
-                    action={toggleFlag}
-                    className="inline-form"
-                    style={{ marginTop: '0.5rem' }}
-                  >
-                    <input type="hidden" name="key" value={k} />
-                    <label className="checkbox-row">
+                    <form action={toggleFlag} style={{ marginLeft: 'auto' }}>
+                      <input type="hidden" name="key" value={k} />
                       <input
-                        type="checkbox"
+                        type="hidden"
                         name="enabled"
-                        defaultChecked={enabled}
+                        value={enabled ? 'off' : 'on'}
                       />
-                      <span>{enabled ? 'On' : 'Off'}</span>
-                    </label>
-                    <button type="submit">Save</button>
-                  </form>
+                      <button
+                        type="submit"
+                        className={enabled ? 'ghost-btn' : 'primary-btn'}
+                      >
+                        {enabled ? 'Disable' : 'Enable'}
+                      </button>
+                    </form>
+                  </div>
                 </li>
               );
             })}
