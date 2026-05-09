@@ -74,6 +74,7 @@ const stubProfile: SynthesizedProfile = {
 function jsonStubAi(profile: SynthesizedProfile): IAIProvider {
   return {
     id: 'stub-json',
+    model: 'stub-model',
     async generateText() {
       throw new Error('not used');
     },

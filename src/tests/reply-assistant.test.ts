@@ -65,6 +65,7 @@ afterAll(async () => {
 
 const stubAi: IAIProvider = {
   id: 'stub',
+  model: 'stub-model',
   async generateText(input) {
     // Echo the prompt back so tests can assert what was sent.
     return {

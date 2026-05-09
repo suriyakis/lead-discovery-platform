@@ -21,6 +21,11 @@ export interface AIGenInput {
 export interface AIGenOptions {
   temperature?: number;
   maxTokens?: number;
+  /** Override the provider's default model for this single call. Useful
+   *  when a specific feature needs a stronger model than the workspace
+   *  default — e.g. autofill needs Sonnet/gpt-4o, not Haiku/mini, to
+   *  populate dense JSON schemas reliably. */
+  model?: string;
   /** Caller-supplied deterministic seed. Honored by the mock; ignored by real providers. */
   mockSeed?: string;
 }
@@ -39,6 +44,10 @@ export interface AIUsage {
 
 export interface IAIProvider {
   readonly id: string;
+  /** The workspace-default model name. Callers can read this to decide
+   *  whether to override per-call (e.g. autofill upgrades small models
+   *  to dense-output models). */
+  readonly model: string;
   generateText(input: AIGenInput, options?: AIGenOptions): Promise<AIGenResult>;
   generateJson<T>(input: AIGenInput, schema: ZodSchema<T>, options?: AIGenOptions): Promise<T>;
   estimateCost(usage: AIUsage): number;
@@ -49,6 +58,7 @@ export interface IAIProvider {
 
 export class MockAIProvider implements IAIProvider {
   public readonly id = 'mock';
+  public readonly model = 'mock-1';
 
   async generateText(input: AIGenInput, options: AIGenOptions = {}): Promise<AIGenResult> {
     const seed = options.mockSeed ?? `${input.system ?? ''}\n${input.prompt}`;
@@ -199,7 +209,7 @@ export class OpenAIAIProvider implements IAIProvider {
     messages.push({ role: 'user', content: input.prompt });
 
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: options.model ?? this.model,
       messages,
       temperature: options.temperature ?? 0.4,
     };
@@ -335,7 +345,7 @@ export class AnthropicAIProvider implements IAIProvider {
     usage?: { input_tokens?: number; output_tokens?: number };
   }> {
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: options.model ?? this.model,
       messages: [{ role: 'user', content: input.prompt }],
       // Anthropic's Messages API requires max_tokens. 4096 is a safer
       // default than 1024 — most callers (drafts, translations,

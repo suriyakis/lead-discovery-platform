@@ -390,12 +390,34 @@ export async function synthesizeProfile(
   const parsed = await provider.generateJson(
     { system: SYSTEM_PROMPT, prompt: userPrompt },
     SynthesizedProfileSchema,
-    // The expanded schema asks for ~14 populated fields with rich
-    // text in the description / criteria / outreach blocks. 4096
-    // tokens was tight; 8192 leaves headroom for verbose responses
-    // and avoids mid-string truncation that breaks JSON.parse.
-    { maxTokens: 8192 },
+    // 8192 tokens leaves headroom for ~14 populated fields with rich
+    // text. Override the model: small/cheap models (Haiku, gpt-4o-mini)
+    // treat all-optional schemas as "you may skip everything" and
+    // routinely return 1-2 fields out of 14 even with strong prompting.
+    // Sonnet / gpt-4o respect the populate-everything instruction.
+    // Lower temperature for determinism — autofill is a structured
+    // extraction task, not creative writing.
+    {
+      maxTokens: 8192,
+      temperature: 0.2,
+      model: pickAutofillModel(provider.id, provider.model),
+    },
   );
+
+  // Post-parse sparseness check. Even with the strong prompt + Sonnet,
+  // the model can occasionally return a thin response. Count the
+  // populated fields and bail with a clear retry hint when too few
+  // came back, so the operator sees a real error instead of a
+  // mostly-empty draft they'll then have to delete.
+  const populated = countPopulated(parsed);
+  if (populated < 6) {
+    throw new ProductAutofillError(
+      `AI returned only ${populated}/14 fields populated. Retry the autofill — the model was unusually sparse on this run. If it persists, check the source has enough product detail (extracted ${
+        sources.reduce((a, s) => a + s.text.length, 0)
+      } chars total).`,
+      'sparse_response',
+    );
+  }
 
   // Belt-and-braces language sanity check.
   const langGuess =
@@ -430,6 +452,53 @@ export async function synthesizeProfile(
     confidence: parsed.confidence ?? 'medium',
     notes: parsed.notes,
   };
+}
+
+/** Pick the right model for autofill based on the active provider.
+ *  Workspace defaults are tuned for cost (Haiku, gpt-4o-mini) and
+ *  produce sparse autofill output. Bump to the dense-output tier just
+ *  for this call. Other features (qualification, drafts, translation)
+ *  keep the workspace default. */
+function pickAutofillModel(
+  providerId: string,
+  workspaceDefault: string,
+): string | undefined {
+  if (providerId === 'anthropic') {
+    // Already on a strong model? Keep it.
+    if (workspaceDefault.toLowerCase().includes('opus')) return undefined;
+    if (workspaceDefault.toLowerCase().includes('sonnet')) return undefined;
+    return 'claude-sonnet-4-6';
+  }
+  if (providerId === 'openai') {
+    if (workspaceDefault === 'gpt-4o' || workspaceDefault.startsWith('gpt-5')) {
+      return undefined;
+    }
+    return 'gpt-4o';
+  }
+  // Unknown provider — let the workspace default ride.
+  return undefined;
+}
+
+/** Count the fields the AI actually populated. Strings: non-null and
+ *  non-empty after trim. Arrays: at least one entry. Used to detect
+ *  Haiku-style "skip everything" responses. */
+function countPopulated(p: z.infer<typeof SynthesizedProfileSchema>): number {
+  let n = 0;
+  if (p.name && p.name.trim()) n++;
+  if (p.shortDescription && p.shortDescription.trim()) n++;
+  if (p.fullDescription && p.fullDescription.trim()) n++;
+  if (p.targetCustomerTypes && p.targetCustomerTypes.length > 0) n++;
+  if (p.targetSectors && p.targetSectors.length > 0) n++;
+  if (p.targetProjectTypes && p.targetProjectTypes.length > 0) n++;
+  if (p.includeKeywords && p.includeKeywords.length > 0) n++;
+  if (p.excludeKeywords && p.excludeKeywords.length > 0) n++;
+  if (p.qualificationCriteria && p.qualificationCriteria.trim()) n++;
+  if (p.disqualificationCriteria && p.disqualificationCriteria.trim()) n++;
+  if (typeof p.relevanceThreshold === 'number') n++;
+  if (p.outreachInstructions && p.outreachInstructions.trim()) n++;
+  if (p.negativeOutreachInstructions && p.negativeOutreachInstructions.trim()) n++;
+  if (p.forbiddenPhrases && p.forbiddenPhrases.length > 0) n++;
+  return n;
 }
 
 /** Best-effort fallback when the AI omits `name`. Tries (1) the

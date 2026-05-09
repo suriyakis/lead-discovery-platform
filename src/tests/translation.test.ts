@@ -108,6 +108,7 @@ function ctx(workspaceId: bigint, userId: string): WorkspaceContext {
  */
 const stubAi: IAIProvider = {
   id: 'stub',
+  model: 'stub-model',
   async generateText() {
     throw new Error('generateText not used by translation');
   },

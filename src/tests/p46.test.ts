@@ -122,6 +122,7 @@ describe('composeAiDraft (research context)', () => {
     let capturedPrompt = '';
     const stub: IAIProvider = {
       id: 'stub',
+      model: 'stub-model',
       async generateText(input) {
         capturedPrompt = input.prompt;
         return {
@@ -156,6 +157,7 @@ describe('composeAiDraft (research context)', () => {
     let capturedPrompt = '';
     const stub: IAIProvider = {
       id: 'stub',
+      model: 'stub-model',
       async generateText(input) {
         capturedPrompt = input.prompt;
         return {
@@ -233,6 +235,7 @@ describe('generateOutreachDraft with enrichDraftsWithResearch=true', () => {
     let capturedSystem = '';
     const aiStub: IAIProvider = {
       id: 'stub-ai',
+      model: 'stub-model',
       async generateText(input) {
         capturedPrompt = input.prompt;
         capturedSystem = input.system ?? '';
@@ -294,6 +297,7 @@ describe('generateOutreachDraft with enrichDraftsWithResearch=true', () => {
     let capturedPrompt = '';
     _setAIProviderForTests({
       id: 'stub-ai',
+      model: 'stub-model',
       async generateText(input) {
         capturedPrompt = input.prompt;
         return {
@@ -341,6 +345,7 @@ describe('generateOutreachDraft with enrichDraftsWithResearch=true', () => {
     });
     _setAIProviderForTests({
       id: 'stub-ai',
+      model: 'stub-model',
       async generateText() {
         return {
           text: 'body',

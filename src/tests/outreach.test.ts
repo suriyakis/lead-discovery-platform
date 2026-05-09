@@ -227,6 +227,7 @@ describe('composeAiDraft (pure engine)', () => {
   it('uses AI provider, strips forbidden output, marks method=ai', async () => {
     const stub: IAIProvider = {
       id: 'stub',
+      model: 'stub-model',
       async generateText(_input) {
         void _input;
         return {
@@ -259,6 +260,7 @@ describe('composeAiDraft (pure engine)', () => {
   it('confidence drops as forbidden strips multiply', async () => {
     const noStrip: IAIProvider = {
       id: 'clean',
+      model: 'stub-model',
       async generateText() {
         return { text: 'Clean output.', model: 'm', usage: { inputTokens: 1, outputTokens: 1 } };
       },
@@ -268,6 +270,7 @@ describe('composeAiDraft (pure engine)', () => {
     };
     const dirty: IAIProvider = {
       id: 'dirty',
+      model: 'stub-model',
       async generateText() {
         return { text: 'synergy leverage synergy', model: 'm', usage: { inputTokens: 1, outputTokens: 1 } };
       },
@@ -404,6 +407,7 @@ describe('generateOutreachDraft (DB-backed)', () => {
     const s = await setup();
     _setAIProviderForTests({
       id: 'stub',
+      model: 'stub-model',
       async generateText() {
         return {
           text: 'Crafted by AI. This is the body.',
