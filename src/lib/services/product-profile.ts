@@ -1,6 +1,9 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { productProfiles, type NewProductProfile, type ProductProfile } from '@/lib/db/schema/products';
+import { qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { outreachDrafts } from '@/lib/db/schema/outreach';
+import { qualifications } from '@/lib/db/schema/qualifications';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 
@@ -238,4 +241,83 @@ export async function restoreProductProfile(
 ): Promise<ProductProfile> {
   if (!canAdminWorkspace(ctx)) throw permissionDenied('restore product profile');
   return updateProductProfile(ctx, id, { active: true });
+}
+
+// ---- delete -----------------------------------------------------------
+
+export interface ProductProfileDependencyCounts {
+  qualifications: number;
+  outreachDrafts: number;
+  qualifiedLeads: number;
+}
+
+export async function countProductProfileDependencies(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<ProductProfileDependencyCounts> {
+  const [q, o, l] = await Promise.all([
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(qualifications)
+      .where(eq(qualifications.productProfileId, id)),
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(outreachDrafts)
+      .where(eq(outreachDrafts.productProfileId, id)),
+    db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(qualifiedLeads)
+      .where(eq(qualifiedLeads.productProfileId, id)),
+  ]);
+  return {
+    qualifications: q[0]?.n ?? 0,
+    outreachDrafts: o[0]?.n ?? 0,
+    qualifiedLeads: l[0]?.n ?? 0,
+  };
+}
+
+/**
+ * Hard-delete a product profile. Refuses if there's any downstream
+ * activity (pipeline rows, qualifications, drafts) — operator must
+ * archive instead so history is preserved. Empty drafts created by
+ * autofill experiments delete cleanly.
+ *
+ * On the DB side the FK from learning_examples / hint_signals cascades
+ * (see learning.ts onDelete: cascade / set null) and the indexes from
+ * autopilot/connectors/documents that lack FK constraints are left
+ * dangling — harmless for those tables.
+ */
+export async function deleteProductProfile(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<{ name: string }> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('delete product profile');
+
+  const profile = await getProductProfile(ctx, id);
+  const deps = await countProductProfileDependencies(ctx, id);
+  const blocking =
+    deps.qualifications + deps.outreachDrafts + deps.qualifiedLeads;
+  if (blocking > 0) {
+    throw invalid(
+      `cannot delete: ${deps.qualifiedLeads} qualified leads, ${deps.qualifications} qualifications, ${deps.outreachDrafts} drafts reference this profile — archive it instead`,
+    );
+  }
+
+  return db.transaction(async (tx) => {
+    await tx
+      .delete(productProfiles)
+      .where(
+        and(
+          eq(productProfiles.workspaceId, ctx.workspaceId),
+          eq(productProfiles.id, id),
+        ),
+      );
+    await recordAuditEvent(ctx, {
+      kind: 'product_profile.delete',
+      entityType: 'product_profile',
+      entityId: profile.id,
+      payload: { name: profile.name },
+    });
+    return { name: profile.name };
+  });
 }

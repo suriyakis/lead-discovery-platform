@@ -10,6 +10,8 @@ import {
 import {
   ProductProfileServiceError,
   archiveProductProfile,
+  countProductProfileDependencies,
+  deleteProductProfile,
   getProductProfile,
   restoreProductProfile,
   updateProductProfile,
@@ -50,7 +52,7 @@ export default async function EditProductPage({
     throw err;
   }
 
-  let profile;
+  let profile: Awaited<ReturnType<typeof getProductProfile>>;
   try {
     profile = await getProductProfile(ctx, id);
   } catch (err) {
@@ -118,6 +120,30 @@ export default async function EditProductPage({
     redirect(`/products/${id}`);
   }
 
+  async function destroy(formData: FormData): Promise<void> {
+    'use server';
+    const ctxInner = await getWorkspaceContext();
+    const confirmed = String(formData.get('confirm') ?? '').trim();
+    if (confirmed !== profile.name) {
+      redirect(
+        `/products/${id}?error=${encodeURIComponent(`Type the product name "${profile.name}" to confirm`)}`,
+      );
+    }
+    try {
+      await deleteProductProfile(ctxInner, id);
+      redirect('/products?deleted=1');
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof ProductProfileServiceError ? err.message : 'failed';
+      redirect(`/products/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  const deps = canAdminWorkspace(ctx)
+    ? await countProductProfileDependencies(ctx, id)
+    : null;
+
   return (
     <AppShell>
         <p className="muted">
@@ -180,7 +206,7 @@ export default async function EditProductPage({
           />
         </form>
 
-        {canAdminWorkspace(ctx) ? (
+        {canAdminWorkspace(ctx) && deps ? (
           <section>
             <h2>Admin</h2>
             <p className="muted">
@@ -193,6 +219,40 @@ export default async function EditProductPage({
                 {profile.active ? 'Archive' : 'Restore'}
               </button>
             </form>
+
+            <h3 style={{ marginTop: '1.5rem' }}>Delete</h3>
+            {deps.qualifiedLeads + deps.qualifications + deps.outreachDrafts >
+            0 ? (
+              <p className="muted">
+                Cannot delete — this profile is referenced by{' '}
+                <strong>{deps.qualifiedLeads}</strong> qualified leads,{' '}
+                <strong>{deps.qualifications}</strong> qualifications, and{' '}
+                <strong>{deps.outreachDrafts}</strong> drafts. Archive instead
+                so history is preserved.
+              </p>
+            ) : (
+              <>
+                <p className="muted">
+                  No downstream activity references this profile — safe to
+                  delete. Type the product name to confirm.
+                </p>
+                <form action={destroy} className="inline-form">
+                  <label>
+                    <span>Confirm name</span>
+                    <input
+                      type="text"
+                      name="confirm"
+                      placeholder={profile.name}
+                      autoComplete="off"
+                      required
+                    />
+                  </label>
+                  <button type="submit" className="ghost-btn">
+                    Permanently delete
+                  </button>
+                </form>
+              </>
+            )}
           </section>
         ) : null}
       </AppShell>
