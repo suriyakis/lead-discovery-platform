@@ -210,16 +210,15 @@ export class OpenAIAIProvider implements IAIProvider {
 
     const model = options.model ?? this.model;
     const body: Record<string, unknown> = { model, messages };
-    // gpt-5 and o-series reasoning models renamed `max_tokens` →
-    // `max_completion_tokens` and most don't accept a custom temperature
-    // (it's fixed at 1.0). Only set those fields with the right names
-    // and within each model family's accepted range.
+    // gpt-5 and o-series renamed `max_tokens` → `max_completion_tokens`,
+    // and BOTH reject any custom temperature (only the default 1.0 is
+    // accepted, returns 400 otherwise). Older chat models still take
+    // both `max_tokens` and a custom temperature.
     const isReasoning = /^o[13]/.test(model);
     const isGpt5 = model.startsWith('gpt-5');
     if (isReasoning || isGpt5) {
       if (options.maxTokens) body.max_completion_tokens = options.maxTokens;
-      // o-series rejects custom temperature; gpt-5 accepts it.
-      if (!isReasoning) body.temperature = options.temperature ?? 0.4;
+      // No temperature on these models — API rejects anything ≠ 1.0.
     } else {
       body.temperature = options.temperature ?? 0.4;
       if (options.maxTokens) body.max_tokens = options.maxTokens;
