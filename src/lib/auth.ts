@@ -168,6 +168,47 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             .update(preauthorizedEmails)
             .set({ consumedAt: new Date() })
             .where(eq(preauthorizedEmails.id, entry.id));
+          return;
+        }
+
+        // Plain Google sign-in (not OWNER_EMAIL, not pre-authorized).
+        // Multi-tenant SaaS path: auto-provision a Personal workspace
+        // as owner so the operator lands on /onboarding instead of
+        // /pending. Account flips to active immediately.
+        await db
+          .update(users)
+          .set({
+            accountStatus: 'active',
+            accountStatusUpdatedAt: new Date(),
+            accountStatusUpdatedBy: user.id,
+          })
+          .where(eq(users.id, user.id));
+
+        const slug = `personal-${crypto.randomUUID().slice(0, 8)}`;
+        const [createdWs] = await db
+          .insert(workspaces)
+          .values({
+            name: 'Personal',
+            slug,
+            ownerUserId: user.id,
+            onboardingStatus: 'pending',
+          })
+          .returning();
+
+        if (createdWs) {
+          await db.insert(workspaceMembers).values({
+            workspaceId: createdWs.id,
+            userId: user.id,
+            role: 'owner',
+          });
+          await db.insert(auditLog).values({
+            workspaceId: createdWs.id,
+            userId: user.id,
+            kind: 'workspace.bootstrap',
+            entityType: 'workspace',
+            entityId: String(createdWs.id),
+            payload: { reason: 'self_signup', email },
+          });
         }
       }
     },

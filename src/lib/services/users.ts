@@ -393,8 +393,6 @@ export interface CreatePasswordUserInput {
   email: string;
   password: string;
   name?: string | null;
-  /** Defaults to 'member'. */
-  platformRole?: 'member' | 'super_admin';
   /** Defaults to 'active'. */
   accountStatus?: AccountStatus;
   /** Optional workspace to drop into immediately. */
@@ -434,7 +432,12 @@ export async function createPasswordUser(
     .values({
       email,
       name: input.name?.trim() || null,
-      role: input.platformRole ?? 'member',
+      // Platform role is intentionally hard-coded to 'member' here. Only
+      // OWNER_EMAIL bootstraps as super_admin (auth.ts), and promotions
+      // afterwards go through setUserPlatformRole, which audit-logs and
+      // protects the last super-admin. Closing the back-door that lets
+      // an admin form silently mint a new platform owner.
+      role: 'member',
       accountStatus: input.accountStatus ?? 'active',
       accountStatusUpdatedAt: new Date(),
       accountStatusUpdatedBy: ctx.userId,
@@ -465,7 +468,7 @@ export async function createPasswordUser(
       entityId: created.id,
       payload: {
         email,
-        platformRole: input.platformRole ?? 'member',
+        platformRole: 'member',
         workspaceId: input.workspaceId?.toString() ?? null,
         workspaceRole: input.workspaceRole ?? null,
       },
@@ -473,6 +476,63 @@ export async function createPasswordUser(
   );
 
   return created;
+}
+
+// ---- platform role (super_admin) -----------------------------------
+
+/**
+ * Promote or demote a user's platform role. Super-admin only. Refuses:
+ *   - to change your OWN platform role (locks you out otherwise)
+ *   - to demote the LAST super-admin (every workspace would lose its
+ *     escape-hatch, the platform would be ungovernable)
+ *
+ * Both transitions are audit-logged with the prior + new role.
+ */
+export async function setUserPlatformRole(
+  ctx: WorkspaceContext,
+  targetUserId: string,
+  role: 'member' | 'super_admin',
+): Promise<User> {
+  if (!isSuperAdmin(ctx)) throw denied('users.set_platform_role');
+  if (targetUserId === ctx.userId) {
+    throw conflict('cannot change your own platform role');
+  }
+  const target = await loadUser(targetUserId);
+  if (target.role === role) return target;
+
+  if (target.role === 'super_admin' && role === 'member') {
+    const otherSupers = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        and(eq(users.role, 'super_admin'), sql`${users.id} <> ${targetUserId}`),
+      );
+    if (otherSupers.length === 0) {
+      throw conflict('cannot demote the last super-admin');
+    }
+  }
+
+  const [updated] = await db
+    .update(users)
+    .set({ role })
+    .where(eq(users.id, targetUserId))
+    .returning();
+  if (!updated) {
+    throw new UserServiceError(
+      'platform role update returned no row',
+      'invariant_violation',
+    );
+  }
+  await recordAuditEvent(
+    { workspaceId: ctx.workspaceId, userId: ctx.userId },
+    {
+      kind: 'user.set_platform_role',
+      entityType: 'user',
+      entityId: targetUserId,
+      payload: { role, prior: target.role },
+    },
+  );
+  return updated;
 }
 
 /**

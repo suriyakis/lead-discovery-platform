@@ -27,6 +27,7 @@ import {
   deleteUserGlobally,
   setAccountStatus,
   setUserPassword,
+  setUserPlatformRole,
 } from '@/lib/services/users';
 import { db } from '@/lib/db/client';
 import { users, type AccountStatus } from '@/lib/db/schema/auth';
@@ -136,6 +137,25 @@ export default async function AdminUserDetail({
       await setUserPassword(c, targetUserId, password);
       redirect(
         `/admin/users/${targetUserId}?message=Password+reset+%E2%80%94+all+sessions+invalidated`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof UserServiceError ? err.message : 'failed';
+      redirect(`/admin/users/${targetUserId}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function changePlatformRole(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const role = String(formData.get('role') ?? '') as 'member' | 'super_admin';
+    if (role !== 'member' && role !== 'super_admin') {
+      redirect(`/admin/users/${targetUserId}?error=Invalid+role`);
+    }
+    try {
+      await setUserPlatformRole(c, targetUserId, role);
+      redirect(
+        `/admin/users/${targetUserId}?message=Platform+role+set+to+${role}`,
       );
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -291,6 +311,39 @@ export default async function AdminUserDetail({
       </section>
 
       <section>
+        <h2>
+          Platform role <span className="badge">{user.role}</span>
+        </h2>
+        <p className="muted">
+          {user.role === 'super_admin'
+            ? 'Super-admin: full platform access — can manage every user, every workspace, every payment subscription. Demote when no longer needed.'
+            : 'Standard user: scoped to the workspaces they belong to. Promote only for trusted operators who run the platform.'}
+        </p>
+        {isSelf ? (
+          <p className="muted">
+            You can&apos;t change your own platform role — ask another
+            super-admin if you need to be demoted.
+          </p>
+        ) : (
+          <form action={changePlatformRole} className="inline-form">
+            <input
+              type="hidden"
+              name="role"
+              value={user.role === 'super_admin' ? 'member' : 'super_admin'}
+            />
+            <button
+              type="submit"
+              className={user.role === 'super_admin' ? 'ghost-btn' : 'primary-btn'}
+            >
+              {user.role === 'super_admin'
+                ? 'Demote to member'
+                : 'Promote to super-admin'}
+            </button>
+          </form>
+        )}
+      </section>
+
+      <section>
         <h2>Workspace memberships ({memberships.length})</h2>
         {memberships.length === 0 ? (
           <p className="muted">Not a member of any workspace.</p>
@@ -414,14 +467,14 @@ export default async function AdminUserDetail({
         </form>
       </section>
 
-      {!isSelf && user.role !== 'super_admin' ? (
+      {!isSelf ? (
         <section>
           <h2>Danger zone</h2>
           <p className="muted">
             Permanently delete this user. Cascades through sessions, OAuth
             accounts, and workspace memberships. Workspaces this user
-            owns must have ownership transferred first. Type the user&apos;s
-            email to confirm.
+            owns must have ownership transferred first; super-admins must
+            be demoted first. Type the user&apos;s email to confirm.
           </p>
           <form action={destroyUser} className="inline-form">
             <label>
