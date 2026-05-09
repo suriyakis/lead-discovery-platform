@@ -34,15 +34,31 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   ],
   callbacks: {
     async session({ session, user }) {
-      // Inject id, platform role, and accountStatus onto session.user. The
-      // shape is augmented in src/types/next-auth.d.ts.
-      session.user.id = user.id;
+      // The Drizzle adapter returns the full users row as `user`, which
+      // includes bigint columns (e.g. activeWorkspaceId). Mutating
+      // session.user in place leaves those bigint fields attached, and
+      // Next.js's RSC serializer chokes with "Do not know how to
+      // serialize a BigInt". Rebuild session.user from primitives
+      // explicitly so only JSON-safe fields cross the boundary. The
+      // session shape is augmented in src/types/next-auth.d.ts.
       const u = user as {
+        id: string;
+        name?: string | null;
+        email: string;
+        image?: string | null;
+        emailVerified?: Date | null;
         role?: 'member' | 'super_admin';
         accountStatus?: 'pending' | 'active' | 'suspended' | 'rejected';
       };
-      session.user.role = u.role ?? 'member';
-      session.user.accountStatus = u.accountStatus ?? 'pending';
+      session.user = {
+        id: u.id,
+        name: u.name ?? null,
+        email: u.email,
+        image: u.image ?? null,
+        emailVerified: u.emailVerified ?? null,
+        role: u.role ?? 'member',
+        accountStatus: u.accountStatus ?? 'pending',
+      };
       return session;
     },
   },
