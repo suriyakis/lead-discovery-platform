@@ -215,6 +215,28 @@ function clipText(text: string, max: number): string {
 
 // ─── AI synthesis ───────────────────────────────────────────────────
 
+// "Bullet list" fields the prompt asks for as text but the model
+// naturally returns as JSON arrays. Accept either at parse time;
+// the orchestrator normalizes arrays to newline-bulleted strings
+// via `bulletsToString` after parse.
+const bulletStringField = z
+  .union([z.string().max(4000), z.array(z.string()).max(50)])
+  .nullable()
+  .optional();
+
+function bulletsToString(
+  v: string | string[] | null | undefined,
+): string | null {
+  if (v == null) return null;
+  if (typeof v === 'string') return v.trim() || null;
+  const joined = v
+    .map((s) => String(s).trim())
+    .filter((s) => s.length > 0)
+    .map((s) => (s.startsWith('- ') ? s : `- ${s}`))
+    .join('\n');
+  return joined || null;
+}
+
 // Schema covers EVERY field that exists on a product profile in the
 // DB. Optional/nullable for resilience against sparse sources, but the
 // SYSTEM_PROMPT below pushes the model to populate everything it has
@@ -229,11 +251,11 @@ const SynthesizedProfileSchema = z.object({
   targetProjectTypes: z.array(z.string()).max(20).optional(),
   includeKeywords: z.array(z.string()).max(40).optional(),
   excludeKeywords: z.array(z.string()).max(40).optional(),
-  qualificationCriteria: z.string().max(2000).nullable().optional(),
-  disqualificationCriteria: z.string().max(2000).nullable().optional(),
+  qualificationCriteria: bulletStringField,
+  disqualificationCriteria: bulletStringField,
   relevanceThreshold: z.number().int().min(0).max(100).optional(),
-  outreachInstructions: z.string().max(2000).nullable().optional(),
-  negativeOutreachInstructions: z.string().max(2000).nullable().optional(),
+  outreachInstructions: bulletStringField,
+  negativeOutreachInstructions: bulletStringField,
   forbiddenPhrases: z.array(z.string()).max(20).optional(),
   language: z.string().min(2).max(10).optional(),
   /** Honest signal about how confident the model is in the output. */
@@ -442,11 +464,11 @@ export async function synthesizeProfile(
     targetProjectTypes: parsed.targetProjectTypes ?? [],
     includeKeywords: parsed.includeKeywords ?? [],
     excludeKeywords: parsed.excludeKeywords ?? [],
-    qualificationCriteria: parsed.qualificationCriteria ?? null,
-    disqualificationCriteria: parsed.disqualificationCriteria ?? null,
+    qualificationCriteria: bulletsToString(parsed.qualificationCriteria),
+    disqualificationCriteria: bulletsToString(parsed.disqualificationCriteria),
     relevanceThreshold: parsed.relevanceThreshold ?? 50,
-    outreachInstructions: parsed.outreachInstructions ?? null,
-    negativeOutreachInstructions: parsed.negativeOutreachInstructions ?? null,
+    outreachInstructions: bulletsToString(parsed.outreachInstructions),
+    negativeOutreachInstructions: bulletsToString(parsed.negativeOutreachInstructions),
     forbiddenPhrases: parsed.forbiddenPhrases ?? [],
     language: langGuess,
     confidence: parsed.confidence ?? 'medium',
@@ -497,11 +519,11 @@ function countPopulated(p: z.infer<typeof SynthesizedProfileSchema>): number {
   if (p.targetProjectTypes && p.targetProjectTypes.length > 0) n++;
   if (p.includeKeywords && p.includeKeywords.length > 0) n++;
   if (p.excludeKeywords && p.excludeKeywords.length > 0) n++;
-  if (p.qualificationCriteria && p.qualificationCriteria.trim()) n++;
-  if (p.disqualificationCriteria && p.disqualificationCriteria.trim()) n++;
+  if (bulletsToString(p.qualificationCriteria)) n++;
+  if (bulletsToString(p.disqualificationCriteria)) n++;
   if (typeof p.relevanceThreshold === 'number') n++;
-  if (p.outreachInstructions && p.outreachInstructions.trim()) n++;
-  if (p.negativeOutreachInstructions && p.negativeOutreachInstructions.trim()) n++;
+  if (bulletsToString(p.outreachInstructions)) n++;
+  if (bulletsToString(p.negativeOutreachInstructions)) n++;
   if (p.forbiddenPhrases && p.forbiddenPhrases.length > 0) n++;
   return n;
 }
