@@ -118,26 +118,54 @@ export async function fetchAndExtractWebsite(
 }
 
 /**
- * cheerio-based readable-text extractor. Strips script / style /
- * navigation / footer / header chrome, joins remaining content with
- * newlines, collapses whitespace.
+ * cheerio-based readable-text extractor. Strips chrome (script, style,
+ * navigation, header, footer, aside, forms), then tries every plausible
+ * content scope (`<main>`, `[role=main]`, `<article>`, `<body>`) and
+ * returns the LONGEST cleaned result.
+ *
+ * Why longest-wins: many templated sites ship an empty `<main>` and
+ * render the product detail client-side, while the actual content
+ * lives elsewhere (e.g. inside `<article>` blocks or directly under
+ * `<body>` when the template is server-rendered). The previous "first
+ * match wins" logic locked onto an empty `<main>` and returned ~0
+ * useful characters even when the page had several KB of extractable
+ * text further down the tree.
  */
 function extractReadableText(html: string): string {
   const $: CheerioAPI = loadHtml(html);
-  $('script, style, noscript, svg, iframe, header, footer, nav, form').remove();
-  // Prefer <main> or [role=main] when available — far less noise.
-  let scope = $('main').first();
-  if (scope.length === 0) scope = $('[role="main"]').first();
-  if (scope.length === 0) scope = $('article').first();
-  if (scope.length === 0) scope = $('body');
-  const text = scope
-    .text()
+  $(
+    'script, style, noscript, svg, iframe, header, footer, nav, aside, form, [role="navigation"]',
+  ).remove();
+  const candidates: string[] = [];
+  const collect = (sel: string) => {
+    const matches = $(sel);
+    if (matches.length === 0) return;
+    // Concatenate every match, not just .first(), so multi-section
+    // product pages aren't truncated to the first card.
+    const joined = matches
+      .map((_, el) => $(el).text())
+      .get()
+      .join('\n');
+    candidates.push(cleanText(joined));
+  };
+  collect('main');
+  collect('[role="main"]');
+  collect('article');
+  collect('body');
+  candidates.push(cleanText($.root().text()));
+  return candidates.reduce(
+    (best, t) => (t.length > best.length ? t : best),
+    '',
+  );
+}
+
+function cleanText(t: string): string {
+  return t
     .replace(/\s+\n/g, '\n')
     .replace(/\n\s+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
-  return text;
 }
 
 /** Extract text out of a PDF buffer. Throws on encrypted PDFs.

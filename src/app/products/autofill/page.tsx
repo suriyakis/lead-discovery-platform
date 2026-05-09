@@ -63,9 +63,20 @@ export default async function AutofillPage({
         url,
         pdfs: pdfFiles,
       });
-      redirect(
-        `/products/${result.profile.id}?autofill=ok&confidence=${result.synthesized.confidence}`,
-      );
+      // Expose per-source extraction sizes so the operator can spot a
+      // thin/empty fetch (SPA, paywall, scanned-image PDF) at a glance.
+      const sizes = result.sources
+        .map((s) => `${s.kind}:${s.text.length}`)
+        .join(',');
+      const params = new URLSearchParams({
+        autofill: 'ok',
+        confidence: result.synthesized.confidence,
+        sizes,
+      });
+      if (result.synthesized.notes) {
+        params.set('notes', result.synthesized.notes);
+      }
+      redirect(`/products/${result.profile.id}?${params.toString()}`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const message =

@@ -28,6 +28,8 @@ export default async function EditProductPage({
     saved?: string;
     autofill?: string;
     confidence?: string;
+    sizes?: string;
+    notes?: string;
   }>;
 }) {
   const session = await auth();
@@ -126,12 +128,47 @@ export default async function EditProductPage({
         {!profile.active ? <p className="badge">Archived</p> : null}
 
         {sp.autofill === 'ok' ? (
-          <p className="form-info">
-            <strong>Autofill complete</strong> · confidence:{' '}
-            <code>{sp.confidence ?? 'medium'}</code>. Review every field
-            below — especially target sectors and keywords — then{' '}
-            <em>Restore</em> to activate.
-          </p>
+          <div
+            className={
+              sp.confidence === 'low'
+                ? 'form-error'
+                : 'form-info'
+            }
+          >
+            <p>
+              <strong>Autofill complete</strong> · confidence:{' '}
+              <code>{sp.confidence ?? 'medium'}</code>
+              {sp.sizes
+                ? (
+                  <>
+                    {' '}· extracted {sp.sizes
+                      .split(',')
+                      .map((s) => {
+                        const [kind, len] = s.split(':');
+                        return `${kind} ${len} chars`;
+                      })
+                      .join(', ')}
+                  </>
+                )
+                : null}
+            </p>
+            {sp.notes ? (
+              <p className="muted">
+                <strong>AI notes:</strong> {sp.notes}
+              </p>
+            ) : null}
+            {sp.confidence === 'low' || hasThinSource(sp.sizes) ? (
+              <p>
+                Low signal — likely a client-rendered SPA, paywall, or a
+                scanned-image PDF the parser couldn&apos;t read. Paste a
+                server-rendered marketing URL or run OCR on the PDF first.
+              </p>
+            ) : null}
+            <p>
+              Review every field below — especially target sectors and
+              keywords — then activate via <em>Restore</em>.
+            </p>
+          </div>
         ) : null}
         {sp.saved === '1' ? <p className="form-info">Changes saved.</p> : null}
 
@@ -160,4 +197,14 @@ export default async function EditProductPage({
         ) : null}
       </AppShell>
   );
+}
+
+function hasThinSource(sizes: string | undefined): boolean {
+  if (!sizes) return false;
+  for (const part of sizes.split(',')) {
+    const [, lenStr] = part.split(':');
+    const len = Number(lenStr);
+    if (Number.isFinite(len) && len < 500) return true;
+  }
+  return false;
 }
