@@ -456,9 +456,17 @@ export async function synthesizeProfile(
 
 /** Pick the right model for autofill based on the active provider.
  *  Workspace defaults are tuned for cost (Haiku, gpt-4o-mini) and
- *  produce sparse autofill output. Bump to the dense-output tier just
- *  for this call. Other features (qualification, drafts, translation)
- *  keep the workspace default. */
+ *  produce sparse autofill output — small models treat all-optional
+ *  schemas as "you may skip everything" and routinely return 1-2 of
+ *  14 fields. Bump to a dense-output model just for this call. Other
+ *  features (qualification, drafts, translation) keep the workspace
+ *  default to control cost.
+ *
+ *  OpenAI: gpt-5-nano — cheap but follows structured-output instructions
+ *  reliably; preferred over gpt-4o for cost.
+ *  Anthropic: claude-sonnet-4-6 — Anthropic has no gpt-5-nano equivalent
+ *  at the cheap tier that respects all-optional schemas.
+ */
 function pickAutofillModel(
   providerId: string,
   workspaceDefault: string,
@@ -470,10 +478,7 @@ function pickAutofillModel(
     return 'claude-sonnet-4-6';
   }
   if (providerId === 'openai') {
-    if (workspaceDefault === 'gpt-4o' || workspaceDefault.startsWith('gpt-5')) {
-      return undefined;
-    }
-    return 'gpt-4o';
+    return 'gpt-5-nano';
   }
   // Unknown provider — let the workspace default ride.
   return undefined;
