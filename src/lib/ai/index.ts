@@ -208,12 +208,22 @@ export class OpenAIAIProvider implements IAIProvider {
     if (input.system) messages.push({ role: 'system', content: input.system });
     messages.push({ role: 'user', content: input.prompt });
 
-    const body: Record<string, unknown> = {
-      model: options.model ?? this.model,
-      messages,
-      temperature: options.temperature ?? 0.4,
-    };
-    if (options.maxTokens) body.max_tokens = options.maxTokens;
+    const model = options.model ?? this.model;
+    const body: Record<string, unknown> = { model, messages };
+    // gpt-5 and o-series reasoning models renamed `max_tokens` →
+    // `max_completion_tokens` and most don't accept a custom temperature
+    // (it's fixed at 1.0). Only set those fields with the right names
+    // and within each model family's accepted range.
+    const isReasoning = /^o[13]/.test(model);
+    const isGpt5 = model.startsWith('gpt-5');
+    if (isReasoning || isGpt5) {
+      if (options.maxTokens) body.max_completion_tokens = options.maxTokens;
+      // o-series rejects custom temperature; gpt-5 accepts it.
+      if (!isReasoning) body.temperature = options.temperature ?? 0.4;
+    } else {
+      body.temperature = options.temperature ?? 0.4;
+      if (options.maxTokens) body.max_tokens = options.maxTokens;
+    }
     if (asJson) body.response_format = { type: 'json_object' };
 
     const controller = new AbortController();
