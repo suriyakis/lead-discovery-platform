@@ -245,38 +245,9 @@ export default async function EditProductPage({
             profile={profile}
             formError={sp.error ?? null}
             submitLabel="Save changes"
+            suggesterAction={suggestAngle}
           />
         </form>
-
-        <section>
-          <h2>AI angle helpers</h2>
-          <p className="muted">
-            One click writes a stage-specific angle straight to the
-            corresponding field above and re-renders the form. Edit the
-            suggestion before clicking <em>Save changes</em>. GPT-5 needs
-            an OpenAI key, Opus 4.7 needs an Anthropic key.
-          </p>
-          <div className="action-row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
-            {(['discovery', 'engagement', 'pitch'] as const).map((stage) => (
-              <form
-                key={stage}
-                action={suggestAngle}
-                style={{ display: 'inline-flex', gap: '0.25rem', alignItems: 'center' }}
-                id={`angle-${stage}`}
-              >
-                <input type="hidden" name="stage" value={stage} />
-                <span className="badge">{stage}</span>
-                <select name="vendor" defaultValue="anthropic">
-                  <option value="anthropic">Opus 4.7</option>
-                  <option value="openai">GPT-5</option>
-                </select>
-                <button type="submit" className="ghost-btn">
-                  Suggest
-                </button>
-              </form>
-            ))}
-          </div>
-        </section>
 
         {canAdminWorkspace(ctx) && deps ? (
           <section>

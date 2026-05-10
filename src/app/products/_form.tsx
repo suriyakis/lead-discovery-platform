@@ -8,14 +8,23 @@ import {
   detectLanguageFromText,
   getLanguageName,
 } from '@/lib/i18n/language';
+import { SuggestAngleButton } from './_suggest-button';
 
 type Props = {
   profile?: ProductProfile;
   formError?: string | null;
   submitLabel: string;
+  /** When provided (only on the edit page — needs a productId), the
+   *  three angle fields render an inline "Suggest with AI" button. */
+  suggesterAction?: (formData: FormData) => Promise<void>;
 };
 
-export function ProductFields({ profile, formError, submitLabel }: Readonly<Props>) {
+export function ProductFields({
+  profile,
+  formError,
+  submitLabel,
+  suggesterAction,
+}: Readonly<Props>) {
   const v = profile;
   return (
     <div className="form-grid">
@@ -169,7 +178,12 @@ export function ProductFields({ profile, formError, submitLabel }: Readonly<Prop
         </label>
 
         <label>
-          <span>Discovery angle (first-touch email)</span>
+          <span>
+            Discovery angle (first-touch email)
+            {suggesterAction ? (
+              <SuggestAngleButton stage="discovery" action={suggesterAction} />
+            ) : null}
+          </span>
           <textarea
             name="discoveryAngle"
             rows={3}
@@ -180,7 +194,12 @@ export function ProductFields({ profile, formError, submitLabel }: Readonly<Prop
         </label>
 
         <label>
-          <span>Engagement angle (in-thread reply)</span>
+          <span>
+            Engagement angle (in-thread reply)
+            {suggesterAction ? (
+              <SuggestAngleButton stage="engagement" action={suggesterAction} />
+            ) : null}
+          </span>
           <textarea
             name="engagementAngle"
             rows={3}
@@ -191,7 +210,12 @@ export function ProductFields({ profile, formError, submitLabel }: Readonly<Prop
         </label>
 
         <label>
-          <span>Pitch angle (when recipient asks for product detail)</span>
+          <span>
+            Pitch angle (when recipient asks for product detail)
+            {suggesterAction ? (
+              <SuggestAngleButton stage="pitch" action={suggesterAction} />
+            ) : null}
+          </span>
           <textarea
             name="pitchAngle"
             rows={3}
