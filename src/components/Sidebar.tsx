@@ -49,6 +49,9 @@ interface NavItem {
   icon: LucideIcon;
   /** Match-prefix list. The first href is also the click target. */
   match?: ReadonlyArray<string>;
+  /** Pull a count from the navCounts payload by key. Renders a small
+   *  badge next to the label when the count is > 0. */
+  countKey?: 'draftsPending' | 'reviewPending' | 'leadsOpen';
 }
 
 interface NavSection {
@@ -67,7 +70,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     defaultOpen: true,
     items: [
       { href: '/connectors', label: 'Connectors', icon: Network },
-      { href: '/review', label: 'Review queue', icon: ListChecks },
+      { href: '/review', label: 'Review queue', icon: ListChecks, countKey: 'reviewPending' },
       { href: '/leads', label: 'Leads', icon: Sparkles },
       { href: '/knowledge', label: 'Knowledge', icon: BookOpen },
       { href: '/documents', label: 'Documents', icon: FileText },
@@ -78,7 +81,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     title: 'Pipeline',
     defaultOpen: true,
     items: [
-      { href: '/pipeline', label: 'Pipeline', icon: KanbanSquare },
+      { href: '/pipeline', label: 'Pipeline', icon: KanbanSquare, countKey: 'leadsOpen' },
       { href: '/contacts', label: 'Contacts', icon: Users2 },
     ],
   },
@@ -86,7 +89,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     title: 'Outreach',
     defaultOpen: true,
     items: [
-      { href: '/drafts', label: 'Drafts', icon: PencilLine },
+      { href: '/drafts', label: 'Drafts', icon: PencilLine, countKey: 'draftsPending' },
       { href: '/mailbox', label: 'Mailbox', icon: Inbox, match: ['/mailbox'] },
       { href: '/mailbox/queue', label: 'Send queue', icon: Send },
       { href: '/mailbox/signatures', label: 'Signatures', icon: AtSign },
@@ -134,9 +137,19 @@ const PINNED: ReadonlyArray<NavItem> = [
 export interface SidebarProps {
   /** Pass true to render the Platform (super-admin) section. */
   isSuperAdmin?: boolean;
+  /** Counts injected by AppShell. Used to render small badges next to
+   *  nav items whose countKey matches. Zeros render no badge. */
+  navCounts?: {
+    draftsPending: number;
+    reviewPending: number;
+    leadsOpen: number;
+  };
 }
 
-export function Sidebar({ isSuperAdmin = false }: Readonly<SidebarProps>) {
+export function Sidebar({
+  isSuperAdmin = false,
+  navCounts,
+}: Readonly<SidebarProps>) {
   const pathname = usePathname() ?? '';
   const visibleSections = SECTIONS.filter(
     (s) => !s.superAdminOnly || isSuperAdmin,
@@ -150,7 +163,7 @@ export function Sidebar({ isSuperAdmin = false }: Readonly<SidebarProps>) {
     <aside className="sidebar">
       <SidebarBrand />
 
-      <SidebarList items={PINNED} activeHref={activeHref} />
+      <SidebarList items={PINNED} activeHref={activeHref} navCounts={navCounts} />
 
       {visibleSections.map((s) => (
         <SidebarSection
@@ -158,6 +171,7 @@ export function Sidebar({ isSuperAdmin = false }: Readonly<SidebarProps>) {
           section={s}
           activeHref={activeHref}
           hasActiveChild={s.items.some((it) => it.href === activeHref)}
+          navCounts={navCounts}
         />
       ))}
     </aside>
@@ -179,10 +193,12 @@ function SidebarSection({
   section,
   activeHref,
   hasActiveChild,
+  navCounts,
 }: Readonly<{
   section: NavSection;
   activeHref: string | null;
   hasActiveChild: boolean;
+  navCounts?: SidebarProps['navCounts'];
 }>) {
   return (
     <details
@@ -192,7 +208,7 @@ function SidebarSection({
       open={section.defaultOpen || hasActiveChild}
     >
       <summary>{section.title}</summary>
-      <SidebarList items={section.items} activeHref={activeHref} />
+      <SidebarList items={section.items} activeHref={activeHref} navCounts={navCounts} />
     </details>
   );
 }
@@ -200,11 +216,18 @@ function SidebarSection({
 function SidebarList({
   items,
   activeHref,
-}: Readonly<{ items: ReadonlyArray<NavItem>; activeHref: string | null }>) {
+  navCounts,
+}: Readonly<{
+  items: ReadonlyArray<NavItem>;
+  activeHref: string | null;
+  navCounts?: SidebarProps['navCounts'];
+}>) {
   return (
     <ul className="sidebar-list">
       {items.map((it) => {
         const Icon = it.icon;
+        const count =
+          it.countKey && navCounts ? navCounts[it.countKey] : 0;
         return (
           <li key={it.href}>
             <Link
@@ -215,6 +238,25 @@ function SidebarList({
             >
               <Icon className="sidebar-link-icon" aria-hidden="true" />
               <span>{it.label}</span>
+              {count > 0 ? (
+                <span
+                  className="sidebar-count-badge"
+                  style={{
+                    marginLeft: 'auto',
+                    padding: '0.05rem 0.4rem',
+                    borderRadius: '0.6rem',
+                    fontSize: '0.75rem',
+                    background: 'oklch(0.85 0.16 75)',
+                    color: 'oklch(0.2 0 0)',
+                    fontWeight: 600,
+                    minWidth: '1.4rem',
+                    textAlign: 'center',
+                  }}
+                  aria-label={`${count} pending`}
+                >
+                  {count > 99 ? '99+' : count}
+                </span>
+              ) : null}
             </Link>
           </li>
         );

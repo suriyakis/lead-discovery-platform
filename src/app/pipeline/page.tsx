@@ -214,7 +214,15 @@ export default async function PipelinePage({
                         <span className={badgeFor(lead.state)}>
                           {lead.state.replace(/_/g, ' ')}
                         </span>
-                        <span className="muted">→ {product.name}</span>
+                        <span className={stageBadge(lead.currentStage)}>
+                          {lead.currentStage ?? 'discovery'}
+                        </span>
+                        <span className="muted">
+                          →{' '}
+                          <Link href={`/products/${product.id}`}>
+                            {product.name}
+                          </Link>
+                        </span>
                       </div>
                       <div className="lead-meta">
                         {lead.contactEmail ? <span>{lead.contactEmail}</span> : null}
@@ -235,6 +243,12 @@ export default async function PipelinePage({
         )}
       </AppShell>
   );
+}
+
+function stageBadge(stage: string | null | undefined): string {
+  if (stage === 'pitch') return 'badge badge-good';
+  if (stage === 'closing') return 'badge badge-bad';
+  return 'badge';
 }
 
 function badgeFor(state: PipelineState): string {

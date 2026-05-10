@@ -360,6 +360,8 @@ export default async function PipelineLeadDetail({
           <span className="muted">
             for <Link href={`/products/${product.id}`}>{product.name}</Link> ·
             source <Link href={`/review/${reviewItem.id}`}>review item {reviewItem.id.toString()}</Link>
+            {' · '}
+            <Link href={`/drafts?product=${product.id}`}>drafts for this product</Link>
           </span>
         </p>
         {lead.currentContactEmail ? (

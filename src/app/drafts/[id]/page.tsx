@@ -207,9 +207,26 @@ export default async function DraftDetail({
             {draft.status.replace('_', ' ')}
           </span>{' '}
           <span className="badge">{draft.stage}</span>{' '}
+          {draft.model ? (
+            <span className="badge" title={draft.model}>
+              {draft.model.toLowerCase().includes('opus')
+                ? 'opus-4.7'
+                : draft.model.toLowerCase().includes('sonnet')
+                  ? 'sonnet'
+                  : draft.model.toLowerCase().includes('haiku')
+                    ? 'haiku'
+                    : draft.model.startsWith('gpt-5-nano')
+                      ? 'gpt-5-nano'
+                      : draft.model.startsWith('gpt-5')
+                        ? 'gpt-5'
+                        : draft.model}
+            </span>
+          ) : null}{' '}
           <span className="muted">
             for <Link href={`/products/${product.id}`}>{product.name}</Link> ·
-            lead <Link href={`/review/${reviewItem.id}`}>{recordTitle}</Link>
+            review <Link href={`/review/${reviewItem.id}`}>{recordTitle}</Link>
+            {' · '}
+            <Link href={`/pipeline?reviewItem=${reviewItem.id}`}>see in pipeline</Link>
           </span>
         </p>
 

@@ -143,6 +143,11 @@ export default async function DraftsPage({
                     </p>
                     <div className="lead-meta">
                       <span>via {draft.method}</span>
+                      {draft.model ? (
+                        <span title={`Model: ${draft.model}`}>
+                          {shortModel(draft.model)}
+                        </span>
+                      ) : null}
                       <span>conf {draft.confidence}</span>
                       <span>{draft.channel}/{draft.language}</span>
                       {draft.forbiddenStripped.length > 0 ? (
@@ -177,6 +182,20 @@ function statusBadgeClass(status: OutreachDraftStatus): string {
     default:
       return 'badge';
   }
+}
+
+function shortModel(model: string): string {
+  // Display compact model names: "claude-opus-4-7..." → "opus-4.7",
+  // "gpt-5-nano" → "gpt-5-nano", "gpt-4o-mini" → "gpt-4o-mini".
+  const m = model.toLowerCase();
+  if (m.includes('opus')) return 'opus-4.7';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('haiku')) return 'haiku';
+  if (m.startsWith('gpt-5-nano')) return 'gpt-5-nano';
+  if (m.startsWith('gpt-5')) return 'gpt-5';
+  if (m.startsWith('gpt-4o-mini')) return 'gpt-4o-mini';
+  if (m.startsWith('gpt-4o')) return 'gpt-4o';
+  return model.length > 16 ? `${model.slice(0, 15)}…` : model;
 }
 
 function stageBadgeClass(stage: string): string {
