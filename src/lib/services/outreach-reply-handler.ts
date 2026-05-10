@@ -216,7 +216,11 @@ export async function handleClassifiedReply(
     //    target email already has an in-flight thread for this lead,
     //    we still write the draft (operator can decide) but skip
     //    creating a duplicate thread_state row.
-    let forkedStateId: bigint | null = null;
+    // forkedStateId is intentionally const-null for now: the new
+    // discovery thread doesn't exist until the queued send delivers,
+    // at which point a post-send hook (Phase D Mark 2) will create
+    // the thread_state row and link it back here.
+    const forkedStateId: bigint | null = null;
     for (const targetEmail of action.targetEmails) {
       const referrerName = msg.fromName ?? null;
       // The "record" for a referred discovery is synthesized — we don't
@@ -252,11 +256,11 @@ export async function handleClassifiedReply(
       });
       draftIds.push(introId);
 
-      // The new discovery uses a fresh thread once it sends — we don't
-      // have that thread id yet. Phase D Mark 2 (post-send hook) will
-      // create the thread_state row when the queued send delivers.
-      // For now, we link the original thread_state to the new email.
-      if (forkedStateId === null) {
+      // Link the original thread_state to the new email — done once
+      // per fork, against the FIRST target email. Other extracted
+      // emails are still drafted but the thread_state pointer holds
+      // the primary handoff target.
+      if (targetEmail === action.targetEmails[0]) {
         await markThreadHandoff(ctx, msg.threadId, targetEmail);
       }
     }
