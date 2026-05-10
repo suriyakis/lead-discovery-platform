@@ -204,11 +204,13 @@ function buildRulesBody(
     parts.push('');
   }
 
-  // Outreach instructions if provided — render as a follow-up sentence.
-  if (product.outreachInstructions) {
-    parts.push(product.outreachInstructions.trim());
-    parts.push('');
-  }
+  // Don't interpolate product.outreachInstructions here — that field is
+  // meta-guidance addressed to an AI ("Open with a project-specific
+  // hook…", "Lead with the technical differentiator…"), NOT email body
+  // text. Pasting it verbatim made the operator's first cold email
+  // read like a brief to a copywriter. The AI mode (composeAiDraft)
+  // uses these instructions correctly via the system prompt; the rules
+  // mode simply has no way to follow them.
 
   // Lesson-derived nudges (outreach_style + product_positioning).
   const nudges = lessons

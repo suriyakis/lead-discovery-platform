@@ -99,7 +99,12 @@ export async function generateOutreachDraft(
   // Detector cascade: input override → product description / instructions →
   // explicit product.language → 'en'. See src/lib/i18n/language.ts.
   const language = input.language?.trim() || resolveProfileLanguage(product);
-  const method: OutreachDraftMethod = input.method ?? 'rules';
+  // Default to 'hybrid': use AI when a real provider is configured,
+  // fall back to deterministic rules when only the mock provider is
+  // available. The earlier 'rules' default was an artifact of Phase 8
+  // (pre-BYOK) and produced drafts that pasted outreachInstructions
+  // (meta-guidance for an AI) directly into the email body.
+  const method: OutreachDraftMethod = input.method ?? 'hybrid';
 
   // Phase 46: optional research enrichment. When the product has the
   // flag on AND we're generating an AI/hybrid draft AND there's a
