@@ -28,6 +28,15 @@ import { classifySourceRecord } from '@/lib/services/qualification';
 import { seedReviewItem } from '@/lib/services/review';
 import { getConnector } from './registry';
 
+// Side-effect imports: each connector implementation calls
+// `registerConnector(new ...)` at module load. Without these imports
+// the registry is empty at runtime and `getConnector(templateType)`
+// throws — silently inside the in-memory job microtask, leaving the
+// connector_runs row stuck on 'pending' with no log line. Importing
+// here makes the connectors load whenever the runner does.
+import './mock';
+import './internet-search';
+
 export interface RunResult {
   status: 'succeeded' | 'failed' | 'cancelled';
   recordCount: number;
@@ -57,7 +66,27 @@ export async function runConnectorRun(
   const connector = connectorRows[0];
   if (!connector) throw new Error(`connectors row ${run.connectorId} not found`);
 
-  const impl = getConnector(connector.templateType);
+  // Resolve the connector impl. A miss here used to throw before the
+  // status flip and leave the row stuck on 'pending' with no log line.
+  // Surface it as a proper failure so the operator sees it.
+  let impl;
+  try {
+    impl = getConnector(connector.templateType);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await db
+      .update(connectorRuns)
+      .set({
+        status: 'failed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        errorPayload: { message },
+        updatedAt: new Date(),
+      })
+      .where(eq(connectorRuns.id, runId));
+    await insertLog(runId, 'error', message);
+    return { status: 'failed', recordCount: 0, error: { message } };
+  }
 
   // Mark running.
   await db
