@@ -478,6 +478,51 @@ export function _setAIProviderForTests(provider: IAIProvider | null): void {
   cached = provider;
 }
 
+/**
+ * Construct a SPECIFIC AI provider regardless of the workspace's
+ * selected default. Used by features that need cross-vendor model
+ * picking (e.g. staged outreach: cheap stages on OpenAI gpt-5-nano,
+ * important stages on Anthropic Opus). Resolves the API key via the
+ * usual BYOK → env cascade for the requested vendor.
+ *
+ * Returns null when no key is configured for that vendor anywhere —
+ * caller decides whether to fall back to the workspace default or
+ * surface an error.
+ */
+export async function getAIProviderById(
+  ctx: { workspaceId: bigint },
+  providerId: 'openai' | 'anthropic',
+): Promise<IAIProvider | null> {
+  // Test injection wins, same as getAIProviderForCtx, so unit tests
+  // that stub the provider don't need to know which vendor a stage
+  // expects.
+  if (cached) return cached;
+  const { resolveProviderKey } = await import('@/lib/services/secrets');
+  if (providerId === 'openai') {
+    const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
+    if (!resolved) return null;
+    return new OpenAIAIProvider({
+      apiKey: resolved.key,
+      model: process.env.AI_MODEL,
+      baseUrl: process.env.OPENAI_BASE_URL,
+    });
+  }
+  if (providerId === 'anthropic') {
+    const resolved = await resolveProviderKey(
+      ctx,
+      'anthropic.apiKey',
+      'ANTHROPIC_API_KEY',
+    );
+    if (!resolved) return null;
+    return new AnthropicAIProvider({
+      apiKey: resolved.key,
+      model: process.env.AI_MODEL,
+      baseUrl: process.env.ANTHROPIC_BASE_URL,
+    });
+  }
+  return null;
+}
+
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }

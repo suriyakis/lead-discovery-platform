@@ -125,11 +125,16 @@ export async function composeDiscoveryDraft(
   product: ProductProfile,
   ctx: DraftContext,
   ai: IAIProvider,
+  modelOverride?: string,
 ): Promise<DraftVerdict> {
   const prompt = buildDiscoveryPrompt(record, product, ctx);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
-    { mockSeed: prompt.mockSeed, temperature: 0.6 },
+    {
+      mockSeed: prompt.mockSeed,
+      temperature: 0.6,
+      ...(modelOverride ? { model: modelOverride } : {}),
+    },
   );
 
   const subject = buildDiscoverySubject(product, (record.title ?? '').trim());
@@ -289,11 +294,16 @@ export async function composeEngagementDraft(
   product: ProductProfile,
   ctx: DraftContext,
   ai: IAIProvider,
+  modelOverride?: string,
 ): Promise<DraftVerdict> {
   const prompt = buildEngagementPrompt(thread, product, ctx);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
-    { mockSeed: prompt.mockSeed, temperature: 0.6 },
+    {
+      mockSeed: prompt.mockSeed,
+      temperature: 0.6,
+      ...(modelOverride ? { model: modelOverride } : {}),
+    },
   );
   const subject = lastInboundSubject(thread, product) ?? `Re: ${product.name}`;
   const body = result.text.trim();
@@ -322,11 +332,16 @@ export async function composePitchDraft(
   ctx: DraftContext,
   ai: IAIProvider,
   researchContext: string | null = null,
+  modelOverride?: string,
 ): Promise<DraftVerdict> {
   const prompt = buildPitchPrompt(thread, product, ctx, researchContext);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
-    { mockSeed: prompt.mockSeed, temperature: 0.5 },
+    {
+      mockSeed: prompt.mockSeed,
+      temperature: 0.5,
+      ...(modelOverride ? { model: modelOverride } : {}),
+    },
   );
   const subject = lastInboundSubject(thread, product) ?? `${product.name}: details`;
   const body = result.text.trim();
@@ -356,11 +371,16 @@ export async function composeClosingDraft(
   ai: IAIProvider,
   /** Only set for `handed_off` — the email we're now reaching out to. */
   referralToEmail?: string | null,
+  modelOverride?: string,
 ): Promise<DraftVerdict> {
   const prompt = buildClosingPrompt(thread, reason, product, ctx, referralToEmail ?? null);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
-    { mockSeed: prompt.mockSeed, temperature: 0.4 },
+    {
+      mockSeed: prompt.mockSeed,
+      temperature: 0.4,
+      ...(modelOverride ? { model: modelOverride } : {}),
+    },
   );
   const subject = lastInboundSubject(thread, product) ?? `Re: ${product.name}`;
   const body = result.text.trim();
@@ -388,11 +408,16 @@ export async function composeReferralIntroDraft(
   referral: { fromName?: string | null; fromEmail: string; reason?: string | null },
   ctx: DraftContext,
   ai: IAIProvider,
+  modelOverride?: string,
 ): Promise<DraftVerdict> {
   const prompt = buildReferralIntroPrompt(record, product, referral, ctx);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
-    { mockSeed: prompt.mockSeed, temperature: 0.5 },
+    {
+      mockSeed: prompt.mockSeed,
+      temperature: 0.5,
+      ...(modelOverride ? { model: modelOverride } : {}),
+    },
   );
   const referrerName =
     referral.fromName ?? referral.fromEmail.split('@')[0] ?? 'a colleague';

@@ -631,11 +631,13 @@ async function composeVerdict(
   // the engagement path below — discovery via the mock would just
   // produce hashed nonsense.
   if (stage === 'discovery') {
-    const ai = await getAIProviderForCtx(workspaceCtx);
-    if (ai.id === 'mock') {
+    // Per-stage tier: discovery runs on cheap-tier (gpt-5-nano).
+    const { getStageProvider } = await import('./outreach-stage-models');
+    const { provider, model } = await getStageProvider(workspaceCtx, 'discovery');
+    if (provider.id === 'mock') {
       return composeRulesDraft(draftable, product, lessons, cfg);
     }
-    return composeDiscoveryDraft(draftable, product, cfg, ai);
+    return composeDiscoveryDraft(draftable, product, cfg, provider, model);
   }
 
   // engagement / pitch / closing route through the existing AI/rules

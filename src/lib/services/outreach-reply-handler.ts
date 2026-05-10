@@ -25,7 +25,7 @@ import { contactAssociations } from '@/lib/db/schema/contacts';
 import { sourceRecords } from '@/lib/db/schema/connectors';
 import { reviewItems } from '@/lib/db/schema/review';
 import { productProfiles } from '@/lib/db/schema/products';
-import { getAIProviderForCtx } from '@/lib/ai';
+import { getStageProvider } from './outreach-stage-models';
 import { canWrite, type WorkspaceContext } from './context';
 import { recordAuditEvent } from './audit';
 import {
@@ -187,17 +187,18 @@ export async function handleClassifiedReply(
     const product = await productForLead(ctx, lead);
     const language = resolveProfileLanguage(product);
     const channel = 'email';
-    const ai = await getAIProviderForCtx(ctx);
     const thread = await loadThreadHistory(ctx, msg.threadId);
 
-    // 1. Closing ack to the original sender — thank them for the referral.
+    // Closing runs on cheap-tier (terminal ack).
+    const closingTier = await getStageProvider(ctx, 'closing');
     const closingVerdict = await composeClosingDraft(
       thread,
       'handed_off',
       product,
       { channel, language },
-      ai,
+      closingTier.provider,
       action.targetEmails[0] ?? null,
+      closingTier.model,
     );
     const closingId = await persistDraft(ctx, {
       lead,
@@ -227,6 +228,9 @@ export async function handleClassifiedReply(
       // have a fresh sourceRecord for the new contact yet. We pass the
       // lead's source record context so the prompt can still personalize.
       const synthRecord = await sourceRecordContext(ctx, lead);
+      // Referral intro is a fresh first-touch email — runs on the
+      // cheap discovery tier.
+      const introTier = await getStageProvider(ctx, 'referral_intro');
       const introVerdict = await composeReferralIntroDraft(
         synthRecord,
         product,
@@ -236,7 +240,8 @@ export async function handleClassifiedReply(
           reason: classification.rationale,
         },
         { channel, language },
-        ai,
+        introTier.provider,
+        introTier.model,
       );
       const introId = await persistDraft(ctx, {
         lead,
@@ -273,24 +278,42 @@ export async function handleClassifiedReply(
     const product = await productForLead(ctx, lead);
     const language = resolveProfileLanguage(product);
     const channel = 'email';
-    const ai = await getAIProviderForCtx(ctx);
     const thread = await loadThreadHistory(ctx, msg.threadId);
 
+    // Engagement and pitch both run on Opus-tier — these are the
+    // moments where the conversation either survives or dies, so the
+    // cost premium is justified. Closing falls through here too,
+    // intentionally on cheap-tier; pitch always overrides to Opus.
     let verdict: DraftVerdict;
     if (action.stage === 'pitch') {
+      const tier = await getStageProvider(ctx, 'pitch');
       verdict = await composePitchDraft(
         thread,
         product,
         { channel, language },
-        ai,
+        tier.provider,
         null, // research enrichment can be wired in later
+        tier.model,
+      );
+    } else if (action.stage === 'closing') {
+      const tier = await getStageProvider(ctx, 'closing');
+      verdict = await composeClosingDraft(
+        thread,
+        'qualified',
+        product,
+        { channel, language },
+        tier.provider,
+        null,
+        tier.model,
       );
     } else {
+      const tier = await getStageProvider(ctx, 'engagement');
       verdict = await composeEngagementDraft(
         thread,
         product,
         { channel, language },
-        ai,
+        tier.provider,
+        tier.model,
       );
     }
 
