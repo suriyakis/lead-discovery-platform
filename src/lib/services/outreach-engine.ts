@@ -243,6 +243,424 @@ function buildDiscoveryPrompt(
   return { system, user, mockSeed };
 }
 
+// ─── Phase C composers — in-thread stages ────────────────────────────
+//
+// engagement / pitch / closing / referral are all in-thread responses
+// to an existing conversation. They share a common shape (read the
+// thread, decide what to write next) but differ in tone + length +
+// what's allowed.
+
+export interface ThreadMessage {
+  /** 'inbound' = from the recipient, 'outbound' = our prior send. */
+  direction: 'inbound' | 'outbound';
+  /** Plain text body — html is converted upstream. */
+  body: string;
+  /** ISO timestamp for thread ordering. */
+  at: string;
+  /** Display name for the sender (best-effort). */
+  fromName?: string | null;
+  fromAddress?: string | null;
+}
+
+function renderThreadHistory(thread: ReadonlyArray<ThreadMessage>): string {
+  // Newest 6 messages, oldest first. Each block prefixed with direction
+  // + sender so the model knows who said what.
+  const last = thread.slice(-6);
+  return last
+    .map((m) => {
+      const sender =
+        m.direction === 'outbound'
+          ? `[us]`
+          : `[${m.fromName ?? m.fromAddress ?? 'them'}]`;
+      return `${sender}\n${m.body.trim()}`;
+    })
+    .join('\n\n---\n\n');
+}
+
+/**
+ * Phase C — engagement reply. The recipient sent a question, gave a
+ * non-committal response, or asked for a qualifying detail. Goal:
+ * answer concisely and keep the conversation moving toward identifying
+ * fit, WITHOUT pitching the product. Pitch only happens when the
+ * recipient explicitly asks for product info (composePitchDraft).
+ */
+export async function composeEngagementDraft(
+  thread: ReadonlyArray<ThreadMessage>,
+  product: ProductProfile,
+  ctx: DraftContext,
+  ai: IAIProvider,
+): Promise<DraftVerdict> {
+  const prompt = buildEngagementPrompt(thread, product, ctx);
+  const result = await ai.generateText(
+    { system: prompt.system, prompt: prompt.user },
+    { mockSeed: prompt.mockSeed, temperature: 0.6 },
+  );
+  const subject = lastInboundSubject(thread, product) ?? `Re: ${product.name}`;
+  const body = result.text.trim();
+  const stripped = stripForbidden(body, product.forbiddenPhrases);
+  return {
+    subject,
+    body: stripped.text,
+    confidence: clamp(70 - stripped.removed.length * 10, 30, 95),
+    method: 'ai',
+    model: result.model,
+    evidence: makeEvidence(prompt.system, prompt.user, product, thread),
+    forbiddenStripped: stripped.removed,
+    matchedLessonIds: [],
+  };
+}
+
+/**
+ * Phase C — pitch draft. The recipient explicitly asked for product
+ * detail (matched ReplyClass `doc_request` / strong `interest`). Now
+ * the full description, differentiators, and one concrete next step
+ * are appropriate. Length budget ~180 words.
+ */
+export async function composePitchDraft(
+  thread: ReadonlyArray<ThreadMessage>,
+  product: ProductProfile,
+  ctx: DraftContext,
+  ai: IAIProvider,
+  researchContext: string | null = null,
+): Promise<DraftVerdict> {
+  const prompt = buildPitchPrompt(thread, product, ctx, researchContext);
+  const result = await ai.generateText(
+    { system: prompt.system, prompt: prompt.user },
+    { mockSeed: prompt.mockSeed, temperature: 0.5 },
+  );
+  const subject = lastInboundSubject(thread, product) ?? `${product.name}: details`;
+  const body = result.text.trim();
+  const stripped = stripForbidden(body, product.forbiddenPhrases);
+  return {
+    subject,
+    body: stripped.text,
+    confidence: clamp(70 - stripped.removed.length * 10, 30, 95),
+    method: 'ai',
+    model: result.model,
+    evidence: makeEvidence(prompt.system, prompt.user, product, thread),
+    forbiddenStripped: stripped.removed,
+    matchedLessonIds: [],
+  };
+}
+
+/**
+ * Phase C — closing draft. Terminal acknowledgement. Used for declines
+ * (thanks for the time, polite close) and for the original-thread
+ * thank-you when a referral fork happens.
+ */
+export async function composeClosingDraft(
+  thread: ReadonlyArray<ThreadMessage>,
+  reason: 'decline' | 'handed_off' | 'qualified',
+  product: ProductProfile,
+  ctx: DraftContext,
+  ai: IAIProvider,
+  /** Only set for `handed_off` — the email we're now reaching out to. */
+  referralToEmail?: string | null,
+): Promise<DraftVerdict> {
+  const prompt = buildClosingPrompt(thread, reason, product, ctx, referralToEmail ?? null);
+  const result = await ai.generateText(
+    { system: prompt.system, prompt: prompt.user },
+    { mockSeed: prompt.mockSeed, temperature: 0.4 },
+  );
+  const subject = lastInboundSubject(thread, product) ?? `Re: ${product.name}`;
+  const body = result.text.trim();
+  const stripped = stripForbidden(body, product.forbiddenPhrases);
+  return {
+    subject,
+    body: stripped.text,
+    confidence: clamp(75 - stripped.removed.length * 10, 30, 95),
+    method: 'ai',
+    model: result.model,
+    evidence: makeEvidence(prompt.system, prompt.user, product, thread),
+    forbiddenStripped: stripped.removed,
+    matchedLessonIds: [],
+  };
+}
+
+/**
+ * Phase D — referral intro. First email to a freshly-referred contact.
+ * Same shape as composeDiscoveryDraft but the prompt mentions WHO
+ * referred us and WHY they thought this person was the right contact.
+ */
+export async function composeReferralIntroDraft(
+  record: DraftableRecord,
+  product: ProductProfile,
+  referral: { fromName?: string | null; fromEmail: string; reason?: string | null },
+  ctx: DraftContext,
+  ai: IAIProvider,
+): Promise<DraftVerdict> {
+  const prompt = buildReferralIntroPrompt(record, product, referral, ctx);
+  const result = await ai.generateText(
+    { system: prompt.system, prompt: prompt.user },
+    { mockSeed: prompt.mockSeed, temperature: 0.5 },
+  );
+  const referrerName =
+    referral.fromName ?? referral.fromEmail.split('@')[0] ?? 'a colleague';
+  const subject = `Intro from ${referrerName} — ${productCategoryLabel(product)}`;
+  const body = result.text.trim();
+  const stripped = stripForbidden(body, product.forbiddenPhrases);
+  return {
+    subject,
+    body: stripped.text,
+    confidence: clamp(70 - stripped.removed.length * 10, 30, 95),
+    method: 'ai',
+    model: result.model,
+    evidence: makeEvidence(prompt.system, prompt.user, product, []),
+    forbiddenStripped: stripped.removed,
+    matchedLessonIds: [],
+  };
+}
+
+// ─── Engagement / pitch / closing / referral prompt builders ─────────
+
+function makeEvidence(
+  system: string,
+  user: string,
+  product: ProductProfile,
+  thread: ReadonlyArray<ThreadMessage>,
+): DraftEvidence {
+  // Last inbound is the most useful for evidence (shows what we replied to)
+  const lastInbound = [...thread].reverse().find((m) => m.direction === 'inbound');
+  return {
+    promptSystem: system,
+    promptUser: user,
+    matchedLessonIds: [],
+    fields: {
+      productName: product.name,
+      productLanguage: product.language,
+      recordDomain: lastInbound?.fromAddress?.split('@')[1] ?? null,
+      recordUrl: null,
+    },
+  };
+}
+
+function lastInboundSubject(
+  thread: ReadonlyArray<ThreadMessage>,
+  product: ProductProfile,
+): string | null {
+  void thread;
+  // Subject is owned by the mail layer (Re: foo), not the engine. The
+  // service layer overrides this with the actual thread subject before
+  // persisting. We still return a useful default so unit tests assert
+  // something meaningful.
+  return `Re: ${product.name}`;
+}
+
+interface InThreadPrompt {
+  system: string;
+  user: string;
+  mockSeed: string;
+}
+
+function buildEngagementPrompt(
+  thread: ReadonlyArray<ThreadMessage>,
+  product: ProductProfile,
+  ctx: DraftContext,
+): InThreadPrompt {
+  const effectiveLang =
+    (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
+  const langName = getLanguageName(effectiveLang);
+  const forbiddenLines =
+    product.forbiddenPhrases.length > 0
+      ? `Forbidden phrases (NEVER include): ${product.forbiddenPhrases.join(', ')}`
+      : '';
+
+  const system = [
+    `You are a B2B outreach assistant writing an in-thread reply in ${langName} (${effectiveLang}).`,
+    `Goal: respond naturally to the most recent inbound message. Move the conversation toward identifying whether this person (or someone they can name) is the right contact for the product category.`,
+    `Hard rules:`,
+    `- DO NOT pitch the product. Do not list features or claim benefits.`,
+    `- ≤80 words. Match the recipient's tone (formal/casual).`,
+    `- If the recipient asked a specific question, answer it directly first, then optionally ONE follow-up.`,
+    `- If non-committal, ask ONE specific qualifying question (not "are you interested?" — ask about a real signal: project type, timeline, current vendor).`,
+    `- Sign off with "Best regards," (no name).`,
+    forbiddenLines,
+    'Output only the message body. No subject line.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const user = [
+    `Conversation so far (oldest → newest):`,
+    renderThreadHistory(thread),
+    '',
+    `Product category (for routing context only — do NOT pitch):`,
+    product.targetSectors.length > 0
+      ? `- Sectors: ${product.targetSectors.join(', ')}`
+      : '',
+    product.targetProjectTypes.length > 0
+      ? `- Project types: ${product.targetProjectTypes.join(', ')}`
+      : '',
+    '',
+    `Write the in-thread reply now.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const mockSeed = `engagement:${product.id}:${thread.length}`;
+  return { system, user, mockSeed };
+}
+
+function buildPitchPrompt(
+  thread: ReadonlyArray<ThreadMessage>,
+  product: ProductProfile,
+  ctx: DraftContext,
+  researchContext: string | null,
+): InThreadPrompt {
+  const effectiveLang =
+    (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
+  const langName = getLanguageName(effectiveLang);
+  const forbiddenLines =
+    product.forbiddenPhrases.length > 0
+      ? `Forbidden phrases (NEVER include): ${product.forbiddenPhrases.join(', ')}`
+      : '';
+
+  const system = [
+    `You are a B2B outreach assistant writing a product-detail reply in ${langName} (${effectiveLang}).`,
+    `The recipient explicitly asked for product information. Now you may pitch — concisely.`,
+    `Hard rules:`,
+    `- ≤180 words.`,
+    `- Lead with the differentiator most relevant to the recipient's project context (extract from the conversation).`,
+    `- One concrete next step at the end (call, datasheet, sample).`,
+    `- No superlatives, no "industry-leading", no marketing language.`,
+    product.outreachInstructions
+      ? `Style guidance: ${product.outreachInstructions.trim()}`
+      : '',
+    product.negativeOutreachInstructions
+      ? `Avoid: ${product.negativeOutreachInstructions.trim()}`
+      : '',
+    forbiddenLines,
+    'Output only the message body. No subject line.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const researchBlock = researchContext
+    ? `Research context about the recipient (use to personalize, not as a footnote):\n${researchContext.trim()}\n`
+    : '';
+
+  const user = [
+    `Conversation so far (oldest → newest):`,
+    renderThreadHistory(thread),
+    '',
+    researchBlock,
+    `Product:`,
+    `- Name: ${product.name}`,
+    product.shortDescription ? `- Short: ${product.shortDescription.trim()}` : '',
+    product.fullDescription ? `- Full: ${product.fullDescription.trim()}` : '',
+    product.targetSectors.length > 0
+      ? `- Sectors: ${product.targetSectors.join(', ')}`
+      : '',
+    '',
+    `Write the pitch reply now.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const mockSeed = `pitch:${product.id}:${thread.length}`;
+  return { system, user, mockSeed };
+}
+
+function buildClosingPrompt(
+  thread: ReadonlyArray<ThreadMessage>,
+  reason: 'decline' | 'handed_off' | 'qualified',
+  product: ProductProfile,
+  ctx: DraftContext,
+  referralToEmail: string | null,
+): InThreadPrompt {
+  const effectiveLang =
+    (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
+  const langName = getLanguageName(effectiveLang);
+
+  const reasonText = {
+    decline: 'The recipient declined or said it is not a fit. Send a short, gracious thank-you. Do not push back. Leave the door open without being needy.',
+    handed_off: referralToEmail
+      ? `The recipient pointed us to ${referralToEmail} as the right contact. Thank them warmly for the referral and confirm we'll follow up there.`
+      : `The recipient pointed us to a colleague. Thank them warmly for the referral.`,
+    qualified: 'The recipient confirmed they are the right person and gave us go-ahead. Acknowledge briefly and confirm the next step we agreed.',
+  }[reason];
+
+  const system = [
+    `You are a B2B outreach assistant writing a closing message in ${langName} (${effectiveLang}).`,
+    reasonText,
+    `Hard rules:`,
+    `- ≤40 words.`,
+    `- No pitch. No CTA beyond the agreed next step.`,
+    `- Sincere, professional, brief.`,
+    `- Sign off with "Best regards," (no name).`,
+    'Output only the message body. No subject line.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const user = [
+    `Conversation so far (oldest → newest):`,
+    renderThreadHistory(thread),
+    '',
+    `Write the closing message now.`,
+  ].join('\n');
+
+  const mockSeed = `closing:${reason}:${product.id}`;
+  return { system, user, mockSeed };
+}
+
+function buildReferralIntroPrompt(
+  record: DraftableRecord,
+  product: ProductProfile,
+  referral: { fromName?: string | null; fromEmail: string; reason?: string | null },
+  ctx: DraftContext,
+): InThreadPrompt {
+  const effectiveLang =
+    (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
+  const langName = getLanguageName(effectiveLang);
+  const forbiddenLines =
+    product.forbiddenPhrases.length > 0
+      ? `Forbidden phrases (NEVER include): ${product.forbiddenPhrases.join(', ')}`
+      : '';
+
+  const referrerName =
+    referral.fromName ?? referral.fromEmail.split('@')[0] ?? 'your colleague';
+
+  const system = [
+    `You are a B2B outreach assistant writing a SHORT INTRO email in ${langName} (${effectiveLang}).`,
+    `You were referred to this person by ${referrerName} (<${referral.fromEmail}>) — they pointed us your way as the right contact for our product category.`,
+    `Goal: open the conversation warmly, name the referrer in the FIRST sentence, then ask one specific question to confirm fit.`,
+    `Hard rules:`,
+    `- ≤80 words.`,
+    `- DO NOT pitch the product or list features.`,
+    `- Open: "${referrerName} suggested I reach out about ..." — then one sentence about the product CATEGORY (not the product itself).`,
+    `- One ask: confirm whether this is the right area for them, or pose a single qualifying question.`,
+    `- Sign off with "Best regards," (no name).`,
+    forbiddenLines,
+    'Output only the message body. No subject line.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const user = [
+    `Recipient context:`,
+    record.title ? `- Title / role hint: ${record.title}` : '',
+    record.domain ? `- Domain: ${record.domain}` : '',
+    '',
+    `Product category (for routing only — do NOT pitch):`,
+    product.targetSectors.length > 0
+      ? `- Sectors: ${product.targetSectors.join(', ')}`
+      : '',
+    product.targetProjectTypes.length > 0
+      ? `- Project types: ${product.targetProjectTypes.join(', ')}`
+      : '',
+    '',
+    referral.reason ? `Why ${referrerName} pointed us here: ${referral.reason}` : '',
+    '',
+    `Write the intro email body now.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const mockSeed = `referral:${product.id}:${referral.fromEmail}`;
+  return { system, user, mockSeed };
+}
+
 /**
  * AI-mode generation. Builds a structured prompt, calls the provider, and
  * runs forbidden-phrase stripping on the output. Provider failures bubble

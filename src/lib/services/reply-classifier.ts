@@ -285,6 +285,20 @@ export async function analyseReply(
     await applyAutoActions(ctx, msg, final);
   }
 
+  // Phase C: hand the classified reply to the staged-outreach engine.
+  // It decides whether to enqueue the next draft (engagement / pitch /
+  // closing / referral fork) and respects the workspace's
+  // autoDraftReplies flag. Best-effort — never break the inbound
+  // pipeline if outreach handling errors.
+  if (!options.skipAutoActions) {
+    try {
+      const { handleClassifiedReply } = await import('./outreach-reply-handler');
+      await handleClassifiedReply(ctx, messageId, final);
+    } catch (err) {
+      console.error('[reply-classifier] outreach handler failed:', err);
+    }
+  }
+
   return final;
 }
 

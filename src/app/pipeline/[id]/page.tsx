@@ -356,11 +356,17 @@ export default async function PipelineLeadDetail({
           <span className={badgeFor(lead.state)}>
             {lead.state.replace(/_/g, ' ')}
           </span>{' '}
+          <span className="badge">stage: {lead.currentStage ?? 'discovery'}</span>{' '}
           <span className="muted">
             for <Link href={`/products/${product.id}`}>{product.name}</Link> ·
             source <Link href={`/review/${reviewItem.id}`}>review item {reviewItem.id.toString()}</Link>
           </span>
         </p>
+        {lead.currentContactEmail ? (
+          <p className="muted">
+            Active contact: <code>{lead.currentContactEmail}</code>
+          </p>
+        ) : null}
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
         {sp.message ? <p className="form-message">{sp.message}</p> : null}
 
@@ -437,6 +443,11 @@ export default async function PipelineLeadDetail({
             </details>
           ) : null}
         </section>
+
+        <ConversationSection
+          workspaceId={ctx.workspaceId}
+          qualifiedLeadId={lead.id}
+        />
 
         <section>
           <h2>Contact</h2>
@@ -763,4 +774,211 @@ function badgeFor(state: PipelineState): string {
     return 'badge badge-good';
   }
   return 'badge';
+}
+
+/**
+ * Phase E — conversation chronology for a qualified lead. Pulls every
+ * mail_thread linked to this lead via contact_associations, then
+ * surfaces the messages + classifier verdicts + thread-state row so
+ * the operator can see the whole arc on one page.
+ */
+async function ConversationSection({
+  workspaceId,
+  qualifiedLeadId,
+}: {
+  workspaceId: bigint;
+  qualifiedLeadId: bigint;
+}) {
+  const { db } = await import('@/lib/db/client');
+  const { mailMessages } = await import('@/lib/db/schema/mailing');
+  const { outreachThreadState } = await import('@/lib/db/schema/outreach');
+  const { contactAssociations } = await import('@/lib/db/schema/contacts');
+  const { and, asc, eq } = await import('drizzle-orm');
+
+  // 1. Find every contact linked to this lead, then every mail_thread
+  //    those contacts are associated with. The same lead may have
+  //    multiple threads if a referral handoff happened.
+  const leadAssoc = await db
+    .select({ contactId: contactAssociations.contactId })
+    .from(contactAssociations)
+    .where(
+      and(
+        eq(contactAssociations.workspaceId, workspaceId),
+        eq(contactAssociations.entityType, 'qualified_lead'),
+        eq(contactAssociations.entityId, qualifiedLeadId.toString()),
+      ),
+    );
+  const contactIds = leadAssoc.map((r) => r.contactId);
+  if (contactIds.length === 0) {
+    return (
+      <section>
+        <h2>Conversation</h2>
+        <p className="muted">
+          No conversation yet — once an outbound draft is sent and the
+          recipient replies, the thread + classifier verdicts will show
+          up here.
+        </p>
+      </section>
+    );
+  }
+  const threadAssoc = [];
+  for (const cid of contactIds) {
+    const rows = await db
+      .select({ entityId: contactAssociations.entityId })
+      .from(contactAssociations)
+      .where(
+        and(
+          eq(contactAssociations.workspaceId, workspaceId),
+          eq(contactAssociations.entityType, 'mail_thread'),
+          eq(contactAssociations.contactId, cid),
+        ),
+      );
+    threadAssoc.push(...rows);
+  }
+  const threadIds = Array.from(
+    new Set(threadAssoc.map((r) => BigInt(r.entityId)).map(String)),
+  ).map(BigInt);
+  if (threadIds.length === 0) {
+    return (
+      <section>
+        <h2>Conversation</h2>
+        <p className="muted">No mail threads associated yet.</p>
+      </section>
+    );
+  }
+
+  // 2. Pull the thread state rows (one per thread) + every message in
+  //    each. We render newest thread first; within a thread, oldest
+  //    message first.
+  type ThreadStateRow = Awaited<
+    ReturnType<typeof db.select.prototype.from>
+  > extends Array<infer U>
+    ? U
+    : never;
+  void {} as unknown as ThreadStateRow;
+  const states: Array<{
+    threadId: bigint;
+    stage: string;
+    lastInboundIntent: string | null;
+    lastInboundConfidence: number | null;
+    closedReason: string | null;
+    referralToEmail: string | null;
+  }> = [];
+  const messages: Array<{
+    threadId: bigint;
+    msgs: Array<{
+      id: bigint;
+      direction: 'inbound' | 'outbound';
+      fromName: string | null;
+      fromAddress: string;
+      bodyText: string | null;
+      receivedAt: Date | null;
+      sentAt: Date | null;
+      createdAt: Date;
+      replyClassification: string | null;
+    }>;
+  }> = [];
+  for (const tid of threadIds) {
+    const sRows = await db
+      .select()
+      .from(outreachThreadState)
+      .where(
+        and(
+          eq(outreachThreadState.workspaceId, workspaceId),
+          eq(outreachThreadState.threadId, tid),
+        ),
+      )
+      .limit(1);
+    if (sRows[0]) states.push(sRows[0]);
+    const mRows = await db
+      .select()
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, workspaceId),
+          eq(mailMessages.threadId, tid),
+        ),
+      )
+      .orderBy(asc(mailMessages.id));
+    messages.push({ threadId: tid, msgs: mRows });
+  }
+
+  return (
+    <section>
+      <h2>Conversation</h2>
+      {messages.map(({ threadId, msgs }) => {
+        const state = states.find((s) => s.threadId === threadId);
+        return (
+          <div key={threadId.toString()} style={{ marginBottom: '1rem' }}>
+            <p className="muted">
+              <strong>Thread {threadId.toString()}</strong>
+              {state ? (
+                <>
+                  {' · '}
+                  <span className="badge">{state.stage}</span>
+                  {state.lastInboundIntent ? (
+                    <>
+                      {' · '}
+                      last intent: <code>{state.lastInboundIntent}</code> (
+                      {state.lastInboundConfidence}%)
+                    </>
+                  ) : null}
+                  {state.closedReason ? (
+                    <>
+                      {' · '}
+                      <span className="badge badge-bad">
+                        closed: {state.closedReason}
+                      </span>
+                      {state.referralToEmail ? (
+                        <>
+                          {' → '}
+                          <code>{state.referralToEmail}</code>
+                        </>
+                      ) : null}
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+            </p>
+            <ol className="thread-history" style={{ listStyle: 'none', paddingLeft: 0 }}>
+              {msgs.slice(-8).map((m) => (
+                <li
+                  key={m.id.toString()}
+                  style={{
+                    padding: '0.5rem 0.75rem',
+                    marginBottom: '0.5rem',
+                    borderLeft: `3px solid ${m.direction === 'inbound' ? 'oklch(0.75 0.15 220)' : 'oklch(0.85 0.05 100)'}`,
+                  }}
+                >
+                  <p className="muted" style={{ margin: 0 }}>
+                    <strong>{m.direction === 'inbound' ? '← ' : '→ '}</strong>
+                    <code>{m.fromName ?? m.fromAddress}</code>
+                    {' · '}
+                    {(m.receivedAt ?? m.sentAt ?? m.createdAt).toLocaleString()}
+                    {m.replyClassification ? (
+                      <>
+                        {' · intent: '}
+                        <code>{m.replyClassification}</code>
+                      </>
+                    ) : null}
+                  </p>
+                  <pre
+                    style={{
+                      whiteSpace: 'pre-wrap',
+                      fontFamily: 'inherit',
+                      margin: '0.25rem 0 0',
+                      fontSize: '0.92em',
+                    }}
+                  >
+                    {(m.bodyText ?? '').slice(0, 1000)}
+                    {(m.bodyText ?? '').length > 1000 ? '\n…' : ''}
+                  </pre>
+                </li>
+              ))}
+            </ol>
+          </div>
+        );
+      })}
+    </section>
+  );
 }

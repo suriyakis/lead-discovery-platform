@@ -206,11 +206,19 @@ export default async function DraftDetail({
           <span className={statusBadgeClass(draft.status)}>
             {draft.status.replace('_', ' ')}
           </span>{' '}
+          <span className="badge">{draft.stage}</span>{' '}
           <span className="muted">
             for <Link href={`/products/${product.id}`}>{product.name}</Link> ·
             lead <Link href={`/review/${reviewItem.id}`}>{recordTitle}</Link>
           </span>
         </p>
+
+        {draft.stage !== 'discovery' ? (
+          <ThreadContextSection
+            workspaceId={ctx.workspaceId}
+            triggeredByMessageId={draft.triggeredByMessageId}
+          />
+        ) : null}
 
         <section>
           <h2>Metadata</h2>
@@ -405,4 +413,99 @@ function statusBadgeClass(status: OutreachDraftStatus): string {
     default:
       return 'badge';
   }
+}
+
+/**
+ * Phase E — render the inbound message that triggered this draft so
+ * the operator sees the conversation context above the proposed reply.
+ * For drafts at stage > discovery only.
+ */
+async function ThreadContextSection({
+  workspaceId,
+  triggeredByMessageId,
+}: {
+  workspaceId: bigint;
+  triggeredByMessageId: bigint | null;
+}) {
+  if (!triggeredByMessageId) {
+    return (
+      <section>
+        <h2>Conversation context</h2>
+        <p className="muted">
+          This draft was generated without a specific inbound trigger
+          (operator-initiated regeneration or referral fork).
+        </p>
+      </section>
+    );
+  }
+  const { db } = await import('@/lib/db/client');
+  const { mailMessages } = await import('@/lib/db/schema/mailing');
+  const { and, asc, eq } = await import('drizzle-orm');
+  const triggerRows = await db
+    .select()
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, workspaceId),
+        eq(mailMessages.id, triggeredByMessageId),
+      ),
+    )
+    .limit(1);
+  const trigger = triggerRows[0];
+  if (!trigger) {
+    return null;
+  }
+  const threadRows = trigger.threadId
+    ? await db
+        .select()
+        .from(mailMessages)
+        .where(
+          and(
+            eq(mailMessages.workspaceId, workspaceId),
+            eq(mailMessages.threadId, trigger.threadId),
+          ),
+        )
+        .orderBy(asc(mailMessages.id))
+    : [trigger];
+  const last5 = threadRows.slice(-5);
+  return (
+    <section>
+      <h2>Conversation context</h2>
+      <p className="muted">
+        Most recent {last5.length} message(s) in this thread. The reply
+        below is your proposed response to the last inbound.
+      </p>
+      <ol className="thread-history">
+        {last5.map((m) => (
+          <li
+            key={m.id.toString()}
+            className={m.direction === 'inbound' ? 'msg-inbound' : 'msg-outbound'}
+            style={{
+              padding: '0.5rem 0.75rem',
+              marginBottom: '0.5rem',
+              borderLeft: `3px solid ${m.direction === 'inbound' ? 'oklch(0.75 0.15 220)' : 'oklch(0.85 0.05 100)'}`,
+            }}
+          >
+            <p className="muted" style={{ margin: 0 }}>
+              <strong>{m.direction === 'inbound' ? '← ' : '→ '}</strong>
+              <code>{m.fromName ?? m.fromAddress}</code>
+              {' · '}
+              {(m.receivedAt ?? m.sentAt ?? m.createdAt).toLocaleString()}
+            </p>
+            <pre
+              style={{
+                whiteSpace: 'pre-wrap',
+                fontFamily: 'inherit',
+                margin: '0.25rem 0 0',
+                fontSize: '0.92em',
+              }}
+            >
+              {(m.bodyText ?? '').slice(0, 1200)}
+              {(m.bodyText ?? '').length > 1200 ? '\n…' : ''}
+            </pre>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
