@@ -203,6 +203,13 @@ function buildDiscoveryPrompt(
       ? `Forbidden phrases (NEVER include any of these): ${product.forbiddenPhrases.join(', ')}`
       : '';
 
+  // Per-stage angle override falls back to the global outreach
+  // instructions for backwards compat with profiles that haven't
+  // populated the new field yet.
+  const angle =
+    (product.discoveryAngle ?? product.outreachInstructions ?? '').trim();
+  const angleLine = angle ? `Operator angle guidance: ${angle}` : '';
+
   // Short, contained system prompt. The discovery email is intentionally
   // narrow — the model gets product CATEGORY signals only (sectors /
   // project types / customer types) so it cannot accidentally pitch.
@@ -216,6 +223,7 @@ function buildDiscoveryPrompt(
     `- The single ask: "could you point me to the right person who handles X?".`,
     `- Polite, direct, no superlatives, no marketing language.`,
     `- Sign off with "Best regards," (no name — the sender layer fills it).`,
+    angleLine,
     forbiddenLines,
     `Output only the message body. No subject line.`,
   ]
@@ -489,6 +497,9 @@ function buildEngagementPrompt(
     product.forbiddenPhrases.length > 0
       ? `Forbidden phrases (NEVER include): ${product.forbiddenPhrases.join(', ')}`
       : '';
+  const angle =
+    (product.engagementAngle ?? product.outreachInstructions ?? '').trim();
+  const angleLine = angle ? `Operator angle guidance: ${angle}` : '';
 
   const system = [
     `You are a B2B outreach assistant writing an in-thread reply in ${langName} (${effectiveLang}).`,
@@ -499,6 +510,7 @@ function buildEngagementPrompt(
     `- If the recipient asked a specific question, answer it directly first, then optionally ONE follow-up.`,
     `- If non-committal, ask ONE specific qualifying question (not "are you interested?" — ask about a real signal: project type, timeline, current vendor).`,
     `- Sign off with "Best regards," (no name).`,
+    angleLine,
     forbiddenLines,
     'Output only the message body. No subject line.',
   ]
@@ -540,6 +552,10 @@ function buildPitchPrompt(
       ? `Forbidden phrases (NEVER include): ${product.forbiddenPhrases.join(', ')}`
       : '';
 
+  const angle =
+    (product.pitchAngle ?? product.outreachInstructions ?? '').trim();
+  const angleLine = angle ? `Operator angle guidance: ${angle}` : '';
+
   const system = [
     `You are a B2B outreach assistant writing a product-detail reply in ${langName} (${effectiveLang}).`,
     `The recipient explicitly asked for product information. Now you may pitch — concisely.`,
@@ -548,9 +564,7 @@ function buildPitchPrompt(
     `- Lead with the differentiator most relevant to the recipient's project context (extract from the conversation).`,
     `- One concrete next step at the end (call, datasheet, sample).`,
     `- No superlatives, no "industry-leading", no marketing language.`,
-    product.outreachInstructions
-      ? `Style guidance: ${product.outreachInstructions.trim()}`
-      : '',
+    angleLine,
     product.negativeOutreachInstructions
       ? `Avoid: ${product.negativeOutreachInstructions.trim()}`
       : '',

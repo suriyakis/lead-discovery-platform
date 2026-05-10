@@ -40,6 +40,9 @@ export interface CreateProductProfileInput {
   outreachInstructions?: string | null;
   negativeOutreachInstructions?: string | null;
   forbiddenPhrases?: readonly string[];
+  discoveryAngle?: string | null;
+  engagementAngle?: string | null;
+  pitchAngle?: string | null;
   language?: string;
   enrichDraftsWithResearch?: boolean;
   researchQuestionTemplate?: string;
@@ -75,6 +78,9 @@ export async function createProductProfile(
       outreachInstructions: input.outreachInstructions ?? null,
       negativeOutreachInstructions: input.negativeOutreachInstructions ?? null,
       forbiddenPhrases: [...(input.forbiddenPhrases ?? [])],
+      discoveryAngle: input.discoveryAngle ?? null,
+      engagementAngle: input.engagementAngle ?? null,
+      pitchAngle: input.pitchAngle ?? null,
       language: input.language ?? 'en',
       ...(input.enrichDraftsWithResearch !== undefined
         ? { enrichDraftsWithResearch: input.enrichDraftsWithResearch }
@@ -197,6 +203,12 @@ export async function updateProductProfile(
       updates.negativeOutreachInstructions = patch.negativeOutreachInstructions ?? null;
     if (patch.forbiddenPhrases !== undefined)
       updates.forbiddenPhrases = [...patch.forbiddenPhrases];
+    if (patch.discoveryAngle !== undefined)
+      updates.discoveryAngle = patch.discoveryAngle ?? null;
+    if (patch.engagementAngle !== undefined)
+      updates.engagementAngle = patch.engagementAngle ?? null;
+    if (patch.pitchAngle !== undefined)
+      updates.pitchAngle = patch.pitchAngle ?? null;
     if (patch.language !== undefined) updates.language = patch.language;
     if (patch.active !== undefined) updates.active = patch.active;
     if (patch.enrichDraftsWithResearch !== undefined)

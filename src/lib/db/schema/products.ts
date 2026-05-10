@@ -73,6 +73,15 @@ export const productProfiles = pgTable(
       .notNull()
       .default(sql`'{}'::text[]`),
 
+    /** Phase A++: per-stage angle overrides. Each one is a short
+     *  instruction string that the corresponding stage composer
+     *  injects into its system prompt. When NULL, the composer falls
+     *  back to outreachInstructions for backwards compat. Operator
+     *  edits manually or hits "Suggest with AI" to populate. */
+    discoveryAngle: text('discovery_angle'),
+    engagementAngle: text('engagement_angle'),
+    pitchAngle: text('pitch_angle'),
+
     language: text('language').notNull().default('en'),
     active: boolean('active').notNull().default(true),
 

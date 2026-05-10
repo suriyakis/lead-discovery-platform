@@ -16,6 +16,12 @@ import {
   restoreProductProfile,
   updateProductProfile,
 } from '@/lib/services/product-profile';
+import {
+  ProductAngleSuggesterError,
+  suggestStageAngle,
+  type AngleStage,
+  type SuggesterVendor,
+} from '@/lib/services/product-angle-suggester';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { ProductFields, readArrayField, readNullableString } from '../_form';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -90,6 +96,9 @@ export default async function EditProductPage({
           formData,
           'negativeOutreachInstructions',
         ),
+        discoveryAngle: readNullableString(formData, 'discoveryAngle'),
+        engagementAngle: readNullableString(formData, 'engagementAngle'),
+        pitchAngle: readNullableString(formData, 'pitchAngle'),
         forbiddenPhrases: readArrayField(formData, 'forbiddenPhrases'),
         language: String(formData.get('language') ?? 'en') || 'en',
         enrichDraftsWithResearch: formData.get('enrichDraftsWithResearch') === 'on',
@@ -118,6 +127,39 @@ export default async function EditProductPage({
     const ctxInner = await getWorkspaceContext();
     await restoreProductProfile(ctxInner, id);
     redirect(`/products/${id}`);
+  }
+
+  async function suggestAngle(formData: FormData): Promise<void> {
+    'use server';
+    const ctxInner = await getWorkspaceContext();
+    const stage = String(formData.get('stage') ?? '') as AngleStage;
+    const vendor = String(formData.get('vendor') ?? 'anthropic') as SuggesterVendor;
+    if (stage !== 'discovery' && stage !== 'engagement' && stage !== 'pitch') {
+      redirect(`/products/${id}?error=Invalid+stage`);
+    }
+    if (vendor !== 'openai' && vendor !== 'anthropic') {
+      redirect(`/products/${id}?error=Invalid+vendor`);
+    }
+    try {
+      const result = await suggestStageAngle(ctxInner, id, stage, vendor);
+      // Persist the suggestion straight to the matching column. The
+      // operator can then edit + save via the main form normally.
+      const patch: Record<string, string> = {};
+      if (stage === 'discovery') patch.discoveryAngle = result.text;
+      if (stage === 'engagement') patch.engagementAngle = result.text;
+      if (stage === 'pitch') patch.pitchAngle = result.text;
+      await updateProductProfile(ctxInner, id, patch);
+      redirect(`/products/${id}?saved=1#angle-${stage}`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof ProductAngleSuggesterError
+          ? err.message
+          : err instanceof ProductProfileServiceError
+            ? err.message
+            : 'failed';
+      redirect(`/products/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
 
   async function destroy(formData: FormData): Promise<void> {
@@ -205,6 +247,36 @@ export default async function EditProductPage({
             submitLabel="Save changes"
           />
         </form>
+
+        <section>
+          <h2>AI angle helpers</h2>
+          <p className="muted">
+            One click writes a stage-specific angle straight to the
+            corresponding field above and re-renders the form. Edit the
+            suggestion before clicking <em>Save changes</em>. GPT-5 needs
+            an OpenAI key, Opus 4.7 needs an Anthropic key.
+          </p>
+          <div className="action-row" style={{ flexWrap: 'wrap', gap: '0.5rem' }}>
+            {(['discovery', 'engagement', 'pitch'] as const).map((stage) => (
+              <form
+                key={stage}
+                action={suggestAngle}
+                style={{ display: 'inline-flex', gap: '0.25rem', alignItems: 'center' }}
+                id={`angle-${stage}`}
+              >
+                <input type="hidden" name="stage" value={stage} />
+                <span className="badge">{stage}</span>
+                <select name="vendor" defaultValue="anthropic">
+                  <option value="anthropic">Opus 4.7</option>
+                  <option value="openai">GPT-5</option>
+                </select>
+                <button type="submit" className="ghost-btn">
+                  Suggest
+                </button>
+              </form>
+            ))}
+          </div>
+        </section>
 
         {canAdminWorkspace(ctx) && deps ? (
           <section>

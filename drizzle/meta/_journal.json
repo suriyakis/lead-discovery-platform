@@ -232,6 +232,13 @@
       "when": 1778399043919,
       "tag": "0032_curious_gamma_corps",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1778404429771,
+      "tag": "0033_parched_stark_industries",
+      "breakpoints": true
     }
   ]
 }

@@ -108,6 +108,9 @@ describe('composeAiDraft (research context)', () => {
       active: true,
       enrichDraftsWithResearch: true,
       researchQuestionTemplate: 'q?',
+      discoveryAngle: null,
+      engagementAngle: null,
+      pitchAngle: null,
       documentSourceIds: [],
       pricingSnapshotId: null,
       crmMapping: {} as never,
@@ -197,6 +200,9 @@ describe('generateOutreachDraft with enrichDraftsWithResearch=true', () => {
       name: 'Vetrofluid',
       enrichDraftsWithResearch: true,
       researchQuestionTemplate: 'tell me about {company} ({domain})',
+      discoveryAngle: null,
+      engagementAngle: null,
+      pitchAngle: null,
     });
     const ri = await seedReviewItem(s.workspaceA, s.ownerA);
     const lead = await ensureQualifiedLead(c, ri.id, product.id);

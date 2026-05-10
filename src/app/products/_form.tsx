@@ -158,13 +158,46 @@ export function ProductFields({ profile, formError, submitLabel }: Readonly<Prop
         <legend>Outreach</legend>
 
         <label>
-          <span>Outreach instructions</span>
+          <span>Outreach instructions (global fallback)</span>
           <textarea
             name="outreachInstructions"
-            rows={4}
+            rows={3}
             maxLength={5000}
             defaultValue={v?.outreachInstructions ?? ''}
-            placeholder="Tone, structure, what to lead with."
+            placeholder="Used when a stage-specific angle below is empty."
+          />
+        </label>
+
+        <label>
+          <span>Discovery angle (first-touch email)</span>
+          <textarea
+            name="discoveryAngle"
+            rows={3}
+            maxLength={2000}
+            defaultValue={v?.discoveryAngle ?? ''}
+            placeholder="Tone + hook for the ≤60-word ask-for-the-right-person email. No product pitch."
+          />
+        </label>
+
+        <label>
+          <span>Engagement angle (in-thread reply)</span>
+          <textarea
+            name="engagementAngle"
+            rows={3}
+            maxLength={2000}
+            defaultValue={v?.engagementAngle ?? ''}
+            placeholder="How to acknowledge replies + which qualifying questions to ask. ≤80 words."
+          />
+        </label>
+
+        <label>
+          <span>Pitch angle (when recipient asks for product detail)</span>
+          <textarea
+            name="pitchAngle"
+            rows={3}
+            maxLength={2000}
+            defaultValue={v?.pitchAngle ?? ''}
+            placeholder="Which differentiator to lead with + concrete next step. ≤180 words."
           />
         </label>
 
