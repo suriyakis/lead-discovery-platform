@@ -29,9 +29,11 @@ import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 import { getRelevantLessons } from './learning';
 import {
   composeAiDraft,
+  composeDiscoveryDraft,
   composeRulesDraft,
   type DraftVerdict,
 } from './outreach-engine';
+import type { OutreachStage } from '@/lib/db/schema/outreach';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { resolveProfileLanguage } from '@/lib/i18n/language';
 
@@ -141,8 +143,18 @@ export async function generateOutreachDraft(
     }
   }
 
+  // Phase A: pick the stage from the active qualified-lead row, or
+  // default to 'discovery' when this is the very first contact for the
+  // (review_item, product) pair. The discovery composer produces a
+  // short ask-for-the-right-person email; engagement / pitch / closing
+  // route through the existing AI/rules path until Phase C.
+  const lead = await findQualifiedLeadForPair(ctx, reviewItem.id, product.id);
+  const stage: OutreachStage =
+    (lead?.currentStage as OutreachStage | undefined) ?? 'discovery';
+
   const verdict = await composeVerdict(
     method,
+    stage,
     sourceRecord,
     product,
     allLessons,
@@ -172,6 +184,7 @@ export async function generateOutreachDraft(
       productProfileId: product.id,
       qualificationId: qualificationId ?? null,
       status: 'draft',
+      stage,
       channel,
       language,
       subject: verdict.subject,
@@ -602,6 +615,7 @@ function extractDraftable(record: SourceRecord) {
 
 async function composeVerdict(
   method: OutreachDraftMethod,
+  stage: OutreachStage,
   sourceRecord: SourceRecord,
   product: ProductProfile,
   lessons: ReadonlyArray<import('@/lib/db/schema/learning').LearningLesson>,
@@ -610,6 +624,23 @@ async function composeVerdict(
   researchContext: string | null = null,
 ): Promise<DraftVerdict> {
   const draftable = extractDraftable(sourceRecord);
+
+  // Phase A: discovery-stage drafts always go through the dedicated
+  // composer (short ask-for-the-right-person email, never a pitch).
+  // Mock provider users get rules-mode for their dev loop, same as
+  // the engagement path below — discovery via the mock would just
+  // produce hashed nonsense.
+  if (stage === 'discovery') {
+    const ai = await getAIProviderForCtx(workspaceCtx);
+    if (ai.id === 'mock') {
+      return composeRulesDraft(draftable, product, lessons, cfg);
+    }
+    return composeDiscoveryDraft(draftable, product, cfg, ai);
+  }
+
+  // engagement / pitch / closing route through the existing AI/rules
+  // path until Phase C ships the in-thread composers. Backwards-
+  // compatible: every existing in-flight draft is at engagement stage.
   if (method === 'rules') {
     return composeRulesDraft(draftable, product, lessons, cfg);
   }
@@ -641,12 +672,14 @@ async function findQualifiedLeadForPair(
 ): Promise<{
   id: bigint;
   contactEmail: string | null;
+  currentStage: string;
 } | null> {
   const { qualifiedLeads } = await import('@/lib/db/schema/pipeline');
   const rows = await db
     .select({
       id: qualifiedLeads.id,
       contactEmail: qualifiedLeads.contactEmail,
+      currentStage: qualifiedLeads.currentStage,
     })
     .from(qualifiedLeads)
     .where(

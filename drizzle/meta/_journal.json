@@ -225,6 +225,13 @@
       "when": 1778223752515,
       "tag": "0031_first_maddog",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1778399043919,
+      "tag": "0032_curious_gamma_corps",
+      "breakpoints": true
     }
   ]
 }

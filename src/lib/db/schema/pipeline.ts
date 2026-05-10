@@ -102,6 +102,18 @@ export const qualifiedLeads = pgTable(
     closeReason: closeReason('close_reason'),
     closeNote: text('close_note'),
 
+    // ---- Phase A: outreach staging (active conversation pointer) ----
+    /** Where the active conversation sits in the discovery → engagement
+     *  → pitch → closing arc. Mirrors outreach_stage. Backfilled at
+     *  migration time: `engagement` for leads with prior outbound
+     *  drafts, `discovery` otherwise. */
+    currentStage: text('current_stage').notNull().default('discovery'),
+    /** Currently-targeted contact email. Moves on referral handoff;
+     *  the original contactEmail is preserved in audit chains. */
+    currentContactEmail: text('current_contact_email'),
+    /** Active mail_threads.id for this lead. Null until first send. */
+    currentThreadId: bigint('current_thread_id', { mode: 'bigint' }),
+
     // ---- CRM linkage (populated in Phase 13) ----
     crmExternalId: text('crm_external_id'),
     crmSystem: text('crm_system'),

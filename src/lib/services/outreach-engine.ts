@@ -108,6 +108,142 @@ export function composeRulesDraft(
 }
 
 /**
+ * Phase A — discovery-stage email. The first cold message in a new
+ * outreach thread. Goal: identify the right contact, NOT pitch the
+ * product. The body is short (~60 words), framed as a polite ask
+ * ("who handles X for your team?") and references something concrete
+ * about the lead (their domain or project title) so it doesn't read
+ * as scraped spam.
+ *
+ * Crucially the AI receives only the product CATEGORY signals
+ * (sectors, project types, customer types) — NOT the full product
+ * description — so it cannot lapse into pitching. Pitch is a separate
+ * stage that runs later, only when the recipient asks for detail.
+ */
+export async function composeDiscoveryDraft(
+  record: DraftableRecord,
+  product: ProductProfile,
+  ctx: DraftContext,
+  ai: IAIProvider,
+): Promise<DraftVerdict> {
+  const prompt = buildDiscoveryPrompt(record, product, ctx);
+  const result = await ai.generateText(
+    { system: prompt.system, prompt: prompt.user },
+    { mockSeed: prompt.mockSeed, temperature: 0.6 },
+  );
+
+  const subject = buildDiscoverySubject(product, (record.title ?? '').trim());
+  const body = result.text.trim();
+  const stripped = stripForbidden(body, product.forbiddenPhrases);
+
+  return {
+    subject,
+    body: stripped.text,
+    confidence: clamp(70 - stripped.removed.length * 10, 30, 95),
+    method: 'ai',
+    model: result.model,
+    evidence: {
+      promptSystem: prompt.system,
+      promptUser: prompt.user,
+      matchedLessonIds: [],
+      fields: {
+        productName: product.name,
+        productLanguage: product.language,
+        recordDomain: record.domain ?? null,
+        recordUrl: record.url ?? null,
+      },
+    },
+    forbiddenStripped: stripped.removed,
+    matchedLessonIds: [],
+  };
+}
+
+function buildDiscoverySubject(product: ProductProfile, recordTitle: string): string {
+  // Discovery subjects ask for routing, not engagement with the product.
+  // Pivot on what the lead does (recordTitle) rather than the product name.
+  if (recordTitle) {
+    const trimmed = recordTitle.length > 50 ? `${recordTitle.slice(0, 49)}…` : recordTitle;
+    return `Who handles ${productCategoryLabel(product)} re: ${trimmed}?`;
+  }
+  return `Who handles ${productCategoryLabel(product)} on your team?`;
+}
+
+function productCategoryLabel(product: ProductProfile): string {
+  // A short label the model can route on. Sectors/project types are
+  // generally more recognizable to the recipient than the product name.
+  const sectors = product.targetSectors[0];
+  if (sectors) return sectors;
+  const projects = product.targetProjectTypes[0];
+  if (projects) return projects;
+  return product.name;
+}
+
+interface DiscoveryPrompt {
+  system: string;
+  user: string;
+  mockSeed: string;
+}
+
+function buildDiscoveryPrompt(
+  record: DraftableRecord,
+  product: ProductProfile,
+  ctx: DraftContext,
+): DiscoveryPrompt {
+  const effectiveLang =
+    (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
+  const langName = getLanguageName(effectiveLang);
+
+  const forbiddenLines =
+    product.forbiddenPhrases.length > 0
+      ? `Forbidden phrases (NEVER include any of these): ${product.forbiddenPhrases.join(', ')}`
+      : '';
+
+  // Short, contained system prompt. The discovery email is intentionally
+  // narrow — the model gets product CATEGORY signals only (sectors /
+  // project types / customer types) so it cannot accidentally pitch.
+  const system = [
+    `You are an outreach assistant writing a SHORT FIRST email in ${langName} (${effectiveLang}).`,
+    `Goal: identify the right person at the recipient's organization to talk to about a category of products. NOT to sell.`,
+    `Hard rules:`,
+    `- Maximum 60 words in the body. Concise wins.`,
+    `- Do NOT describe the product. Do NOT name technical features. Do NOT claim benefits.`,
+    `- Open with one sentence referencing what the recipient does (use the lead context).`,
+    `- The single ask: "could you point me to the right person who handles X?".`,
+    `- Polite, direct, no superlatives, no marketing language.`,
+    `- Sign off with "Best regards," (no name — the sender layer fills it).`,
+    forbiddenLines,
+    `Output only the message body. No subject line.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const user = [
+    `Lead context:`,
+    record.title ? `- What they do / project title: ${record.title}` : '',
+    record.domain ? `- Domain: ${record.domain}` : '',
+    record.snippet ? `- Snippet: ${record.snippet}` : '',
+    '',
+    `Product category (USE for routing only — do NOT pitch any of this):`,
+    product.targetSectors.length > 0
+      ? `- Sectors: ${product.targetSectors.join(', ')}`
+      : '',
+    product.targetProjectTypes.length > 0
+      ? `- Project types: ${product.targetProjectTypes.join(', ')}`
+      : '',
+    product.targetCustomerTypes.length > 0
+      ? `- Buyer roles: ${product.targetCustomerTypes.join(', ')}`
+      : '',
+    '',
+    `Write the discovery email body now.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const mockSeed = `discovery:${product.id}:${record.url ?? record.domain ?? 'noref'}`;
+  return { system, user, mockSeed };
+}
+
+/**
  * AI-mode generation. Builds a structured prompt, calls the provider, and
  * runs forbidden-phrase stripping on the output. Provider failures bubble
  * up — the service layer decides whether to fall back to rules.

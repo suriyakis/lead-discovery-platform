@@ -133,6 +133,9 @@ export default async function DraftsPage({
                       <span className={statusBadgeClass(draft.status)}>
                         {draft.status.replace('_', ' ')}
                       </span>
+                      <span className={stageBadgeClass(draft.stage)}>
+                        {draft.stage}
+                      </span>
                       <span className="muted">→ {product.name}</span>
                     </div>
                     <p className="muted">
@@ -171,6 +174,23 @@ function statusBadgeClass(status: OutreachDraftStatus): string {
     case 'superseded':
       return 'badge';
     case 'draft':
+    default:
+      return 'badge';
+  }
+}
+
+function stageBadgeClass(stage: string): string {
+  // discovery = first cold email; pitch = full product; closing = terminal.
+  // Color coding mirrors the conversation arc.
+  switch (stage) {
+    case 'discovery':
+      return 'badge';
+    case 'engagement':
+      return 'badge badge-good';
+    case 'pitch':
+      return 'badge badge-good';
+    case 'closing':
+      return 'badge badge-bad';
     default:
       return 'badge';
   }

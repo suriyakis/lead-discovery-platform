@@ -91,6 +91,50 @@ export async function getWorkspace(ctx: WorkspaceContext): Promise<Workspace> {
   return ws;
 }
 
+// ---- Phase A: outreach defaults --------------------------------------
+
+export interface UpdateOutreachDefaultsInput {
+  autoDraftReplies?: boolean;
+  autoSendReplies?: boolean;
+}
+
+/** Update workspace-level outreach automation toggles. Workspace-admin
+ *  only. autoSendReplies forces autoDraftReplies on (auto-send without
+ *  auto-draft is meaningless). */
+export async function updateOutreachDefaults(
+  ctx: WorkspaceContext,
+  input: UpdateOutreachDefaultsInput,
+): Promise<Workspace> {
+  if (!canAdminWorkspace(ctx)) {
+    throw permissionDenied('workspace.update_outreach_defaults');
+  }
+  const updates: Partial<Workspace> & { updatedAt: Date } = { updatedAt: new Date() };
+  if (input.autoDraftReplies !== undefined) {
+    updates.autoDraftReplies = input.autoDraftReplies;
+  }
+  if (input.autoSendReplies !== undefined) {
+    updates.autoSendReplies = input.autoSendReplies;
+    // Auto-send implies auto-draft (you can't send what wasn't drafted).
+    if (input.autoSendReplies) updates.autoDraftReplies = true;
+  }
+  const [updated] = await db
+    .update(workspaces)
+    .set(updates)
+    .where(eq(workspaces.id, ctx.workspaceId))
+    .returning();
+  if (!updated) throw notFound('workspace');
+  await recordAuditEvent(ctx, {
+    kind: 'workspace.update_outreach_defaults',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: {
+      autoDraftReplies: updated.autoDraftReplies,
+      autoSendReplies: updated.autoSendReplies,
+    },
+  });
+  return updated;
+}
+
 export interface MemberWithUser {
   member: WorkspaceMember;
   user: {

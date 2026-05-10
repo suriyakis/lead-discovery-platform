@@ -86,6 +86,16 @@ export const workspaces = pgTable('workspaces', {
   stripeCustomerId: text('stripe_customer_id'),
   stripeSubscriptionId: text('stripe_subscription_id'),
 
+  // ---- Phase A: staged outreach defaults ----
+  /** When an inbound reply lands on an outreach thread, automatically
+   *  generate the next draft via AI. Operator can flip this OFF if they
+   *  prefer to write every reply themselves. Default ON. */
+  autoDraftReplies: boolean('auto_draft_replies').notNull().default(true),
+  /** When auto-drafted reply confidence is high enough, send without
+   *  human review. Default OFF — sales replies are too risky to auto-
+   *  send unless the operator opts in. */
+  autoSendReplies: boolean('auto_send_replies').notNull().default(false),
+
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),

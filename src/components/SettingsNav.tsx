@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 
 const ITEMS = [
   { href: '/settings/integrations', label: 'Integrations' },
+  { href: '/settings/outreach', label: 'Outreach' },
   { href: '/settings/members', label: 'Members' },
   { href: '/settings/usage', label: 'Usage' },
   { href: '/settings/crm', label: 'CRM & Export' },

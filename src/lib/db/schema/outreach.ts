@@ -41,6 +41,29 @@ export const outreachDraftStatus = pgEnum('outreach_draft_status', [
 ]);
 
 /**
+ * Phase A (staged outreach): every draft belongs to a stage in the
+ * sales conversation. The engine picks a different prompt per stage.
+ *
+ *   discovery  ← first cold email; ≤60 words; asks "who handles X?"
+ *                no product pitch
+ *   engagement ← in-thread reply driven by the inbound message
+ *   pitch      ← only when the recipient explicitly asks for product
+ *                detail; full description + research context
+ *   closing    ← terminal: thank-you / decline acknowledgement /
+ *                handoff confirmation
+ *
+ * Existing drafts are backfilled to `engagement` since they were
+ * generated before staging existed and are mid-conversation.
+ */
+export const outreachStage = pgEnum('outreach_stage', [
+  'discovery',
+  'engagement',
+  'pitch',
+  'closing',
+]);
+export type OutreachStage = (typeof outreachStage.enumValues)[number];
+
+/**
  * One outreach draft per (review_item, product_profile) attempt. A new
  * draft for the same pair supersedes the previous one — we keep the row
  * but mark it `superseded` so the audit trail is preserved.
@@ -76,6 +99,16 @@ export const outreachDrafts = pgTable(
     ),
 
     status: outreachDraftStatus('status').notNull().default('draft'),
+
+    // ---- Phase A: staging ----
+    stage: outreachStage('stage').notNull().default('discovery'),
+    /** Previous draft in the same conversation (null for stage=discovery). */
+    parentDraftId: bigint('parent_draft_id', { mode: 'bigint' }),
+    /** Inbound mail_message that prompted this draft (null for cold openers). */
+    triggeredByMessageId: bigint('triggered_by_message_id', { mode: 'bigint' }),
+    /** Audit chain when the lead was reached via referral(s).
+     *  Shape: [{from_email, from_name, at}]. Null for direct outreach. */
+    referralChain: jsonb('referral_chain'),
 
     // ---- generated content ----
     channel: text('channel').notNull().default('email'),
@@ -281,3 +314,78 @@ export const outreachSendSettings = pgTable('outreach_send_settings', {
 
 export type OutreachSendSettings = typeof outreachSendSettings.$inferSelect;
 export type NewOutreachSendSettings = typeof outreachSendSettings.$inferInsert;
+
+/**
+ * Phase A: per-thread conversation state. Created when the first
+ * outbound for a (qualified_lead, mail_thread) pair lands. Updated
+ * by the reply pipeline on every inbound. One row per conversation.
+ *
+ * If the lead is referred to a new contact, the handoff opens a NEW
+ * thread → a NEW row here, while the original row is closed with
+ * `closed_reason='handed_off'` and `referral_to_email` set.
+ */
+export const outreachThreadState = pgTable(
+  'outreach_thread_state',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    /** Lead this conversation belongs to. Multi-product threads share
+     *  the same lead row — see qualified_leads dedupe rules. */
+    qualifiedLeadId: bigint('qualified_lead_id', { mode: 'bigint' }).notNull(),
+    /** mail_threads.id — the email thread this state is tracking. */
+    threadId: bigint('thread_id', { mode: 'bigint' }).notNull(),
+    /** Where the conversation currently sits. Mirrors outreach_stage. */
+    stage: outreachStage('stage').notNull().default('discovery'),
+    /** Last AI verdict on the most recent inbound message. */
+    lastInboundIntent: text('last_inbound_intent'),
+    /** Last AI confidence on that verdict, 0-100. */
+    lastInboundConfidence: smallint('last_inbound_confidence'),
+    lastInboundAt: timestamp('last_inbound_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    lastOutboundAt: timestamp('last_outbound_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    /** Closed when the conversation reaches a terminal state. */
+    closedAt: timestamp('closed_at', { mode: 'date', withTimezone: true }),
+    /** Why the conversation closed: `handed_off`, `not_interested`,
+     *  `no_reply`, `qualified`, `error`. Free-form text for forward
+     *  compat; we don't enum it. */
+    closedReason: text('closed_reason'),
+    /** If closed_reason='handed_off', the email we forked to. */
+    referralToEmail: text('referral_to_email'),
+    /** Foreign-key style pointer to the new thread state, if any. */
+    referralToThreadStateId: bigint('referral_to_thread_state_id', {
+      mode: 'bigint',
+    }),
+
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    /** One state row per (workspace, thread) — a thread can carry
+     *  multiple products for the same lead but only one conversation. */
+    threadKey: uniqueIndex('outreach_thread_state_thread_idx').on(
+      table.workspaceId,
+      table.threadId,
+    ),
+    leadIdx: index('outreach_thread_state_lead_idx').on(
+      table.workspaceId,
+      table.qualifiedLeadId,
+    ),
+    openIdx: index('outreach_thread_state_open_idx')
+      .on(table.workspaceId, table.stage)
+      .where(sql`closed_at IS NULL`),
+  }),
+);
+
+export type OutreachThreadState = typeof outreachThreadState.$inferSelect;
+export type NewOutreachThreadState = typeof outreachThreadState.$inferInsert;
