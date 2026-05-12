@@ -303,8 +303,9 @@ export async function composeEngagementDraft(
   ctx: DraftContext,
   ai: IAIProvider,
   modelOverride?: string,
+  productKnowledge?: string | null,
 ): Promise<DraftVerdict> {
-  const prompt = buildEngagementPrompt(thread, product, ctx);
+  const prompt = buildEngagementPrompt(thread, product, ctx, productKnowledge ?? null);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
     {
@@ -341,8 +342,9 @@ export async function composePitchDraft(
   ai: IAIProvider,
   researchContext: string | null = null,
   modelOverride?: string,
+  productKnowledge?: string | null,
 ): Promise<DraftVerdict> {
-  const prompt = buildPitchPrompt(thread, product, ctx, researchContext);
+  const prompt = buildPitchPrompt(thread, product, ctx, researchContext, productKnowledge ?? null);
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
     {
@@ -489,6 +491,7 @@ function buildEngagementPrompt(
   thread: ReadonlyArray<ThreadMessage>,
   product: ProductProfile,
   ctx: DraftContext,
+  productKnowledge: string | null,
 ): InThreadPrompt {
   const effectiveLang =
     (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
@@ -517,10 +520,13 @@ function buildEngagementPrompt(
     .filter(Boolean)
     .join('\n');
 
+  const knowledgeBlock = productKnowledge ? `${productKnowledge}\n\n` : '';
+
   const user = [
     `Conversation so far (oldest → newest):`,
     renderThreadHistory(thread),
     '',
+    knowledgeBlock,
     `Product category (for routing context only — do NOT pitch):`,
     product.targetSectors.length > 0
       ? `- Sectors: ${product.targetSectors.join(', ')}`
@@ -543,6 +549,7 @@ function buildPitchPrompt(
   product: ProductProfile,
   ctx: DraftContext,
   researchContext: string | null,
+  productKnowledge: string | null,
 ): InThreadPrompt {
   const effectiveLang =
     (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
@@ -577,12 +584,14 @@ function buildPitchPrompt(
   const researchBlock = researchContext
     ? `Research context about the recipient (use to personalize, not as a footnote):\n${researchContext.trim()}\n`
     : '';
+  const knowledgeBlock = productKnowledge ? `${productKnowledge}\n` : '';
 
   const user = [
     `Conversation so far (oldest → newest):`,
     renderThreadHistory(thread),
     '',
     researchBlock,
+    knowledgeBlock,
     `Product:`,
     `- Name: ${product.name}`,
     product.shortDescription ? `- Short: ${product.shortDescription.trim()}` : '',

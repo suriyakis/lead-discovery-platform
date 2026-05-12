@@ -26,6 +26,7 @@ import { sourceRecords } from '@/lib/db/schema/connectors';
 import { reviewItems } from '@/lib/db/schema/review';
 import { productProfiles } from '@/lib/db/schema/products';
 import { getStageProvider } from './outreach-stage-models';
+import { buildProductKnowledgeBlock } from './outreach-knowledge';
 import { canWrite, type WorkspaceContext } from './context';
 import { recordAuditEvent } from './audit';
 import {
@@ -284,6 +285,20 @@ export async function handleClassifiedReply(
     // moments where the conversation either survives or dies, so the
     // cost premium is justified. Closing falls through here too,
     // intentionally on cheap-tier; pitch always overrides to Opus.
+    // Retrieve product knowledge ONCE per inbound — the same query
+    // (most recent inbound body) is the right anchor for both
+    // engagement and pitch composers.
+    const inboundQuery = (msg.bodyText ?? '').slice(0, 2000);
+    const knowledge =
+      action.stage === 'engagement' || action.stage === 'pitch'
+        ? await buildProductKnowledgeBlock(
+            ctx,
+            product.id,
+            inboundQuery,
+            { topK: action.stage === 'pitch' ? 4 : 2, stageHint: action.stage },
+          )
+        : { formatted: '', chunkCount: 0, topSimilarity: 0 };
+
     let verdict: DraftVerdict;
     if (action.stage === 'pitch') {
       const tier = await getStageProvider(ctx, 'pitch');
@@ -294,6 +309,7 @@ export async function handleClassifiedReply(
         tier.provider,
         null, // research enrichment can be wired in later
         tier.model,
+        knowledge.formatted || null,
       );
     } else if (action.stage === 'closing') {
       const tier = await getStageProvider(ctx, 'closing');
@@ -314,6 +330,7 @@ export async function handleClassifiedReply(
         { channel, language },
         tier.provider,
         tier.model,
+        knowledge.formatted || null,
       );
     }
 

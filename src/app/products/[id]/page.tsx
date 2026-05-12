@@ -22,6 +22,7 @@ import {
   type AngleStage,
   type SuggesterVendor,
 } from '@/lib/services/product-angle-suggester';
+import { getProductKnowledgeCoverage } from '@/lib/services/outreach-knowledge';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { ProductFields, readArrayField, readNullableString } from '../_form';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -195,6 +196,11 @@ export default async function EditProductPage({
         <h1>{profile.name}</h1>
         {!profile.active ? <p className="badge">Archived</p> : null}
 
+        <KnowledgeCoverageBadge
+          workspaceId={ctx.workspaceId}
+          productProfileId={id}
+        />
+
         {sp.autofill === 'ok' ? (
           <div
             className={
@@ -310,4 +316,42 @@ function hasThinSource(sizes: string | undefined): boolean {
     if (Number.isFinite(len) && len < 500) return true;
   }
   return false;
+}
+
+async function KnowledgeCoverageBadge({
+  workspaceId,
+  productProfileId,
+}: {
+  workspaceId: bigint;
+  productProfileId: bigint;
+}) {
+  const coverage = await getProductKnowledgeCoverage(
+    { workspaceId },
+    productProfileId,
+  );
+  if (coverage.docs === 0 && coverage.chunks === 0) {
+    return (
+      <p className="muted" style={{ marginTop: '0.25rem', fontSize: '0.9em' }}>
+        <span className="badge">no knowledge yet</span>{' '}
+        Engagement + pitch drafts will run without RAG context. Upload
+        datasheets / case studies on <Link href="/knowledge">/knowledge</Link> and
+        tag them to this product to enrich those stages.
+      </p>
+    );
+  }
+  return (
+    <p className="muted" style={{ marginTop: '0.25rem', fontSize: '0.9em' }}>
+      <span
+        className="badge"
+        style={{
+          background: 'oklch(0.85 0.14 145)',
+          color: 'oklch(0.2 0 0)',
+        }}
+      >
+        {coverage.docs} source{coverage.docs === 1 ? '' : 's'} · {coverage.chunks} chunk{coverage.chunks === 1 ? '' : 's'} indexed
+      </span>{' '}
+      — engagement + pitch composers will retrieve the top-k matching
+      passages on each draft.
+    </p>
+  );
 }
