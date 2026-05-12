@@ -440,6 +440,11 @@ export async function getAIProviderForCtx(
   const id = active.id;
   if (id === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
+  const { getProviderSettings } = await import('@/lib/services/provider-settings');
+  // Workspace-selected model wins; otherwise fall back to env AI_MODEL,
+  // otherwise the provider's built-in default kicks in.
+  const settings = await getProviderSettings(ctx);
+  const wsModel = settings.aiModel?.trim() || undefined;
   if (id === 'openai') {
     const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
     if (!resolved) {
@@ -449,7 +454,7 @@ export async function getAIProviderForCtx(
     }
     return new OpenAIAIProvider({
       apiKey: resolved.key,
-      model: process.env.AI_MODEL,
+      model: wsModel ?? process.env.AI_MODEL,
       baseUrl: process.env.OPENAI_BASE_URL,
     });
   }
@@ -466,7 +471,7 @@ export async function getAIProviderForCtx(
     }
     return new AnthropicAIProvider({
       apiKey: resolved.key,
-      model: process.env.AI_MODEL,
+      model: wsModel ?? process.env.AI_MODEL,
       baseUrl: process.env.ANTHROPIC_BASE_URL,
     });
   }

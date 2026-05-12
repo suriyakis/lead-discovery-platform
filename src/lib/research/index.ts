@@ -185,6 +185,9 @@ export async function getResearchProviderForCtx(
   const id = active.id;
   if (id === 'mock') return new MockResearchProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
+  const { getProviderSettings } = await import('@/lib/services/provider-settings');
+  const settings = await getProviderSettings(ctx);
+  const wsModel = settings.researchModel?.trim() || undefined;
   if (id === 'gemini') {
     const resolved = await resolveProviderKey(ctx, 'gemini.apiKey', 'GEMINI_API_KEY');
     if (!resolved) {
@@ -194,7 +197,7 @@ export async function getResearchProviderForCtx(
     }
     return new GeminiResearchProvider({
       apiKey: resolved.key,
-      model: process.env.RESEARCH_MODEL,
+      model: wsModel ?? process.env.RESEARCH_MODEL,
     });
   }
   if (id === 'perplexity') {
@@ -210,7 +213,7 @@ export async function getResearchProviderForCtx(
     }
     return new PerplexityResearchProvider({
       apiKey: resolved.key,
-      model: process.env.RESEARCH_MODEL,
+      model: wsModel ?? process.env.RESEARCH_MODEL,
     });
   }
   throw new Error(`Unknown research provider id from cascade: ${id}`);

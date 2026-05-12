@@ -155,10 +155,18 @@ export const workspaceProviderSettings = pgTable('workspace_provider_settings', 
     .references(() => workspaces.id, { onDelete: 'cascade' }),
   /** 'mock' | 'openai' | 'anthropic' — null inherits env. */
   aiProvider: text('ai_provider'),
+  /** Specific model id for the chosen AI provider, e.g. 'gpt-5-nano'
+   *  for openai, 'claude-opus-4-7' for anthropic. NULL inherits the
+   *  provider's built-in default model. Validated against the per-
+   *  vendor catalog in provider-settings.ts at write time. */
+  aiModel: text('ai_model'),
   /** 'mock' | 'openai' — null inherits env. */
   embeddingProvider: text('embedding_provider'),
   /** 'mock' | 'gemini' | 'perplexity' — null inherits env. */
   researchProvider: text('research_provider'),
+  /** Specific model id for the chosen research provider — e.g.
+   *  'gemini-2.5-flash' or 'sonar-pro'. NULL inherits default. */
+  researchModel: text('research_model'),
   /** 'mock' | 'serpapi' — null inherits env. */
   searchProvider: text('search_provider'),
   updatedBy: text('updated_by'),

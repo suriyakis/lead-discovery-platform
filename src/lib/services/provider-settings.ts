@@ -51,6 +51,52 @@ export type ResearchProviderId = (typeof ALLOWED_RESEARCH_PROVIDERS)[number];
 export const ALLOWED_SEARCH_PROVIDERS = ['mock', 'serpapi'] as const;
 export type SearchProviderId = (typeof ALLOWED_SEARCH_PROVIDERS)[number];
 
+// ─── Per-vendor model catalogs ─────────────────────────────────────────
+//
+// Drop-in additions to these arrays are safe — the validator just
+// checks membership before writing. Keep the most capable model first
+// so the UI dropdown shows it as a sensible default.
+
+export const AI_MODELS: Record<string, readonly string[]> = {
+  openai: [
+    'gpt-5',
+    'gpt-5-mini',
+    'gpt-5-nano',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'o3',
+    'o3-mini',
+  ],
+  anthropic: [
+    'claude-opus-4-7',
+    'claude-opus-4',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4',
+    'claude-haiku-4-5',
+  ],
+  mock: ['mock-1'],
+};
+
+export const RESEARCH_MODELS: Record<string, readonly string[]> = {
+  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  perplexity: ['sonar-pro', 'sonar', 'sonar-reasoning'],
+  mock: ['mock-1'],
+};
+
+/** True when `model` is in the catalog for the given provider. NULL
+ *  always passes — null means "let the provider use its default". */
+export function isValidAiModel(provider: string, model: string | null): boolean {
+  if (model === null) return true;
+  const catalog = AI_MODELS[provider];
+  return catalog ? catalog.includes(model) : true;
+}
+
+export function isValidResearchModel(provider: string, model: string | null): boolean {
+  if (model === null) return true;
+  const catalog = RESEARCH_MODELS[provider];
+  return catalog ? catalog.includes(model) : true;
+}
+
 // ─── Read ─────────────────────────────────────────────────────────────
 
 /**
@@ -62,8 +108,10 @@ export async function getProviderSettings(
 ): Promise<{
   workspaceId: bigint;
   aiProvider: string | null;
+  aiModel: string | null;
   embeddingProvider: string | null;
   researchProvider: string | null;
+  researchModel: string | null;
   searchProvider: string | null;
 }> {
   const [row] = await db
@@ -75,16 +123,20 @@ export async function getProviderSettings(
     return {
       workspaceId: row.workspaceId,
       aiProvider: row.aiProvider,
+      aiModel: row.aiModel,
       embeddingProvider: row.embeddingProvider,
       researchProvider: row.researchProvider,
+      researchModel: row.researchModel,
       searchProvider: row.searchProvider,
     };
   }
   return {
     workspaceId: ctx.workspaceId,
     aiProvider: null,
+    aiModel: null,
     embeddingProvider: null,
     researchProvider: null,
+    researchModel: null,
     searchProvider: null,
   };
 }
@@ -125,8 +177,10 @@ export async function resolveActiveProvider(
 
 export interface UpdateProviderSettingsInput {
   aiProvider?: AiProviderId | null;
+  aiModel?: string | null;
   embeddingProvider?: EmbeddingProviderId | null;
   researchProvider?: ResearchProviderId | null;
+  researchModel?: string | null;
   searchProvider?: SearchProviderId | null;
 }
 
@@ -172,11 +226,35 @@ export async function updateProviderSettings(
     }
   }
 
+  // Validate model fields against the chosen vendor's catalog. When
+  // the vendor isn't being updated in the same call, we resolve the
+  // current effective vendor and validate against that.
+  if (input.aiModel !== undefined && input.aiModel !== null) {
+    const effectiveAi =
+      input.aiProvider !== undefined && input.aiProvider !== null
+        ? input.aiProvider
+        : (await getProviderSettings(ctx)).aiProvider ?? 'openai';
+    if (!isValidAiModel(effectiveAi, input.aiModel)) {
+      throw invalid(`unknown ${effectiveAi} model: ${input.aiModel}`);
+    }
+  }
+  if (input.researchModel !== undefined && input.researchModel !== null) {
+    const effectiveResearch =
+      input.researchProvider !== undefined && input.researchProvider !== null
+        ? input.researchProvider
+        : (await getProviderSettings(ctx)).researchProvider ?? 'gemini';
+    if (!isValidResearchModel(effectiveResearch, input.researchModel)) {
+      throw invalid(`unknown ${effectiveResearch} model: ${input.researchModel}`);
+    }
+  }
+
   // Upsert. Build update set from the keys actually present.
   const set: Partial<WorkspaceProviderSettings> = { updatedAt: new Date(), updatedBy: ctx.userId };
   if (input.aiProvider !== undefined) set.aiProvider = input.aiProvider;
+  if (input.aiModel !== undefined) set.aiModel = input.aiModel;
   if (input.embeddingProvider !== undefined) set.embeddingProvider = input.embeddingProvider;
   if (input.researchProvider !== undefined) set.researchProvider = input.researchProvider;
+  if (input.researchModel !== undefined) set.researchModel = input.researchModel;
   if (input.searchProvider !== undefined) set.searchProvider = input.searchProvider;
 
   const [row] = await db
@@ -184,8 +262,10 @@ export async function updateProviderSettings(
     .values({
       workspaceId: ctx.workspaceId,
       aiProvider: input.aiProvider ?? null,
+      aiModel: input.aiModel ?? null,
       embeddingProvider: input.embeddingProvider ?? null,
       researchProvider: input.researchProvider ?? null,
+      researchModel: input.researchModel ?? null,
       searchProvider: input.searchProvider ?? null,
       updatedBy: ctx.userId,
     })
@@ -207,8 +287,10 @@ export async function updateProviderSettings(
     entityId: ctx.workspaceId,
     payload: {
       ai: row.aiProvider,
+      aiModel: row.aiModel,
       embedding: row.embeddingProvider,
       research: row.researchProvider,
+      researchModel: row.researchModel,
       search: row.searchProvider,
     },
   });

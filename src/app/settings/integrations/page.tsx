@@ -20,11 +20,13 @@ import { getAIProviderForCtx } from '@/lib/ai';
 import { getEmbeddingProviderForCtx } from '@/lib/embeddings';
 import { getResearchProviderForCtx } from '@/lib/research';
 import {
+  AI_MODELS,
   ALLOWED_AI_PROVIDERS,
   ALLOWED_EMBEDDING_PROVIDERS,
   ALLOWED_RESEARCH_PROVIDERS,
   ALLOWED_SEARCH_PROVIDERS,
   ProviderSettingsError,
+  RESEARCH_MODELS,
   getProviderSettings,
   resolveActiveProvider,
   updateProviderSettings,
@@ -304,18 +306,27 @@ export default async function IntegrationsPage({
     'use server';
     const c = await getWorkspaceContext();
     const ai = String(formData.get('aiProvider') ?? '');
+    const aiModelRaw = String(formData.get('aiModel') ?? '').trim();
     const embedding = String(formData.get('embeddingProvider') ?? '');
     const research = String(formData.get('researchProvider') ?? '');
+    const researchModelRaw = String(formData.get('researchModel') ?? '').trim();
     const search = String(formData.get('searchProvider') ?? '');
     const aiPick = ai === '__env__' ? null : (ai as AiProviderId);
+    const aiModelPick = aiModelRaw === '' || aiModelRaw === '__default__' ? null : aiModelRaw;
     const embeddingPick = embedding === '__env__' ? null : (embedding as EmbeddingProviderId);
     const researchPick = research === '__env__' ? null : (research as ResearchProviderId);
+    const researchModelPick =
+      researchModelRaw === '' || researchModelRaw === '__default__'
+        ? null
+        : researchModelRaw;
     const searchPick = search === '__env__' ? null : (search as SearchProviderId);
     try {
       await updateProviderSettings(c, {
         aiProvider: aiPick,
+        aiModel: aiModelPick,
         embeddingProvider: embeddingPick,
         researchProvider: researchPick,
+        researchModel: researchModelPick,
         searchProvider: searchPick,
       });
       redirect('/settings/integrations?ok=providers-saved');
@@ -473,9 +484,15 @@ export default async function IntegrationsPage({
           <p className="muted">
             Pick which provider drives each capability for this workspace.
             Choose <em>inherit env default</em> to fall back to the
-            platform-level setting (`AI_PROVIDER` / `RESEARCH_PROVIDER`
-            / etc.). The actual API key for the chosen provider is set
-            in the per-provider sections below.
+            platform-level setting. The actual API key for the chosen
+            provider is set in the per-provider sections below.
+          </p>
+          <p className="muted">
+            <strong>Web search</strong> = Google-style SERP results
+            (SerpAPI). <strong>Research grounding</strong> = LLM-with-
+            citations (Gemini grounded search or Perplexity Sonar). They
+            are separate pipelines — the discovery connector uses Web
+            search; the per-lead research pre-pass uses Research grounding.
           </p>
           {isAdmin ? (
             <form action={saveActiveProviders} className="active-providers-grid">
@@ -487,6 +504,13 @@ export default async function IntegrationsPage({
                 resolved={aiActive}
                 options={ALLOWED_AI_PROVIDERS}
               />
+              <ModelSelect
+                label="AI model"
+                name="aiModel"
+                workspaceValue={providerSettings.aiModel}
+                activeProviderId={aiActive.id}
+                catalog={AI_MODELS}
+              />
               <ProviderSelect
                 label="Embedding provider"
                 name="embeddingProvider"
@@ -496,15 +520,22 @@ export default async function IntegrationsPage({
                 options={ALLOWED_EMBEDDING_PROVIDERS}
               />
               <ProviderSelect
-                label="Research provider"
+                label="Research grounding provider"
                 name="researchProvider"
                 workspaceValue={providerSettings.researchProvider}
                 envFallback={researchProviderEnv}
                 resolved={researchActive}
                 options={ALLOWED_RESEARCH_PROVIDERS}
               />
+              <ModelSelect
+                label="Research model"
+                name="researchModel"
+                workspaceValue={providerSettings.researchModel}
+                activeProviderId={researchActive.id}
+                catalog={RESEARCH_MODELS}
+              />
               <ProviderSelect
-                label="Search provider"
+                label="Web search provider"
                 name="searchProvider"
                 workspaceValue={providerSettings.searchProvider}
                 envFallback={process.env.SEARCH_PROVIDER ?? 'mock'}
@@ -1014,6 +1045,56 @@ function ProviderSelect({
         {options.map((opt) => (
           <option key={opt} value={opt}>
             {opt}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ModelSelect({
+  label,
+  name,
+  workspaceValue,
+  activeProviderId,
+  catalog,
+}: {
+  label: string;
+  name: string;
+  workspaceValue: string | null;
+  activeProviderId: string;
+  catalog: Record<string, readonly string[]>;
+}) {
+  const models = catalog[activeProviderId] ?? [];
+  const value = workspaceValue ?? '__default__';
+  if (models.length === 0) {
+    return (
+      <label className="provider-select">
+        <span>
+          {label}{' '}
+          <span className="muted small">
+            (provider <code>{activeProviderId}</code> has no model picker)
+          </span>
+        </span>
+        <select name={name} disabled defaultValue="__default__">
+          <option value="__default__">— not applicable —</option>
+        </select>
+      </label>
+    );
+  }
+  return (
+    <label className="provider-select">
+      <span>
+        {label}{' '}
+        <span className="muted small">
+          (for <code>{activeProviderId}</code>)
+        </span>
+      </span>
+      <select name={name} defaultValue={value}>
+        <option value="__default__">— provider default —</option>
+        {models.map((m) => (
+          <option key={m} value={m}>
+            {m}
           </option>
         ))}
       </select>

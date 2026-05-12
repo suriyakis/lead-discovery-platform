@@ -239,6 +239,13 @@
       "when": 1778404429771,
       "tag": "0033_parched_stark_industries",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1778565298700,
+      "tag": "0034_real_callisto",
+      "breakpoints": true
     }
   ]
 }
