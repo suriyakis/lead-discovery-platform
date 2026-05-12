@@ -23,6 +23,7 @@ import {
   type SuggesterVendor,
 } from '@/lib/services/product-angle-suggester';
 import { getProductKnowledgeCoverage } from '@/lib/services/outreach-knowledge';
+import { listKnowledgeSources } from '@/lib/services/knowledge-sources';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { ProductFields, readArrayField, readNullableString } from '../_form';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -196,7 +197,7 @@ export default async function EditProductPage({
         <h1>{profile.name}</h1>
         {!profile.active ? <p className="badge">Archived</p> : null}
 
-        <KnowledgeCoverageBadge
+        <KnowledgeSection
           workspaceId={ctx.workspaceId}
           productProfileId={id}
         />
@@ -318,40 +319,123 @@ function hasThinSource(sizes: string | undefined): boolean {
   return false;
 }
 
-async function KnowledgeCoverageBadge({
+async function KnowledgeSection({
   workspaceId,
   productProfileId,
 }: {
   workspaceId: bigint;
   productProfileId: bigint;
 }) {
-  const coverage = await getProductKnowledgeCoverage(
-    { workspaceId },
-    productProfileId,
-  );
-  if (coverage.docs === 0 && coverage.chunks === 0) {
-    return (
-      <p className="muted" style={{ marginTop: '0.25rem', fontSize: '0.9em' }}>
-        <span className="badge">no knowledge yet</span>{' '}
-        Engagement + pitch drafts will run without RAG context. Upload
-        datasheets / case studies on <Link href="/knowledge">/knowledge</Link> and
-        tag them to this product to enrich those stages.
-      </p>
-    );
-  }
+  const [coverage, sources] = await Promise.all([
+    getProductKnowledgeCoverage({ workspaceId }, productProfileId),
+    listKnowledgeSources({ workspaceId }, { productProfileId, limit: 25 }),
+  ]);
+  const hasAny = coverage.docs > 0 || coverage.chunks > 0;
   return (
-    <p className="muted" style={{ marginTop: '0.25rem', fontSize: '0.9em' }}>
-      <span
-        className="badge"
+    <section
+      style={{
+        marginTop: '0.5rem',
+        marginBottom: '1.25rem',
+        padding: '0.75rem 1rem',
+        borderRadius: '0.6rem',
+        background: 'oklch(0.99 0 0 / 0.5)',
+        border: '1px solid oklch(0.9 0 0)',
+      }}
+    >
+      <div
         style={{
-          background: 'oklch(0.85 0.14 145)',
-          color: 'oklch(0.2 0 0)',
+          display: 'flex',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '0.5rem',
+          marginBottom: hasAny ? '0.5rem' : 0,
         }}
       >
-        {coverage.docs} source{coverage.docs === 1 ? '' : 's'} · {coverage.chunks} chunk{coverage.chunks === 1 ? '' : 's'} indexed
-      </span>{' '}
-      — engagement + pitch composers will retrieve the top-k matching
-      passages on each draft.
-    </p>
+        <strong style={{ fontSize: '0.95em' }}>Knowledge for this product</strong>
+        {hasAny ? (
+          <span
+            className="badge"
+            style={{
+              background: 'oklch(0.85 0.14 145)',
+              color: 'oklch(0.2 0 0)',
+            }}
+          >
+            {coverage.docs} source{coverage.docs === 1 ? '' : 's'} · {coverage.chunks} chunk{coverage.chunks === 1 ? '' : 's'} indexed
+          </span>
+        ) : (
+          <span className="badge">no knowledge yet</span>
+        )}
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: '0.35rem' }}>
+          <Link
+            href={`/knowledge/new?product=${productProfileId}&kind=document`}
+            className="primary-btn"
+            style={{ fontSize: '0.85em', padding: '0.3rem 0.7rem' }}
+          >
+            Upload document
+          </Link>
+          <Link
+            href={`/knowledge/new?product=${productProfileId}&kind=url`}
+            className="ghost-btn"
+            style={{ fontSize: '0.85em', padding: '0.3rem 0.7rem' }}
+          >
+            Add URL
+          </Link>
+          <Link
+            href={`/knowledge/new?product=${productProfileId}&kind=text`}
+            className="ghost-btn"
+            style={{ fontSize: '0.85em', padding: '0.3rem 0.7rem' }}
+          >
+            Paste text
+          </Link>
+        </span>
+      </div>
+      {hasAny ? (
+        <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.85em' }}>
+          Engagement + pitch drafts retrieve the top-k matching passages from
+          these sources on every draft.
+        </p>
+      ) : (
+        <p className="muted" style={{ margin: 0, fontSize: '0.85em' }}>
+          Upload datasheets, case studies, or paste FAQ text — engagement +
+          pitch drafts will then quote the most relevant facts on every
+          conversation.
+        </p>
+      )}
+      {sources.length > 0 ? (
+        <ul
+          style={{
+            listStyle: 'none',
+            padding: 0,
+            margin: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.25rem',
+          }}
+        >
+          {sources.map(({ source }) => (
+            <li
+              key={source.id.toString()}
+              style={{
+                padding: '0.35rem 0.5rem',
+                borderRadius: '0.3rem',
+                background: 'oklch(0.97 0 0)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                fontSize: '0.88em',
+              }}
+            >
+              <span className="badge" style={{ fontSize: '0.75em' }}>{source.kind}</span>
+              <Link href={`/knowledge/${source.id}`} style={{ flex: 1 }}>
+                {source.title}
+              </Link>
+              <span className="muted" style={{ fontSize: '0.78em' }}>
+                {source.purposeCategory}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
   );
 }
