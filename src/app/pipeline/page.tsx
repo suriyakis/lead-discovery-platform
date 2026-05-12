@@ -15,6 +15,7 @@ import {
 } from '@/lib/services/pipeline';
 import { hintsForLead, type Hint } from '@/lib/services/hints';
 import { HintBadgeList } from '@/components/HintBadge';
+import { EmptyState } from '@/components/EmptyState';
 import type { PipelineState } from '@/lib/db/schema/pipeline';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
@@ -118,6 +119,8 @@ export default async function PipelinePage({
           </p>
         </header>
 
+        <FunnelStrip counts={counts} />
+
         <form className="leads-controls" method="get">
           <label>
             View
@@ -193,11 +196,12 @@ export default async function PipelinePage({
         ) : (
           <section>
             {leads.length === 0 ? (
-              <p className="muted">
-                No leads in this view. Leads are promoted from{' '}
-                <Link href="/leads">/leads</Link> via the &ldquo;Promote to
-                pipeline&rdquo; action on a qualification.
-              </p>
+              <EmptyState
+                title="No leads in this view"
+                hint="Leads are promoted from the Leads page via Promote to pipeline on a qualified record. Try widening filters above."
+                ctaLabel="Open leads"
+                ctaHref="/leads"
+              />
             ) : (
               <ul className="lead-list">
                 {leads.map(({ lead, product, reviewItem }) => {
@@ -214,7 +218,13 @@ export default async function PipelinePage({
                         <span className={badgeFor(lead.state)}>
                           {lead.state.replace(/_/g, ' ')}
                         </span>
-                        <span className={stageBadge(lead.currentStage)}>
+                        <span
+                          className="badge"
+                          style={{
+                            background: stageBg(lead.currentStage),
+                            color: 'oklch(0.2 0 0)',
+                          }}
+                        >
                           {lead.currentStage ?? 'discovery'}
                         </span>
                         <span className="muted">
@@ -245,10 +255,19 @@ export default async function PipelinePage({
   );
 }
 
-function stageBadge(stage: string | null | undefined): string {
-  if (stage === 'pitch') return 'badge badge-good';
-  if (stage === 'closing') return 'badge badge-bad';
-  return 'badge';
+function stageBg(stage: string | null | undefined): string {
+  switch (stage) {
+    case 'discovery':
+      return 'oklch(0.85 0.13 240)';
+    case 'engagement':
+      return 'oklch(0.85 0.12 195)';
+    case 'pitch':
+      return 'oklch(0.85 0.14 145)';
+    case 'closing':
+      return 'oklch(0.86 0 0)';
+    default:
+      return 'oklch(0.88 0 0)';
+  }
 }
 
 function badgeFor(state: PipelineState): string {
@@ -257,4 +276,82 @@ function badgeFor(state: PipelineState): string {
     return 'badge badge-good';
   }
   return 'badge';
+}
+
+/** Horizontal funnel at the top of /pipeline. Each bar is also a link
+ *  that re-applies the page filters with state=X so the operator can
+ *  drill in with one click. Cold → warm sequential colors mirror the
+ *  conversation arc. */
+function FunnelStrip({ counts }: { counts: Record<PipelineState, number> }) {
+  const stages: Array<{ key: PipelineState; label: string }> = [
+    { key: 'relevant', label: 'Relevant' },
+    { key: 'contacted', label: 'Contacted' },
+    { key: 'replied', label: 'Replied' },
+    { key: 'contact_identified', label: 'Identified' },
+    { key: 'qualified', label: 'Qualified' },
+    { key: 'handed_over', label: 'Handed over' },
+    { key: 'synced_to_crm', label: 'Synced' },
+  ];
+  const max = Math.max(1, ...stages.map((s) => counts[s.key]));
+  return (
+    <section
+      style={{
+        margin: '0 0 1.25rem',
+        padding: '0.75rem 1rem',
+        borderRadius: '0.6rem',
+        background: 'oklch(0.98 0 0 / 0.6)',
+        border: '1px solid oklch(0.9 0 0)',
+      }}
+    >
+      <p className="muted" style={{ margin: '0 0 0.6rem', fontSize: '0.85em', fontWeight: 500 }}>
+        Pipeline funnel — click a bar to filter
+      </p>
+      <div style={{ display: 'grid', gap: '0.3rem' }}>
+        {stages.map(({ key, label }) => {
+          const n = counts[key];
+          const pct = Math.round((n / max) * 100);
+          return (
+            <Link
+              key={key}
+              href={`/pipeline?state=${key}`}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '7em 1fr 3em',
+                gap: '0.5rem',
+                alignItems: 'center',
+                padding: '0.15rem 0.25rem',
+                borderRadius: '0.3rem',
+                textDecoration: 'none',
+                color: 'inherit',
+              }}
+            >
+              <span style={{ fontSize: '0.82em', opacity: 0.85 }}>{label}</span>
+              <div style={{ height: '0.65rem', background: 'oklch(0.93 0 0)', borderRadius: '0.3rem', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: `${pct}%`,
+                    height: '100%',
+                    background: stateColor(key),
+                    borderRadius: '0.3rem',
+                  }}
+                />
+              </div>
+              <span style={{ fontSize: '0.9em', fontWeight: 600, textAlign: 'right' }}>{n}</span>
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function stateColor(state: PipelineState): string {
+  if (state === 'relevant') return 'oklch(0.7 0.15 240)';
+  if (state === 'contacted') return 'oklch(0.72 0.13 200)';
+  if (state === 'replied') return 'oklch(0.74 0.13 175)';
+  if (state === 'contact_identified') return 'oklch(0.76 0.13 150)';
+  if (state === 'qualified') return 'oklch(0.78 0.16 130)';
+  if (state === 'handed_over') return 'oklch(0.78 0.18 110)';
+  if (state === 'synced_to_crm') return 'oklch(0.78 0.18 95)';
+  return 'oklch(0.7 0 0)';
 }

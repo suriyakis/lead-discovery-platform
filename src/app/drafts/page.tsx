@@ -14,6 +14,7 @@ import {
 } from '@/lib/services/outreach';
 import { hintsForDraft, type Hint } from '@/lib/services/hints';
 import { HintBadgeList } from '@/components/HintBadge';
+import { EmptyState } from '@/components/EmptyState';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
@@ -112,10 +113,12 @@ export default async function DraftsPage({
 
         <section>
           {drafts.length === 0 ? (
-            <p className="muted">
-              No drafts in this view. Open a review item and click &ldquo;Generate
-              draft&rdquo; against one of your active products.
-            </p>
+            <EmptyState
+              title="No drafts in this view"
+              hint="Drafts appear here when a lead is qualified or replies. Open a qualified lead and click Generate draft."
+              ctaLabel="Open pipeline"
+              ctaHref="/pipeline"
+            />
           ) : (
             <ul className="lead-list">
               {drafts.map(({ draft, product, sourceRecord, reviewItem }) => {
@@ -133,7 +136,13 @@ export default async function DraftsPage({
                       <span className={statusBadgeClass(draft.status)}>
                         {draft.status.replace('_', ' ')}
                       </span>
-                      <span className={stageBadgeClass(draft.stage)}>
+                      <span
+                        className="badge"
+                        style={{
+                          background: stageBg(draft.stage),
+                          color: 'oklch(0.2 0 0)',
+                        }}
+                      >
                         {draft.stage}
                       </span>
                       <span className="muted">→ {product.name}</span>
@@ -198,19 +207,20 @@ function shortModel(model: string): string {
   return model.length > 16 ? `${model.slice(0, 15)}…` : model;
 }
 
-function stageBadgeClass(stage: string): string {
-  // discovery = first cold email; pitch = full product; closing = terminal.
-  // Color coding mirrors the conversation arc.
+// Sequential color scale for outreach stages — cold (discovery) →
+// warm (pitch) → terminal (closing). Mirrors stage progression so
+// visual scanning is immediate.
+function stageBg(stage: string): string {
   switch (stage) {
     case 'discovery':
-      return 'badge';
+      return 'oklch(0.85 0.13 240)'; // cold blue
     case 'engagement':
-      return 'badge badge-good';
+      return 'oklch(0.85 0.12 195)'; // teal
     case 'pitch':
-      return 'badge badge-good';
+      return 'oklch(0.85 0.14 145)'; // green-warm
     case 'closing':
-      return 'badge badge-bad';
+      return 'oklch(0.86 0 0)'; // gray terminal
     default:
-      return 'badge';
+      return 'oklch(0.88 0 0)';
   }
 }
