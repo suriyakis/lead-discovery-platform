@@ -38,7 +38,7 @@ import {
   type ThreadMessage,
 } from './outreach-engine';
 import { decideOutreachAction, type OutreachAction } from './outreach-decision';
-import type { ReplyClassification } from './reply-classifier';
+import { getReplyAutoActions, type ReplyClassification } from './reply-classifier';
 import { transition as pipelineTransition } from './pipeline';
 import { addSuppression } from './suppression';
 import { resolveProfileLanguage } from '@/lib/i18n/language';
@@ -135,11 +135,17 @@ export async function handleClassifiedReply(
     },
   });
 
-  // close_and_suppress: terminal. The existing analyseReply auto-action
-  // path also runs for unsubscribe/bounce — we defensively run here so
-  // the outreach side stays consistent even if the operator turned off
-  // the workspace-level reply_auto_actions flags.
+  // close_and_suppress: terminal. Unsubscribe/bounce always close +
+  // suppress (deliverability + legal). Decline (negative reply) honors
+  // the workspace's autoCloseNegative flag so an operator who wants to
+  // hand-write a follow-up can keep the lead open.
   if (action.kind === 'close_and_suppress') {
+    if (action.reason === 'decline') {
+      const settings = await getReplyAutoActions(ctx);
+      if (!settings.autoCloseNegative) {
+        return { action, draftIds: [], forkedThreadStateId: null };
+      }
+    }
     if (action.reason === 'unsubscribe' || action.reason === 'bounce') {
       try {
         await addSuppression(ctx, {

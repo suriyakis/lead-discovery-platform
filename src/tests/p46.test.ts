@@ -8,7 +8,7 @@ import '@/lib/connectors/mock';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
-import { leadResearch } from '@/lib/db/schema/pipeline';
+import { leadResearch, qualifiedLeads } from '@/lib/db/schema/pipeline';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { reviewItems } from '@/lib/db/schema/review';
 import {
@@ -210,6 +210,13 @@ describe('generateOutreachDraft with enrichDraftsWithResearch=true', () => {
       contactEmail: 'cto@acme.test',
       contactName: 'CTO',
     });
+    // Move the lead past discovery so the engagement composer (which
+    // consumes researchContext) runs. Discovery is a category-only
+    // ask-for-the-right-person email and intentionally skips research.
+    await db
+      .update(qualifiedLeads)
+      .set({ currentStage: 'engagement' })
+      .where(eq(qualifiedLeads.id, lead.id));
 
     // Inject stub research provider that yields a deterministic answer.
     const researchStub: IResearchProvider = {
