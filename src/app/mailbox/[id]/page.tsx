@@ -15,6 +15,7 @@ import {
   MailboxServiceError,
   archiveMailbox,
   getMailbox,
+  reactivateMailbox,
   testMailboxConnection,
 } from '@/lib/services/mailbox';
 import { listThreads, syncInbound } from '@/lib/services/mail';
@@ -101,6 +102,21 @@ export default async function MailboxDetail({
     const c = await getWorkspaceContext();
     await archiveMailbox(c, id);
     redirect('/mailbox');
+  }
+
+  async function reactivate() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await reactivateMailbox(c, id);
+      redirect(
+        `/mailbox/${id}?message=${encodeURIComponent('Mailbox reactivated — next IMAP tick will retry.')}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'reactivate failed';
+      redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
 
   async function saveSendingPolicy(formData: FormData) {
@@ -199,7 +215,43 @@ export default async function MailboxDetail({
                 <dd className="warn">{mailbox.lastError}</dd>
               </>
             ) : null}
+            {mailbox.imapHost && mailbox.imapConsecutiveFailures > 0 ? (
+              <>
+                <dt>Consecutive failures</dt>
+                <dd>
+                  <span className="badge badge-bad">{mailbox.imapConsecutiveFailures}</span>
+                  {mailbox.imapNextSyncAfter ? (
+                    <span className="muted">
+                      {' '}
+                      · next retry {mailbox.imapNextSyncAfter.toLocaleString()}
+                    </span>
+                  ) : null}
+                </dd>
+              </>
+            ) : null}
+            {mailbox.imapHost && mailbox.imapEmptySyncs >= 5 ? (
+              <>
+                <dt>Adaptive poll</dt>
+                <dd>
+                  <span className="badge">quiet — 15 min cadence</span>
+                  <span className="muted">
+                    {' '}
+                    · {mailbox.imapEmptySyncs} consecutive empty syncs; reverts
+                    to 2 min on next inbound.
+                  </span>
+                </dd>
+              </>
+            ) : null}
           </dl>
+          {mailbox.status === 'failing' ? (
+            <p className="form-error">
+              IMAP authentication is failing — the scheduled tick has been
+              suspended to prevent the upstream server&apos;s fail2ban /
+              rate-limit from banning agregat&apos;s IP. Fix the credentials
+              or IMAP config (under <Link href={`/mailbox/${id}/edit`}>Edit settings</Link>),
+              then click <strong>Reactivate</strong> to resume polling.
+            </p>
+          ) : null}
           <div className="action-row">
             <form action={runTest}>
               <button type="submit">Test connection</button>
@@ -207,6 +259,13 @@ export default async function MailboxDetail({
             {mailbox.imapHost ? (
               <form action={runSync}>
                 <button type="submit">Sync inbound</button>
+              </form>
+            ) : null}
+            {mailbox.status === 'failing' && canAdminWorkspace(ctx) ? (
+              <form action={reactivate}>
+                <button type="submit" className="primary-btn">
+                  Reactivate
+                </button>
               </form>
             ) : null}
           </div>

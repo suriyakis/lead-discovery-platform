@@ -71,6 +71,22 @@ export const mailboxes = pgTable(
     lastSyncedAt: timestamp('last_synced_at', { mode: 'date', withTimezone: true }),
     /** Last error message from a failing send/receive. Cleared on success. */
     lastError: text('last_error'),
+    /** Phase 51: consecutive IMAP tick failures since the last success.
+     *  Drives exponential backoff so a stale-password mailbox doesn't
+     *  pound the upstream server every 2 minutes (fail2ban bait). */
+    imapConsecutiveFailures: integer('imap_consecutive_failures')
+      .notNull()
+      .default(0),
+    /** Phase 51: when the next IMAP tick is allowed. Set to now + 2^n*2min
+     *  on transient failure (cap 60 min); cleared on success. */
+    imapNextSyncAfter: timestamp('imap_next_sync_after', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+    /** Phase 51: count of consecutive ticks that fetched zero new
+     *  messages. After N=5 we stretch the poll interval so quiet
+     *  mailboxes stop pounding the server. */
+    imapEmptySyncs: integer('imap_empty_syncs').notNull().default(0),
 
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',

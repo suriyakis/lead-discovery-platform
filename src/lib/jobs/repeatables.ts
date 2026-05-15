@@ -12,7 +12,7 @@
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
 
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, lte, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
@@ -23,6 +23,11 @@ import {
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import { syncInbound } from '@/lib/services/mail';
+import {
+  classifyImapError,
+  computeBackoffMs,
+  nextSyncAfterEmpty,
+} from '@/lib/services/imap-backoff';
 import { getJobQueue, type JobHandler } from './index';
 
 export const AUTOPILOT_TICK_MS = 5 * 60 * 1000;
@@ -87,35 +92,91 @@ const handleDrainTick: JobHandler = async () => {
 
 const handleImapTick: JobHandler = async () => {
   // Active workspaces only. Inner loop selects each workspace's IMAP-
-  // enabled, status=active mailboxes.
+  // enabled, status=active mailboxes whose cooldown gate has elapsed.
   const wss = await db
     .select()
     .from(workspaces)
     .where(eq(workspaces.status, 'active'));
   let synced = 0;
   let failed = 0;
+  let skipped = 0;
+  let markedFailing = 0;
+  const now = new Date();
   for (const ws of wss) {
     const mbs = await db
       .select()
       .from(mailboxes)
-      .where(eq(mailboxes.workspaceId, ws.id));
-    const eligible = mbs.filter((m) => m.status === 'active' && m.imapHost);
+      .where(
+        and(
+          eq(mailboxes.workspaceId, ws.id),
+          eq(mailboxes.status, 'active'),
+          or(
+            isNull(mailboxes.imapNextSyncAfter),
+            lte(mailboxes.imapNextSyncAfter, now),
+          ),
+        ),
+      );
+    const eligible = mbs.filter((m) => m.imapHost);
+    skipped += mbs.length - eligible.length;
     if (eligible.length === 0) continue;
     const ctx = ownerCtx(ws.id, ws.ownerUserId);
     for (const mb of eligible) {
       try {
-        await syncInbound(ctx, mb.id);
+        const result = await syncInbound(ctx, mb.id);
+        // Success path — reset failure counter, adjust adaptive poll.
+        const nextEmpty = result.fetched === 0 ? mb.imapEmptySyncs + 1 : 0;
+        const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);
+        await db
+          .update(mailboxes)
+          .set({
+            imapConsecutiveFailures: 0,
+            imapNextSyncAfter: adaptiveNext,
+            imapEmptySyncs: nextEmpty,
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(mailboxes.id, mb.id));
         synced++;
       } catch (err) {
         failed++;
-        console.error(
-          `[imap.tick] workspace=${ws.id} mailbox=${mb.id} failed:`,
-          err instanceof Error ? err.message : err,
-        );
+        const msg = err instanceof Error ? err.message : String(err);
+        const cls = classifyImapError(err);
+        if (cls === 'auth') {
+          // Permanent — stop ticking until the operator reactivates.
+          await db
+            .update(mailboxes)
+            .set({
+              status: 'failing',
+              lastError: msg.slice(0, 2000),
+              imapNextSyncAfter: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(mailboxes.id, mb.id));
+          markedFailing++;
+          console.error(
+            `[imap.tick] workspace=${ws.id} mailbox=${mb.id} auth-failed: ${msg}`,
+          );
+        } else {
+          // Transient — exponential backoff.
+          const nextCount = mb.imapConsecutiveFailures + 1;
+          const cooldown = computeBackoffMs(nextCount);
+          await db
+            .update(mailboxes)
+            .set({
+              imapConsecutiveFailures: nextCount,
+              imapNextSyncAfter: new Date(Date.now() + cooldown),
+              lastError: msg.slice(0, 2000),
+              updatedAt: new Date(),
+            })
+            .where(eq(mailboxes.id, mb.id));
+          console.error(
+            `[imap.tick] workspace=${ws.id} mailbox=${mb.id} transient failure ${nextCount} (next in ${Math.round(cooldown / 60000)}m): ${msg}`,
+          );
+        }
       }
     }
   }
-  return { mailboxesSynced: synced, failed };
+  return { mailboxesSynced: synced, failed, skipped, markedFailing };
 };
 
 let registered = false;

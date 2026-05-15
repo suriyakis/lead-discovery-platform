@@ -271,6 +271,50 @@ export async function archiveMailbox(
   return updated;
 }
 
+/**
+ * Phase 51: bring a `failing` mailbox back to `active`. Resets the
+ * consecutive-failure counter, clears the cooldown gate, and wipes the
+ * stored lastError so the next IMAP tick re-attempts the connection.
+ * Use after fixing the underlying credential / config issue.
+ */
+export async function reactivateMailbox(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<Mailbox> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('mailbox.reactivate');
+  const existing = await loadMailbox(ctx, id);
+  if (existing.status === 'archived') {
+    throw new MailboxServiceError(
+      'cannot reactivate an archived mailbox — un-archive first',
+      'invalid_state',
+    );
+  }
+  const [updated] = await db
+    .update(mailboxes)
+    .set({
+      status: 'active',
+      imapConsecutiveFailures: 0,
+      imapNextSyncAfter: null,
+      imapEmptySyncs: 0,
+      lastError: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mailboxes.workspaceId, ctx.workspaceId),
+        eq(mailboxes.id, id),
+      ),
+    )
+    .returning();
+  if (!updated) throw invariant('mailbox reactivate returned no row');
+  await recordAuditEvent(ctx, {
+    kind: 'mailbox.reactivate',
+    entityType: 'mailbox',
+    entityId: id,
+  });
+  return updated;
+}
+
 // ---- read ----------------------------------------------------------
 
 export async function listMailboxes(

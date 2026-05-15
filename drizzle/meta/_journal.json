@@ -253,6 +253,13 @@
       "when": 1778768654515,
       "tag": "0035_groovy_unicorn",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1778879362273,
+      "tag": "0036_early_onslaught",
+      "breakpoints": true
     }
   ]
 }
