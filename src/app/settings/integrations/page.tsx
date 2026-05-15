@@ -19,12 +19,15 @@ import { getSearchProviderForCtx } from '@/lib/search';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { getEmbeddingProviderForCtx } from '@/lib/embeddings';
 import { getResearchProviderForCtx } from '@/lib/research';
+import { getVectorStorageProviderForCtx } from '@/lib/vector-storage';
+import { updateWorkspaceVectorStorageQuota } from '@/lib/services/workspace';
 import {
   AI_MODELS,
   ALLOWED_AI_PROVIDERS,
   ALLOWED_EMBEDDING_PROVIDERS,
   ALLOWED_RESEARCH_PROVIDERS,
   ALLOWED_SEARCH_PROVIDERS,
+  ALLOWED_VECTOR_STORAGE_PROVIDERS,
   ProviderSettingsError,
   RESEARCH_MODELS,
   getProviderSettings,
@@ -34,6 +37,7 @@ import {
   type EmbeddingProviderId,
   type ResearchProviderId,
   type SearchProviderId,
+  type VectorStorageProviderId,
 } from '@/lib/services/provider-settings';
 
 const SERPAPI_SECRET_KEY = 'serpapi.apiKey';
@@ -155,6 +159,16 @@ export default async function IntegrationsPage({
     'search',
     process.env.SEARCH_PROVIDER,
   );
+  const vectorStorageActive = await resolveActiveProvider(
+    ctx,
+    'vector_storage',
+    process.env.VECTOR_STORAGE_PROVIDER,
+  );
+
+  // Phase 50: workspace-level per-product byte cap for vector storage.
+  const { getWorkspace } = await import('@/lib/services/workspace');
+  const workspaceRow = await getWorkspace(ctx);
+  const vectorQuotaMb = workspaceRow.vectorStorageQuotaMbPerProduct ?? 20;
 
   // ---- server actions ----
   async function saveKey(formData: FormData) {
@@ -311,6 +325,7 @@ export default async function IntegrationsPage({
     const research = String(formData.get('researchProvider') ?? '');
     const researchModelRaw = String(formData.get('researchModel') ?? '').trim();
     const search = String(formData.get('searchProvider') ?? '');
+    const vectorStorage = String(formData.get('vectorStorageProvider') ?? '');
     const aiPick = ai === '__env__' ? null : (ai as AiProviderId);
     const aiModelPick = aiModelRaw === '' || aiModelRaw === '__default__' ? null : aiModelRaw;
     const embeddingPick = embedding === '__env__' ? null : (embedding as EmbeddingProviderId);
@@ -320,6 +335,10 @@ export default async function IntegrationsPage({
         ? null
         : researchModelRaw;
     const searchPick = search === '__env__' ? null : (search as SearchProviderId);
+    const vectorStoragePick =
+      vectorStorage === '__env__'
+        ? null
+        : (vectorStorage as VectorStorageProviderId);
     try {
       await updateProviderSettings(c, {
         aiProvider: aiPick,
@@ -328,6 +347,7 @@ export default async function IntegrationsPage({
         researchProvider: researchPick,
         researchModel: researchModelPick,
         searchProvider: searchPick,
+        vectorStorageProvider: vectorStoragePick,
       });
       redirect('/settings/integrations?ok=providers-saved');
     } catch (err) {
@@ -336,6 +356,51 @@ export default async function IntegrationsPage({
       }
       throw err;
     }
+  }
+
+  async function saveVectorStorageQuota(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const raw = String(formData.get('quotaMb') ?? '').trim();
+    const quotaMb = Number(raw);
+    try {
+      await updateWorkspaceVectorStorageQuota(c, quotaMb);
+      redirect('/settings/integrations?ok=quota-saved&provider=vector_storage');
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'invalid quota';
+      redirect(
+        `/settings/integrations?err=${encodeURIComponent(detail)}&provider=vector_storage`,
+      );
+    }
+  }
+
+  async function testVectorStorageConnection() {
+    'use server';
+    const c = await getWorkspaceContext();
+    let result: { ok: boolean; detail?: string };
+    try {
+      const provider = await getVectorStorageProviderForCtx(c);
+      if (provider.id === 'mock') {
+        redirect('/settings/integrations?tested=mock&provider=vector_storage');
+      }
+      if (typeof provider.testConnection !== 'function') {
+        result = { ok: true, detail: `${provider.id} has no connection check` };
+      } else {
+        const probe = await provider.testConnection(c);
+        result = probe.ok
+          ? { ok: true }
+          : { ok: false, detail: probe.reason };
+      }
+    } catch (err) {
+      result = {
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const param = result.ok ? 'ok' : 'fail';
+    redirect(
+      `/settings/integrations?tested=${param}&provider=vector_storage&detail=${encodeURIComponent(result.detail ?? '')}`,
+    );
   }
 
   async function clearPerplexity() {
@@ -542,6 +607,14 @@ export default async function IntegrationsPage({
                 resolved={searchActive}
                 options={ALLOWED_SEARCH_PROVIDERS}
               />
+              <ProviderSelect
+                label="Vector storage provider"
+                name="vectorStorageProvider"
+                workspaceValue={providerSettings.vectorStorageProvider}
+                envFallback={process.env.VECTOR_STORAGE_PROVIDER ?? 'mock'}
+                resolved={vectorStorageActive}
+                options={ALLOWED_VECTOR_STORAGE_PROVIDERS}
+              />
               <div className="action-row" style={{ gridColumn: '1 / -1' }}>
                 <button type="submit" className="primary-btn">
                   Save active providers
@@ -551,6 +624,75 @@ export default async function IntegrationsPage({
           ) : (
             <p className="muted">
               Only workspace admins and owners can change active providers.
+            </p>
+          )}
+        </section>
+
+        <section>
+          <h2>Vector Storage</h2>
+          <p className="muted">
+            Where product knowledge sources (PDFs, URLs, text excerpts) are
+            chunked, embedded, and retrieved from for RAG-grounded outreach
+            drafts. <strong>pgvector</strong> = self-hosted chunks in this
+            workspace&apos;s Postgres + the Embedding provider above (cheaper,
+            limited to PDF / HTML / JSON / plain text).
+            <strong> openai</strong> = per-product OpenAI Vector Store via
+            the Files API + <code>file_search</code> tool (OpenAI does the
+            chunking, embeds, and parses PDF / DOCX / PPTX / XLSX / CSV /
+            HTML / MD / TXT natively — uses your OpenAI key configured
+            below).
+          </p>
+          <dl>
+            <dt>Active vector storage</dt>
+            <dd>
+              <span className="badge">{vectorStorageActive.id}</span>
+              <span className="muted">
+                {' '}
+                — via {vectorStorageActive.source === 'workspace'
+                  ? 'workspace setting'
+                  : vectorStorageActive.source === 'env'
+                    ? 'env default'
+                    : 'platform default'}
+              </span>
+            </dd>
+            <dt>Per-product upload cap</dt>
+            <dd>
+              <code>{vectorQuotaMb} MB</code>
+              <span className="muted">
+                {' '}
+                — total bytes the active provider may hold per product
+                before new attaches are rejected. Default is 20 MB.
+              </span>
+            </dd>
+          </dl>
+          {isAdmin ? (
+            <>
+              <form action={saveVectorStorageQuota} className="inline-form">
+                <label>
+                  <span>Per-product cap (MB)</span>
+                  <input
+                    name="quotaMb"
+                    type="number"
+                    min={1}
+                    max={4096}
+                    step={1}
+                    defaultValue={vectorQuotaMb}
+                    required
+                  />
+                </label>
+                <button type="submit" className="primary-btn">
+                  Save cap
+                </button>
+              </form>
+              <div className="action-row">
+                <form action={testVectorStorageConnection}>
+                  <button type="submit">Test connection</button>
+                </form>
+              </div>
+            </>
+          ) : (
+            <p className="muted">
+              Only workspace admins and owners can change the upload cap.
             </p>
           )}
         </section>

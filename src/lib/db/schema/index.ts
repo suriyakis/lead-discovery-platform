@@ -16,6 +16,7 @@ export * from './documents';
 export * from './mailing';
 export * from './pipeline';
 export * from './rag';
+export * from './vector-stores';
 export * from './crm';
 export * from './admin';
 export * from './contacts';

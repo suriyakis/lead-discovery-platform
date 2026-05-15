@@ -11,11 +11,12 @@ import { canAdminWorkspace } from '@/lib/services/context';
 import { listProductProfiles } from '@/lib/services/product-profile';
 import {
   KnowledgeSourceServiceError,
+  attachKnowledgeSourceViaProvider,
   deleteKnowledgeSource,
   getKnowledgeSource,
   updateKnowledgeSource,
 } from '@/lib/services/knowledge-sources';
-import { indexKnowledgeSource, listIndexingJobs } from '@/lib/services/rag';
+import { listIndexingJobs } from '@/lib/services/rag';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
@@ -116,8 +117,10 @@ export default async function KnowledgeSourceDetail({
     'use server';
     const c = await getWorkspaceContext();
     try {
-      const result = await indexKnowledgeSource(c, id);
-      redirect(`/knowledge/${id}?message=Indexed+${result.chunkCount}+chunks`);
+      const updated = await attachKnowledgeSourceViaProvider(c, id);
+      redirect(
+        `/knowledge/${id}?message=Indexed+via+${updated.externalProviderId ?? 'provider'}`,
+      );
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'index failed';
@@ -195,12 +198,58 @@ export default async function KnowledgeSourceDetail({
         <section>
           <h2>RAG indexing</h2>
           <p className="muted">
-            Indexing splits this source into chunks and embeds them for
-            similarity retrieval. Re-index after edits.
+            Indexing routes this source through the workspace&apos;s active
+            Vector Storage provider (see{' '}
+            <Link href="/settings/integrations">Settings → Integrations</Link>).
+            On the <code>pgvector</code> rail, chunks land in the local
+            Postgres. On the <code>openai</code> rail, the file is uploaded
+            to a per-product OpenAI Vector Store and chunked server-side.
           </p>
+          <dl>
+            <dt>Status</dt>
+            <dd>
+              {source.externalStatus === 'indexed' ? (
+                <>
+                  <span className="badge badge-good">indexed</span>
+                  <span className="muted">
+                    {' '}
+                    via <code>{source.externalProviderId ?? 'unknown'}</code>
+                    {source.externalIndexedAt
+                      ? ` · ${source.externalIndexedAt.toLocaleString()}`
+                      : ''}
+                  </span>
+                </>
+              ) : source.externalStatus === 'failed' ? (
+                <>
+                  <span className="badge badge-bad">failed</span>
+                  {source.externalError ? (
+                    <span className="muted"> · {source.externalError.slice(0, 200)}</span>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <span className="badge">pending</span>
+                  <span className="muted">
+                    {' '}
+                    — click <strong>Index now</strong> to push to the active
+                    provider. (Sources without product associations stay
+                    pending; attach them to a product first.)
+                  </span>
+                </>
+              )}
+            </dd>
+            {source.externalFileId ? (
+              <>
+                <dt>External file id</dt>
+                <dd>
+                  <code>{source.externalFileId}</code>
+                </dd>
+              </>
+            ) : null}
+          </dl>
           <form action={reindex}>
             <button type="submit">
-              {indexJobs.some((j) => j.status === 'succeeded') ? 'Re-index' : 'Index now'}
+              {source.externalStatus === 'indexed' ? 'Re-index' : 'Index now'}
             </button>
           </form>
           {indexJobs.length > 0 ? (

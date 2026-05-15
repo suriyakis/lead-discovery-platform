@@ -51,6 +51,14 @@ export type ResearchProviderId = (typeof ALLOWED_RESEARCH_PROVIDERS)[number];
 export const ALLOWED_SEARCH_PROVIDERS = ['mock', 'serpapi'] as const;
 export type SearchProviderId = (typeof ALLOWED_SEARCH_PROVIDERS)[number];
 
+export const ALLOWED_VECTOR_STORAGE_PROVIDERS = [
+  'mock',
+  'pgvector',
+  'openai',
+] as const;
+export type VectorStorageProviderId =
+  (typeof ALLOWED_VECTOR_STORAGE_PROVIDERS)[number];
+
 // ─── Per-vendor model catalogs ─────────────────────────────────────────
 //
 // Drop-in additions to these arrays are safe — the validator just
@@ -113,6 +121,7 @@ export async function getProviderSettings(
   researchProvider: string | null;
   researchModel: string | null;
   searchProvider: string | null;
+  vectorStorageProvider: string | null;
 }> {
   const [row] = await db
     .select()
@@ -128,6 +137,7 @@ export async function getProviderSettings(
       researchProvider: row.researchProvider,
       researchModel: row.researchModel,
       searchProvider: row.searchProvider,
+      vectorStorageProvider: row.vectorStorageProvider,
     };
   }
   return {
@@ -138,6 +148,7 @@ export async function getProviderSettings(
     researchProvider: null,
     researchModel: null,
     searchProvider: null,
+    vectorStorageProvider: null,
   };
 }
 
@@ -153,7 +164,7 @@ export interface ResolvedProvider {
 
 export async function resolveActiveProvider(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  capability: 'ai' | 'embedding' | 'research' | 'search',
+  capability: 'ai' | 'embedding' | 'research' | 'search' | 'vector_storage',
   envFallback: string | undefined,
 ): Promise<ResolvedProvider> {
   const settings = await getProviderSettings(ctx);
@@ -164,7 +175,9 @@ export async function resolveActiveProvider(
         ? settings.embeddingProvider
         : capability === 'research'
           ? settings.researchProvider
-          : settings.searchProvider;
+          : capability === 'search'
+            ? settings.searchProvider
+            : settings.vectorStorageProvider;
   if (wsValue && wsValue.trim()) {
     return { id: wsValue.trim(), source: 'workspace' };
   }
@@ -182,6 +195,7 @@ export interface UpdateProviderSettingsInput {
   researchProvider?: ResearchProviderId | null;
   researchModel?: string | null;
   searchProvider?: SearchProviderId | null;
+  vectorStorageProvider?: VectorStorageProviderId | null;
 }
 
 /**
@@ -225,6 +239,20 @@ export async function updateProviderSettings(
       throw invalid(`unknown search provider: ${input.searchProvider}`);
     }
   }
+  if (
+    input.vectorStorageProvider !== undefined &&
+    input.vectorStorageProvider !== null
+  ) {
+    if (
+      !(ALLOWED_VECTOR_STORAGE_PROVIDERS as readonly string[]).includes(
+        input.vectorStorageProvider,
+      )
+    ) {
+      throw invalid(
+        `unknown vector storage provider: ${input.vectorStorageProvider}`,
+      );
+    }
+  }
 
   // Validate model fields against the chosen vendor's catalog. When
   // the vendor isn't being updated in the same call, we resolve the
@@ -256,6 +284,8 @@ export async function updateProviderSettings(
   if (input.researchProvider !== undefined) set.researchProvider = input.researchProvider;
   if (input.researchModel !== undefined) set.researchModel = input.researchModel;
   if (input.searchProvider !== undefined) set.searchProvider = input.searchProvider;
+  if (input.vectorStorageProvider !== undefined)
+    set.vectorStorageProvider = input.vectorStorageProvider;
 
   const [row] = await db
     .insert(workspaceProviderSettings)
@@ -267,6 +297,7 @@ export async function updateProviderSettings(
       researchProvider: input.researchProvider ?? null,
       researchModel: input.researchModel ?? null,
       searchProvider: input.searchProvider ?? null,
+      vectorStorageProvider: input.vectorStorageProvider ?? null,
       updatedBy: ctx.userId,
     })
     .onConflictDoUpdate({
@@ -292,6 +323,7 @@ export async function updateProviderSettings(
       research: row.researchProvider,
       researchModel: row.researchModel,
       search: row.searchProvider,
+      vectorStorage: row.vectorStorageProvider,
     },
   });
 

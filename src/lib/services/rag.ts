@@ -122,6 +122,7 @@ async function extractDocumentText(
   const stream = await storage.get(document.storageKey);
   const buffer = await streamToBuffer(stream);
   const mime = document.mimeType.toLowerCase();
+  const filename = document.filename.toLowerCase();
 
   if (mime.startsWith('text/') || mime === 'application/json') {
     return buffer.toString('utf8');
@@ -129,13 +130,77 @@ async function extractDocumentText(
   if (mime === 'text/html' || mime === 'application/xhtml+xml') {
     return stripHtml(buffer.toString('utf8'));
   }
-  // Phase 12 supports plain-text. PDF + DOCX extraction is a Phase 12+
-  // upgrade — we keep the schema ready and the caller can inject text via
-  // a knowledge_source(kind=text) for now.
+  // PDFs go through the same lazy-loaded pdf-parse pipeline that
+  // product-autofill uses, sharing the same v1-self-test workaround
+  // (import the inner module path to skip the entry-point bug). PDFs
+  // matter for spec sheets / TDS docs and are the most common
+  // operator-uploaded format after plain text.
+  if (mime === 'application/pdf' || filename.endsWith('.pdf')) {
+    return extractPdfText(buffer, document.filename);
+  }
+  // DOCX via mammoth (`.docx` only — old `.doc` binary format is rare
+  // and would need a separate path). Mammoth strips formatting and
+  // returns the body text directly, ideal for embedding.
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    filename.endsWith('.docx')
+  ) {
+    return extractDocxText(buffer, document.filename);
+  }
   // Heuristic: if the buffer looks like UTF-8 text, treat it as such.
   const sample = buffer.subarray(0, Math.min(buffer.length, 1024)).toString('utf8');
   if (looksLikeText(sample)) return buffer.toString('utf8');
   throw invalid(`unsupported mime type for indexing: ${mime}`);
+}
+
+async function extractPdfText(buffer: Buffer, filename: string): Promise<string> {
+  // @ts-expect-error pdf-parse v1 has no .d.ts for the inner path; we
+  // hand-type the surface we use.
+  const mod = (await import('pdf-parse/lib/pdf-parse.js')) as unknown as {
+    default: (buffer: Buffer) => Promise<{ text: string }>;
+  };
+  let raw = '';
+  try {
+    const result = await mod.default(buffer);
+    raw = result.text ?? '';
+  } catch (err) {
+    throw invalid(
+      `pdf parse failed for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const cleaned = raw
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (cleaned.length < 20) {
+    throw invalid(
+      `${filename} contains no extractable text (likely a scanned image — OCR is not supported on the pgvector rail; switch the workspace's Vector Storage to openai for OCR-on-upload, or re-save the PDF with a text layer).`,
+    );
+  }
+  return cleaned;
+}
+
+async function extractDocxText(buffer: Buffer, filename: string): Promise<string> {
+  const mod = (await import('mammoth')) as unknown as {
+    extractRawText: (input: { buffer: Buffer }) => Promise<{ value: string }>;
+  };
+  let raw = '';
+  try {
+    const result = await mod.extractRawText({ buffer });
+    raw = result.value ?? '';
+  } catch (err) {
+    throw invalid(
+      `docx parse failed for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const cleaned = raw
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (cleaned.length < 20) {
+    throw invalid(`${filename} contains no extractable text after docx parsing.`);
+  }
+  return cleaned;
 }
 
 function stripHtml(html: string): string {

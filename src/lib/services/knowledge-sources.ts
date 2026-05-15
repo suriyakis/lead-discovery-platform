@@ -124,7 +124,171 @@ export async function createKnowledgeSource(
     },
   });
 
-  return created;
+  // Phase 50: auto-attach to the workspace's active Vector Storage
+  // provider as soon as the row exists. Best-effort — failure does NOT
+  // undo the create (the operator can re-trigger from /knowledge/[id]).
+  // Sources with zero product associations stay 'pending' until the
+  // operator attaches them to a product, since there's no per-product
+  // vector store to push them into yet.
+  if (productIds.length > 0) {
+    try {
+      await attachKnowledgeSourceViaProvider(ctx, created.id);
+    } catch (err) {
+      console.error('[knowledge-sources] auto-attach failed:', err);
+    }
+  }
+
+  // Re-read so the caller sees external_status from the auto-attach.
+  const [refreshed] = await db
+    .select()
+    .from(knowledgeSources)
+    .where(eq(knowledgeSources.id, created.id))
+    .limit(1);
+  return refreshed ?? created;
+}
+
+// ---- attach (Phase 50) ---------------------------------------------
+
+/**
+ * Push the source through the workspace's active Vector Storage
+ * provider — one attach per product the source is associated with.
+ * Idempotent: re-running detaches first when the source is already
+ * indexed, so callers can use this as both "first attach" and
+ * "re-index".
+ *
+ * Writes the aggregate state back to the row:
+ *   - external_provider_id = the provider id that performed the attach
+ *   - external_file_id     = the first provider-returned file id
+ *   - external_status      = 'indexed' on any success, 'failed' on
+ *                            total failure
+ *   - external_indexed_at  = now() on success
+ *   - external_error       = joined error messages on failure
+ */
+export async function attachKnowledgeSourceViaProvider(
+  ctx: WorkspaceContext,
+  knowledgeSourceId: bigint,
+): Promise<KnowledgeSource> {
+  if (!canWrite(ctx)) throw permissionDenied('knowledge_source.attach');
+  const [source] = await db
+    .select()
+    .from(knowledgeSources)
+    .where(
+      and(
+        eq(knowledgeSources.workspaceId, ctx.workspaceId),
+        eq(knowledgeSources.id, knowledgeSourceId),
+      ),
+    )
+    .limit(1);
+  if (!source) throw notFound();
+  if (source.productProfileIds.length === 0) {
+    throw invalid('cannot attach: source has no product associations');
+  }
+
+  const { getVectorStorageProviderForCtx } = await import('@/lib/vector-storage');
+  const provider = await getVectorStorageProviderForCtx(ctx);
+
+  // Detach prior attachment when re-indexing under the same provider.
+  if (
+    source.externalProviderId === provider.id &&
+    source.externalStatus === 'indexed'
+  ) {
+    try {
+      await provider.detachKnowledgeSource(ctx, source.id);
+    } catch (err) {
+      console.error('[knowledge-sources] pre-attach detach failed:', err);
+    }
+  }
+
+  // Materialize input shape — bytes for documents, plain text for the
+  // other two kinds. The provider may or may not need the bytes; we
+  // load them once and share across product attaches.
+  let fileBytes: Buffer | undefined;
+  let filename: string | undefined;
+  let mimeType: string | undefined;
+  let text: string | undefined;
+  let url: string | undefined;
+  if (source.kind === 'document' && source.documentId) {
+    const [doc] = await db
+      .select()
+      .from(documents)
+      .where(eq(documents.id, source.documentId))
+      .limit(1);
+    if (doc) {
+      const { getStorage } = await import('@/lib/storage');
+      const storage = getStorage();
+      const stream = await storage.get(doc.storageKey);
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      }
+      fileBytes = Buffer.concat(chunks);
+      filename = doc.filename;
+      mimeType = doc.mimeType;
+    }
+  } else if (source.kind === 'text') {
+    text = source.textExcerpt ?? '';
+  } else if (source.kind === 'url') {
+    url = source.url ?? '';
+  }
+
+  const errors: string[] = [];
+  let firstFileId: string | null = null;
+  for (const productId of source.productProfileIds) {
+    try {
+      const r = await provider.attachKnowledgeSource(ctx, productId, {
+        knowledgeSource: source,
+        fileBytes,
+        filename,
+        mimeType,
+        text,
+        url,
+      });
+      if (firstFileId === null) firstFileId = r.externalFileId;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`product ${productId}: ${msg}`);
+    }
+  }
+
+  const allFailed = errors.length === source.productProfileIds.length;
+  const [updated] = await db
+    .update(knowledgeSources)
+    .set({
+      externalProviderId: provider.id,
+      externalFileId: firstFileId,
+      externalStatus: allFailed ? 'failed' : 'indexed',
+      externalError: errors.length > 0 ? errors.join('; ') : null,
+      externalIndexedAt: allFailed ? null : new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(knowledgeSources.workspaceId, ctx.workspaceId),
+        eq(knowledgeSources.id, source.id),
+      ),
+    )
+    .returning();
+  if (!updated) throw invariant('knowledge_source update lost row');
+
+  await recordAuditEvent(ctx, {
+    kind: 'knowledge_source.attach',
+    entityType: 'knowledge_source',
+    entityId: source.id,
+    payload: {
+      providerId: provider.id,
+      status: updated.externalStatus,
+      errorCount: errors.length,
+      productCount: source.productProfileIds.length,
+    },
+  });
+
+  if (allFailed) {
+    throw new KnowledgeSourceServiceError(
+      `attach failed for all ${source.productProfileIds.length} product(s): ${errors.join('; ')}`,
+      'attach_failed',
+    );
+  }
+  return updated;
 }
 
 // ---- read -----------------------------------------------------------

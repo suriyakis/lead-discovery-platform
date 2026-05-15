@@ -135,6 +135,41 @@ export async function updateOutreachDefaults(
   return updated;
 }
 
+/** Phase 50: workspace-level cap on bytes uploaded per product to the
+ *  active vector-storage provider. Admin-only. Clamped to [1, 4096] MB
+ *  so an operator can't accidentally zero the cap or push past OpenAI's
+ *  per-file storage budget. */
+export async function updateWorkspaceVectorStorageQuota(
+  ctx: WorkspaceContext,
+  quotaMb: number,
+): Promise<Workspace> {
+  if (!canAdminWorkspace(ctx)) {
+    throw permissionDenied('workspace.update_vector_storage_quota');
+  }
+  if (!Number.isFinite(quotaMb) || quotaMb < 1 || quotaMb > 4096) {
+    throw new WorkspaceServiceError(
+      `quotaMb must be in [1, 4096], got ${quotaMb}`,
+      'invalid_input',
+    );
+  }
+  const [updated] = await db
+    .update(workspaces)
+    .set({
+      vectorStorageQuotaMbPerProduct: Math.floor(quotaMb),
+      updatedAt: new Date(),
+    })
+    .where(eq(workspaces.id, ctx.workspaceId))
+    .returning();
+  if (!updated) throw notFound('workspace');
+  await recordAuditEvent(ctx, {
+    kind: 'workspace.update_vector_storage_quota',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: { quotaMb: updated.vectorStorageQuotaMbPerProduct },
+  });
+  return updated;
+}
+
 export interface MemberWithUser {
   member: WorkspaceMember;
   user: {

@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -96,6 +97,14 @@ export const workspaces = pgTable('workspaces', {
    *  send unless the operator opts in. */
   autoSendReplies: boolean('auto_send_replies').notNull().default(false),
 
+  /** Phase 50: per-product cap on bytes uploaded to vector storage.
+   *  Enforced by the vector-storage provider before attaching a new
+   *  knowledge source. 20 MB matches the operator's default budget for
+   *  a single product's knowledge base. */
+  vectorStorageQuotaMbPerProduct: integer('vector_storage_quota_mb_per_product')
+    .notNull()
+    .default(20),
+
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -169,6 +178,11 @@ export const workspaceProviderSettings = pgTable('workspace_provider_settings', 
   researchModel: text('research_model'),
   /** 'mock' | 'serpapi' — null inherits env. */
   searchProvider: text('search_provider'),
+  /** Phase 50: 'mock' | 'pgvector' | 'openai' — null inherits env
+   *  (`VECTOR_STORAGE_PROVIDER`). Drives where knowledge sources land
+   *  (local pgvector chunks vs. per-product OpenAI Vector Store) and
+   *  which backend serves RAG retrieval. */
+  vectorStorageProvider: text('vector_storage_provider'),
   updatedBy: text('updated_by'),
   updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
     .notNull()

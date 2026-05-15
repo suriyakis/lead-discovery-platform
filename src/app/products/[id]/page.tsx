@@ -412,28 +412,40 @@ async function KnowledgeSection({
             gap: '0.25rem',
           }}
         >
-          {sources.map(({ source }) => (
-            <li
-              key={source.id.toString()}
-              style={{
-                padding: '0.35rem 0.5rem',
-                borderRadius: '0.3rem',
-                background: 'oklch(0.97 0 0)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                fontSize: '0.88em',
-              }}
-            >
-              <span className="badge" style={{ fontSize: '0.75em' }}>{source.kind}</span>
-              <Link href={`/knowledge/${source.id}`} style={{ flex: 1 }}>
-                {source.title}
-              </Link>
-              <span className="muted" style={{ fontSize: '0.78em' }}>
-                {source.purposeCategory}
-              </span>
-            </li>
-          ))}
+          {sources.map(({ source }) => {
+            const status = source.externalStatus;
+            const statusBadgeClass =
+              status === 'indexed'
+                ? 'badge badge-good'
+                : status === 'failed'
+                  ? 'badge badge-bad'
+                  : 'badge';
+            return (
+              <li
+                key={source.id.toString()}
+                style={{
+                  padding: '0.35rem 0.5rem',
+                  borderRadius: '0.3rem',
+                  background: 'oklch(0.97 0 0)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  fontSize: '0.88em',
+                }}
+              >
+                <span className="badge" style={{ fontSize: '0.75em' }}>{source.kind}</span>
+                <Link href={`/knowledge/${source.id}`} style={{ flex: 1 }}>
+                  {source.title}
+                </Link>
+                <span className={statusBadgeClass} style={{ fontSize: '0.75em' }}>
+                  {status}
+                </span>
+                <span className="muted" style={{ fontSize: '0.78em' }}>
+                  {source.purposeCategory}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
     </section>

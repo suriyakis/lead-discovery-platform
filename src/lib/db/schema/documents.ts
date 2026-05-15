@@ -148,6 +148,23 @@ export const knowledgeSources = pgTable(
       .notNull()
       .default(sql`'{}'::bigint[]`),
 
+    /** Phase 50: which vector-storage provider indexed this source, e.g.
+     *  'pgvector' (chunks live in `document_chunks`) or 'openai' (file
+     *  uploaded to the product's OpenAI Vector Store). NULL when never
+     *  indexed. Cleared on provider switch so re-indexing is idempotent. */
+    externalProviderId: text('external_provider_id'),
+    /** Phase 50: provider-specific opaque id (`file-...` for OpenAI; for
+     *  pgvector this stays NULL since chunks reference the row by id). */
+    externalFileId: text('external_file_id'),
+    /** Phase 50: 'pending' | 'indexed' | 'failed'. Auto-attach pipeline
+     *  writes 'pending' on create, flips on success / failure. */
+    externalStatus: text('external_status').notNull().default('pending'),
+    externalError: text('external_error'),
+    externalIndexedAt: timestamp('external_indexed_at', {
+      mode: 'date',
+      withTimezone: true,
+    }),
+
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
     }),
