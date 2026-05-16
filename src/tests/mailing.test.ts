@@ -308,6 +308,51 @@ describe('signatures', () => {
     const list = await listSignatures(ctx(s.workspaceA, s.ownerA));
     expect(list).toHaveLength(0);
   });
+
+  // ─── Phase 53: logoUrl ──────────────────────────────────────────
+  it('accepts a valid https logoUrl on create + persists it', async () => {
+    const s = await setup();
+    const sig = await createSignature(ctx(s.workspaceA, s.ownerA), {
+      name: 'L',
+      bodyText: '—',
+      logoUrl: 'https://cdn.example.com/logo.png',
+    });
+    expect(sig.logoUrl).toBe('https://cdn.example.com/logo.png');
+  });
+
+  it('blank logoUrl normalises to null', async () => {
+    const s = await setup();
+    const sig = await createSignature(ctx(s.workspaceA, s.ownerA), {
+      name: 'L2',
+      bodyText: '—',
+      logoUrl: '   ',
+    });
+    expect(sig.logoUrl).toBeNull();
+  });
+
+  it('rejects non-http(s) logoUrl', async () => {
+    const s = await setup();
+    await expect(
+      createSignature(ctx(s.workspaceA, s.ownerA), {
+        name: 'L3',
+        bodyText: '—',
+        logoUrl: 'javascript:alert(1)',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('updateSignature can clear logoUrl by passing null', async () => {
+    const s = await setup();
+    const sig = await createSignature(ctx(s.workspaceA, s.ownerA), {
+      name: 'L4',
+      bodyText: '—',
+      logoUrl: 'https://cdn.example.com/a.png',
+    });
+    const cleared = await updateSignature(ctx(s.workspaceA, s.ownerA), sig.id, {
+      logoUrl: null,
+    });
+    expect(cleared.logoUrl).toBeNull();
+  });
 });
 
 // ============ mail send / receive ====================================

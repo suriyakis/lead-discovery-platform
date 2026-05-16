@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { SignatureForm } from '@/components/SignatureForm';
+import { SignatureHtmlEditor } from '@/components/SignatureHtmlEditor';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -76,6 +77,7 @@ export default async function SignaturesPage() {
       tagline: String(formData.get('tagline') ?? '').trim() || null,
       website: String(formData.get('website') ?? '').trim() || null,
       email: String(formData.get('email') ?? '').trim() || null,
+      logoUrl: String(formData.get('logoUrl') ?? '').trim() || null,
       phones,
     });
     redirect('/mailbox/signatures');
@@ -87,6 +89,15 @@ export default async function SignaturesPage() {
     const id = BigInt(String(formData.get('id')));
     const bodyHtml = String(formData.get('bodyHtml') ?? '').trim();
     await updateSignature(c, id, { bodyHtml: bodyHtml || null });
+    redirect('/mailbox/signatures');
+  }
+
+  async function updateLogoUrl(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const id = BigInt(String(formData.get('id')));
+    const logoUrl = String(formData.get('logoUrl') ?? '').trim();
+    await updateSignature(c, id, { logoUrl: logoUrl || null });
     redirect('/mailbox/signatures');
   }
 
@@ -142,6 +153,7 @@ export default async function SignaturesPage() {
                 setDefault={setDefault}
                 destroy={destroy}
                 updateHtml={updateHtml}
+                updateLogoUrl={updateLogoUrl}
               />
             </section>
             {mailboxes.map((m) => (
@@ -157,6 +169,7 @@ export default async function SignaturesPage() {
                   setDefault={setDefault}
                   destroy={destroy}
                   updateHtml={updateHtml}
+                  updateLogoUrl={updateLogoUrl}
                 />
               </section>
             ))}
@@ -171,11 +184,13 @@ function SignatureList({
   setDefault,
   destroy,
   updateHtml,
+  updateLogoUrl,
 }: {
   items: Signature[];
   setDefault: (formData: FormData) => Promise<void>;
   destroy: (formData: FormData) => Promise<void>;
   updateHtml: (formData: FormData) => Promise<void>;
+  updateLogoUrl: (formData: FormData) => Promise<void>;
 }) {
   if (items.length === 0) return <p className="muted">None at this scope.</p>;
   return (
@@ -190,41 +205,56 @@ function SignatureList({
                 custom HTML
               </span>
             ) : null}
+            {s.logoUrl ? (
+              <span className="badge" title={s.logoUrl}>logo URL</span>
+            ) : null}
           </div>
           <pre className="draft-body" style={{ marginTop: '0.5rem' }}>{s.bodyText}</pre>
 
           <details style={{ marginTop: '0.5rem' }}>
             <summary className="muted" style={{ cursor: 'pointer' }}>
-              {s.bodyHtml ? 'Edit / replace custom HTML' : 'Paste custom HTML'}
+              Logo URL {s.logoUrl ? `(${truncate(s.logoUrl, 50)})` : '(none)'}
             </summary>
             <form
-              action={updateHtml}
-              style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
+              action={updateLogoUrl}
+              className="inline-form"
+              style={{ marginTop: '0.5rem' }}
             >
               <input type="hidden" name="id" value={s.id.toString()} />
-              <textarea
-                name="bodyHtml"
-                rows={8}
-                maxLength={20000}
-                defaultValue={s.bodyHtml ?? ''}
-                placeholder={'<table>\n  <tr><td>...</td></tr>\n</table>'}
-                spellCheck={false}
-                style={{
-                  fontFamily: 'var(--brand-mono)',
-                  fontSize: '0.825rem',
-                  width: '100%',
-                }}
-              />
-              <p className="muted" style={{ fontSize: '0.75rem', margin: 0 }}>
-                Leave blank and save to revert to the auto-rendered HTML
-                from the structured fields.
-              </p>
-              <div>
-                <button type="submit" className="primary-btn">
-                  Save HTML
-                </button>
-              </div>
+              <label>
+                <span>Externally hosted logo URL</span>
+                <input
+                  type="url"
+                  name="logoUrl"
+                  defaultValue={s.logoUrl ?? ''}
+                  placeholder="https://cdn.example.com/logo.png"
+                  maxLength={2048}
+                />
+                <small className="muted" style={{ fontSize: '0.75rem' }}>
+                  HTTPS recommended. ~96 px wide renders best in most mail
+                  clients. Leave blank to remove.
+                </small>
+              </label>
+              <button type="submit" className="primary-btn">
+                Save logo
+              </button>
             </form>
+          </details>
+
+          <details style={{ marginTop: '0.5rem' }}>
+            <summary className="muted" style={{ cursor: 'pointer' }}>
+              {s.bodyHtml ? 'Edit / replace custom HTML' : 'Paste custom HTML'}
+              {s.bodyHtml ? null : (
+                <span className="muted" style={{ fontSize: '0.78rem' }}>
+                  {' '}— with live preview
+                </span>
+              )}
+            </summary>
+            <SignatureHtmlEditor
+              action={updateHtml}
+              signatureId={s.id.toString()}
+              initialHtml={s.bodyHtml ?? ''}
+            />
           </details>
 
           <div className="action-row" style={{ marginTop: '0.5rem' }}>
@@ -245,4 +275,8 @@ function SignatureList({
       ))}
     </ul>
   );
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }

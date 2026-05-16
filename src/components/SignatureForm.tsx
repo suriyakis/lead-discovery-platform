@@ -58,6 +58,7 @@ export function SignatureForm({ action, mailboxes }: SignatureFormProps) {
   const [phonesRaw, setPhonesRaw] = useState('');
   const [bodyText, setBodyText] = useState('');
   const [bodyHtml, setBodyHtml] = useState('');
+  const [logoUrl, setLogoUrl] = useState('');
   const [isDefault, setIsDefault] = useState(false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>('html');
 
@@ -73,6 +74,7 @@ export function SignatureForm({ action, mailboxes }: SignatureFormProps) {
       website: website || null,
       email: email || null,
       phones: parsePhones(phonesRaw),
+      logoUrl: logoUrl.trim() || null,
     }),
     [
       bodyText,
@@ -85,6 +87,7 @@ export function SignatureForm({ action, mailboxes }: SignatureFormProps) {
       website,
       email,
       phonesRaw,
+      logoUrl,
     ],
   );
 
@@ -212,6 +215,21 @@ export function SignatureForm({ action, mailboxes }: SignatureFormProps) {
               value={phonesRaw}
               onChange={(e) => setPhonesRaw(e.target.value)}
             />
+          </label>
+          <label>
+            <span>Logo URL</span>
+            <input
+              type="url"
+              name="logoUrl"
+              placeholder="https://cdn.example.com/logo.png"
+              maxLength={2048}
+              value={logoUrl}
+              onChange={(e) => setLogoUrl(e.target.value)}
+            />
+            <small className="muted" style={{ fontSize: '0.78rem' }}>
+              Externally hosted image (HTTPS recommended for email clients).
+              ~96 px wide renders best. Leave blank for no logo.
+            </small>
           </label>
         </fieldset>
         <label>

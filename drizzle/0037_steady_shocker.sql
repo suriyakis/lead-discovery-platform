@@ -1,0 +1,1 @@
+ALTER TABLE "signatures" ADD COLUMN "logo_url" text;

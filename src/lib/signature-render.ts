@@ -24,6 +24,9 @@ export interface SignatureRenderInput {
   /** jsonb on the wire; structurally an array of {label, number}. */
   phones?: unknown;
   logoStorageKey?: string | null;
+  /** Phase 53: externally hosted logo URL. When set, the renderer uses
+   *  this verbatim and skips any logoStorageKey signed-URL lookup. */
+  logoUrl?: string | null;
 }
 
 function escape(s: string): string {
@@ -85,8 +88,12 @@ export function renderSignatureHtml(
     ? `<div style="padding:0 0 8px 0;border-bottom:2px solid ${accent};color:${muted};font-weight:500">${escape(signature.greeting)}</div>`
     : '';
 
-  const logoCell = logoUrl
-    ? `<td valign="top" style="padding:8px 16px 0 0;width:96px"><img src="${escape(logoUrl)}" alt="${escape(signature.company ?? 'logo')}" style="max-width:96px;height:auto;display:block" /></td>`
+  // Phase 53: prefer the externally-hosted URL on the row; the explicit
+  // logoUrl parameter (which mail.send pre-resolves from logoStorageKey
+  // via storage.signedUrl) is the fallback.
+  const effectiveLogoUrl = signature.logoUrl?.trim() || logoUrl?.trim() || '';
+  const logoCell = effectiveLogoUrl
+    ? `<td valign="top" style="padding:8px 16px 0 0;width:96px"><img src="${escape(effectiveLogoUrl)}" alt="${escape(signature.company ?? 'logo')}" style="max-width:96px;height:auto;display:block" /></td>`
     : '';
 
   const phoneLines = phones

@@ -333,6 +333,10 @@ export const signatures = pgTable(
     phones: jsonb('phones').notNull().default(sql`'[]'::jsonb`),
     /** IStorage key for an uploaded logo (Phase 9 storage). */
     logoStorageKey: text('logo_storage_key'),
+    /** Phase 53: externally hosted logo URL (e.g. https://cdn.example.com/logo.png).
+     *  When set, the renderer uses this directly; when blank the renderer
+     *  falls back to a signed URL for `logoStorageKey`. */
+    logoUrl: text('logo_url'),
     isDefault: boolean('is_default').notNull().default(false),
 
     createdBy: text('created_by').references(() => users.id, {

@@ -260,6 +260,13 @@
       "when": 1778879362273,
       "tag": "0036_early_onslaught",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1778937311155,
+      "tag": "0037_steady_shocker",
+      "breakpoints": true
     }
   ]
 }

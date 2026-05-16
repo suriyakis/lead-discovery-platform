@@ -56,6 +56,8 @@ export interface CreateSignatureInput {
   email?: string | null;
   phones?: ReadonlyArray<SignaturePhone>;
   logoStorageKey?: string | null;
+  /** Phase 53: externally hosted logo URL. */
+  logoUrl?: string | null;
 }
 
 export async function createSignature(
@@ -86,6 +88,7 @@ export async function createSignature(
     email: input.email?.trim() || null,
     phones: input.phones ? sanitizePhones(input.phones) : [],
     logoStorageKey: input.logoStorageKey?.trim() || null,
+    logoUrl: validateLogoUrl(input.logoUrl),
     isDefault: input.isDefault ?? false,
     createdBy: ctx.userId,
   };
@@ -139,6 +142,9 @@ export async function updateSignature(
   if (patch.phones !== undefined) updates.phones = sanitizePhones(patch.phones);
   if (patch.logoStorageKey !== undefined) {
     updates.logoStorageKey = patch.logoStorageKey?.trim() || null;
+  }
+  if (patch.logoUrl !== undefined) {
+    updates.logoUrl = validateLogoUrl(patch.logoUrl);
   }
   if (patch.mailboxId !== undefined) {
     updates.mailboxId = patch.mailboxId;
@@ -239,6 +245,20 @@ export async function defaultSignature(
 }
 
 // ---- internals -----------------------------------------------------
+
+/** Phase 53: accept null / blank / http(s) URL up to 2 KB; everything
+ *  else is rejected so a malformed URL doesn't slip into the rendered
+ *  <img src=…>. */
+function validateLogoUrl(input: string | null | undefined): string | null {
+  if (input === undefined || input === null) return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 2048) throw invalid('logoUrl too long (max 2048)');
+  if (!/^https?:\/\//i.test(trimmed)) {
+    throw invalid('logoUrl must start with http:// or https://');
+  }
+  return trimmed;
+}
 
 async function loadSignature(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
