@@ -286,6 +286,13 @@ HARD RULES (email-client compatibility — non-negotiable):
   fences, no commentary, no "Here is the signature:" preamble.
 - Inline CSS only. Email clients strip <style> tags. No @import, no
   <link>, no class names that depend on external CSS.
+- Separators between contact fields: use ONE of these literal characters
+  directly — "·" (U+00B7 middle dot), "|" (pipe), "—" (em dash), or "•"
+  (bullet). Use the actual character — do NOT write hex codes ("b7",
+  "0xB7", "\\xB7"), do NOT write HTML entities ("&#183;", "&#xB7;",
+  "&middot;"), and do NOT write Unicode escape sequences ("\\u00B7").
+  The wrong choice here breaks the signature in a way that's hard to
+  diagnose; stick to literal characters only.
 - The outermost element must be a <table cellspacing="0" cellpadding="0"
   border="0"> — flexbox / grid won't render in Outlook.
 - Stay under 600px wide. Use cellpadding / inline style="padding:Npx"
@@ -441,9 +448,11 @@ export async function redesignSignatureHtml(
     {
       maxTokens: 4096,
       // Design is a creative task — higher temperature than autofill so
-      // the model varies the layout / accent placement / title position
-      // across regenerations instead of producing the same template.
-      temperature: 0.85,
+      // the model varies layouts. 0.85 produced occasional hallucinated
+      // separators ("b7" instead of "·" — the model writing the Unicode
+      // codepoint hex as literal text). 0.7 still varies layouts but
+      // tames the wackiness.
+      temperature: 0.7,
       // Override the workspace default to a model that handles visual /
       // HTML design well. Cheap models (Haiku, gpt-5-nano) produce
       // generic stacked-text signatures regardless of the prompt; the
@@ -526,9 +535,9 @@ function pickRedesignModel(
 }
 
 /** Defensive HTML sanitiser. Drops <script>, <iframe>, on* event
- *  handlers, and javascript: URLs from the AI output. Tag whitelist
- *  isn't enforced (signatures legitimately use many tags) — instead
- *  we surgically remove the known-hostile constructs. */
+ *  handlers, javascript: URLs, and fixes a class of LLM hallucinations
+ *  where the model writes Unicode codepoint hex values (b7, B7, ...) or
+ *  truncated HTML entities (&#xb7) instead of the actual character. */
 function sanitizeSignatureHtml(input: string): string {
   let out = input.trim();
   // Strip <script>...</script> + <iframe>...</iframe> (and self-closing).
@@ -552,6 +561,21 @@ function sanitizeSignatureHtml(input: string): string {
   // Trim markdown code fences in case the model ignored the system
   // prompt and wrapped the output anyway.
   out = out.replace(/^```html\s*/i, '').replace(/```$/, '').trim();
+
+  // Fix orphaned middle-dot mojibake. Cheap models occasionally emit
+  // the codepoint number as text ("Sales b7 Engineer") instead of the
+  // character "·". The pattern is unambiguous: whitespace + b7/B7 +
+  // whitespace, between adjacent contact-line tokens. Also collapse
+  // common truncated entity forms.
+  //   "Foo &#xB7; Bar"  → "Foo &#xB7; Bar" (intact entity — leave it)
+  //   "Foo &#xB7 Bar"   → "Foo · Bar"      (entity missing semicolon)
+  //   "Foo &xB7; Bar"   → "Foo · Bar"      (entity missing #)
+  //   "Foo b7 Bar"      → "Foo · Bar"      (codepoint as text)
+  //   "Foo B7 Bar"      → "Foo · Bar"
+  //   "Foo 0xB7 Bar"    → "Foo · Bar"
+  out = out.replace(/&#x?B7(?![;0-9a-fA-F])/gi, '·');
+  out = out.replace(/&x?B7;?/gi, '·');
+  out = out.replace(/(\s)(?:0x)?b7(?=\s)/gi, '$1·');
   return out;
 }
 

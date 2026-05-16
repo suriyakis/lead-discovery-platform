@@ -479,6 +479,47 @@ describe('redesignSignatureHtml (P54)', () => {
     expect(result.bodyHtml).not.toMatch(/```$/);
     expect(result.bodyHtml).toContain('<table>');
   });
+
+  it('rewrites orphaned U+00B7 codepoint hex (b7 / B7 / 0xB7 / &#xB7 / &xB7;) to literal ·', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi(
+        {},
+        // Mojibake stew the model produced in the wild (May 16 2026):
+        // bare "b7" separators between fields. Also exercise the common
+        // entity-truncation variants.
+        '<table><tr><td>Sales b7 Engineer<br>Foo B7 Bar<br>One 0xB7 Two<br>A &#xB7 B<br>C &xB7; D</td></tr></table>',
+      ),
+    );
+    const result = await redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+      fullName: 'Jakub',
+    });
+    expect(result.bodyHtml).not.toMatch(/\bb7\b/);
+    expect(result.bodyHtml).not.toMatch(/\bB7\b/);
+    expect(result.bodyHtml).not.toMatch(/0xB7/i);
+    expect(result.bodyHtml).not.toMatch(/&x?B7;?/i);
+    expect(result.bodyHtml).toContain('Sales · Engineer');
+    expect(result.bodyHtml).toContain('Foo · Bar');
+    expect(result.bodyHtml).toContain('One · Two');
+    expect(result.bodyHtml).toContain('A · B');
+    expect(result.bodyHtml).toContain('C · D');
+  });
+
+  it('leaves intact &#xB7; entities alone (still renders as · in mail clients)', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi(
+        {},
+        '<table><tr><td>Foo &#xB7; Bar</td></tr></table>',
+      ),
+    );
+    const result = await redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+      fullName: 'X',
+    });
+    // The intact entity is acceptable; sanitiser shouldn't strip
+    // legit "&#xB7;" sequences (they render fine in email clients).
+    expect(result.bodyHtml).toContain('&#xB7;');
+  });
 });
 
 // ============ mail send / receive ====================================
