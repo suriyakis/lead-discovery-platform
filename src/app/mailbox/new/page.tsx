@@ -60,7 +60,7 @@ export default async function NewMailboxPage({
       imap = {
         host: String(formData.get('imapHost') ?? '').trim(),
         port: /^\d+$/.test(imapPortRaw) ? Number(imapPortRaw) : 993,
-        secure: formData.get('imapSecure') !== 'off',
+        secure: formData.get('imapSecure') === 'on',
         user: String(formData.get('imapUser') ?? '').trim(),
         password: String(formData.get('imapPassword') ?? ''),
         folder: String(formData.get('imapFolder') ?? 'INBOX').trim() || 'INBOX',
