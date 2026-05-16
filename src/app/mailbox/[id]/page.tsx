@@ -18,7 +18,7 @@ import {
   reactivateMailbox,
   testMailboxConnection,
 } from '@/lib/services/mailbox';
-import { listThreads, syncInbound } from '@/lib/services/mail';
+import { countThreadsByKind, listThreads, syncInbound } from '@/lib/services/mail';
 import { getOrCreateMailboxSendingLimits } from '@/lib/services/sending-policy';
 import {
   SUPPORTED_HOLIDAY_COUNTRIES,
@@ -31,7 +31,7 @@ export default async function MailboxDetail({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ message?: string; error?: string }>;
+  searchParams: Promise<{ message?: string; error?: string; view?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -61,7 +61,15 @@ export default async function MailboxDetail({
     throw err;
   }
 
-  const threads = await listThreads(ctx, { mailboxId: id, limit: 100 });
+  // Phase 52: split thread list into Outreach (linked to a qualified
+  // lead) vs Inbox (everything else). Default to Outreach since that's
+  // the operator's work surface; Inbox is the catch-all for the rest.
+  const activeView: 'outreach' | 'inbox' | 'all' =
+    sp.view === 'inbox' || sp.view === 'all' ? sp.view : 'outreach';
+  const [threads, threadCounts] = await Promise.all([
+    listThreads(ctx, { mailboxId: id, limit: 100, kind: activeView }),
+    countThreadsByKind(ctx, id),
+  ]);
 
   async function runSync() {
     'use server';
@@ -172,6 +180,7 @@ export default async function MailboxDetail({
             <Link href={`/mailbox/${id}/compose`} className="primary-btn">
               Compose
             </Link>
+            <Link href={`/mailbox/${id}/test`}>Send test</Link>
             <Link href={`/mailbox/${id}/edit`}>Edit settings</Link>
           </div>
         </div>
@@ -388,9 +397,43 @@ export default async function MailboxDetail({
         ) : null}
 
         <section>
-          <h2>Threads ({threads.length})</h2>
+          <h2>Conversations</h2>
+          <p className="muted small">
+            <strong>Outreach</strong> = threads linked to a qualified lead
+            (drafts have been generated, the staged-conversation engine is
+            handling replies).{' '}
+            <strong>Inbox</strong> = inbound mail that hasn&apos;t been
+            routed to outreach yet — newsletters, replies on the wrong
+            address, anything you haven&apos;t turned into a lead.
+          </p>
+          <div className="window-tabs" style={{ marginBottom: '0.75rem' }}>
+            <Link
+              href={`/mailbox/${id}?view=outreach`}
+              className={`window-tab${activeView === 'outreach' ? ' window-tab-active' : ''}`}
+            >
+              Outreach <span className="badge">{threadCounts.outreach}</span>
+            </Link>
+            <Link
+              href={`/mailbox/${id}?view=inbox`}
+              className={`window-tab${activeView === 'inbox' ? ' window-tab-active' : ''}`}
+            >
+              Inbox <span className="badge">{threadCounts.inbox}</span>
+            </Link>
+            <Link
+              href={`/mailbox/${id}?view=all`}
+              className={`window-tab${activeView === 'all' ? ' window-tab-active' : ''}`}
+            >
+              All <span className="badge">{threadCounts.all}</span>
+            </Link>
+          </div>
           {threads.length === 0 ? (
-            <p className="muted">No conversations yet. Compose a message or run a sync.</p>
+            <p className="muted">
+              {activeView === 'outreach'
+                ? 'No outreach conversations yet. When the engine generates an outbound draft and the recipient replies, the thread shows up here.'
+                : activeView === 'inbox'
+                  ? 'Inbox is empty. Inbound mail that arrives but isn’t linked to a qualified lead lands here.'
+                  : 'No conversations yet. Compose a message or run a sync.'}
+            </p>
           ) : (
             <ul className="lead-list">
               {threads.map((t) => (

@@ -2,7 +2,7 @@
 // outbound + inbound message is persisted, threaded by header heuristic,
 // and audit-logged. Suppression list is checked before every send.
 
-import { and, asc, desc, eq, inArray, or, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   mailMessages,
@@ -276,6 +276,139 @@ export async function sendMessage(
   return created;
 }
 
+// ---- test email (Phase 52) -----------------------------------------
+
+export interface SendTestEmailInput {
+  mailboxId: bigint;
+  to: string;
+  subject: string;
+  /** Plain-text body. Test emails do NOT go through the unsubscribe /
+   *  tracking-pixel pipeline — they're for the operator, not recipients. */
+  body: string;
+  /** Optional signature pick. Null = no signature; undefined = use the
+   *  mailbox default (same behaviour as a normal send). */
+  signatureId?: bigint | null;
+  /** Test seam. */
+  providerOverride?: IMailProvider;
+}
+
+export interface SendTestEmailResult {
+  messageId: string;
+  smtpResponse: string;
+  appendedSignature: boolean;
+  signatureName: string | null;
+}
+
+/**
+ * Phase 52 — operator-only deliverability + signature smoke test. Sends a
+ * real email through the mailbox's SMTP, renders the chosen signature (or
+ * the mailbox default), and returns the SMTP response so the operator can
+ * verify:
+ *   - SMTP auth + transport works end-to-end
+ *   - The configured signature renders the way they expect
+ *   - The remote mail server accepts mail from this account
+ *
+ * Crucially this does NOT:
+ *   - Persist a `mail_messages` row (keeps test sends out of the threads view)
+ *   - Run suppression / bounce / contact resolution (operator-internal)
+ *   - Inject the unsubscribe footer or tracking pixel
+ * It DOES record an `audit_log` entry of kind `mail.send_test` so the
+ * operator can see the history.
+ */
+export async function sendTestEmail(
+  ctx: WorkspaceContext,
+  input: SendTestEmailInput,
+): Promise<SendTestEmailResult> {
+  if (!canWrite(ctx)) throw permissionDenied('mail.send_test');
+  const to = input.to.trim();
+  const subject = input.subject.trim();
+  const body = input.body;
+  if (!to) throw invalid('to required');
+  if (!subject) throw invalid('subject required');
+  if (!body || !body.trim()) throw invalid('body required');
+
+  const { mailbox, provider } = await buildProviderFor(
+    ctx,
+    input.mailboxId,
+    input.providerOverride,
+  );
+  if (mailbox.status === 'archived') {
+    throw new MailServiceError('mailbox is archived', 'invalid_input');
+  }
+
+  // Signature resolution: explicit id → that signature (validated);
+  // explicit null → no signature; undefined → mailbox default.
+  let sig = null;
+  let appendedSignature = false;
+  if (input.signatureId === undefined) {
+    sig = await defaultSignature(ctx, mailbox.id);
+  } else if (input.signatureId !== null) {
+    const { signatures } = await import('@/lib/db/schema/mailing');
+    const rows = await db
+      .select()
+      .from(signatures)
+      .where(
+        and(
+          eq(signatures.workspaceId, ctx.workspaceId),
+          eq(signatures.id, input.signatureId),
+        ),
+      )
+      .limit(1);
+    if (!rows[0]) throw invalid('signature not found');
+    sig = rows[0];
+  }
+
+  let text = body;
+  let html: string | undefined;
+  if (sig) {
+    const sigText = renderSignatureText(sig);
+    const sigHtml = renderSignatureHtml(sig);
+    if (sigText) text = `${text}\n\n${sigText}`;
+    if (sigHtml) {
+      // Minimal HTML wrapper so the operator's mail client renders the
+      // signature with its intended formatting + image.
+      const escapedBody = body
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>\n');
+      html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5">${escapedBody}</div>${sigHtml}`;
+    }
+    appendedSignature = true;
+  }
+
+  const out: OutboundMessage = {
+    from: { address: mailbox.fromAddress, name: mailbox.fromName ?? undefined },
+    to: [{ address: to }],
+    replyTo: mailbox.replyTo ?? undefined,
+    subject,
+    text,
+    html,
+    headers: { 'X-LDP-Test': 'true' },
+  };
+  const sendResult = await provider.send(out);
+
+  await recordAuditEvent(ctx, {
+    kind: 'mail.send_test',
+    entityType: 'mailbox',
+    entityId: mailbox.id,
+    payload: {
+      to,
+      subject,
+      messageId: sendResult.messageId,
+      signatureId: sig?.id.toString() ?? null,
+      signatureName: sig?.name ?? null,
+    },
+  });
+
+  return {
+    messageId: sendResult.messageId,
+    smtpResponse: String(sendResult.raw ?? ''),
+    appendedSignature,
+    signatureName: sig?.name ?? null,
+  };
+}
+
 // ---- receive -------------------------------------------------------
 
 export interface SyncInboundResult {
@@ -430,6 +563,13 @@ async function persistInbound(
 export interface ListThreadsFilter {
   mailboxId?: bigint;
   limit?: number;
+  /** Phase 52: split the thread list by whether outreach is happening.
+   *  'outreach' = threads with at least one row in outreach_thread_state
+   *  (i.e., linked to a qualified_lead, drafts have been generated, the
+   *  staged-conversation engine treats them as in-flight).
+   *  'inbox'    = threads NOT linked to outreach — random inbound mail.
+   *  'all'      = everything (default, unchanged from prior behaviour). */
+  kind?: 'all' | 'outreach' | 'inbox';
 }
 
 export async function listThreads(
@@ -440,12 +580,57 @@ export async function listThreads(
   if (filter.mailboxId !== undefined) {
     conditions.push(eq(mailThreads.mailboxId, filter.mailboxId));
   }
+  if (filter.kind === 'outreach' || filter.kind === 'inbox') {
+    const { outreachThreadState } = await import('@/lib/db/schema/outreach');
+    const exists = sql`EXISTS (
+      SELECT 1 FROM ${outreachThreadState}
+      WHERE ${outreachThreadState.threadId} = ${mailThreads.id}
+        AND ${outreachThreadState.workspaceId} = ${mailThreads.workspaceId}
+    )`;
+    conditions.push(
+      filter.kind === 'outreach'
+        ? (exists as unknown as SQL)
+        : (sql`NOT ${exists}` as unknown as SQL),
+    );
+  }
   return db
     .select()
     .from(mailThreads)
     .where(and(...conditions))
     .orderBy(desc(mailThreads.lastMessageAt))
     .limit(Math.min(filter.limit ?? 200, 1000));
+}
+
+/** Phase 52 — fast count of threads partitioned by kind, used to badge
+ *  the Inbox / Outreach tabs on the mailbox detail page. */
+export async function countThreadsByKind(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+): Promise<{ outreach: number; inbox: number; all: number }> {
+  const { outreachThreadState } = await import('@/lib/db/schema/outreach');
+  // Correlated EXISTS: for each mail_threads row, look up matching
+  // outreach_thread_state by (workspace_id, thread_id). All column refs
+  // go through Drizzle so the alias / qualification is correct.
+  const outreachExists = sql<boolean>`EXISTS (
+    SELECT 1 FROM ${outreachThreadState}
+    WHERE ${outreachThreadState.threadId} = ${mailThreads.id}
+      AND ${outreachThreadState.workspaceId} = ${mailThreads.workspaceId}
+  )`;
+  const rows = await db
+    .select({
+      total: sql<number>`COUNT(*)::int`,
+      outreach: sql<number>`COUNT(*) FILTER (WHERE ${outreachExists})::int`,
+    })
+    .from(mailThreads)
+    .where(
+      and(
+        eq(mailThreads.workspaceId, ctx.workspaceId),
+        eq(mailThreads.mailboxId, mailboxId),
+      ),
+    );
+  const all = rows[0]?.total ?? 0;
+  const outreach = rows[0]?.outreach ?? 0;
+  return { all, outreach, inbox: all - outreach };
 }
 
 export async function getThread(

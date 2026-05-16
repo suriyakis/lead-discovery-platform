@@ -22,12 +22,15 @@ import {
   updateMailbox,
 } from '@/lib/services/mailbox';
 import {
+  countThreadsByKind,
   getMessage,
   getThread,
   listThreads,
   sendMessage,
+  sendTestEmail,
   syncInbound,
 } from '@/lib/services/mail';
+import { outreachThreadState } from '@/lib/db/schema/outreach';
 import {
   addSuppression,
   isSuppressed,
@@ -591,5 +594,216 @@ describe('isolation', () => {
         expect((r as { workspaceId: bigint }).workspaceId).toBe(s.workspaceA);
       }
     }
+  });
+});
+
+// ============ P52: sendTestEmail =====================================
+
+describe('sendTestEmail (P52)', () => {
+  it('sends via SMTP, applies default signature, does NOT persist a mail_messages row', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await createSignature(ctx(s.workspaceA, s.ownerA), {
+      name: 'Default sig',
+      mailboxId: mb.id,
+      bodyText: '— Jakub @ Nulife',
+      bodyHtml: '<p>— Jakub @ Nulife</p>',
+      isDefault: true,
+    });
+    const provider = new MockMailProvider();
+
+    const result = await sendTestEmail(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: 'me@example.com',
+      subject: 'Deliverability test',
+      body: 'Hello world',
+      providerOverride: provider,
+    });
+
+    // SMTP fired.
+    expect(provider.sent).toHaveLength(1);
+    const sent = provider.sent[0]!.message;
+    expect(sent.subject).toBe('Deliverability test');
+    expect(sent.text).toContain('Hello world');
+    expect(sent.text).toContain('— Jakub @ Nulife'); // signature appended
+    expect(sent.html).toContain('<p>— Jakub @ Nulife</p>');
+    // Test-marker header so the operator's mail rules can recognise the
+    // bounce-back if they want to.
+    expect(sent.headers?.['X-LDP-Test']).toBe('true');
+    // Test emails are not real outreach; no unsubscribe footer or
+    // tracking pixel.
+    expect(sent.text ?? '').not.toContain('Unsubscribe:');
+    expect(sent.html ?? '').not.toContain('/api/track/');
+    expect(sent.headers?.['List-Unsubscribe']).toBeUndefined();
+    // Return shape reports the signature that was attached.
+    expect(result.appendedSignature).toBe(true);
+    expect(result.signatureName).toBe('Default sig');
+
+    // Critically — no mail_messages row was created. Test emails don't
+    // clutter the threads view.
+    const rows = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.workspaceId, s.workspaceA));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('signatureId: null forces no signature', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await createSignature(ctx(s.workspaceA, s.ownerA), {
+      name: 'Default sig',
+      mailboxId: mb.id,
+      bodyText: '— footer',
+      bodyHtml: '<p>— footer</p>',
+      isDefault: true,
+    });
+    const provider = new MockMailProvider();
+    const result = await sendTestEmail(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: 'me@example.com',
+      subject: 'plain',
+      body: 'no signature please',
+      signatureId: null,
+      providerOverride: provider,
+    });
+    expect(result.appendedSignature).toBe(false);
+    expect(provider.sent[0]!.message.text).not.toContain('— footer');
+    expect(provider.sent[0]!.message.html).toBeUndefined();
+  });
+
+  it('viewers cannot send a test', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await expect(
+      sendTestEmail(ctx(s.workspaceA, s.ownerA, 'viewer'), {
+        mailboxId: mb.id,
+        to: 'me@example.com',
+        subject: 'x',
+        body: 'x',
+        providerOverride: new MockMailProvider(),
+      }),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+
+  it('rejects empty to / subject / body', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    for (const overrides of [
+      { to: '', subject: 's', body: 'b' },
+      { to: 'x@y.com', subject: '', body: 'b' },
+      { to: 'x@y.com', subject: 's', body: '' },
+    ]) {
+      await expect(
+        sendTestEmail(ctx(s.workspaceA, s.ownerA), {
+          mailboxId: mb.id,
+          providerOverride: new MockMailProvider(),
+          ...overrides,
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_input' });
+    }
+  });
+});
+
+// ============ P52: thread kind filter ================================
+
+describe('listThreads kind filter + countThreadsByKind (P52)', () => {
+  it('partitions threads by whether outreach_thread_state row exists', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const provider = new MockMailProvider();
+
+    // Three threads via sendMessage (creates mail_threads rows).
+    const a = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead-a@target.com' }],
+      subject: 'Lead A',
+      text: 'a',
+      providerOverride: provider,
+    });
+    const b = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead-b@target.com' }],
+      subject: 'Lead B',
+      text: 'b',
+      providerOverride: provider,
+    });
+    const c = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'random-c@target.com' }],
+      subject: 'Random C',
+      text: 'c',
+      providerOverride: provider,
+    });
+
+    // Attach outreach state to only A + B; C stays inbox-side.
+    await db.insert(outreachThreadState).values([
+      {
+        workspaceId: s.workspaceA,
+        qualifiedLeadId: 9001n,
+        threadId: a.threadId!,
+        stage: 'discovery',
+      },
+      {
+        workspaceId: s.workspaceA,
+        qualifiedLeadId: 9002n,
+        threadId: b.threadId!,
+        stage: 'engagement',
+      },
+    ]);
+
+    const outreach = await listThreads(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      kind: 'outreach',
+    });
+    const inbox = await listThreads(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      kind: 'inbox',
+    });
+    const all = await listThreads(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      kind: 'all',
+    });
+
+    expect(outreach.map((t) => t.id).sort()).toEqual([a.threadId!, b.threadId!].sort());
+    expect(inbox.map((t) => t.id)).toEqual([c.threadId!]);
+    expect(all).toHaveLength(3);
+
+    const counts = await countThreadsByKind(ctx(s.workspaceA, s.ownerA), mb.id);
+    expect(counts).toEqual({ outreach: 2, inbox: 1, all: 3 });
+  });
+
+  it('default (no kind) returns all threads — backwards compatible', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const provider = new MockMailProvider();
+    await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'x@y.com' }],
+      subject: 'no filter',
+      text: 'x',
+      providerOverride: provider,
+    });
+    const list = await listThreads(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+    });
+    expect(list).toHaveLength(1);
+  });
+
+  it('counts scope to workspace + mailbox', async () => {
+    const s = await setup();
+    const mb1 = await makeMailbox(s, s.workspaceA, s.ownerA, 'mb1');
+    const mb2 = await makeMailbox(s, s.workspaceA, s.ownerA, 'mb2');
+    const provider = new MockMailProvider();
+    await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb1.id,
+      to: [{ address: 'x@y.com' }],
+      subject: 'in mb1',
+      text: 'x',
+      providerOverride: provider,
+    });
+    // mb2 has zero — counts for mb2 should be {0,0,0}.
+    const countsMb2 = await countThreadsByKind(ctx(s.workspaceA, s.ownerA), mb2.id);
+    expect(countsMb2).toEqual({ outreach: 0, inbox: 0, all: 0 });
   });
 });
