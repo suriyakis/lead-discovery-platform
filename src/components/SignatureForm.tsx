@@ -18,10 +18,34 @@ interface MailboxOption {
   fromAddress: string;
 }
 
+export interface SignatureFormInitial {
+  id?: string;
+  name?: string;
+  mailboxId?: string;
+  greeting?: string | null;
+  fullName?: string | null;
+  title?: string | null;
+  company?: string | null;
+  tagline?: string | null;
+  website?: string | null;
+  email?: string | null;
+  phonesRaw?: string;
+  bodyText?: string;
+  bodyHtml?: string | null;
+  logoUrl?: string | null;
+  isDefault?: boolean;
+}
+
 interface SignatureFormProps {
   /** Server action — receives the FormData on submit. */
   action: (formData: FormData) => Promise<void>;
   mailboxes: ReadonlyArray<MailboxOption>;
+  /** Phase 56: pre-populate the form when editing an existing row. */
+  initial?: SignatureFormInitial;
+  /** Submit button label override. Defaults to "Create" for new, "Save" when initial.id is set. */
+  submitLabel?: string;
+  /** Optional onCancel — surfaces a Cancel button next to Submit. */
+  onCancel?: () => void;
 }
 
 type PreviewTab = 'html' | 'text';
@@ -46,22 +70,30 @@ function parsePhones(raw: string): PhoneEntry[] {
     .filter((p) => p.number.length > 0);
 }
 
-export function SignatureForm({ action, mailboxes }: SignatureFormProps) {
-  const [name, setName] = useState('');
-  const [mailboxId, setMailboxId] = useState('');
-  const [greeting, setGreeting] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [title, setTitle] = useState('');
-  const [company, setCompany] = useState('');
-  const [tagline, setTagline] = useState('');
-  const [website, setWebsite] = useState('');
-  const [email, setEmail] = useState('');
-  const [phonesRaw, setPhonesRaw] = useState('');
-  const [bodyText, setBodyText] = useState('');
-  const [bodyHtml, setBodyHtml] = useState('');
-  const [logoUrl, setLogoUrl] = useState('');
-  const [isDefault, setIsDefault] = useState(false);
+export function SignatureForm({
+  action,
+  mailboxes,
+  initial,
+  submitLabel,
+  onCancel,
+}: SignatureFormProps) {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [mailboxId, setMailboxId] = useState(initial?.mailboxId ?? '');
+  const [greeting, setGreeting] = useState(initial?.greeting ?? '');
+  const [fullName, setFullName] = useState(initial?.fullName ?? '');
+  const [title, setTitle] = useState(initial?.title ?? '');
+  const [company, setCompany] = useState(initial?.company ?? '');
+  const [tagline, setTagline] = useState(initial?.tagline ?? '');
+  const [website, setWebsite] = useState(initial?.website ?? '');
+  const [email, setEmail] = useState(initial?.email ?? '');
+  const [phonesRaw, setPhonesRaw] = useState(initial?.phonesRaw ?? '');
+  const [bodyText, setBodyText] = useState(initial?.bodyText ?? '');
+  const [bodyHtml, setBodyHtml] = useState(initial?.bodyHtml ?? '');
+  const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? '');
+  const [isDefault, setIsDefault] = useState(initial?.isDefault ?? false);
   const [previewTab, setPreviewTab] = useState<PreviewTab>('html');
+  const effectiveSubmitLabel =
+    submitLabel ?? (initial?.id ? 'Save changes' : 'Create');
 
   const previewInput = useMemo(
     () => ({
@@ -293,9 +325,17 @@ export function SignatureForm({ action, mailboxes }: SignatureFormProps) {
           <span>Set as default at this scope</span>
         </label>
         <div className="action-row">
+          {initial?.id ? (
+            <input type="hidden" name="id" value={initial.id} />
+          ) : null}
           <button type="submit" className="primary-btn">
-            Create
+            {effectiveSubmitLabel}
           </button>
+          {onCancel ? (
+            <button type="button" className="ghost-btn" onClick={onCancel}>
+              Cancel
+            </button>
+          ) : null}
         </div>
       </form>
 

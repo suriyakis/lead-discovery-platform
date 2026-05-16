@@ -502,35 +502,22 @@ export async function redesignSignatureHtml(
   };
 }
 
-/** Phase 55: signature redesign benefits from a more capable model than
- *  the workspace default. Mini / nano tier models output flat stacked
- *  text regardless of prompt. Sonnet / gpt-5 actually use the example
- *  layouts and vary the title placement.
+/** Phase 56: signatures are designed once per operator. The cost of one
+ *  Opus / gpt-5 chat completion is rounding error against the value of
+ *  a polished signature that goes on every outbound mail. Always pick
+ *  the top tier model regardless of the workspace's default selection.
  *
- *  Anthropic: keep Opus / Sonnet if already selected, else upgrade to
- *    claude-sonnet-4-6 (good design, fraction of Opus cost).
- *  OpenAI: keep o3 / gpt-5 / gpt-4o if selected, else upgrade to gpt-5.
- *  Unknown provider: leave workspace default alone. */
+ *  Anthropic: claude-opus-4-7 (top tier as of 2026-05).
+ *  OpenAI: gpt-5 (top tier as of 2026-05).
+ *  Unknown provider: leave the workspace default alone — we have no
+ *    catalog to override against.
+ */
 function pickRedesignModel(
   providerId: string,
-  workspaceDefault: string,
+  _workspaceDefault: string,
 ): string | undefined {
-  const lower = workspaceDefault.toLowerCase();
-  if (providerId === 'anthropic') {
-    if (lower.includes('opus') || lower.includes('sonnet')) return undefined;
-    return 'claude-sonnet-4-6';
-  }
-  if (providerId === 'openai') {
-    if (
-      lower === 'gpt-5' ||
-      lower === 'gpt-4o' ||
-      lower.startsWith('o3') ||
-      lower === 'gpt-5-mini'
-    ) {
-      return undefined;
-    }
-    return 'gpt-5';
-  }
+  if (providerId === 'anthropic') return 'claude-opus-4-7';
+  if (providerId === 'openai') return 'gpt-5';
   return undefined;
 }
 
