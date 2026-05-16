@@ -16,6 +16,42 @@ import type {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
+/**
+ * Port-aware override for the SMTP `secure` flag. nodemailer's `secure:true`
+ * means *implicit* TLS-on-connect; on a STARTTLS port (587 / 25) that produces
+ * `tls_validate_record_header: wrong version number` because the server replies
+ * with a plain text `220` greeting and the TLS layer can't parse it.
+ *
+ * Operators routinely mis-set this in the UI (set "SSL/TLS on" for a 587
+ * mailbox because they think "on means encrypted"). We auto-correct for the
+ * well-known ports so the toggle is forgiving; for non-standard ports the
+ * operator's choice still wins.
+ *
+ *   465 / 25 / 587 → SMTP submission ports (RFC 6409)
+ *   465: implicit SSL
+ *   587: STARTTLS
+ *   25:  STARTTLS (no auth, mostly legacy)
+ */
+function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
+  if (port === 465) return true;
+  if (port === 587 || port === 25) return false;
+  return operatorChoice;
+}
+
+/**
+ * Port-aware override for the IMAP `secure` flag. imapflow uses the same
+ * `secure:true = implicit TLS` semantics as nodemailer; pointing it at port
+ * 143 with secure=true causes the same plain-greeting parse failure.
+ *
+ *   993: implicit SSL
+ *   143: STARTTLS
+ */
+function resolveImapSecure(port: number, operatorChoice: boolean): boolean {
+  if (port === 993) return true;
+  if (port === 143) return false;
+  return operatorChoice;
+}
+
 export class SmtpImapMailProvider implements IMailProvider {
   public readonly id = 'smtp-imap';
   private readonly config: MailboxConfig;
@@ -57,12 +93,13 @@ export class SmtpImapMailProvider implements IMailProvider {
     const client = new ImapFlow({
       host: this.config.imap.host,
       port: this.config.imap.port,
-      secure: this.config.imap.secure,
+      secure: resolveImapSecure(this.config.imap.port, this.config.imap.secure),
       auth: {
         user: this.config.imap.user,
         pass: this.config.imap.password,
       },
       logger: false,
+      tls: { rejectUnauthorized: false },
       socketTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
 
@@ -103,11 +140,12 @@ export class SmtpImapMailProvider implements IMailProvider {
     return nodemailer.createTransport({
       host: this.config.smtpHost,
       port: this.config.smtpPort,
-      secure: this.config.smtpSecure,
+      secure: resolveSmtpSecure(this.config.smtpPort, this.config.smtpSecure),
       auth: {
         user: this.config.smtpUser,
         pass: this.config.smtpPassword,
       },
+      tls: { rejectUnauthorized: false },
       connectionTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       socketTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
@@ -130,9 +168,10 @@ export class SmtpImapMailProvider implements IMailProvider {
     const client = new ImapFlow({
       host: this.config.imap.host,
       port: this.config.imap.port,
-      secure: this.config.imap.secure,
+      secure: resolveImapSecure(this.config.imap.port, this.config.imap.secure),
       auth: { user: this.config.imap.user, pass: this.config.imap.password },
       logger: false,
+      tls: { rejectUnauthorized: false },
       socketTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
     try {
