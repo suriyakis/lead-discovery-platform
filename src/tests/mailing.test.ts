@@ -42,8 +42,10 @@ import {
   defaultSignature,
   deleteSignature,
   listSignatures,
+  redesignSignatureHtml,
   updateSignature,
 } from '@/lib/services/signatures';
+import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
 import { MockMailProvider, type InboundMessage } from '@/lib/mail';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -352,6 +354,130 @@ describe('signatures', () => {
       logoUrl: null,
     });
     expect(cleared.logoUrl).toBeNull();
+  });
+});
+
+// ============ P54: redesignSignatureHtml ==============================
+
+function makeStubAi(captured: { system?: string; prompt?: string }, html: string): IAIProvider {
+  return {
+    id: 'stub-ai',
+    model: 'stub-model',
+    async generateText() {
+      throw new Error('not used');
+    },
+    async generateJson(input, schema) {
+      captured.system = input.system;
+      captured.prompt = input.prompt;
+      return schema.parse({ bodyHtml: html });
+    },
+    estimateCost() {
+      return 0;
+    },
+    async healthCheck() {
+      return { ok: true };
+    },
+  };
+}
+
+describe('redesignSignatureHtml (P54)', () => {
+  afterAll(() => {
+    _setAIProviderForTests(null);
+  });
+
+  it('threads structured fields + extraPrompt into the AI prompt and returns sanitized HTML', async () => {
+    const s = await setup();
+    const captured: { system?: string; prompt?: string } = {};
+    _setAIProviderForTests(
+      makeStubAi(
+        captured,
+        '<table cellspacing="0" cellpadding="0" border="0"><tr><td>Hello, I am Jakub.</td></tr></table>',
+      ),
+    );
+    const result = await redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+      fullName: 'Jakub',
+      title: 'Operator',
+      company: 'Nulife',
+      email: 'jb@nulife.pl',
+      phones: [{ label: 'mob', number: '+48 555 111 222' }],
+      logoUrl: 'https://cdn.example.com/logo.png',
+      extraPrompt: 'use navy and gold',
+    });
+    expect(result.bodyHtml).toContain('<table');
+    expect(result.providerId).toBe('stub-ai');
+    expect(captured.prompt).toContain('Jakub');
+    expect(captured.prompt).toContain('Nulife');
+    expect(captured.prompt).toContain('jb@nulife.pl');
+    expect(captured.prompt).toContain('+48 555 111 222');
+    expect(captured.prompt).toContain('https://cdn.example.com/logo.png');
+    expect(captured.prompt).toContain('use navy and gold');
+    expect(captured.system).toContain('email signature designer');
+  });
+
+  it('strips script / iframe / on* / javascript: URLs from AI output', async () => {
+    const s = await setup();
+    const captured: { system?: string; prompt?: string } = {};
+    const hostile = `
+      <table>
+        <tr><td>
+          <script>alert('xss')</script>
+          <iframe src="https://evil.example.com"></iframe>
+          <a href="javascript:alert(1)" onclick="boom()" onmouseover='x()'>click</a>
+          <img src="javascript:alert(2)" onerror="leak()">
+          Good text
+        </td></tr>
+      </table>
+    `;
+    _setAIProviderForTests(makeStubAi(captured, hostile));
+    const result = await redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+      fullName: 'Jakub',
+    });
+    expect(result.bodyHtml).not.toMatch(/<script/i);
+    expect(result.bodyHtml).not.toMatch(/<iframe/i);
+    expect(result.bodyHtml).not.toMatch(/\bonclick\b/i);
+    expect(result.bodyHtml).not.toMatch(/\bonmouseover\b/i);
+    expect(result.bodyHtml).not.toMatch(/\bonerror\b/i);
+    expect(result.bodyHtml).not.toMatch(/javascript:/i);
+    // Benign content survives.
+    expect(result.bodyHtml).toContain('Good text');
+  });
+
+  it('rejects when neither fields nor bodyText is supplied', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi({}, '<table><tr><td>x</td></tr></table>'),
+    );
+    await expect(
+      redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {}),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('viewers cannot redesign', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi({}, '<table><tr><td>x</td></tr></table>'),
+    );
+    await expect(
+      redesignSignatureHtml(ctx(s.workspaceA, s.ownerA, 'viewer'), {
+        fullName: 'X',
+      }),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+
+  it('strips markdown code fences if the model ignores instructions', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi(
+        {},
+        '```html\n<table><tr><td>Signature with markdown wrapper</td></tr></table>\n```',
+      ),
+    );
+    const result = await redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+      fullName: 'Jakub',
+    });
+    expect(result.bodyHtml).not.toMatch(/^```/);
+    expect(result.bodyHtml).not.toMatch(/```$/);
+    expect(result.bodyHtml).toContain('<table>');
   });
 });
 

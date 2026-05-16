@@ -254,6 +254,17 @@ function SignatureList({
               action={updateHtml}
               signatureId={s.id.toString()}
               initialHtml={s.bodyHtml ?? ''}
+              fieldsSnapshot={{
+                fullName: s.fullName,
+                title: s.title,
+                company: s.company,
+                tagline: s.tagline,
+                website: s.website,
+                email: s.email,
+                phones: coercePhonesForUi(s.phones),
+                logoUrl: s.logoUrl,
+                bodyText: s.bodyText,
+              }}
             />
           </details>
 
@@ -279,4 +290,26 @@ function SignatureList({
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/** signatures.phones is `unknown` (jsonb); cast safely to the UI shape
+ *  used by AISignatureRedesigner. Same shape coercion the server-side
+ *  renderer does, just trimmed-down for the snapshot pass-through. */
+function coercePhonesForUi(
+  raw: unknown,
+): Array<{ label: string; number: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ label: string; number: string }> = [];
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as { label?: unknown; number?: unknown };
+    const number = (typeof o.number === 'string' ? o.number : '').trim();
+    if (!number) continue;
+    out.push({
+      label: (typeof o.label === 'string' ? o.label : '').trim(),
+      number,
+    });
+    if (out.length >= 6) break;
+  }
+  return out;
 }

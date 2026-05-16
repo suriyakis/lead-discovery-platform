@@ -19,6 +19,10 @@ export {
   renderSignatureText,
 } from '@/lib/signature-render';
 
+import { z } from 'zod';
+import { getAIProviderForCtx } from '@/lib/ai';
+import { recordUsage } from './usage';
+
 export class SignatureServiceError extends Error {
   public readonly code: string;
   constructor(message: string, code: string) {
@@ -242,6 +246,217 @@ export async function defaultSignature(
     .limit(1);
   if (mailboxScoped[0]) return mailboxScoped[0];
   return null;
+}
+
+// ---- AI redesign (Phase 54) -----------------------------------------
+
+const REDESIGN_SYSTEM_PROMPT = `You are an expert email signature designer.
+
+Produce a single block of HTML that renders as a clean, professional email
+signature. Apply the operator's structured fields + any style preferences
+they specify; pick tasteful typography, spacing, and accent colors when not
+told explicitly.
+
+Hard rules (email-client compatibility):
+- Output ONLY the signature HTML. No <html>, <head>, <body>, no markdown
+  fences, no commentary.
+- Inline CSS only. Email clients strip <style> tags.
+- Use a single <table cellspacing="0" cellpadding="0" border="0"> as the
+  outer layout container. Modern flexbox / grid won't render in Outlook.
+- Stay under 600px wide. Mobile clients are unforgiving.
+- If a logo URL is provided, embed it via <img src="..." alt="..."
+  style="display:block;max-width:120px;height:auto"> in a left cell.
+  Don't make it larger than 200px wide unless the operator explicitly
+  asks for a big logo.
+- All anchors get target="_blank" and rel="noopener". All URLs as-is.
+- Don't invent fields. If a field is blank in the input, omit it.
+- Don't include "Sent from my iPhone" style noise.
+- No JavaScript, no <script>, no <iframe>, no <form>, no <input>.
+- No external CSS imports (@import, link rel=stylesheet).
+
+Return JSON shaped as { "bodyHtml": "<table>...</table>" }.
+`;
+
+const RedesignResultSchema = z.object({
+  bodyHtml: z.string().min(20).max(20_000),
+});
+
+export interface RedesignSignatureInput {
+  /** Operator's optional style guidance, e.g. "use navy and gold" or
+   *  "make the logo big". */
+  extraPrompt?: string | null;
+  /** Structured fields the AI must honour verbatim. */
+  fullName?: string | null;
+  title?: string | null;
+  company?: string | null;
+  tagline?: string | null;
+  website?: string | null;
+  email?: string | null;
+  phones?: ReadonlyArray<SignaturePhone>;
+  logoUrl?: string | null;
+  /** Operator's current bodyText — useful for AI to mirror tone / language. */
+  bodyText?: string | null;
+  /** Existing bodyHtml the AI is replacing, if any. Provider gets to see
+   *  the prior design as context (operator may say "make the colors
+   *  match the existing layout" or "keep the structure but change X"). */
+  currentBodyHtml?: string | null;
+}
+
+export interface RedesignSignatureResult {
+  bodyHtml: string;
+  model: string;
+  providerId: string;
+  costEstimateCents: number;
+}
+
+/**
+ * Phase 54 — generate a fresh HTML signature from structured fields + a
+ * style prompt. Calls the workspace's active AI provider. Returns the
+ * candidate HTML for the operator to preview + save; this function does
+ * NOT mutate the signature row, the caller decides what to do with the
+ * returned HTML.
+ *
+ * Sanitisation note: <script>, <iframe>, javascript: URLs are stripped
+ * from the AI output as a defense-in-depth measure. The system prompt
+ * already forbids them, but trusting an LLM to never emit them is a
+ * losing bet.
+ */
+export async function redesignSignatureHtml(
+  ctx: WorkspaceContext,
+  input: RedesignSignatureInput,
+): Promise<RedesignSignatureResult> {
+  if (!canWrite(ctx)) throw permissionDenied('signature.redesign');
+
+  const fields: Array<[string, string]> = [];
+  if (input.fullName?.trim()) fields.push(['Full name', input.fullName.trim()]);
+  if (input.title?.trim()) fields.push(['Title', input.title.trim()]);
+  if (input.company?.trim()) fields.push(['Company', input.company.trim()]);
+  if (input.tagline?.trim()) fields.push(['Tagline', input.tagline.trim()]);
+  if (input.website?.trim()) fields.push(['Website', input.website.trim()]);
+  if (input.email?.trim()) fields.push(['Email', input.email.trim()]);
+  for (const p of input.phones ?? []) {
+    if (p.number.trim()) {
+      fields.push([
+        p.label.trim() ? `Phone (${p.label.trim()})` : 'Phone',
+        p.number.trim(),
+      ]);
+    }
+  }
+  if (input.logoUrl?.trim()) fields.push(['Logo URL', input.logoUrl.trim()]);
+
+  if (fields.length === 0 && !input.bodyText?.trim()) {
+    throw invalid(
+      'cannot redesign — no signature data provided. Fill in at least one structured field before asking AI to redesign.',
+    );
+  }
+
+  const fieldLines = fields
+    .map(([k, v]) => `- ${k}: ${v}`)
+    .join('\n');
+
+  const sections: string[] = [
+    'Structured fields (use these verbatim — do NOT invent or substitute):',
+    fieldLines || '(no fields)',
+  ];
+  if (input.bodyText?.trim()) {
+    sections.push(
+      '',
+      'Operator\'s plain-text signature (for language / tone reference):',
+      input.bodyText.trim().slice(0, 4000),
+    );
+  }
+  if (input.currentBodyHtml?.trim()) {
+    sections.push(
+      '',
+      'Existing HTML signature (the operator is re-designing this — feel free to keep what works, change what doesn\'t):',
+      input.currentBodyHtml.trim().slice(0, 8000),
+    );
+  }
+  if (input.extraPrompt?.trim()) {
+    sections.push(
+      '',
+      'Operator\'s style preferences (priority — honour these):',
+      input.extraPrompt.trim().slice(0, 2000),
+    );
+  }
+
+  const userPrompt = sections.join('\n');
+
+  const provider = await getAIProviderForCtx(ctx);
+  const result = await provider.generateJson(
+    { system: REDESIGN_SYSTEM_PROMPT, prompt: userPrompt },
+    RedesignResultSchema,
+    { maxTokens: 4096, temperature: 0.6 },
+  );
+
+  const sanitized = sanitizeSignatureHtml(result.bodyHtml);
+
+  // Cost estimate is best-effort; AI providers return token counts on
+  // chat completions but generateJson surfaces them on the same wrapper.
+  const costEstimateCents = 0; // The provider's billing pipeline already
+  // records the underlying chat completion via usage_log inside
+  // generateJson. We add an extra entry tagged ai.signature_redesign so
+  // /settings/usage can show signature spend distinctly.
+  await recordUsage(ctx, {
+    kind: 'ai.signature_redesign',
+    provider: provider.id,
+    units: 1n,
+    costEstimateCents,
+    payload: {
+      model: provider.model,
+      hasExtraPrompt: Boolean(input.extraPrompt?.trim()),
+      fieldsProvided: fields.length,
+    },
+  });
+
+  await recordAuditEvent(ctx, {
+    kind: 'signature.redesign',
+    entityType: 'signature',
+    entityId: 0n,
+    payload: {
+      providerId: provider.id,
+      model: provider.model,
+      fieldsProvided: fields.length,
+      hasExtraPrompt: Boolean(input.extraPrompt?.trim()),
+    },
+  });
+
+  return {
+    bodyHtml: sanitized,
+    model: provider.model,
+    providerId: provider.id,
+    costEstimateCents,
+  };
+}
+
+/** Defensive HTML sanitiser. Drops <script>, <iframe>, on* event
+ *  handlers, and javascript: URLs from the AI output. Tag whitelist
+ *  isn't enforced (signatures legitimately use many tags) — instead
+ *  we surgically remove the known-hostile constructs. */
+function sanitizeSignatureHtml(input: string): string {
+  let out = input.trim();
+  // Strip <script>...</script> + <iframe>...</iframe> (and self-closing).
+  out = out.replace(/<script[\s\S]*?<\/script>/gi, '');
+  out = out.replace(/<script[^>]*\/?\s*>/gi, '');
+  out = out.replace(/<iframe[\s\S]*?<\/iframe>/gi, '');
+  out = out.replace(/<iframe[^>]*\/?\s*>/gi, '');
+  // Strip on* event handler attributes (onclick="...", onerror='...').
+  out = out.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
+  out = out.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
+  out = out.replace(/\s+on[a-z]+\s*=\s*[^\s>]+/gi, '');
+  // Strip javascript: URLs from href / src.
+  out = out.replace(
+    /(href|src)\s*=\s*"(?:\s*javascript:)[^"]*"/gi,
+    '$1="#"',
+  );
+  out = out.replace(
+    /(href|src)\s*=\s*'(?:\s*javascript:)[^']*'/gi,
+    "$1='#'",
+  );
+  // Trim markdown code fences in case the model ignored the system
+  // prompt and wrapped the output anyway.
+  out = out.replace(/^```html\s*/i, '').replace(/```$/, '').trim();
+  return out;
 }
 
 // ---- internals -----------------------------------------------------

@@ -10,6 +10,7 @@ import {
   renderSignatureHtml,
   renderSignatureText,
 } from '@/lib/signature-render';
+import { AISignatureRedesigner } from './AISignatureRedesigner';
 
 interface MailboxOption {
   id: string;
@@ -267,6 +268,21 @@ export function SignatureForm({ action, mailboxes }: SignatureFormProps) {
             />
           </label>
         </fieldset>
+        <AISignatureRedesigner
+          getFields={() => ({
+            fullName,
+            title,
+            company,
+            tagline,
+            website,
+            email,
+            phones: parsePhones(phonesRaw),
+            logoUrl,
+            bodyText,
+            currentBodyHtml: bodyHtml,
+          })}
+          onApply={(html) => setBodyHtml(html)}
+        />
         <label className="checkbox-row">
           <input
             type="checkbox"
