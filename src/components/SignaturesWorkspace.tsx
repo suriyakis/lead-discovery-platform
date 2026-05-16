@@ -151,17 +151,17 @@ export function SignaturesWorkspace({
         </div>
       </div>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
-          gap: '1rem',
-          alignItems: 'flex-start',
-        }}
-      >
-        {/* Left column: list or edit form */}
-        <div>
-          {mode.kind === 'browsing' ? (
+      {mode.kind === 'browsing' ? (
+        // Browsing: two-column workspace (list left, preview + raw right).
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+            gap: '1rem',
+            alignItems: 'flex-start',
+          }}
+        >
+          <div>
             <SignatureList
               signatures={signatures}
               selectedId={mode.selectedId}
@@ -172,43 +172,44 @@ export function SignaturesWorkspace({
               deleteAction={deleteAction}
               setDefaultAction={setDefaultAction}
             />
-          ) : mode.kind === 'creating' ? (
-            <section className="profile-list-card" style={{ padding: '1rem' }}>
-              <h2 style={{ marginTop: 0 }}>New signature</h2>
-              <SignatureForm
-                action={createAction}
-                mailboxes={mailboxes}
-                onCancel={() =>
-                  setMode({
-                    kind: 'browsing',
-                    selectedId: signatures[0]?.id ?? null,
-                  })
-                }
-              />
-            </section>
-          ) : (
-            <EditForm
-              signature={signatures.find((s) => s.id === mode.signatureId)!}
-              mailboxes={mailboxes}
-              updateAction={updateAction}
-              onCancel={() =>
-                setMode({ kind: 'browsing', selectedId: mode.signatureId })
-              }
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <PreviewPanel
+              signature={selected}
+              renderedHtml={renderedHtml}
+              renderedText={renderedText}
+              defaultTestRecipient={defaultTestRecipient}
             />
-          )}
+            <RawHtmlPanel renderedHtml={renderedHtml} />
+          </div>
         </div>
-
-        {/* Right column: preview + raw HTML */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <PreviewPanel
-            signature={selected}
-            renderedHtml={renderedHtml}
-            renderedText={renderedText}
-            defaultTestRecipient={defaultTestRecipient}
+      ) : mode.kind === 'creating' ? (
+        // Creating: SignatureForm has its own internal 2-col grid (fields
+        // left, live preview right). Render it full-width — the outer
+        // right column would collide with the form's internal preview.
+        <section className="profile-list-card" style={{ padding: '1rem' }}>
+          <h2 style={{ marginTop: 0 }}>New signature</h2>
+          <SignatureForm
+            action={createAction}
+            mailboxes={mailboxes}
+            onCancel={() =>
+              setMode({
+                kind: 'browsing',
+                selectedId: signatures[0]?.id ?? null,
+              })
+            }
           />
-          <RawHtmlPanel renderedHtml={renderedHtml} />
-        </div>
-      </div>
+        </section>
+      ) : (
+        <EditForm
+          signature={signatures.find((s) => s.id === mode.signatureId)!}
+          mailboxes={mailboxes}
+          updateAction={updateAction}
+          onCancel={() =>
+            setMode({ kind: 'browsing', selectedId: mode.signatureId })
+          }
+        />
+      )}
     </div>
   );
 }
@@ -514,28 +515,23 @@ function RawHtmlPanel({ renderedHtml }: { renderedHtml: string }) {
         </strong>
         <button
           type="button"
-          className="ghost-btn"
+          className="ghost-btn icon-btn"
           onClick={copy}
           disabled={!renderedHtml}
           title="Copy HTML to clipboard"
-          style={{ fontSize: '0.75rem' }}
+          style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
         >
-          <Copy className="lucide" /> {copied ? 'Copied' : 'Copy HTML'}
+          <Copy className="lucide" />
+          {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
       {renderedHtml ? (
         <pre
+          className="signature-preview-text"
           style={{
-            margin: 0,
-            padding: '0.75rem',
-            background: 'oklch(0.96 0 0)',
-            fontFamily: 'var(--brand-mono)',
-            fontSize: '0.74rem',
-            whiteSpace: 'pre-wrap',
+            fontSize: '0.72rem',
             wordBreak: 'break-word',
             maxHeight: '320px',
-            overflow: 'auto',
-            borderRadius: '0.35rem',
           }}
         >
           {renderedHtml}
