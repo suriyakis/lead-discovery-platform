@@ -250,31 +250,83 @@ export async function defaultSignature(
 
 // ---- AI redesign (Phase 54) -----------------------------------------
 
-const REDESIGN_SYSTEM_PROMPT = `You are an expert email signature designer.
+const REDESIGN_SYSTEM_PROMPT = `You are a senior email signature designer for a B2B sales platform.
 
-Produce a single block of HTML that renders as a clean, professional email
-signature. Apply the operator's structured fields + any style preferences
-they specify; pick tasteful typography, spacing, and accent colors when not
-told explicitly.
+Your job: turn the operator's structured fields + style preferences into a
+polished, brand-coherent signature block that renders correctly in Gmail,
+Outlook (web + desktop), Apple Mail, and on mobile.
 
-Hard rules (email-client compatibility):
+DESIGN PRINCIPLES (apply unless the operator overrides):
+- Visual hierarchy: name is the strongest element (size + weight), the
+  rest descends. Don't make 4 different things equally prominent.
+- Whitespace beats density. 8–16px gaps between groups.
+- One accent color, used sparingly — usually for the name, a thin divider,
+  or a link. Pick one that suits the company; default to a confident
+  neutral (deep blue #1f3864 or warm slate #334155) if no brand colour is
+  specified.
+- ONE typeface. System-font stack: Arial, Helvetica, sans-serif.
+  Body copy 13–14px, name 15–17px. Mono / serif only if explicitly asked.
+- Title placement options (pick the one that fits the style — DO NOT
+  default to "title under name" every time):
+    (a) inline with name: "Jakub Bobek · CEO"  ← favors compact / minimal
+    (b) muted sub-line under name, smaller font: typical / classic
+    (c) inline with company: "CEO at Nulife"     ← favors corporate
+    (d) under a thin accent divider: modern feel
+  Choose based on the requested style; rotate across designs so output
+  doesn't look templated.
+- Logo: when a logo URL is provided, place it in a left cell of a 2-col
+  table OR at the top-left of a single-col layout. Default size 80–120px
+  wide unless operator says "big" / "small". Always
+  style="display:block;max-width:<size>px;height:auto".
+- Phone numbers: when 3+ phones, prefer one-per-line. When 1–2, inline
+  with a · separator is cleaner.
+
+HARD RULES (email-client compatibility — non-negotiable):
 - Output ONLY the signature HTML. No <html>, <head>, <body>, no markdown
-  fences, no commentary.
-- Inline CSS only. Email clients strip <style> tags.
-- Use a single <table cellspacing="0" cellpadding="0" border="0"> as the
-  outer layout container. Modern flexbox / grid won't render in Outlook.
-- Stay under 600px wide. Mobile clients are unforgiving.
-- If a logo URL is provided, embed it via <img src="..." alt="..."
-  style="display:block;max-width:120px;height:auto"> in a left cell.
-  Don't make it larger than 200px wide unless the operator explicitly
-  asks for a big logo.
-- All anchors get target="_blank" and rel="noopener". All URLs as-is.
-- Don't invent fields. If a field is blank in the input, omit it.
-- Don't include "Sent from my iPhone" style noise.
-- No JavaScript, no <script>, no <iframe>, no <form>, no <input>.
-- No external CSS imports (@import, link rel=stylesheet).
+  fences, no commentary, no "Here is the signature:" preamble.
+- Inline CSS only. Email clients strip <style> tags. No @import, no
+  <link>, no class names that depend on external CSS.
+- The outermost element must be a <table cellspacing="0" cellpadding="0"
+  border="0"> — flexbox / grid won't render in Outlook.
+- Stay under 600px wide. Use cellpadding / inline style="padding:Npx"
+  rather than margins (Outlook ignores margin on td).
+- All anchors: target="_blank" rel="noopener". Use the URL verbatim.
+- Don't invent data. If a field is blank, omit it entirely — don't
+  fabricate phone numbers, never put placeholder text like "[your title]".
+- No <script>, <iframe>, <form>, <input>, <object>, <embed>, <video>.
+- Don't include the operator's plain-text signature text wholesale —
+  rebuild the design from structured fields.
 
-Return JSON shaped as { "bodyHtml": "<table>...</table>" }.
+EXAMPLES (different aesthetics — match the requested style if any):
+
+Example A — Minimal, single column, inline title:
+<table cellspacing="0" cellpadding="0" border="0" style="font-family:Arial,Helvetica,sans-serif;color:#0f172a">
+  <tr><td>
+    <div style="font-size:15px;font-weight:600;color:#0f172a">Jakub Bobek <span style="font-weight:400;color:#64748b">· CEO</span></div>
+    <div style="height:1px;width:36px;background:#1f3864;margin:8px 0"></div>
+    <div style="font-size:13px;line-height:1.6;color:#334155">
+      <a href="https://nulife.pl" target="_blank" rel="noopener" style="color:#1f3864;text-decoration:none;font-weight:500">nulife.pl</a> · <a href="mailto:jb@nulife.pl" style="color:#334155;text-decoration:none">jb@nulife.pl</a> · +48 555 111 222
+    </div>
+  </td></tr>
+</table>
+
+Example B — Branded two-column with logo, title sub-line under name:
+<table cellspacing="0" cellpadding="0" border="0" style="font-family:Arial,Helvetica,sans-serif;color:#0f172a">
+  <tr>
+    <td valign="top" style="padding-right:18px;border-right:3px solid #1f3864;width:100px"><img src="https://cdn.example.com/logo.png" alt="Nulife" style="display:block;max-width:100px;height:auto" /></td>
+    <td valign="top" style="padding-left:18px">
+      <div style="font-size:16px;font-weight:700;color:#1f3864">Jakub Bobek</div>
+      <div style="font-size:12px;color:#64748b;letter-spacing:0.4px;text-transform:uppercase;margin-top:2px">CEO · Nulife</div>
+      <div style="font-size:13px;line-height:1.6;color:#0f172a;margin-top:10px">
+        <a href="https://nulife.pl" target="_blank" rel="noopener" style="color:#1f3864;text-decoration:none;font-weight:600">nulife.pl</a><br>
+        <a href="mailto:jb@nulife.pl" style="color:#0f172a;text-decoration:none">jb@nulife.pl</a><br>
+        <span style="color:#64748b">+48 555 111 222</span>
+      </div>
+    </td>
+  </tr>
+</table>
+
+Return JSON shaped exactly: { "bodyHtml": "<table>...</table>" }
 `;
 
 const RedesignResultSchema = z.object({
@@ -386,7 +438,19 @@ export async function redesignSignatureHtml(
   const result = await provider.generateJson(
     { system: REDESIGN_SYSTEM_PROMPT, prompt: userPrompt },
     RedesignResultSchema,
-    { maxTokens: 4096, temperature: 0.6 },
+    {
+      maxTokens: 4096,
+      // Design is a creative task — higher temperature than autofill so
+      // the model varies the layout / accent placement / title position
+      // across regenerations instead of producing the same template.
+      temperature: 0.85,
+      // Override the workspace default to a model that handles visual /
+      // HTML design well. Cheap models (Haiku, gpt-5-nano) produce
+      // generic stacked-text signatures regardless of the prompt; the
+      // pickRedesignModel helper keeps strong defaults strong and
+      // upgrades the weak ones.
+      model: pickRedesignModel(provider.id, provider.model),
+    },
   );
 
   const sanitized = sanitizeSignatureHtml(result.bodyHtml);
@@ -427,6 +491,38 @@ export async function redesignSignatureHtml(
     providerId: provider.id,
     costEstimateCents,
   };
+}
+
+/** Phase 55: signature redesign benefits from a more capable model than
+ *  the workspace default. Mini / nano tier models output flat stacked
+ *  text regardless of prompt. Sonnet / gpt-5 actually use the example
+ *  layouts and vary the title placement.
+ *
+ *  Anthropic: keep Opus / Sonnet if already selected, else upgrade to
+ *    claude-sonnet-4-6 (good design, fraction of Opus cost).
+ *  OpenAI: keep o3 / gpt-5 / gpt-4o if selected, else upgrade to gpt-5.
+ *  Unknown provider: leave workspace default alone. */
+function pickRedesignModel(
+  providerId: string,
+  workspaceDefault: string,
+): string | undefined {
+  const lower = workspaceDefault.toLowerCase();
+  if (providerId === 'anthropic') {
+    if (lower.includes('opus') || lower.includes('sonnet')) return undefined;
+    return 'claude-sonnet-4-6';
+  }
+  if (providerId === 'openai') {
+    if (
+      lower === 'gpt-5' ||
+      lower === 'gpt-4o' ||
+      lower.startsWith('o3') ||
+      lower === 'gpt-5-mini'
+    ) {
+      return undefined;
+    }
+    return 'gpt-5';
+  }
+  return undefined;
 }
 
 /** Defensive HTML sanitiser. Drops <script>, <iframe>, on* event

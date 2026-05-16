@@ -13,6 +13,45 @@
 
 import { useState, useTransition } from 'react';
 
+interface StylePreset {
+  id: string;
+  label: string;
+  blurb: string;
+  /** Text added to the AI prompt when the operator clicks the chip. */
+  prompt: string;
+}
+
+const STYLE_PRESETS: ReadonlyArray<StylePreset> = [
+  {
+    id: 'minimal',
+    label: 'Minimal',
+    blurb: 'Single column · generous whitespace · one thin accent',
+    prompt:
+      'Style: minimal. Single column, generous whitespace, one thin accent divider, no logo emphasis, title inline with name using a · separator. Neutral accent color (deep blue or warm slate).',
+  },
+  {
+    id: 'branded',
+    label: 'Branded',
+    blurb: 'Logo emphasized · bold company colors · accent bar',
+    prompt:
+      'Style: branded. Two-column layout with the logo on the left, a vertical accent bar between columns, the name bold in the brand accent color, and contact lines stacked on the right. Make the company identity strong.',
+  },
+  {
+    id: 'two-column',
+    label: 'Two-column',
+    blurb: 'Logo or person info left · contact details right',
+    prompt:
+      'Style: two columns. Logo or initials on the left, name + title + contact on the right. Subtle vertical separator. Title placed inline with company ("Title at Company") for a corporate feel.',
+  },
+  {
+    id: 'compact',
+    label: 'Compact',
+    blurb: 'One or two rows · all contact on a single line',
+    prompt:
+      'Style: compact. One row for name + title, second row for all contact (website · email · phone) separated by middle-dots. No logo emphasis, no dividers, just clean type. Title inline with name.',
+  },
+];
+
 export interface SignatureRedesignFields {
   fullName?: string | null;
   title?: string | null;
@@ -45,6 +84,7 @@ export function AISignatureRedesigner({
   onApply,
 }: AISignatureRedesignerProps) {
   const [extraPrompt, setExtraPrompt] = useState('');
+  const [presetId, setPresetId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -53,9 +93,15 @@ export function AISignatureRedesigner({
     setError(null);
     setInfo(null);
     const fields = getFields();
+    const preset = STYLE_PRESETS.find((p) => p.id === presetId);
+    // Preset goes first so the operator's own note can override / refine
+    // anything they want to adjust.
+    const combined = [preset?.prompt, extraPrompt.trim()]
+      .filter(Boolean)
+      .join('\n\n');
     const body = {
       ...fields,
-      extraPrompt: extraPrompt.trim() || null,
+      extraPrompt: combined || null,
     };
     startTransition(async () => {
       try {
@@ -83,18 +129,64 @@ export function AISignatureRedesigner({
 
   return (
     <fieldset className="ks-kind-fields">
-      <legend className="muted">Re-design with AI (Phase 54)</legend>
+      <legend className="muted">Re-design with AI</legend>
       <p className="muted" style={{ fontSize: '0.825rem', marginTop: 0 }}>
-        Don&apos;t like how the signature looks? Click below and the
-        workspace&apos;s active AI provider will design fresh HTML using
-        the fields you&apos;ve filled in. Add an optional style note
-        (colors, logo size, layout preference…) and the AI will honor it.
-        The output lands in the HTML field above and runs through the
-        same defensive sanitiser (no script / iframe / javascript: URLs)
-        before save.
+        Don&apos;t like how the signature looks? Pick a style direction
+        below and click <strong>Re-design</strong> — the workspace&apos;s
+        active AI provider will rebuild the HTML using your structured
+        fields and the requested aesthetic. Add an optional note for
+        specifics (colors, logo size, etc). The output drops into the
+        HTML field above and goes through a defensive sanitiser
+        (script / iframe / javascript: URLs stripped) before save.
+        Each click bills one chat completion.
       </p>
-      <label>
-        <span>Extra prompt (optional)</span>
+
+      <div style={{ marginTop: '0.5rem' }}>
+        <span
+          className="muted"
+          style={{ fontSize: '0.75rem', display: 'block', marginBottom: '0.35rem' }}
+        >
+          Style direction (optional)
+        </span>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '0.4rem',
+          }}
+        >
+          {STYLE_PRESETS.map((p) => {
+            const active = p.id === presetId;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setPresetId(active ? null : p.id)}
+                className={active ? 'primary-btn' : ''}
+                title={p.blurb}
+                style={{
+                  fontSize: '0.78rem',
+                  padding: '0.3rem 0.7rem',
+                  borderRadius: '999px',
+                  border: active ? undefined : '1px solid var(--brand-border, #ddd)',
+                  background: active ? undefined : 'transparent',
+                  cursor: 'pointer',
+                }}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+        {presetId ? (
+          <p className="muted" style={{ fontSize: '0.72rem', margin: '0.35rem 0 0' }}>
+            {STYLE_PRESETS.find((p) => p.id === presetId)?.blurb}
+          </p>
+        ) : null}
+      </div>
+
+      <label style={{ marginTop: '0.75rem' }}>
+        <span>Extra note (optional)</span>
         <textarea
           rows={3}
           maxLength={2000}
@@ -105,14 +197,14 @@ export function AISignatureRedesigner({
           }
         />
       </label>
-      <div className="action-row">
+      <div className="action-row" style={{ marginTop: '0.5rem' }}>
         <button
           type="button"
           onClick={run}
           disabled={isPending}
           className="primary-btn"
         >
-          {isPending ? 'Designing…' : 'Re-design with AI'}
+          {isPending ? 'Designing…' : presetId || extraPrompt.trim() ? 'Re-design with AI' : 'Design with AI'}
         </button>
       </div>
       {info ? <p className="form-info">{info}</p> : null}
