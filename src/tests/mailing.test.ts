@@ -520,6 +520,61 @@ describe('redesignSignatureHtml (P54)', () => {
     // legit "&#xB7;" sequences (they render fine in email clients).
     expect(result.bodyHtml).toContain('&#xB7;');
   });
+
+  it('rejects output that contains an email address not in the operator input', async () => {
+    // The May 16 2026 incident: operator typed jack@ecobeton.co.uk;
+    // Opus 4.7 substituted office@ecobeton.co.uk (a real contact at
+    // the same company it recognised from training data). Hard-reject
+    // any output whose emails aren't in the operator's structured
+    // fields so fabricated data can't slip into outbound mail.
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi(
+        {},
+        `<table><tr><td>
+           <a href="mailto:office@ecobeton.co.uk">office@ecobeton.co.uk</a>
+        </td></tr></table>`,
+      ),
+    );
+    await expect(
+      redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+        fullName: 'Jacek Bienkowski',
+        company: 'Ecobeton UK LTD',
+        email: 'jack@ecobeton.co.uk',
+      }),
+    ).rejects.toMatchObject({ code: 'fabrication_detected' });
+  });
+
+  it('accepts output that reuses the operator email verbatim (case-insensitive)', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi(
+        {},
+        `<table><tr><td>
+           <a href="mailto:JACK@ecobeton.co.uk">jack@ecobeton.co.uk</a>
+        </td></tr></table>`,
+      ),
+    );
+    const result = await redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+      fullName: 'Jacek',
+      email: 'jack@ecobeton.co.uk',
+    });
+    expect(result.bodyHtml).toContain('jack@ecobeton.co.uk');
+  });
+
+  it('accepts output without any email when the operator did not provide one', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      makeStubAi(
+        {},
+        '<table><tr><td>Just a name, no contact info</td></tr></table>',
+      ),
+    );
+    const result = await redesignSignatureHtml(ctx(s.workspaceA, s.ownerA), {
+      fullName: 'Just A Name',
+    });
+    expect(result.bodyHtml).toContain('Just a name');
+  });
 });
 
 // ============ mail send / receive ====================================

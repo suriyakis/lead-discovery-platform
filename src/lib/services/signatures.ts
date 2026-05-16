@@ -281,6 +281,27 @@ DESIGN PRINCIPLES (apply unless the operator overrides):
 - Phone numbers: when 3+ phones, prefer one-per-line. When 1–2, inline
   with a · separator is cleaner.
 
+DATA INTEGRITY RULES (non-negotiable — fabrication is a hard fail):
+- The "Structured fields" block in the user prompt is the ONLY source of
+  truth for names, titles, emails, phone numbers, URLs, taglines, and
+  company facts. Use those values VERBATIM in the output.
+- Do NOT use information you know about the company from your training
+  data. Even if the operator's company is a real entity you recognise,
+  do NOT substitute "more accurate" names, contact people, alternate
+  emails, or alternate phone numbers. The data in the prompt may be a
+  spouse, a different department, a test account, a misspelling — none
+  of that matters: use it verbatim.
+- If a field is blank in the structured-fields block, OMIT it. Do not
+  fabricate a value, do not insert placeholder text like "[your title]"
+  or example values like "John Doe".
+- Specifically: never invent an email address. Never invent a phone
+  number. Never invent a person's name. Never invent a job title.
+  Never invent a logo URL — only embed an <img> when a logo URL is
+  explicitly provided in the structured fields.
+- The plain-text / existing-HTML sections (when present) are reference
+  only — they may have been edited by hand and may not match the
+  structured fields exactly. When in doubt, the structured fields win.
+
 HARD RULES (email-client compatibility — non-negotiable):
 - Output ONLY the signature HTML. No <html>, <head>, <body>, no markdown
   fences, no commentary, no "Here is the signature:" preamble.
@@ -464,6 +485,18 @@ export async function redesignSignatureHtml(
 
   const sanitized = sanitizeSignatureHtml(result.bodyHtml);
 
+  // Phase 56b: anti-fabrication validation. Opus 4.7 / gpt-5 will pull
+  // real-world contacts from training data when the operator's company
+  // is a recognisable entity (observed in the wild: Ecobeton UK input
+  // → "Francesco Nardese / office@ecobeton.co.uk" output, neither of
+  // which were in the structured fields). Hard-reject any output whose
+  // email addresses don't all appear in the operator's input.
+  detectFabrication(sanitized, {
+    operatorEmail: input.email ?? null,
+    operatorFullName: input.fullName ?? null,
+    operatorWebsite: input.website ?? null,
+  });
+
   // Cost estimate is best-effort; AI providers return token counts on
   // chat completions but generateJson surfaces them on the same wrapper.
   const costEstimateCents = 0; // The provider's billing pipeline already
@@ -519,6 +552,44 @@ function pickRedesignModel(
   if (providerId === 'anthropic') return 'claude-opus-4-7';
   if (providerId === 'openai') return 'gpt-5';
   return undefined;
+}
+
+/** Phase 56b — anti-fabrication. Strong models (Opus 4.7, gpt-5)
+ *  recognise real companies from their training data and will substitute
+ *  "more accurate" contacts than the operator typed in. Reject any
+ *  output whose email addresses aren't all in the operator's input.
+ *  Throws a clear error the operator can act on; safer than silently
+ *  letting fabricated contact info into outbound mail. */
+function detectFabrication(
+  html: string,
+  operator: {
+    operatorEmail: string | null;
+    operatorFullName: string | null;
+    operatorWebsite: string | null;
+  },
+): void {
+  // Strip tags, decode the common entities we'd find, get visible text +
+  // attribute values together. Email addresses inside href / alt / src
+  // matter equally to ones inside visible text.
+  const haystack = html.toLowerCase();
+  const emails = Array.from(
+    haystack.matchAll(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi),
+  ).map((m) => m[0]);
+  const allowed = new Set<string>();
+  if (operator.operatorEmail) allowed.add(operator.operatorEmail.toLowerCase());
+
+  // mailto: anchors often expose the same email twice — that's fine; we
+  // only flag emails that aren't in the allowed set at all.
+  const alien = emails.filter((e) => !allowed.has(e));
+  if (alien.length > 0) {
+    throw new SignatureServiceError(
+      `AI redesign produced an email address that wasn't in your structured fields: ${alien.slice(0, 3).join(', ')}. ` +
+        `This usually means the model recognised your company from its training data and substituted "real" contacts ` +
+        `over the data you typed in. Try the redesign again — sometimes a second run gets it right — or remove the ` +
+        `bodyText / existing HTML to give the AI a cleaner slate.`,
+      'fabrication_detected',
+    );
+  }
 }
 
 /** Defensive HTML sanitiser. Drops <script>, <iframe>, on* event
