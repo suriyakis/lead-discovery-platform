@@ -252,10 +252,10 @@ function SignatureList({
         return (
           <li
             key={s.id}
-            onClick={() => onSelect(s.id)}
             style={{
-              cursor: 'pointer',
-              outline: isSelected ? '2px solid var(--brand-accent, #e87b1f)' : 'none',
+              outline: isSelected
+                ? '2px solid var(--brand-accent, #e87b1f)'
+                : 'none',
               outlineOffset: '-2px',
             }}
           >
@@ -269,8 +269,37 @@ function SignatureList({
                 width: '100%',
               }}
             >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+              {/* Card body — explicit click target. Behaves like a button
+                  for accessibility (role=button + keyboard activation) so
+                  preview selection isn't dependent on the parent <li>
+                  receiving click events that nested forms might swallow. */}
+              <button
+                type="button"
+                onClick={() => onSelect(s.id)}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.2rem',
+                  minWidth: 0,
+                  flex: 1,
+                  textAlign: 'left',
+                  background: 'transparent',
+                  border: 0,
+                  padding: 0,
+                  color: 'inherit',
+                  cursor: 'pointer',
+                  font: 'inherit',
+                }}
+                title="Preview this signature"
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    flexWrap: 'wrap',
+                  }}
+                >
                   {s.isDefault ? (
                     <Star
                       className="lucide"
@@ -296,42 +325,26 @@ function SignatureList({
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
+                    display: 'block',
+                    width: '100%',
                   }}
                 >
                   {(s.fullName || '').trim()}
                   {s.fullName && s.company ? ' — ' : ''}
                   {(s.company || '').trim() || (s.fullName ? '' : '(no contact info)')}
                 </span>
-              </div>
+              </button>
               <div style={{ display: 'flex', gap: '0.25rem', flexShrink: 0 }}>
                 <button
                   type="button"
                   className="ghost-btn icon-btn"
-                  title="Preview"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelect(s.id);
-                  }}
-                >
-                  <Eye className="lucide" />
-                </button>
-                <button
-                  type="button"
-                  className="ghost-btn icon-btn"
                   title="Edit"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onEdit(s.id);
-                  }}
+                  onClick={() => onEdit(s.id)}
                 >
                   <PenLine className="lucide" />
                 </button>
                 {!s.isDefault ? (
-                  <form
-                    action={setDefaultAction}
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ display: 'inline' }}
-                  >
+                  <form action={setDefaultAction} style={{ display: 'inline' }}>
                     <input type="hidden" name="id" value={s.id} />
                     <button
                       type="submit"
@@ -344,7 +357,6 @@ function SignatureList({
                 ) : null}
                 <form
                   action={deleteAction}
-                  onClick={(e) => e.stopPropagation()}
                   onSubmit={(e) => {
                     if (!confirm(`Delete signature "${s.name}"?`)) {
                       e.preventDefault();
