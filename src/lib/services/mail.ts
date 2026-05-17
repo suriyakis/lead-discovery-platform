@@ -296,6 +296,44 @@ export async function sendMessage(
 
   await touchThread(thread.id);
 
+  // Phase 58: schedule auto follow-ups when this is the FIRST outbound
+  // on a thread linked to a qualified lead. Best-effort — failures log
+  // but never break the send.
+  try {
+    const outboundCount = await db
+      .select({ id: mailMessages.id })
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.threadId, thread.id),
+          eq(mailMessages.direction, 'outbound'),
+        ),
+      );
+    if (outboundCount.length === 1) {
+      const { outreachThreadState } = await import('@/lib/db/schema/outreach');
+      const [ots] = await db
+        .select()
+        .from(outreachThreadState)
+        .where(
+          and(
+            eq(outreachThreadState.workspaceId, ctx.workspaceId),
+            eq(outreachThreadState.threadId, thread.id),
+          ),
+        )
+        .limit(1);
+      if (ots) {
+        const { scheduleFollowUps } = await import('./follow-up');
+        await scheduleFollowUps(ctx, {
+          threadId: thread.id,
+          qualifiedLeadId: ots.qualifiedLeadId,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[mail.send] follow-up schedule failed (best-effort):', err);
+  }
+
   return created;
 }
 

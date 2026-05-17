@@ -267,6 +267,13 @@
       "when": 1778937311155,
       "tag": "0037_steady_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1779029638182,
+      "tag": "0038_keen_korvac",
+      "breakpoints": true
     }
   ]
 }

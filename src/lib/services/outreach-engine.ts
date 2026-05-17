@@ -446,6 +446,110 @@ export async function composeReferralIntroDraft(
   };
 }
 
+/**
+ * Phase 58 — automatic follow-up. Fires on a fixed schedule (default
+ * every 7 days for 3 steps) when a cold outbound has gone without a
+ * reply and there's no bounce / error to short-circuit it. Tone is
+ * polite and low-pressure; the final step explicitly tells the
+ * recipient this is the last email we'll send so no reply means we
+ * stop pinging them. Builds on the existing thread so the operator's
+ * mail client renders it as one conversation.
+ */
+export async function composeFollowUpDraft(
+  thread: ReadonlyArray<ThreadMessage>,
+  product: ProductProfile,
+  step: number,
+  totalSteps: number,
+  ctx: DraftContext,
+  ai: IAIProvider,
+  modelOverride?: string,
+): Promise<DraftVerdict> {
+  const prompt = buildFollowUpPrompt(thread, product, ctx, step, totalSteps);
+  const result = await ai.generateText(
+    { system: prompt.system, prompt: prompt.user },
+    {
+      mockSeed: prompt.mockSeed,
+      // Follow-ups want consistency over creativity — operators want
+      // every step to sound the same kind of polite. Lower temperature
+      // than engagement (0.6) / pitch (0.5).
+      temperature: 0.45,
+      ...(modelOverride ? { model: modelOverride } : {}),
+    },
+  );
+  const subject = lastInboundSubject(thread, product) ?? `Re: ${product.name}`;
+  const body = result.text.trim();
+  const stripped = stripForbidden(body, product.forbiddenPhrases);
+  return {
+    subject,
+    body: stripped.text,
+    confidence: clamp(70 - stripped.removed.length * 10, 30, 95),
+    method: 'ai',
+    model: result.model,
+    evidence: makeEvidence(prompt.system, prompt.user, product, thread),
+    forbiddenStripped: stripped.removed,
+    matchedLessonIds: [],
+  };
+}
+
+function buildFollowUpPrompt(
+  thread: ReadonlyArray<ThreadMessage>,
+  product: ProductProfile,
+  ctx: DraftContext,
+  step: number,
+  totalSteps: number,
+): InThreadPrompt {
+  const effectiveLang =
+    (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
+  const langName = getLanguageName(effectiveLang);
+  const forbiddenLines =
+    product.forbiddenPhrases.length > 0
+      ? `Forbidden phrases (NEVER include): ${product.forbiddenPhrases.join(', ')}`
+      : '';
+
+  const isLast = step >= totalSteps;
+  const stepLabel = `${step} of ${totalSteps}`;
+
+  const system = [
+    `You are a B2B outreach assistant writing a polite, low-pressure follow-up in ${langName} (${effectiveLang}).`,
+    `This is follow-up ${stepLabel} on a cold outbound that has not received a reply.`,
+    `Hard rules:`,
+    `- ≤60 words. One short paragraph, sometimes two short sentences.`,
+    `- Tone: polite, professional, non-intrusive. No urgency tactics, no FOMO, no "just checking in?" with question mark spam.`,
+    `- Do NOT re-pitch the product. Do NOT list features. Do NOT claim benefits.`,
+    `- Do NOT apologise for following up — that draws attention to the friction. A simple acknowledgement that you're bumping the prior note is fine.`,
+    `- Do NOT add new attachments or links the prior email didn't have.`,
+    `- If the recipient might not have seen the first email, offer ONE clear ask: "if this isn't the right person, could you point me to who handles X?"`,
+    isLast
+      ? `- THIS IS THE FINAL FOLLOW-UP. The body MUST include a single clear sentence explicitly telling the recipient this is the last email you'll send on this topic, and that no reply means you'll close the loop on your side and stop reaching out. Frame it as respect for their inbox, NOT as a guilt-trip or final-chance scarcity tactic.`
+      : `- Acknowledge the prior note implicitly ("following up on my note from last week") — do NOT quote it.`,
+    `- Sign off with "Best regards," (no name — the sender layer fills it in).`,
+    forbiddenLines,
+    `Output only the message body. No subject line.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const user = [
+    `Conversation so far (oldest → newest, most recent at bottom):`,
+    renderThreadHistory(thread),
+    '',
+    `Product category (for routing context only — do NOT pitch):`,
+    product.targetSectors.length > 0
+      ? `- Sectors: ${product.targetSectors.join(', ')}`
+      : '',
+    product.targetProjectTypes.length > 0
+      ? `- Project types: ${product.targetProjectTypes.join(', ')}`
+      : '',
+    '',
+    `Write follow-up ${stepLabel} now${isLast ? ' (FINAL — must say so explicitly)' : ''}.`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const mockSeed = `follow_up:${product.id}:step${step}of${totalSteps}:t${thread.length}`;
+  return { system, user, mockSeed };
+}
+
 // ─── Engagement / pitch / closing / referral prompt builders ─────────
 
 function makeEvidence(

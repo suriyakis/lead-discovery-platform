@@ -1,13 +1,17 @@
-// Phase 34: scheduled background work. Three tick handlers fan out across
+// Phase 34: scheduled background work. Four tick handlers fan out across
 // every active workspace / mailbox so the platform actually does its job
 // without anyone clicking buttons.
 //
-//   autopilot.tick      every 5 min  → for each ws with autopilot enabled,
-//                                       call autopilot.runOnce(ctx)
-//   outreach.drain.tick every 30 sec → for each active workspace, drain
-//                                       the send queue
-//   mail.imap.tick      every 2 min  → for each active mailbox with IMAP,
-//                                       call mail.syncInbound(ctx, mb.id)
+//   autopilot.tick         every 5 min  → for each ws with autopilot
+//                                          enabled, call autopilot.runOnce(ctx)
+//   outreach.drain.tick    every 30 sec → for each active workspace, drain
+//                                          the send queue
+//   mail.imap.tick         every 2 min  → for each active mailbox with IMAP,
+//                                          call mail.syncInbound(ctx, mb.id)
+//   outreach.follow_up.tick every 1 h    → Phase 58: for each active
+//                                          workspace with followUpEnabled,
+//                                          process pending follow-ups whose
+//                                          scheduled_for has passed.
 //
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
@@ -23,6 +27,7 @@ import {
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import { syncInbound } from '@/lib/services/mail';
+import { processDueFollowUps } from '@/lib/services/follow-up';
 import {
   classifyImapError,
   computeBackoffMs,
@@ -33,6 +38,7 @@ import { getJobQueue, type JobHandler } from './index';
 export const AUTOPILOT_TICK_MS = 5 * 60 * 1000;
 export const DRAIN_TICK_MS = 30 * 1000;
 export const IMAP_TICK_MS = 2 * 60 * 1000;
+export const FOLLOW_UP_TICK_MS = 60 * 60 * 1000;
 
 function ownerCtx(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
   return makeWorkspaceContext({
@@ -179,6 +185,37 @@ const handleImapTick: JobHandler = async () => {
   return { mailboxesSynced: synced, failed, skipped, markedFailing };
 };
 
+const handleFollowUpTick: JobHandler = async () => {
+  // Phase 58: every active workspace with follow-ups enabled. The
+  // service-level loadSettings() is the source of truth — we just
+  // iterate the workspace list and let processDueFollowUps no-op
+  // for any that have follow-ups disabled.
+  const wss = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.status, 'active'));
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
+  let checked = 0;
+  for (const ws of wss) {
+    const ctx = ownerCtx(ws.id, ws.ownerUserId);
+    try {
+      const result = await processDueFollowUps(ctx);
+      checked += result.checked;
+      sent += result.sent;
+      skipped += result.skipped;
+      failed += result.failed;
+    } catch (err) {
+      console.error(
+        `[follow_up.tick] workspace=${ws.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return { checked, sent, skipped, failed };
+};
+
 let registered = false;
 
 /**
@@ -194,6 +231,7 @@ export async function registerRepeatableJobs(
   q.on('autopilot.tick', handleAutopilotTick);
   q.on('outreach.drain.tick', handleDrainTick);
   q.on('mail.imap.tick', handleImapTick);
+  q.on('outreach.follow_up.tick', handleFollowUpTick);
   if (!options.skipSchedule) {
     await q.enqueueRepeatable('autopilot.tick', {}, {
       everyMs: AUTOPILOT_TICK_MS,
@@ -206,6 +244,10 @@ export async function registerRepeatableJobs(
     await q.enqueueRepeatable('mail.imap.tick', {}, {
       everyMs: IMAP_TICK_MS,
       jobId: 'mail-imap-tick',
+    });
+    await q.enqueueRepeatable('outreach.follow_up.tick', {}, {
+      everyMs: FOLLOW_UP_TICK_MS,
+      jobId: 'outreach-follow-up-tick',
     });
   }
   registered = true;

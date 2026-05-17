@@ -105,6 +105,19 @@ export const workspaces = pgTable('workspaces', {
     .notNull()
     .default(20),
 
+  /** Phase 58: automatic follow-up defaults. When enabled, every first
+   *  outbound message linked to a qualified lead pre-schedules N
+   *  follow-up steps (each `followUpIntervalDays` days apart) that
+   *  fire automatically if no reply / no bounce shows up first. */
+  followUpEnabled: boolean('follow_up_enabled').notNull().default(true),
+  /** Days between consecutive follow-up steps. Default 7. */
+  followUpIntervalDays: integer('follow_up_interval_days')
+    .notNull()
+    .default(7),
+  /** Total follow-up steps (the last one carries the "this is the
+   *  final email" framing). Default 3. */
+  followUpMaxSteps: integer('follow_up_max_steps').notNull().default(3),
+
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),

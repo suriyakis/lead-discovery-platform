@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { MessagesSquare, Search } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { CommunicationTabs } from '@/components/CommunicationTabs';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -14,6 +15,7 @@ import {
   listCommunication,
   type CommunicationStatus,
 } from '@/lib/services/communication';
+import { countFollowUpsByStatus } from '@/lib/services/follow-up';
 
 const STATUS_TABS: ReadonlyArray<{
   id: CommunicationStatus;
@@ -83,10 +85,11 @@ export default async function CommunicationPage({
   const dateTo = parseDate(sp.to);
 
   const baseFilters = { productId, search, dateFrom, dateTo };
-  const [rows, counts, products] = await Promise.all([
+  const [rows, counts, products, followUpCounts] = await Promise.all([
     listCommunication(ctx, { ...baseFilters, status: activeStatus }),
     countCommunicationByStatus(ctx, baseFilters),
     listProductProfiles(ctx, { includeArchived: false }),
+    countFollowUpsByStatus(ctx),
   ]);
 
   function buildHref(overrides: Partial<{ status: CommunicationStatus }>): string {
@@ -117,6 +120,12 @@ export default async function CommunicationPage({
           </p>
         </div>
       </div>
+
+      <CommunicationTabs
+        active="conversations"
+        conversationsCount={counts.all}
+        followUpsPendingCount={followUpCounts.pending}
+      />
 
       {/* Status tabs */}
       <div className="window-tabs" style={{ marginBottom: '0.75rem' }}>

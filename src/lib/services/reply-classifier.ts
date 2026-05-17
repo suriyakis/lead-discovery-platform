@@ -299,6 +299,19 @@ export async function analyseReply(
     }
   }
 
+  // Phase 58: any inbound on this thread cancels every pending
+  // follow-up. We do this unconditionally on reply receipt — even
+  // out-of-office / irrelevant counts as "they saw it", and the
+  // operator can re-schedule manually if they want to keep pinging.
+  if (msg.threadId) {
+    try {
+      const { cancelFollowUps } = await import('./follow-up');
+      await cancelFollowUps(ctx, msg.threadId, 'replied');
+    } catch (err) {
+      console.error('[reply-classifier] follow-up cancel failed:', err);
+    }
+  }
+
   return final;
 }
 
