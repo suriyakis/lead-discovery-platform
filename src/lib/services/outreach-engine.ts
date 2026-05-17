@@ -463,8 +463,20 @@ export async function composeFollowUpDraft(
   ctx: DraftContext,
   ai: IAIProvider,
   modelOverride?: string,
+  /** Phase 59 — operator-supplied per-step instruction text. Empty
+   *  string / undefined → no extra direction. Injected verbatim into
+   *  the system prompt under an "Operator instructions for this step"
+   *  block, so the model treats it as priority guidance. */
+  customInstructions?: string,
 ): Promise<DraftVerdict> {
-  const prompt = buildFollowUpPrompt(thread, product, ctx, step, totalSteps);
+  const prompt = buildFollowUpPrompt(
+    thread,
+    product,
+    ctx,
+    step,
+    totalSteps,
+    customInstructions ?? '',
+  );
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
     {
@@ -497,6 +509,7 @@ function buildFollowUpPrompt(
   ctx: DraftContext,
   step: number,
   totalSteps: number,
+  customInstructions: string,
 ): InThreadPrompt {
   const effectiveLang =
     (ctx.language && ctx.language.trim()) || resolveProfileLanguage(product);
@@ -508,10 +521,14 @@ function buildFollowUpPrompt(
 
   const isLast = step >= totalSteps;
   const stepLabel = `${step} of ${totalSteps}`;
+  const operatorBlock = customInstructions
+    ? `Operator instructions for this step (priority — honour these): ${customInstructions}`
+    : '';
 
   const system = [
     `You are a B2B outreach assistant writing a polite, low-pressure follow-up in ${langName} (${effectiveLang}).`,
     `This is follow-up ${stepLabel} on a cold outbound that has not received a reply.`,
+    operatorBlock,
     `Hard rules:`,
     `- ≤60 words. One short paragraph, sometimes two short sentences.`,
     `- Tone: polite, professional, non-intrusive. No urgency tactics, no FOMO, no "just checking in?" with question mark spam.`,

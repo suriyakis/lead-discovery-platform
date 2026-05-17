@@ -37,7 +37,13 @@ import { mailThreads } from './mailing';
  *   failed   — the AI compose or enqueue threw and the worker gave up
  *              after the retry budget.
  */
-export const followUpStatus = ['pending', 'sent', 'skipped', 'failed'] as const;
+export const followUpStatus = [
+  'pending',
+  'awaiting_approval',
+  'sent',
+  'skipped',
+  'failed',
+] as const;
 export type FollowUpStatus = (typeof followUpStatus)[number];
 
 export const followUpSkipReason = [
@@ -94,6 +100,13 @@ export const outreachFollowUps = pgTable(
     draftId: bigint('draft_id', { mode: 'bigint' }),
     /** mail_messages.id once the queue entry was sent. */
     sentMessageId: bigint('sent_message_id', { mode: 'bigint' }),
+    /** Phase 59: when require_approval is on, the worker composes the
+     *  email but does NOT send. Subject + body land here, status flips
+     *  to 'awaiting_approval', and the operator approves or edits from
+     *  the Follow-ups tab. Null on rows that never went through the
+     *  approval path. */
+    stagedSubject: text('staged_subject'),
+    stagedBody: text('staged_body'),
     /** When the worker last transitioned this row (sent / skipped /
      *  failed). */
     processedAt: timestamp('processed_at', {

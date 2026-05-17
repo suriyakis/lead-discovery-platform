@@ -107,6 +107,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
       { href: '/products', label: 'Products', icon: ShoppingBag },
       { href: '/settings/members', label: 'Members', icon: Users },
       { href: '/settings/integrations', label: 'Integrations', icon: Key },
+      { href: '/settings/outreach', label: 'Outreach config', icon: MessagesSquare },
       { href: '/settings/crm', label: 'CRM & Export', icon: Workflow },
       { href: '/settings/usage', label: 'Usage', icon: Receipt },
       { href: '/settings/billing', label: 'Billing', icon: CreditCard },

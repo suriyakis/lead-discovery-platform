@@ -107,16 +107,31 @@ export const workspaces = pgTable('workspaces', {
 
   /** Phase 58: automatic follow-up defaults. When enabled, every first
    *  outbound message linked to a qualified lead pre-schedules N
-   *  follow-up steps (each `followUpIntervalDays` days apart) that
-   *  fire automatically if no reply / no bounce shows up first. */
+   *  follow-up steps that fire automatically if no reply / no bounce
+   *  shows up first. */
   followUpEnabled: boolean('follow_up_enabled').notNull().default(true),
-  /** Days between consecutive follow-up steps. Default 7. */
+  /** Phase 58: simple interval — used when followUpStepConfigs is null. */
   followUpIntervalDays: integer('follow_up_interval_days')
     .notNull()
     .default(7),
-  /** Total follow-up steps (the last one carries the "this is the
-   *  final email" framing). Default 3. */
+  /** Phase 58: simple total — used when followUpStepConfigs is null. */
   followUpMaxSteps: integer('follow_up_max_steps').notNull().default(3),
+  /** Phase 59: when true, follow-ups are composed by AI but NOT sent
+   *  automatically; the operator approves each one from the Follow-ups
+   *  tab before it goes out. Defaults to false so existing setups keep
+   *  the autopilot behaviour. */
+  followUpRequireApproval: boolean('follow_up_require_approval')
+    .notNull()
+    .default(false),
+  /** Phase 59: per-step configuration. Array of
+   *  { daysAfterPrev: number, customInstructions: string } in order.
+   *  Length = total steps; the position is the step number (1-indexed
+   *  in the UI). customInstructions is operator-supplied text injected
+   *  verbatim into the AI prompt for that step ("mention the trade
+   *  show", "ask about timing", "explicit final-email framing", etc.).
+   *  NULL → fall back to the simple followUpIntervalDays /
+   *  followUpMaxSteps fields above. */
+  followUpStepConfigs: jsonb('follow_up_step_configs'),
 
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()

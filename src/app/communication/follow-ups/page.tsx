@@ -10,14 +10,17 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import {
+  FollowUpServiceError,
+  approveFollowUp,
   cancelFollowUps,
   countFollowUpsByStatus,
   listFollowUps,
+  rejectFollowUp,
 } from '@/lib/services/follow-up';
 import { countCommunicationByStatus } from '@/lib/services/communication';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
-type FollowUpFilter = 'all' | 'pending' | 'sent' | 'skipped' | 'failed';
+type FollowUpFilter = 'all' | 'pending' | 'awaiting_approval' | 'sent' | 'skipped' | 'failed';
 
 const STATUS_TABS: ReadonlyArray<{
   id: FollowUpFilter;
@@ -25,6 +28,11 @@ const STATUS_TABS: ReadonlyArray<{
   hint: string;
 }> = [
   { id: 'pending', label: 'Pending', hint: 'Scheduled, waiting for their send time.' },
+  {
+    id: 'awaiting_approval',
+    label: 'Awaiting approval',
+    hint: 'Composed by AI, waiting for the operator to approve or reject.',
+  },
   { id: 'sent', label: 'Sent', hint: 'Follow-up email delivered.' },
   {
     id: 'skipped',
@@ -64,6 +72,7 @@ export default async function FollowUpsPage({
   const activeStatus: FollowUpFilter =
     sp.status === 'all' ||
     sp.status === 'pending' ||
+    sp.status === 'awaiting_approval' ||
     sp.status === 'sent' ||
     sp.status === 'skipped' ||
     sp.status === 'failed'
@@ -94,6 +103,69 @@ export default async function FollowUpsPage({
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'cancel failed';
+      redirect(
+        `/communication/follow-ups?status=${activeStatus}&error=${encodeURIComponent(m)}`,
+      );
+    }
+  }
+
+  async function approve(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const idRaw = String(formData.get('id') ?? '');
+    if (!/^\d+$/.test(idRaw)) {
+      redirect('/communication/follow-ups?error=invalid_id');
+    }
+    const id = BigInt(idRaw);
+    const subject = String(formData.get('subject') ?? '').trim();
+    const body = String(formData.get('body') ?? '').trim();
+    try {
+      const updated = await approveFollowUp(c, id, {
+        subject: subject || undefined,
+        body: body || undefined,
+      });
+      redirect(
+        `/communication/follow-ups?status=${activeStatus}&message=${encodeURIComponent(
+          `Approved step ${updated.stepNumber}/${updated.totalSteps} — sent.`,
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof FollowUpServiceError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'approve failed';
+      redirect(
+        `/communication/follow-ups?status=${activeStatus}&error=${encodeURIComponent(m)}`,
+      );
+    }
+  }
+
+  async function reject(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const idRaw = String(formData.get('id') ?? '');
+    if (!/^\d+$/.test(idRaw)) {
+      redirect('/communication/follow-ups?error=invalid_id');
+    }
+    const id = BigInt(idRaw);
+    try {
+      await rejectFollowUp(c, id);
+      redirect(
+        `/communication/follow-ups?status=${activeStatus}&message=${encodeURIComponent(
+          'Follow-up rejected.',
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof FollowUpServiceError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'reject failed';
       redirect(
         `/communication/follow-ups?status=${activeStatus}&error=${encodeURIComponent(m)}`,
       );
@@ -166,11 +238,13 @@ export default async function FollowUpsPage({
             const statusBadge =
               r.status === 'pending'
                 ? 'badge'
-                : r.status === 'sent'
-                  ? 'badge badge-good'
-                  : r.status === 'failed'
-                    ? 'badge badge-bad'
-                    : 'badge';
+                : r.status === 'awaiting_approval'
+                  ? 'badge badge-warn'
+                  : r.status === 'sent'
+                    ? 'badge badge-good'
+                    : r.status === 'failed'
+                      ? 'badge badge-bad'
+                      : 'badge';
             const stepLabel = `${r.stepNumber}/${r.totalSteps}`;
             const isFinal = r.stepNumber === r.totalSteps;
             return (
@@ -278,6 +352,112 @@ export default async function FollowUpsPage({
                     ) : null}
                   </div>
                 </div>
+
+                {/* Phase 59 — approval review inline. The composed
+                    subject / body live on the follow-up row when
+                    require_approval is on; expanding the details lets
+                    the operator edit before approving, or reject. */}
+                {r.status === 'awaiting_approval' ? (
+                  <details
+                    style={{
+                      marginTop: '0.5rem',
+                      borderTop: '1px solid var(--brand-border)',
+                      paddingTop: '0.5rem',
+                    }}
+                  >
+                    <summary
+                      className="muted"
+                      style={{ cursor: 'pointer', fontSize: '0.85em' }}
+                    >
+                      Review proposed follow-up
+                    </summary>
+                    <form
+                      action={approve}
+                      style={{
+                        marginTop: '0.5rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.4rem',
+                      }}
+                    >
+                      <input type="hidden" name="id" value={r.id.toString()} />
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.2rem',
+                        }}
+                      >
+                        <span
+                          style={{ fontSize: '0.72em' }}
+                          className="muted"
+                        >
+                          Subject
+                        </span>
+                        <input
+                          type="text"
+                          name="subject"
+                          defaultValue={r.stagedSubject ?? ''}
+                          required
+                        />
+                      </label>
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.2rem',
+                        }}
+                      >
+                        <span
+                          style={{ fontSize: '0.72em' }}
+                          className="muted"
+                        >
+                          Body (edit freely — what you save here is what
+                          gets sent; the signature is auto-appended)
+                        </span>
+                        <textarea
+                          name="body"
+                          rows={10}
+                          defaultValue={r.stagedBody ?? ''}
+                          required
+                          style={{
+                            width: '100%',
+                            fontSize: '0.88rem',
+                            lineHeight: 1.55,
+                            padding: '0.5rem',
+                            resize: 'vertical',
+                          }}
+                        />
+                      </label>
+                      <div
+                        className="action-row"
+                        style={{ display: 'flex', gap: '0.4rem' }}
+                      >
+                        <button
+                          type="submit"
+                          className="primary-btn"
+                          style={{ fontSize: '0.85em' }}
+                        >
+                          Approve &amp; send
+                        </button>
+                      </div>
+                    </form>
+                    <form
+                      action={reject}
+                      style={{ marginTop: '0.4rem', display: 'inline' }}
+                    >
+                      <input type="hidden" name="id" value={r.id.toString()} />
+                      <button
+                        type="submit"
+                        className="ghost-btn"
+                        style={{ fontSize: '0.78em' }}
+                        title="Mark this follow-up as skipped — won't be sent."
+                      >
+                        Reject (skip)
+                      </button>
+                    </form>
+                  </details>
+                ) : null}
               </li>
             );
           })}

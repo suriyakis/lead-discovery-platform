@@ -48,29 +48,129 @@ export class FollowUpServiceError extends Error {
 const denied = (op: string) =>
   new FollowUpServiceError(`Permission denied: ${op}`, 'permission_denied');
 
-interface WorkspaceFollowUpSettings {
-  enabled: boolean;
-  intervalDays: number;
-  maxSteps: number;
+export interface FollowUpStepConfig {
+  /** Days between this step and the previous one (or send time for
+   *  step 1). Must be >= 1. */
+  daysAfterPrev: number;
+  /** Operator-supplied text injected verbatim into the AI prompt for
+   *  this step. Empty string for "no extra direction". Up to 2000 chars. */
+  customInstructions: string;
 }
 
-async function loadSettings(
+export interface WorkspaceFollowUpSettings {
+  enabled: boolean;
+  requireApproval: boolean;
+  steps: FollowUpStepConfig[];
+}
+
+const DEFAULT_STEP: FollowUpStepConfig = {
+  daysAfterPrev: 7,
+  customInstructions: '',
+};
+
+export async function loadSettings(
   workspaceId: bigint,
 ): Promise<WorkspaceFollowUpSettings> {
   const [row] = await db
     .select({
       enabled: workspaces.followUpEnabled,
+      requireApproval: workspaces.followUpRequireApproval,
       intervalDays: workspaces.followUpIntervalDays,
       maxSteps: workspaces.followUpMaxSteps,
+      stepConfigs: workspaces.followUpStepConfigs,
     })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
+  const enabled = row?.enabled ?? true;
+  const requireApproval = row?.requireApproval ?? false;
+  // Prefer per-step JSONB config when set; fall back to the legacy
+  // simple interval × maxSteps so existing workspaces keep working
+  // without a backfill migration.
+  const rawConfigs = row?.stepConfigs;
+  const steps =
+    Array.isArray(rawConfigs) && rawConfigs.length > 0
+      ? rawConfigs
+          .map((c) => coerceStep(c))
+          .filter((c): c is FollowUpStepConfig => c !== null)
+      : Array.from({ length: row?.maxSteps ?? 3 }, () => ({
+          daysAfterPrev: row?.intervalDays ?? 7,
+          customInstructions: '',
+        }));
+  return { enabled, requireApproval, steps };
+}
+
+function coerceStep(input: unknown): FollowUpStepConfig | null {
+  if (!input || typeof input !== 'object') return null;
+  const o = input as Record<string, unknown>;
+  const days = Number(o.daysAfterPrev);
+  if (!Number.isFinite(days) || days < 1) return null;
+  const instr =
+    typeof o.customInstructions === 'string' ? o.customInstructions : '';
   return {
-    enabled: row?.enabled ?? true,
-    intervalDays: row?.intervalDays ?? 7,
-    maxSteps: row?.maxSteps ?? 3,
+    daysAfterPrev: Math.floor(days),
+    customInstructions: instr.slice(0, 2000),
   };
+}
+
+/** Admin-only writer. Validates that steps is non-empty and each step
+ *  has daysAfterPrev >= 1; trims customInstructions to 2000 chars. */
+export async function updateFollowUpConfig(
+  ctx: WorkspaceContext,
+  input: {
+    enabled?: boolean;
+    requireApproval?: boolean;
+    steps?: ReadonlyArray<FollowUpStepConfig>;
+  },
+): Promise<WorkspaceFollowUpSettings> {
+  const { canAdminWorkspace } = await import('./context');
+  if (!canAdminWorkspace(ctx)) {
+    throw new FollowUpServiceError(
+      'Permission denied: follow_up_config.update',
+      'permission_denied',
+    );
+  }
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (input.enabled !== undefined) updates.followUpEnabled = input.enabled;
+  if (input.requireApproval !== undefined) {
+    updates.followUpRequireApproval = input.requireApproval;
+  }
+  if (input.steps !== undefined) {
+    if (input.steps.length < 1 || input.steps.length > 10) {
+      throw new FollowUpServiceError(
+        'steps must have between 1 and 10 entries',
+        'invalid_input',
+      );
+    }
+    const cleaned = input.steps.map((s, i) => {
+      if (!Number.isFinite(s.daysAfterPrev) || s.daysAfterPrev < 1) {
+        throw new FollowUpServiceError(
+          `step ${i + 1}: daysAfterPrev must be >= 1`,
+          'invalid_input',
+        );
+      }
+      return {
+        daysAfterPrev: Math.floor(s.daysAfterPrev),
+        customInstructions: (s.customInstructions ?? '').slice(0, 2000),
+      };
+    });
+    updates.followUpStepConfigs = cleaned;
+  }
+  await db
+    .update(workspaces)
+    .set(updates)
+    .where(eq(workspaces.id, ctx.workspaceId));
+  await recordAuditEvent(ctx, {
+    kind: 'follow_up_config.update',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: {
+      enabled: input.enabled,
+      requireApproval: input.requireApproval,
+      stepCount: input.steps?.length,
+    },
+  });
+  return loadSettings(ctx.workspaceId);
 }
 
 /**
@@ -88,7 +188,7 @@ export async function scheduleFollowUps(
 ): Promise<OutreachFollowUp[]> {
   if (!canWrite(ctx)) throw denied('follow_up.schedule');
   const settings = await loadSettings(ctx.workspaceId);
-  if (!settings.enabled || settings.maxSteps < 1) return [];
+  if (!settings.enabled || settings.steps.length < 1) return [];
 
   // Don't schedule for closed / archived leads.
   const [lead] = await db
@@ -105,20 +205,20 @@ export async function scheduleFollowUps(
   if (lead.state === 'closed') return [];
 
   const now = new Date();
-  const rowsToInsert = Array.from(
-    { length: settings.maxSteps },
-    (_, i) => ({
+  const dayMs = 24 * 60 * 60 * 1000;
+  let cumulativeDays = 0;
+  const rowsToInsert = settings.steps.map((step, i) => {
+    cumulativeDays += step.daysAfterPrev;
+    return {
       workspaceId: ctx.workspaceId,
       qualifiedLeadId: input.qualifiedLeadId,
       threadId: input.threadId,
       stepNumber: i + 1,
-      totalSteps: settings.maxSteps,
-      scheduledFor: new Date(
-        now.getTime() + (i + 1) * settings.intervalDays * 24 * 60 * 60 * 1000,
-      ),
+      totalSteps: settings.steps.length,
+      scheduledFor: new Date(now.getTime() + cumulativeDays * dayMs),
       status: 'pending' as const,
-    }),
-  );
+    };
+  });
 
   const inserted = await db
     .insert(outreachFollowUps)
@@ -140,7 +240,6 @@ export async function scheduleFollowUps(
       payload: {
         leadId: input.qualifiedLeadId.toString(),
         stepsCreated: inserted.length,
-        intervalDays: settings.intervalDays,
         firstStepAt: inserted[0]?.scheduledFor.toISOString() ?? null,
       },
     });
@@ -368,6 +467,7 @@ async function processOne(
   const lastMessage = messages[messages.length - 1]!;
 
   // Compose body via AI.
+  const settings = await loadSettings(ctx.workspaceId);
   const provider = await getAIProviderForCtx(ctx);
   const threadHistory: ThreadMessage[] = messages.map((m) => ({
     direction: m.direction === 'inbound' ? 'inbound' : 'outbound',
@@ -376,6 +476,10 @@ async function processOne(
     fromName: m.fromName ?? null,
     fromAddress: m.fromAddress ?? null,
   }));
+  // Per-step custom instructions land in the AI prompt as a numbered
+  // operator-direction block — see composeFollowUpDraft + buildFollowUpPrompt.
+  const stepConfig = settings.steps[row.stepNumber - 1];
+  const customInstructions = stepConfig?.customInstructions?.trim() ?? '';
   const verdict = await composeFollowUpDraft(
     threadHistory,
     product,
@@ -383,6 +487,8 @@ async function processOne(
     row.totalSteps,
     { channel: 'email', language: resolveProfileLanguage(product) },
     provider,
+    undefined,
+    customInstructions || undefined,
   );
 
   // Subject: preserve the thread subject prefixed Re: (operator's mail
@@ -390,6 +496,35 @@ async function processOne(
   const subject = thread.subject.match(/^Re:/i)
     ? thread.subject
     : `Re: ${thread.subject}`;
+
+  // Phase 59 — approval gate. When require_approval is on, persist the
+  // composed subject + body on the follow-up row and flip status to
+  // 'awaiting_approval' instead of sending. Operator reviews + approves
+  // via the Follow-ups tab (approveFollowUp helper below). Cuts the
+  // automated send loop for high-touch workflows.
+  if (settings.requireApproval) {
+    await db
+      .update(outreachFollowUps)
+      .set({
+        status: 'awaiting_approval',
+        stagedSubject: subject,
+        stagedBody: verdict.body,
+        processedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(outreachFollowUps.id, row.id));
+    await recordAuditEvent(ctx, {
+      kind: 'follow_up.awaiting_approval',
+      entityType: 'mail_thread',
+      entityId: row.threadId,
+      payload: {
+        followUpId: row.id.toString(),
+        step: row.stepNumber,
+        totalSteps: row.totalSteps,
+      },
+    });
+    return 'skipped';
+  }
 
   // Send. mail.sendMessage handles threading via inReplyTo/references,
   // mailbox lookup, suppression, signature append, and tracking pixel.
@@ -433,10 +568,173 @@ async function processOne(
   return 'sent';
 }
 
+// ─── Approval helpers (Phase 59) ────────────────────────────────────
+
+/**
+ * Operator approves an awaiting_approval follow-up. Sends via
+ * mail.sendMessage with the stored (possibly edited) subject + body
+ * and flips status to 'sent'. Accepts optional `editedSubject` /
+ * `editedBody` so the operator can tweak before approving.
+ */
+export async function approveFollowUp(
+  ctx: WorkspaceContext,
+  followUpId: bigint,
+  override?: { subject?: string; body?: string },
+  deps: ProcessDueFollowUpsDeps = {},
+): Promise<OutreachFollowUp> {
+  if (!canWrite(ctx)) throw denied('follow_up.approve');
+  const [row] = await db
+    .select()
+    .from(outreachFollowUps)
+    .where(
+      and(
+        eq(outreachFollowUps.workspaceId, ctx.workspaceId),
+        eq(outreachFollowUps.id, followUpId),
+      ),
+    )
+    .limit(1);
+  if (!row) {
+    throw new FollowUpServiceError('follow_up not found', 'not_found');
+  }
+  if (row.status !== 'awaiting_approval') {
+    throw new FollowUpServiceError(
+      `follow_up status is ${row.status}, not awaiting_approval`,
+      'invalid_state',
+    );
+  }
+  const subject = (override?.subject ?? row.stagedSubject ?? '').trim();
+  const body = (override?.body ?? row.stagedBody ?? '').trim();
+  if (!subject || !body) {
+    throw new FollowUpServiceError(
+      'staged subject and body are required',
+      'invalid_input',
+    );
+  }
+
+  const [thread] = await db
+    .select()
+    .from(mailThreads)
+    .where(eq(mailThreads.id, row.threadId))
+    .limit(1);
+  if (!thread) {
+    throw new FollowUpServiceError('thread not found', 'not_found');
+  }
+  const [lead] = await db
+    .select()
+    .from(qualifiedLeads)
+    .where(eq(qualifiedLeads.id, row.qualifiedLeadId))
+    .limit(1);
+  if (!lead || !lead.contactEmail) {
+    throw new FollowUpServiceError(
+      'lead or contact email missing — cannot send',
+      'invalid_state',
+    );
+  }
+
+  const messages = await db
+    .select()
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        eq(mailMessages.threadId, row.threadId),
+      ),
+    )
+    .orderBy(asc(mailMessages.createdAt));
+  const lastMessage = messages[messages.length - 1] ?? null;
+
+  const sent = await sendMessage(ctx, {
+    mailboxId: thread.mailboxId,
+    to: [
+      {
+        address: lead.contactEmail,
+        name: lead.contactName ?? undefined,
+      },
+    ],
+    subject,
+    text: body,
+    inReplyTo: lastMessage?.messageId ?? undefined,
+    references: lastMessage?.references ?? [],
+    providerOverride: deps.mailProviderOverride,
+  });
+
+  const [updated] = await db
+    .update(outreachFollowUps)
+    .set({
+      status: 'sent',
+      stagedSubject: subject,
+      stagedBody: body,
+      sentMessageId: sent.id,
+      processedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(outreachFollowUps.id, row.id))
+    .returning();
+  await recordAuditEvent(ctx, {
+    kind: 'follow_up.approved',
+    entityType: 'mail_thread',
+    entityId: row.threadId,
+    payload: {
+      followUpId: row.id.toString(),
+      step: row.stepNumber,
+      totalSteps: row.totalSteps,
+      messageId: sent.messageId,
+      edited: Boolean(override?.subject || override?.body),
+    },
+  });
+  return updated ?? row;
+}
+
+/** Operator rejects an awaiting_approval follow-up. Marks it skipped. */
+export async function rejectFollowUp(
+  ctx: WorkspaceContext,
+  followUpId: bigint,
+): Promise<OutreachFollowUp> {
+  if (!canWrite(ctx)) throw denied('follow_up.reject');
+  const [updated] = await db
+    .update(outreachFollowUps)
+    .set({
+      status: 'skipped',
+      skipReason: 'manual_cancel',
+      processedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(outreachFollowUps.workspaceId, ctx.workspaceId),
+        eq(outreachFollowUps.id, followUpId),
+        eq(outreachFollowUps.status, 'awaiting_approval'),
+      ),
+    )
+    .returning();
+  if (!updated) {
+    throw new FollowUpServiceError(
+      'follow_up not found or not awaiting approval',
+      'not_found',
+    );
+  }
+  await recordAuditEvent(ctx, {
+    kind: 'follow_up.rejected',
+    entityType: 'mail_thread',
+    entityId: updated.threadId,
+    payload: {
+      followUpId: updated.id.toString(),
+      step: updated.stepNumber,
+    },
+  });
+  return updated;
+}
+
 // ─── read helpers (UI / tests) ──────────────────────────────────────
 
 export interface ListFollowUpsFilter {
-  status?: 'pending' | 'sent' | 'skipped' | 'failed' | 'all';
+  status?:
+    | 'pending'
+    | 'awaiting_approval'
+    | 'sent'
+    | 'skipped'
+    | 'failed'
+    | 'all';
   limit?: number;
 }
 
@@ -495,25 +793,35 @@ export async function listFollowUps(
   }));
 }
 
+type FollowUpCountKey =
+  | 'pending'
+  | 'awaiting_approval'
+  | 'sent'
+  | 'skipped'
+  | 'failed'
+  | 'all';
+
 /** Counts by status for the UI tab badges. */
 export async function countFollowUpsByStatus(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-): Promise<Record<'pending' | 'sent' | 'skipped' | 'failed' | 'all', number>> {
+): Promise<Record<FollowUpCountKey, number>> {
   const rows = await db
     .select({
       status: outreachFollowUps.status,
     })
     .from(outreachFollowUps)
     .where(eq(outreachFollowUps.workspaceId, ctx.workspaceId));
-  const out: Record<'pending' | 'sent' | 'skipped' | 'failed' | 'all', number> = {
+  const out: Record<FollowUpCountKey, number> = {
     all: rows.length,
     pending: 0,
+    awaiting_approval: 0,
     sent: 0,
     skipped: 0,
     failed: 0,
   };
   for (const r of rows) {
     if (r.status === 'pending') out.pending++;
+    else if (r.status === 'awaiting_approval') out.awaiting_approval++;
     else if (r.status === 'sent') out.sent++;
     else if (r.status === 'skipped') out.skipped++;
     else if (r.status === 'failed') out.failed++;

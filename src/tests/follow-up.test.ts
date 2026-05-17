@@ -27,6 +27,9 @@ import {
   listFollowUps,
   processDueFollowUps,
   scheduleFollowUps,
+  approveFollowUp,
+  rejectFollowUp,
+  updateFollowUpConfig,
 } from '@/lib/services/follow-up';
 import { MockMailProvider } from '@/lib/mail';
 import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
@@ -486,6 +489,269 @@ describe('processDueFollowUps (P58)', () => {
         ),
       );
     expect(remaining).toHaveLength(0);
+  });
+
+  it('honours per-step daysAfterPrev when stepConfigs is set', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s);
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
+      name: 'P1',
+    });
+    const ri = await makeReviewItem(s.workspaceA);
+    const provider = new MockMailProvider();
+    const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead@target.com' }],
+      subject: 'Hi',
+      text: 'x',
+      providerOverride: provider,
+    });
+    const [lead] = await db
+      .insert(qualifiedLeads)
+      .values({
+        workspaceId: s.workspaceA,
+        reviewItemId: ri,
+        productProfileId: product.id,
+        state: 'relevant',
+        contactEmail: 'lead@target.com',
+      })
+      .returning();
+    await db.insert(outreachThreadState).values({
+      workspaceId: s.workspaceA,
+      qualifiedLeadId: lead!.id,
+      threadId: sent.threadId!,
+      stage: 'discovery',
+    });
+    // 3 / 5 / 10 day cadence with custom instructions on the last step.
+    await updateFollowUpConfig(ctx(s.workspaceA, s.ownerA), {
+      steps: [
+        { daysAfterPrev: 3, customInstructions: '' },
+        { daysAfterPrev: 5, customInstructions: 'mention the trade show' },
+        { daysAfterPrev: 10, customInstructions: 'close the loop politely' },
+      ],
+    });
+    const created = await scheduleFollowUps(ctx(s.workspaceA, s.ownerA), {
+      threadId: sent.threadId!,
+      qualifiedLeadId: lead!.id,
+    });
+    const sorted = [...created].sort((a, b) => a.stepNumber - b.stepNumber);
+    const day = 24 * 60 * 60 * 1000;
+    const t0 = sorted[0]!.scheduledFor.getTime();
+    const t1 = sorted[1]!.scheduledFor.getTime();
+    const t2 = sorted[2]!.scheduledFor.getTime();
+    expect((t1 - t0) / day).toBeGreaterThan(4.9);
+    expect((t1 - t0) / day).toBeLessThan(5.1);
+    expect((t2 - t1) / day).toBeGreaterThan(9.9);
+    expect((t2 - t1) / day).toBeLessThan(10.1);
+  });
+
+  it('stages content + status=awaiting_approval when requireApproval is on', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s);
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
+      name: 'P1',
+    });
+    const ri = await makeReviewItem(s.workspaceA);
+    const provider = new MockMailProvider();
+    const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead@target.com' }],
+      subject: 'Hi',
+      text: 'x',
+      providerOverride: provider,
+    });
+    const [lead] = await db
+      .insert(qualifiedLeads)
+      .values({
+        workspaceId: s.workspaceA,
+        reviewItemId: ri,
+        productProfileId: product.id,
+        state: 'relevant',
+        contactEmail: 'lead@target.com',
+      })
+      .returning();
+    await db.insert(outreachThreadState).values({
+      workspaceId: s.workspaceA,
+      qualifiedLeadId: lead!.id,
+      threadId: sent.threadId!,
+      stage: 'discovery',
+    });
+    await updateFollowUpConfig(ctx(s.workspaceA, s.ownerA), {
+      requireApproval: true,
+    });
+    await scheduleFollowUps(ctx(s.workspaceA, s.ownerA), {
+      threadId: sent.threadId!,
+      qualifiedLeadId: lead!.id,
+    });
+    await db
+      .update(outreachFollowUps)
+      .set({ scheduledFor: new Date(Date.now() - 60_000) })
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    _setAIProviderForTests(makeStubAi());
+    const result = await processDueFollowUps(ctx(s.workspaceA, s.ownerA), {
+      mailProviderOverride: provider,
+    });
+    expect(result.sent).toBe(0);
+    expect(result.skipped).toBe(1);
+    const [row] = await db
+      .select()
+      .from(outreachFollowUps)
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    expect(row?.status).toBe('awaiting_approval');
+    expect(row?.stagedSubject).toBeTruthy();
+    expect(row?.stagedBody).toBe('Polite follow-up body.');
+    // No new outbound was sent (just the initial one from the test).
+    expect(provider.sent).toHaveLength(1);
+  });
+
+  it('approveFollowUp sends the staged content and flips status to sent', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s);
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
+      name: 'P1',
+    });
+    const ri = await makeReviewItem(s.workspaceA);
+    const provider = new MockMailProvider();
+    const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead@target.com' }],
+      subject: 'Hi',
+      text: 'x',
+      providerOverride: provider,
+    });
+    const [lead] = await db
+      .insert(qualifiedLeads)
+      .values({
+        workspaceId: s.workspaceA,
+        reviewItemId: ri,
+        productProfileId: product.id,
+        state: 'relevant',
+        contactEmail: 'lead@target.com',
+      })
+      .returning();
+    await db.insert(outreachThreadState).values({
+      workspaceId: s.workspaceA,
+      qualifiedLeadId: lead!.id,
+      threadId: sent.threadId!,
+      stage: 'discovery',
+    });
+    await updateFollowUpConfig(ctx(s.workspaceA, s.ownerA), {
+      requireApproval: true,
+    });
+    await scheduleFollowUps(ctx(s.workspaceA, s.ownerA), {
+      threadId: sent.threadId!,
+      qualifiedLeadId: lead!.id,
+    });
+    await db
+      .update(outreachFollowUps)
+      .set({ scheduledFor: new Date(Date.now() - 60_000) })
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    _setAIProviderForTests(makeStubAi());
+    await processDueFollowUps(ctx(s.workspaceA, s.ownerA), {
+      mailProviderOverride: provider,
+    });
+    const [staged] = await db
+      .select()
+      .from(outreachFollowUps)
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    const approved = await approveFollowUp(
+      ctx(s.workspaceA, s.ownerA),
+      staged!.id,
+      { body: 'Operator edited body.' },
+      { mailProviderOverride: provider },
+    );
+    expect(approved.status).toBe('sent');
+    expect(approved.sentMessageId).not.toBeNull();
+    expect(provider.sent).toHaveLength(2);
+    expect(provider.sent[1]!.message.text).toContain('Operator edited body.');
+  });
+
+  it('rejectFollowUp skips an awaiting_approval row', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s);
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
+      name: 'P1',
+    });
+    const ri = await makeReviewItem(s.workspaceA);
+    const provider = new MockMailProvider();
+    const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead@target.com' }],
+      subject: 'Hi',
+      text: 'x',
+      providerOverride: provider,
+    });
+    const [lead] = await db
+      .insert(qualifiedLeads)
+      .values({
+        workspaceId: s.workspaceA,
+        reviewItemId: ri,
+        productProfileId: product.id,
+        state: 'relevant',
+        contactEmail: 'lead@target.com',
+      })
+      .returning();
+    await db.insert(outreachThreadState).values({
+      workspaceId: s.workspaceA,
+      qualifiedLeadId: lead!.id,
+      threadId: sent.threadId!,
+      stage: 'discovery',
+    });
+    await updateFollowUpConfig(ctx(s.workspaceA, s.ownerA), {
+      requireApproval: true,
+    });
+    await scheduleFollowUps(ctx(s.workspaceA, s.ownerA), {
+      threadId: sent.threadId!,
+      qualifiedLeadId: lead!.id,
+    });
+    await db
+      .update(outreachFollowUps)
+      .set({ scheduledFor: new Date(Date.now() - 60_000) })
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    _setAIProviderForTests(makeStubAi());
+    await processDueFollowUps(ctx(s.workspaceA, s.ownerA), {
+      mailProviderOverride: provider,
+    });
+    const [staged] = await db
+      .select()
+      .from(outreachFollowUps)
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    const rejected = await rejectFollowUp(
+      ctx(s.workspaceA, s.ownerA),
+      staged!.id,
+    );
+    expect(rejected.status).toBe('skipped');
+    expect(rejected.skipReason).toBe('manual_cancel');
   });
 
   it('sends a row when the thread has no inbound and the lead is open', async () => {
