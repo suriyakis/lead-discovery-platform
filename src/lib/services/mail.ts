@@ -66,6 +66,11 @@ export interface SendMailInput {
   references?: ReadonlyArray<string>;
   /** Optional link to outreach_drafts.id when this came from a draft. */
   sourceDraftId?: bigint;
+  /** Phase 57 — one-shot signature override.
+   *    undefined → use the mailbox default (current behaviour)
+   *    null      → no signature
+   *    bigint    → use that specific signature (validated against workspace) */
+  signatureId?: bigint | null;
   /** Test-only override; production passes undefined. */
   providerOverride?: IMailProvider;
 }
@@ -100,12 +105,30 @@ export async function sendMessage(
     headers['References'] = input.references.join(' ');
   }
 
-  // Phase 17: append the default signature for this mailbox to the body
-  // (text + html). Caller-supplied bodies are passed through untouched.
+  // Phase 17 + 57: signature resolution.
+  //   undefined → mailbox default
+  //   null      → no signature (operator picked "none")
+  //   bigint    → that specific signature (validated workspace-scoped)
   let outboundText = input.text;
   let outboundHtml = input.html;
   try {
-    const sig = await defaultSignature(ctx, mailbox.id);
+    let sig = null;
+    if (input.signatureId === undefined) {
+      sig = await defaultSignature(ctx, mailbox.id);
+    } else if (input.signatureId !== null) {
+      const { signatures } = await import('@/lib/db/schema/mailing');
+      const rows = await db
+        .select()
+        .from(signatures)
+        .where(
+          and(
+            eq(signatures.workspaceId, ctx.workspaceId),
+            eq(signatures.id, input.signatureId),
+          ),
+        )
+        .limit(1);
+      sig = rows[0] ?? null;
+    }
     if (sig) {
       const sigText = renderSignatureText(sig);
       const sigHtml = renderSignatureHtml(sig);

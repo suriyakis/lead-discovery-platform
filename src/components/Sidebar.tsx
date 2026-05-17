@@ -29,6 +29,7 @@ import {
   type LucideIcon,
   Mail,
   MailWarning,
+  MessagesSquare,
   Network,
   Package,
   PencilLine,
@@ -90,6 +91,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     defaultOpen: true,
     items: [
       { href: '/drafts', label: 'Drafts', icon: PencilLine, countKey: 'draftsPending' },
+      { href: '/communication', label: 'Communication', icon: MessagesSquare },
       { href: '/mailbox', label: 'Mailbox', icon: Inbox, match: ['/mailbox'] },
       { href: '/mailbox/queue', label: 'Send queue', icon: Send },
       { href: '/mailbox/signatures', label: 'Signatures', icon: AtSign },
