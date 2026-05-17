@@ -3308,3 +3308,24 @@ button.primary-btn {
   align-items: center;
   gap: 0.4rem;
 }
+
+/* Phase 57: shared baseline for inline lucide-react icons. Without
+ * this they default to width:24/height:24 with vertical-align:baseline,
+ * which floats them above text. Inline-flex + size:1em + middle-align
+ * sits them inside the cap height of the surrounding text. */
+.lucide {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+  flex-shrink: 0;
+  stroke-width: 2;
+}
+
+/* When an .icon-btn wraps a .lucide, scale the icon up to 1.1em so
+ * the click target reads as iconographic rather than text-sized. */
+.icon-btn .lucide {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: middle;
+}

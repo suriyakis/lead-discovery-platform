@@ -98,27 +98,66 @@ export function CommunicationReply({
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: '0.5rem',
+        gap: '0.75rem',
         borderTop: '1px solid var(--brand-border)',
-        paddingTop: '0.75rem',
+        paddingTop: '1rem',
+        marginTop: '0.5rem',
       }}
     >
-      <strong style={{ fontSize: '0.9em' }}>Reply</strong>
+      <h3 style={{ margin: 0, fontSize: '0.95rem' }}>Reply</h3>
 
-      <label>
-        <span style={{ fontSize: '0.78em' }} className="muted">
-          To
-        </span>
-        <input
-          type="email"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-          required
-        />
-      </label>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '0.5rem',
+        }}
+      >
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+          <span style={{ fontSize: '0.72rem' }} className="muted">
+            To
+          </span>
+          <input
+            type="email"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            required
+            style={{ width: '100%' }}
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+          <span style={{ fontSize: '0.72rem' }} className="muted">
+            Signature
+            <span style={{ color: 'var(--brand-muted)', fontWeight: 'normal' }}>
+              {' · '}
+              {defaultLabel}
+            </span>
+          </span>
+          <select
+            value={signaturePick}
+            onChange={(e) =>
+              setSignaturePick(
+                e.target.value as '__default__' | '__none__' | string,
+              )
+            }
+            style={{ width: '100%' }}
+          >
+            <option value="__default__">
+              Use mailbox default {defaultSignatureId ? '(active)' : ''}
+            </option>
+            <option value="__none__">No signature (just the body)</option>
+            {signatures.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.isDefault ? ' (default)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
 
-      <label>
-        <span style={{ fontSize: '0.78em' }} className="muted">
+      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+        <span style={{ fontSize: '0.72rem' }} className="muted">
           Subject
         </span>
         <input
@@ -126,49 +165,41 @@ export function CommunicationReply({
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
           required
+          style={{ width: '100%' }}
         />
       </label>
 
-      <label>
-        <span style={{ fontSize: '0.78em' }} className="muted">
-          Body (signature appended automatically — pick below)
+      <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+        <span style={{ fontSize: '0.72rem' }} className="muted">
+          Body — signature appended automatically on send
         </span>
         <textarea
-          rows={8}
+          rows={14}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           required
-          placeholder="Write your reply here. The selected signature is appended on send."
+          placeholder="Write your reply here…"
+          style={{
+            width: '100%',
+            minHeight: '22ch',
+            resize: 'vertical',
+            fontFamily: 'inherit',
+            fontSize: '0.92rem',
+            lineHeight: 1.55,
+            padding: '0.75rem',
+          }}
         />
       </label>
 
-      <label>
-        <span style={{ fontSize: '0.78em' }} className="muted">
-          Signature{' '}
-          <span style={{ fontWeight: 'normal' }}>· {defaultLabel}</span>
-        </span>
-        <select
-          value={signaturePick}
-          onChange={(e) =>
-            setSignaturePick(
-              e.target.value as '__default__' | '__none__' | string,
-            )
-          }
-        >
-          <option value="__default__">
-            Use mailbox default {defaultSignatureId ? '(active)' : ''}
-          </option>
-          <option value="__none__">No signature (just the body)</option>
-          {signatures.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-              {s.isDefault ? ' (default)' : ''}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <div className="action-row">
+      <div
+        className="action-row"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.6rem',
+          flexWrap: 'wrap',
+        }}
+      >
         <button
           type="button"
           onClick={send}
@@ -177,10 +208,17 @@ export function CommunicationReply({
         >
           {isPending ? 'Sending…' : 'Send reply'}
         </button>
+        {info ? (
+          <span className="form-info" style={{ margin: 0, fontSize: '0.82rem' }}>
+            {info}
+          </span>
+        ) : null}
+        {error ? (
+          <span className="form-error" style={{ margin: 0, fontSize: '0.82rem' }}>
+            {error}
+          </span>
+        ) : null}
       </div>
-
-      {info ? <p className="form-info">{info}</p> : null}
-      {error ? <p className="form-error">{error}</p> : null}
     </div>
   );
 }

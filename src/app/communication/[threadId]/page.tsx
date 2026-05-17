@@ -7,7 +7,6 @@ import {
   User,
   Clock,
   History,
-  ChevronLeft,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { CommunicationReply } from '@/components/CommunicationReply';
@@ -163,17 +162,37 @@ export default async function CommunicationDetail({
 
   return (
     <AppShell>
-      <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
-        <Link href="/communication">
-          <ChevronLeft className="lucide" /> Communication
-        </Link>{' '}
-        / {baseSubject}
-      </p>
+      <nav
+        className="muted"
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: '0.4rem',
+          marginBottom: '0.75rem',
+          fontSize: '0.85rem',
+        }}
+      >
+        <Link href="/dashboard">Dashboard</Link>
+        <span aria-hidden>/</span>
+        <Link href="/communication">Communication</Link>
+        <span aria-hidden>/</span>
+        <span
+          style={{
+            color: 'var(--brand-fg)',
+            fontWeight: 500,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            maxWidth: '50ch',
+          }}
+        >
+          {baseSubject}
+        </span>
+      </nav>
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr)',
+          gridTemplateColumns: 'minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.6fr)',
           gap: '1rem',
           alignItems: 'flex-start',
         }}

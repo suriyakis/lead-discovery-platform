@@ -66,7 +66,7 @@ async function makeReviewItem(workspaceId: bigint): Promise<bigint> {
       workspaceId,
       name: 'mock-conn',
       templateType: 'mock',
-      isActive: true,
+      active: true,
     })
     .returning();
   const [recipe] = await db
@@ -76,7 +76,6 @@ async function makeReviewItem(workspaceId: bigint): Promise<bigint> {
       connectorId: conn!.id,
       name: 'mock-recipe',
       templateType: 'mock',
-      config: {},
     })
     .returning();
   const [run] = await db
