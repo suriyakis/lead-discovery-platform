@@ -1,12 +1,19 @@
 // Phase 10 — retrieval-augmented composers. Given a query (typically
 // the most recent inbound message) + a product profile id, pull the
-// top-k matching chunks from the existing RAG store and format them
-// for inclusion in the engagement / pitch system prompts.
+// top-k matching chunks from the workspace's active Vector Storage
+// provider and format them for inclusion in the engagement / pitch
+// system prompts.
+//
+// Phase 50 — routes through getVectorStorageProviderForCtx so the
+// workspace's vector_storage_provider selection (pgvector / openai /
+// mock) is honored at the read path too, not just the write path.
+// In practice the workspace is on pgvector (cheaper), but going
+// through the abstraction keeps both rails symmetric.
 //
 // Best-effort: zero indexed chunks → empty string, never throws into
 // the composer.
 
-import { retrieve } from './rag';
+import { getVectorStorageProviderForCtx } from '@/lib/vector-storage';
 import type { WorkspaceContext } from './context';
 
 export interface KnowledgeBlock {
@@ -15,13 +22,14 @@ export interface KnowledgeBlock {
   formatted: string;
   /** Number of chunks actually returned. */
   chunkCount: number;
-  /** Cosine similarity of the top result (0-1). Useful for the
-   *  draft evidence audit. */
+  /** Cosine similarity of the top result (0-1, pgvector only). 0
+   *  when the provider doesn't surface similarity (e.g. openai
+   *  file_search returns citations without scores). */
   topSimilarity: number;
 }
 
 export async function buildProductKnowledgeBlock(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  ctx: WorkspaceContext,
   productProfileId: bigint,
   query: string,
   options: { topK?: number; minSimilarity?: number; stageHint?: 'engagement' | 'pitch' } = {},
@@ -32,41 +40,34 @@ export async function buildProductKnowledgeBlock(
   if (!trimmed) {
     return { formatted: '', chunkCount: 0, topSimilarity: 0 };
   }
-  let chunks;
+  let provider;
+  let result;
   try {
-    chunks = await retrieve(ctx, trimmed, {
-      productProfileId,
-      limit: topK,
-      // For pitch, prefer technical + case_study chunks. For engagement,
-      // prefer objection_handling. Leave general available in both via
-      // the no-filter fallback below.
-      // We don't filter strictly here because indexed-on-purpose data
-      // may be too sparse; better to surface anything relevant and let
-      // the AI cherry-pick.
+    provider = await getVectorStorageProviderForCtx(ctx);
+    result = await provider.query(ctx, productProfileId, trimmed, {
+      topK,
+      minSimilarity,
     });
   } catch (err) {
     console.warn('[outreach-knowledge] retrieve failed (best-effort):', err);
     return { formatted: '', chunkCount: 0, topSimilarity: 0 };
   }
 
-  // Drop low-similarity hits — they'd just noise up the prompt.
-  const filtered = chunks.filter((c) => c.similarity >= minSimilarity);
-  if (filtered.length === 0) {
-    return { formatted: '', chunkCount: 0, topSimilarity: chunks[0]?.similarity ?? 0 };
+  const chunks = result.chunks;
+  if (chunks.length === 0) {
+    return { formatted: '', chunkCount: 0, topSimilarity: 0 };
   }
 
   void options.stageHint;
 
-  const blocks = filtered.map((c, i) => {
-    const source =
-      c.document?.name ??
-      c.knowledgeSource?.title ??
-      `chunk ${c.chunk.id}`;
+  const blocks = chunks.map((c, i) => {
+    const source = c.citationFilename ?? `chunk ${i + 1}`;
     // Truncate to keep the prompt budget reasonable.
-    const text = c.chunk.content.length > 1200
-      ? `${c.chunk.content.slice(0, 1200)}…`
-      : c.chunk.content;
-    return `[${i + 1}] from "${source}" (similarity ${c.similarity.toFixed(2)}):\n${text}`;
+    const text =
+      c.content.length > 1200 ? `${c.content.slice(0, 1200)}…` : c.content;
+    const sim = c.similarity ?? 0;
+    const simLabel = sim > 0 ? ` (similarity ${sim.toFixed(2)})` : '';
+    return `[${i + 1}] from "${source}"${simLabel}:\n${text}`;
   });
 
   const formatted = [
@@ -76,8 +77,8 @@ export async function buildProductKnowledgeBlock(
 
   return {
     formatted,
-    chunkCount: filtered.length,
-    topSimilarity: filtered[0]!.similarity,
+    chunkCount: chunks.length,
+    topSimilarity: chunks[0]?.similarity ?? 0,
   };
 }
 

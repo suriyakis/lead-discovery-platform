@@ -84,6 +84,14 @@ export async function suggestReply(
     || lastInbound.subject
     || messages.map((m) => m.subject).join(' ');
 
+  // Phase 12 technical reply assistant: workspace-wide retrieval — no
+  // product scope (the operator may be answering a generic technical
+  // question that touches multiple products). The Phase 50 vector-
+  // storage provider abstraction REQUIRES a productProfileId, so this
+  // path intentionally bypasses it and calls retrieve() directly. As
+  // long as the workspace stays on pgvector (the default), both code
+  // paths land in the same underlying tables. retrieveLessons() likewise
+  // operates on learning_lessons and isn't part of the provider abstraction.
   const [chunks, lessons] = await Promise.all([
     retrieve(ctx, queryText, {
       limit: input.chunkLimit ?? 6,
