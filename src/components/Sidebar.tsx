@@ -37,6 +37,7 @@ import {
   Send,
   ShieldCheck,
   ShoppingBag,
+  SlidersHorizontal,
   Sparkles,
   UserCircle,
   Users,
@@ -97,6 +98,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
       { href: '/mailbox/signatures', label: 'Signatures', icon: AtSign },
       { href: '/mailbox/suppression', label: 'Suppression', icon: MailWarning },
       { href: '/mailbox/deliverability', label: 'Deliverability', icon: Mail },
+      { href: '/settings/outreach', label: 'Outreach config', icon: SlidersHorizontal },
     ],
   },
   {
@@ -107,7 +109,6 @@ const SECTIONS: ReadonlyArray<NavSection> = [
       { href: '/products', label: 'Products', icon: ShoppingBag },
       { href: '/settings/members', label: 'Members', icon: Users },
       { href: '/settings/integrations', label: 'Integrations', icon: Key },
-      { href: '/settings/outreach', label: 'Outreach config', icon: MessagesSquare },
       { href: '/settings/crm', label: 'CRM & Export', icon: Workflow },
       { href: '/settings/usage', label: 'Usage', icon: Receipt },
       { href: '/settings/billing', label: 'Billing', icon: CreditCard },

@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { Timer } from 'lucide-react';
+import { Timer, SlidersHorizontal } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { CommunicationTabs } from '@/components/CommunicationTabs';
 import { auth } from '@/lib/auth';
@@ -182,11 +182,18 @@ export default async function FollowUpsPage({
           </h1>
           <p className="page-lede">
             After the first outbound on a thread, the platform schedules
-            three polite follow-ups — one per week. They only fire if no
+            polite follow-ups (default: 3, weekly). They only fire if no
             reply has arrived and no error has surfaced. The last step
             explicitly tells the recipient it&apos;s the final email so the
-            cadence ends cleanly.
+            cadence ends cleanly. Configure cadence, custom per-step
+            instructions, and the approval gate on{' '}
+            <Link href="/settings/outreach">Outreach config</Link>.
           </p>
+        </div>
+        <div className="action-row">
+          <Link href="/settings/outreach" className="primary-btn">
+            <SlidersHorizontal className="lucide" /> Configure follow-ups
+          </Link>
         </div>
       </div>
 
