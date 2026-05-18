@@ -7,6 +7,8 @@
 // shell and render BrandHeader on their own.
 
 import { BrandHeader } from './BrandHeader';
+import { CommandPalette } from './CommandPalette';
+import { fetchCommandPaletteEntities } from './command-palette-action';
 import { Sidebar } from './Sidebar';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { auth } from '@/lib/auth';
@@ -92,6 +94,12 @@ export async function AppShell({
         <Sidebar isSuperAdmin={showAdmin} navCounts={navCounts} />
         <main className="app-main">{children}</main>
       </div>
+      {session?.user?.id ? (
+        <CommandPalette
+          fetchEntities={fetchCommandPaletteEntities}
+          isSuperAdmin={showAdmin}
+        />
+      ) : null}
     </div>
   );
 }
