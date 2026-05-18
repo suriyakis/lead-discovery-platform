@@ -289,19 +289,27 @@ export async function countProductProfileDependencies(
 }
 
 /**
- * Hard-delete a product profile. Refuses if there's any downstream
- * activity (pipeline rows, qualifications, drafts) — operator must
- * archive instead so history is preserved. Empty drafts created by
- * autofill experiments delete cleanly.
+ * Hard-delete a product profile.
  *
- * On the DB side the FK from learning_examples / hint_signals cascades
- * (see learning.ts onDelete: cascade / set null) and the indexes from
- * autopilot/connectors/documents that lack FK constraints are left
- * dangling — harmless for those tables.
+ * Default (force=false): refuses if there's any downstream activity
+ * (pipeline rows, qualifications, drafts) so operators don't lose
+ * work by accident. They can either archive instead, or call again
+ * with force=true after a typed-name confirmation in the UI.
+ *
+ * Force (force=true): cascades. The FK from qualifications,
+ * outreach_drafts, qualified_leads, hint_signals, vector_stores all
+ * have ON DELETE CASCADE — those rows go with it. learning_examples
+ * FK is set-null so workspace-level memory stays. document
+ * product_profile_ids arrays don't FK and become harmless orphan
+ * id entries.
+ *
+ * Audit log captures the dependency counts at delete time for
+ * forensics.
  */
 export async function deleteProductProfile(
   ctx: WorkspaceContext,
   id: bigint,
+  opts: { force?: boolean } = {},
 ): Promise<{ name: string }> {
   if (!canAdminWorkspace(ctx)) throw permissionDenied('delete product profile');
 
@@ -309,9 +317,9 @@ export async function deleteProductProfile(
   const deps = await countProductProfileDependencies(ctx, id);
   const blocking =
     deps.qualifications + deps.outreachDrafts + deps.qualifiedLeads;
-  if (blocking > 0) {
+  if (blocking > 0 && !opts.force) {
     throw invalid(
-      `cannot delete: ${deps.qualifiedLeads} qualified leads, ${deps.qualifications} qualifications, ${deps.outreachDrafts} drafts reference this profile — archive it instead`,
+      `cannot delete: ${deps.qualifiedLeads} qualified leads, ${deps.qualifications} qualifications, ${deps.outreachDrafts} drafts reference this profile — archive it, or force-delete from the product page`,
     );
   }
 
@@ -328,7 +336,13 @@ export async function deleteProductProfile(
       kind: 'product_profile.delete',
       entityType: 'product_profile',
       entityId: profile.id,
-      payload: { name: profile.name },
+      payload: {
+        name: profile.name,
+        force: Boolean(opts.force),
+        cascadedQualifications: deps.qualifications,
+        cascadedOutreachDrafts: deps.outreachDrafts,
+        cascadedQualifiedLeads: deps.qualifiedLeads,
+      },
     });
     return { name: profile.name };
   });

@@ -131,13 +131,23 @@ export default async function ProductsPage({
                     </span>
                     <span>threshold {p.relevanceThreshold}</span>
                   </div>
-                  {isAdmin && deletableIds.has(p.id.toString()) ? (
-                    <form action={destroy} style={{ marginTop: '0.5rem' }}>
-                      <input type="hidden" name="id" value={p.id.toString()} />
-                      <button type="submit" className="ghost-btn">
-                        Delete
-                      </button>
-                    </form>
+                  {isAdmin ? (
+                    deletableIds.has(p.id.toString()) ? (
+                      <form action={destroy} style={{ marginTop: '0.5rem' }}>
+                        <input type="hidden" name="id" value={p.id.toString()} />
+                        <button type="submit" className="ghost-btn">
+                          Delete
+                        </button>
+                      </form>
+                    ) : (
+                      <Link
+                        href={`/products/${p.id}#delete-section`}
+                        className="ghost-btn"
+                        style={{ marginTop: '0.5rem' }}
+                      >
+                        Delete (force confirmation)
+                      </Link>
+                    )
                   ) : null}
                 </li>
               ))}
@@ -153,13 +163,23 @@ export default async function ProductsPage({
                 <li key={p.id.toString()} className="archived">
                   <Link href={`/products/${p.id}`}>{p.name}</Link>
                   {p.shortDescription ? <p className="muted">{p.shortDescription}</p> : null}
-                  {isAdmin && deletableIds.has(p.id.toString()) ? (
-                    <form action={destroy} style={{ marginTop: '0.5rem' }}>
-                      <input type="hidden" name="id" value={p.id.toString()} />
-                      <button type="submit" className="ghost-btn">
-                        Delete
-                      </button>
-                    </form>
+                  {isAdmin ? (
+                    deletableIds.has(p.id.toString()) ? (
+                      <form action={destroy} style={{ marginTop: '0.5rem' }}>
+                        <input type="hidden" name="id" value={p.id.toString()} />
+                        <button type="submit" className="ghost-btn">
+                          Delete
+                        </button>
+                      </form>
+                    ) : (
+                      <Link
+                        href={`/products/${p.id}#delete-section`}
+                        className="ghost-btn"
+                        style={{ marginTop: '0.5rem' }}
+                      >
+                        Delete (force confirmation)
+                      </Link>
+                    )
                   ) : null}
                 </li>
               ))}

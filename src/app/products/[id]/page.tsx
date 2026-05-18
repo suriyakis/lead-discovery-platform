@@ -168,13 +168,14 @@ export default async function EditProductPage({
     'use server';
     const ctxInner = await getWorkspaceContext();
     const confirmed = String(formData.get('confirm') ?? '').trim();
+    const force = formData.get('force') === 'on';
     if (confirmed !== profile.name) {
       redirect(
         `/products/${id}?error=${encodeURIComponent(`Type the product name "${profile.name}" to confirm`)}`,
       );
     }
     try {
-      await deleteProductProfile(ctxInner, id);
+      await deleteProductProfile(ctxInner, id, { force });
       redirect('/products?deleted=1');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -270,16 +271,50 @@ export default async function EditProductPage({
               </button>
             </form>
 
-            <h3 style={{ marginTop: '1.5rem' }}>Delete</h3>
+            <h3 id="delete-section" style={{ marginTop: '1.5rem' }}>
+              Delete
+            </h3>
             {deps.qualifiedLeads + deps.qualifications + deps.outreachDrafts >
             0 ? (
-              <p className="muted">
-                Cannot delete — this profile is referenced by{' '}
-                <strong>{deps.qualifiedLeads}</strong> qualified leads,{' '}
-                <strong>{deps.qualifications}</strong> qualifications, and{' '}
-                <strong>{deps.outreachDrafts}</strong> drafts. Archive instead
-                so history is preserved.
-              </p>
+              <>
+                <p className="muted">
+                  This product is referenced by{' '}
+                  <strong>{deps.qualifiedLeads}</strong> qualified leads,{' '}
+                  <strong>{deps.qualifications}</strong> qualifications, and{' '}
+                  <strong>{deps.outreachDrafts}</strong> drafts. Deleting it
+                  will <strong>cascade</strong> — those records, their
+                  associated threads, drafts, and product-scoped knowledge
+                  go with it. Workspace-level learning memory is preserved.
+                </p>
+                <form action={destroy} className="inline-form">
+                  <input type="hidden" name="force" value="on" />
+                  <label>
+                    <span>
+                      Confirm by typing the product name: <code>{profile.name}</code>
+                    </span>
+                    <input
+                      type="text"
+                      name="confirm"
+                      placeholder={profile.name}
+                      autoComplete="off"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="ghost-btn"
+                    style={{
+                      borderColor: 'var(--brand-status-rejected)',
+                      color: 'var(--brand-status-rejected)',
+                    }}
+                  >
+                    Force-delete (cascades {deps.qualifiedLeads +
+                      deps.qualifications +
+                      deps.outreachDrafts}{' '}
+                    records)
+                  </button>
+                </form>
+              </>
             ) : (
               <>
                 <p className="muted">
