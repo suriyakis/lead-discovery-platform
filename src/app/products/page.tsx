@@ -50,7 +50,7 @@ export default async function ProductsPage({
   // per-row queries — three GROUP BY scans regardless of how many
   // products this workspace has.
   const isAdmin = canAdminWorkspace(ctx);
-  let deletableIds = new Set<string>();
+  const deletableIds = new Set<string>();
   if (isAdmin) {
     const deps = await batchCountProductProfileDependencies(
       ctx,
