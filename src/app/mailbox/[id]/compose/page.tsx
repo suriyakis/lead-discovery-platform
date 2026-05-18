@@ -82,7 +82,7 @@ export default async function ComposeMessagePage({
         text,
         sourceDraftId: /^\d+$/.test(draftIdRaw) ? BigInt(draftIdRaw) : undefined,
       });
-      redirect(`/mailbox/threads/${created.threadId}`);
+      redirect(`/communication/${created.threadId}`);
     } catch (err) {
       if (err instanceof MailServiceError || err instanceof MailboxServiceError) {
         const params = new URLSearchParams({

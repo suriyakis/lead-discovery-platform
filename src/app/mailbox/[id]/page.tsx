@@ -439,7 +439,7 @@ export default async function MailboxDetail({
               {threads.map((t) => (
                 <li key={t.id.toString()}>
                   <div className="lead-row">
-                    <Link href={`/mailbox/threads/${t.id}`}>{t.subject || '(no subject)'}</Link>
+                    <Link href={`/communication/${t.id}`}>{t.subject || '(no subject)'}</Link>
                     <span className="muted">{t.messageCount} msg</span>
                   </div>
                   <div className="lead-meta">

@@ -71,6 +71,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     title: 'Discovery',
     defaultOpen: true,
     items: [
+      { href: '/products', label: 'Products', icon: ShoppingBag },
       { href: '/connectors', label: 'Connectors', icon: Network },
       { href: '/review', label: 'Review queue', icon: ListChecks, countKey: 'reviewPending' },
       { href: '/leads', label: 'Leads', icon: Sparkles },
@@ -102,17 +103,22 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     ],
   },
   {
-    title: 'Administration',
+    title: 'Workspace',
     defaultOpen: false,
     items: [
-      { href: '/settings/account', label: 'My account', icon: UserCircle },
-      { href: '/products', label: 'Products', icon: ShoppingBag },
       { href: '/settings/members', label: 'Members', icon: Users },
       { href: '/settings/integrations', label: 'Integrations', icon: Key },
       { href: '/settings/crm', label: 'CRM & Export', icon: Workflow },
       { href: '/settings/usage', label: 'Usage', icon: Receipt },
       { href: '/settings/billing', label: 'Billing', icon: CreditCard },
       { href: '/settings/audit', label: 'Audit log', icon: ShieldCheck },
+    ],
+  },
+  {
+    title: 'Account',
+    defaultOpen: false,
+    items: [
+      { href: '/settings/account', label: 'My account', icon: UserCircle },
     ],
   },
   {

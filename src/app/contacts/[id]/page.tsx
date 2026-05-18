@@ -167,7 +167,7 @@ export default async function ContactDetail({
           <ul className="profile-list">
             {threads.map((t) => (
               <li key={t.id.toString()}>
-                <Link href={`/mailbox/threads/${t.id}`}>
+                <Link href={`/communication/${t.id}`}>
                   {t.subject || '(no subject)'}
                 </Link>
                 <div className="meta">
@@ -196,7 +196,7 @@ export default async function ContactDetail({
                 <strong>{m.direction}</strong> ·{' '}
                 {m.direction === 'inbound' ? m.fromAddress : m.toAddresses.join(', ')}
                 {' · '}
-                <Link href={`/mailbox/threads/${m.threadId ?? ''}`}>{m.subject}</Link>
+                <Link href={`/communication/${m.threadId ?? ''}`}>{m.subject}</Link>
               </li>
             ))}
           </ul>
