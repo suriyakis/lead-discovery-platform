@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { Inbox, Plus } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
@@ -8,12 +9,59 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { listMailboxes } from '@/lib/services/mailbox';
+import {
+  MailboxServiceError,
+  getMailbox,
+  listMailboxes,
+  pauseMailbox,
+  reactivateMailbox,
+  updateMailbox,
+} from '@/lib/services/mailbox';
+import { isNextRedirectError } from '@/lib/server-redirect';
 import type { Mailbox } from '@/lib/db/schema/mailing';
 
-export default async function MailboxIndex() {
+async function toggleMailboxEnabled(formData: FormData) {
+  'use server';
+  const idStr = String(formData.get('id') ?? '');
+  if (!/^\d+$/.test(idStr)) return;
+  const id = BigInt(idStr);
+  const desired = String(formData.get('target') ?? '');
+
+  try {
+    const ctx = await getWorkspaceContext();
+    const current = await getMailbox(ctx, id);
+    if (current.status === 'archived') return;
+
+    if (desired === 'on') {
+      if (current.status === 'paused') {
+        await updateMailbox(ctx, id, { status: 'active' });
+      } else if (current.status === 'failing') {
+        await reactivateMailbox(ctx, id);
+      }
+    } else if (desired === 'off' && current.status !== 'paused') {
+      await pauseMailbox(ctx, id);
+    }
+  } catch (err) {
+    if (isNextRedirectError(err)) throw err;
+    if (err instanceof MailboxServiceError) {
+      // Best-effort UX: surface via query param so the page can render
+      // a banner. Quick path — the toggle is best-effort and the next
+      // render will reflect the truth either way.
+      redirect(`/mailbox?error=${encodeURIComponent(err.message)}`);
+    }
+    throw err;
+  }
+  revalidatePath('/mailbox');
+}
+
+export default async function MailboxIndex({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
+  const sp = await searchParams;
 
   let mailboxes: Mailbox[] = [];
   try {
@@ -51,6 +99,8 @@ export default async function MailboxIndex() {
           </Link>
         </div>
 
+        {sp.error ? <p className="form-error">{sp.error}</p> : null}
+
         {mailboxes.length === 0 ? (
           <div className="empty-state">
             <Inbox className="empty-state-icon" aria-hidden="true" />
@@ -62,37 +112,68 @@ export default async function MailboxIndex() {
         ) : (
           <section>
             <ul className="profile-list">
-              {mailboxes.map((m) => (
-                <li
-                  key={m.id.toString()}
-                  className={m.status === 'archived' ? 'archived' : undefined}
-                >
-                  <div className="lead-row">
-                    <Link href={`/mailbox/${m.id}`}>{m.name}</Link>
-                    <span className={statusBadge(m.status)}>{m.status}</span>
-                    {m.isDefault ? <span className="badge badge-good">default</span> : null}
-                  </div>
-                  <div className="meta">
-                    <span>{m.fromAddress}</span>
-                    <span>SMTP {m.smtpHost}:{m.smtpPort}</span>
-                    {m.imapHost ? (
-                      <span>
-                        IMAP {m.imapHost}:{m.imapPort} · {m.imapFolder}
-                      </span>
-                    ) : (
-                      <span>(outbound only)</span>
-                    )}
-                    {m.lastSyncedAt ? (
-                      <span>last sync {m.lastSyncedAt.toLocaleString()}</span>
-                    ) : null}
-                    {m.lastError ? (
-                      <span style={{ color: 'var(--brand-status-rejected)' }}>
-                        error: {m.lastError}
-                      </span>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
+              {mailboxes.map((m) => {
+                const enabled = m.status === 'active';
+                const archived = m.status === 'archived';
+                return (
+                  <li
+                    key={m.id.toString()}
+                    className={archived ? 'archived' : undefined}
+                  >
+                    <div className="mailbox-row-head">
+                      <div className="lead-row">
+                        <Link href={`/mailbox/${m.id}`}>{m.name}</Link>
+                        <span className={statusBadge(m.status)}>{m.status}</span>
+                        {m.isDefault ? <span className="badge badge-good">default</span> : null}
+                      </div>
+                      {archived ? null : (
+                        <form action={toggleMailboxEnabled} className="mailbox-toggle-form">
+                          <input type="hidden" name="id" value={m.id.toString()} />
+                          <input type="hidden" name="target" value={enabled ? 'off' : 'on'} />
+                          <button
+                            type="submit"
+                            className={enabled ? 'mailbox-switch on' : 'mailbox-switch off'}
+                            aria-label={enabled ? `Disable ${m.name}` : `Enable ${m.name}`}
+                            title={
+                              enabled
+                                ? 'Click to pause: stops outbound sends and IMAP sync'
+                                : m.status === 'failing'
+                                ? 'Click to re-activate (resets failure counters)'
+                                : 'Click to enable: resumes sends and IMAP sync'
+                            }
+                          >
+                            <span className="mailbox-switch-label">
+                              {enabled ? 'ON' : 'OFF'}
+                            </span>
+                            <span className="mailbox-switch-track">
+                              <span className="mailbox-switch-thumb" />
+                            </span>
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                    <div className="meta">
+                      <span>{m.fromAddress}</span>
+                      <span>SMTP {m.smtpHost}:{m.smtpPort}</span>
+                      {m.imapHost ? (
+                        <span>
+                          IMAP {m.imapHost}:{m.imapPort} · {m.imapFolder}
+                        </span>
+                      ) : (
+                        <span>(outbound only)</span>
+                      )}
+                      {m.lastSyncedAt ? (
+                        <span>last sync {m.lastSyncedAt.toLocaleString()}</span>
+                      ) : null}
+                      {m.lastError ? (
+                        <span style={{ color: 'var(--brand-status-rejected)' }}>
+                          error: {m.lastError}
+                        </span>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         )}
