@@ -98,6 +98,9 @@ export async function sendMessage(
   if (mailbox.status === 'archived') {
     throw new MailServiceError('mailbox is archived', 'invalid_input');
   }
+  if (mailbox.status === 'paused') {
+    throw new MailServiceError('mailbox is paused — re-enable it from Edit mailbox to resume sends', 'invalid_input');
+  }
 
   const headers: Record<string, string> = { ...(input.headers ?? {}) };
   if (input.inReplyTo) headers['In-Reply-To'] = input.inReplyTo;
@@ -395,6 +398,9 @@ export async function sendTestEmail(
   );
   if (mailbox.status === 'archived') {
     throw new MailServiceError('mailbox is archived', 'invalid_input');
+  }
+  if (mailbox.status === 'paused') {
+    throw new MailServiceError('mailbox is paused — re-enable it from Edit mailbox to resume sends', 'invalid_input');
   }
 
   // Signature resolution: explicit id → that signature (validated);

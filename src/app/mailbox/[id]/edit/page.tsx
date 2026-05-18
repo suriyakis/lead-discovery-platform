@@ -10,6 +10,8 @@ import {
 import {
   MailboxServiceError,
   getMailbox,
+  pauseMailbox,
+  reactivateMailbox,
   updateMailbox,
 } from '@/lib/services/mailbox';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -59,6 +61,8 @@ export default async function EditMailboxPage({
     const newSmtpPassword = String(formData.get('smtpPassword') ?? '');
     const newImapPassword = String(formData.get('imapPassword') ?? '');
 
+    const wantEnabled = formData.get('enabled') === 'on';
+
     try {
       await updateMailbox(c, id, {
         name: String(formData.get('name') ?? '').trim() || undefined,
@@ -81,6 +85,21 @@ export default async function EditMailboxPage({
           : null,
         isDefault: formData.get('isDefault') === 'on',
       });
+      // Enabled toggle. Re-read the current status (could have
+      // changed between render and submit) and route through the
+      // helper that matches the transition: failing→active resets
+      // counters via reactivateMailbox (admin-gated); paused→active
+      // is a cheap status flip; active/failing→paused is sticky.
+      const current = await getMailbox(c, id);
+      if (current.status !== 'archived') {
+        if (wantEnabled && current.status === 'paused') {
+          await updateMailbox(c, id, { status: 'active' });
+        } else if (wantEnabled && current.status === 'failing') {
+          await reactivateMailbox(c, id);
+        } else if (!wantEnabled && current.status !== 'paused') {
+          await pauseMailbox(c, id);
+        }
+      }
       redirect(`/mailbox/${id}`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -108,6 +127,30 @@ export default async function EditMailboxPage({
         </p>
 
         <form action={save} className="edit-draft-form">
+          <fieldset className="ks-kind-fields">
+            <legend className="muted">Mailbox status</legend>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                name="enabled"
+                defaultChecked={mailbox.status !== 'paused'}
+                disabled={mailbox.status === 'archived'}
+              />
+              <span>
+                Enabled
+                {mailbox.status === 'paused' ? (
+                  <em className="muted"> — currently paused (no sends, no IMAP sync)</em>
+                ) : mailbox.status === 'failing' ? (
+                  <em className="muted"> — currently failing; un-checking pauses it, saving with this checked re-activates and resets the failure counter</em>
+                ) : mailbox.status === 'archived' ? (
+                  <em className="muted"> — archived mailboxes cannot be toggled here</em>
+                ) : (
+                  <em className="muted"> — un-check to pause sends and stop IMAP sync</em>
+                )}
+              </span>
+            </label>
+          </fieldset>
+
           <label>
             <span>Display name</span>
             <input type="text" name="name" defaultValue={mailbox.name} required />

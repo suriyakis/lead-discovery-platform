@@ -315,6 +315,46 @@ export async function reactivateMailbox(
   return updated;
 }
 
+/**
+ * Operator-driven pause: flips an `active` or `failing` mailbox to
+ * `paused`. While paused, the IMAP tick skips this row (it filters on
+ * status='active') and `mail.sendMessage` refuses to send through it.
+ * The pause is sticky until the operator re-enables. Counters and
+ * lastError are preserved so a later Reactivate still has the
+ * forensic trail.
+ */
+export async function pauseMailbox(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<Mailbox> {
+  if (!canWrite(ctx)) throw permissionDenied('mailbox.pause');
+  const existing = await loadMailbox(ctx, id);
+  if (existing.status === 'archived') {
+    throw new MailboxServiceError(
+      'cannot pause an archived mailbox',
+      'invalid_state',
+    );
+  }
+  if (existing.status === 'paused') return existing;
+  const [updated] = await db
+    .update(mailboxes)
+    .set({ status: 'paused', updatedAt: new Date() })
+    .where(
+      and(
+        eq(mailboxes.workspaceId, ctx.workspaceId),
+        eq(mailboxes.id, id),
+      ),
+    )
+    .returning();
+  if (!updated) throw invariant('mailbox pause returned no row');
+  await recordAuditEvent(ctx, {
+    kind: 'mailbox.pause',
+    entityType: 'mailbox',
+    entityId: id,
+  });
+  return updated;
+}
+
 // ---- read ----------------------------------------------------------
 
 export async function listMailboxes(

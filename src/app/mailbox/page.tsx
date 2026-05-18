@@ -103,5 +103,6 @@ export default async function MailboxIndex() {
 function statusBadge(status: string): string {
   if (status === 'active') return 'badge badge-good';
   if (status === 'failing' || status === 'archived') return 'badge badge-bad';
+  if (status === 'paused') return 'badge badge-warn';
   return 'badge';
 }
