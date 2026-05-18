@@ -1235,6 +1235,219 @@ button.primary-btn {
   box-shadow: 0 0 0 3px oklch(0.5 0.05 200 / 0.25);
 }
 
+/* ---- Dashboard cockpit cards ---- */
+.cockpit-grid-inner {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-bottom: 2rem;
+}
+
+.cockpit-card {
+  position: relative;
+  display: block;
+  padding: 1rem 1.1rem 1.05rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--brand-border);
+  background:
+    linear-gradient(
+      180deg,
+      oklch(0.235 0.025 250 / 0.95),
+      oklch(0.215 0.025 250 / 0.95)
+    );
+  text-decoration: none;
+  color: var(--brand-fg);
+  transition: transform 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, background 0.15s ease;
+  overflow: hidden;
+}
+
+.cockpit-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--cockpit-accent, var(--brand-muted));
+  opacity: 0.85;
+}
+
+.cockpit-card:hover {
+  transform: translateY(-2px);
+  border-color: oklch(0.4 0.04 250);
+  box-shadow:
+    0 10px 24px -16px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--cockpit-accent, transparent);
+}
+
+.cockpit-card-tone-amber {
+  --cockpit-accent: var(--brand-accent-amber);
+}
+.cockpit-card-tone-teal {
+  --cockpit-accent: var(--brand-accent-teal);
+}
+.cockpit-card-tone-bad {
+  --cockpit-accent: var(--brand-status-rejected);
+}
+.cockpit-card-tone-good {
+  --cockpit-accent: var(--brand-status-approved);
+}
+.cockpit-card-tone-neutral {
+  --cockpit-accent: oklch(0.5 0.04 250);
+}
+
+.cockpit-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.4rem;
+}
+
+.cockpit-card-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+  color: var(--cockpit-accent, var(--brand-muted));
+  flex-shrink: 0;
+}
+
+.cockpit-card-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--brand-muted);
+  text-transform: uppercase;
+}
+
+.cockpit-card-value {
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1;
+  font-feature-settings: 'tnum';
+  color: var(--brand-fg);
+}
+
+.cockpit-card-tone-amber.cockpit-card-active .cockpit-card-value,
+.cockpit-card-tone-teal.cockpit-card-active .cockpit-card-value,
+.cockpit-card-tone-bad.cockpit-card-active .cockpit-card-value,
+.cockpit-card-tone-good.cockpit-card-active .cockpit-card-value {
+  color: var(--cockpit-accent);
+}
+
+.cockpit-card-sub {
+  font-size: 0.76rem;
+  color: var(--brand-muted);
+  margin-top: 0.4rem;
+  line-height: 1.4;
+}
+
+.cockpit-card-wide {
+  grid-column: span 2;
+}
+
+@media (max-width: 720px) {
+  .cockpit-card-wide {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Funnel card */
+.cockpit-funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.cockpit-funnel-row {
+  display: grid;
+  grid-template-columns: 7em 1fr 2.5em;
+  gap: 0.6rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.cockpit-funnel-row-label {
+  color: var(--brand-muted);
+  font-size: 0.78rem;
+}
+
+.cockpit-funnel-row-count {
+  text-align: right;
+  font-weight: 700;
+  font-feature-settings: 'tnum';
+  color: var(--brand-fg);
+}
+
+.cockpit-funnel-track {
+  position: relative;
+  height: 0.5rem;
+  background: oklch(0.3 0.025 250);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.cockpit-funnel-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--cockpit-stage-color, var(--brand-accent-teal));
+  transition: width 0.3s ease;
+  box-shadow: 0 0 12px -4px var(--cockpit-stage-color, var(--brand-accent-teal));
+}
+
+/* Recent replies card */
+.cockpit-replies-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cockpit-replies-list li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid oklch(0.3 0.025 250 / 0.55);
+}
+
+.cockpit-replies-list li:last-child {
+  border-bottom: none;
+}
+
+.cockpit-reply-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+}
+
+.cockpit-reply-from {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--brand-fg);
+}
+
+.cockpit-reply-time {
+  color: var(--brand-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.cockpit-reply-subject {
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cockpit-reply-subject .badge {
+  margin-right: 0.4rem;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+}
+
 /* Amber info box */
 .followup-info-amber {
   display: flex;
