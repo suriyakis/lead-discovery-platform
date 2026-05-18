@@ -9,12 +9,12 @@
   --brand-card: oklch(0.215 0.025 250);
   --brand-card-elevated: oklch(0.235 0.025 250);
   --brand-input: oklch(0.26 0.025 250);
-  --brand-primary: oklch(0.72 0.14 220);
+  --brand-primary: oklch(0.74 0.17 225);
   --brand-primary-foreground: oklch(0.15 0.025 250);
-  --brand-accent-teal: oklch(0.72 0.12 180);
-  --brand-accent-amber: oklch(0.78 0.13 75);
-  --brand-status-approved: oklch(0.72 0.14 155);
-  --brand-status-rejected: oklch(0.65 0.16 25);
+  --brand-accent-teal: oklch(0.74 0.15 185);
+  --brand-accent-amber: oklch(0.8 0.16 75);
+  --brand-status-approved: oklch(0.74 0.17 150);
+  --brand-status-rejected: oklch(0.68 0.19 25);
 
   --brand-mark-gradient: linear-gradient(
     135deg,
@@ -2834,11 +2834,23 @@ button.primary-btn {
 }
 
 .kanban-col {
-  background: oklch(0.2 0.02 250 / 0.5);
+  background:
+    linear-gradient(
+      180deg,
+      oklch(0.235 0.025 250 / 0.85),
+      oklch(0.215 0.025 250 / 0.85)
+    );
   border: 1px solid var(--brand-border);
-  border-radius: var(--brand-radius);
-  padding: 0.75rem;
+  border-radius: 0.65rem;
+  padding: 0.85rem;
   min-height: 240px;
+}
+
+.kanban-col-head {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .kanban-col-head {
@@ -2874,6 +2886,119 @@ button.primary-btn {
 .kanban-list li p {
   margin: 0.125rem 0 0 0;
   font-size: 0.8rem;
+}
+
+/* ---- Pipeline funnel + stage badges ---- */
+.pipeline-funnel-card {
+  margin: 0 0 1.25rem;
+  padding: 0.95rem 1.1rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--brand-border);
+  background:
+    linear-gradient(
+      180deg,
+      oklch(0.235 0.025 250 / 0.95),
+      oklch(0.215 0.025 250 / 0.95)
+    );
+  box-shadow: var(--brand-shadow);
+}
+
+.pipeline-funnel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-muted);
+}
+
+.pipeline-funnel-rows {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.pipeline-funnel-row {
+  display: grid;
+  grid-template-columns: 7em 1fr 3em;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.2rem 0.3rem;
+  border-radius: 0.4rem;
+  text-decoration: none;
+  color: var(--brand-fg);
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+
+.pipeline-funnel-row:hover {
+  background: oklch(0.3 0.03 250 / 0.4);
+  transform: translateX(2px);
+}
+
+.pipeline-funnel-row-label {
+  font-size: 0.82rem;
+  color: var(--brand-muted);
+}
+
+.pipeline-funnel-row-count {
+  text-align: right;
+  font-weight: 700;
+  font-feature-settings: 'tnum';
+  color: var(--brand-fg);
+}
+
+.pipeline-funnel-track {
+  position: relative;
+  height: 0.65rem;
+  background: oklch(0.3 0.025 250);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.pipeline-funnel-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--pipeline-stage-color, var(--brand-accent-teal));
+  transition: width 0.3s ease;
+  box-shadow: 0 0 12px -3px var(--pipeline-stage-color, var(--brand-accent-teal));
+}
+
+/* Stage badges on lead rows. Replace the old light-pastel-on-dark
+ * inline backgrounds with proper tinted dark-theme chips. */
+.badge-stage-discovery {
+  background: oklch(0.45 0.13 240 / 0.28);
+  border: 1px solid oklch(0.68 0.16 240 / 0.55);
+  color: oklch(0.85 0.13 240);
+}
+.badge-stage-engagement {
+  background: oklch(0.45 0.13 195 / 0.28);
+  border: 1px solid oklch(0.68 0.15 195 / 0.55);
+  color: oklch(0.85 0.13 195);
+}
+.badge-stage-pitch {
+  background: oklch(0.45 0.15 145 / 0.28);
+  border: 1px solid oklch(0.68 0.17 145 / 0.55);
+  color: oklch(0.85 0.16 145);
+}
+.badge-stage-closing {
+  background: oklch(0.45 0.18 25 / 0.28);
+  border: 1px solid oklch(0.68 0.19 25 / 0.55);
+  color: oklch(0.85 0.17 25);
+}
+.badge-stage-discovery,
+.badge-stage-engagement,
+.badge-stage-pitch,
+.badge-stage-closing {
+  font-family: var(--brand-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
 }
 
 /* ---- Timeline ---- */

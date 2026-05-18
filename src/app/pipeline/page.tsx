@@ -216,13 +216,7 @@ export default async function PipelinePage({
                         <span className={badgeFor(lead.state)}>
                           {lead.state.replace(/_/g, ' ')}
                         </span>
-                        <span
-                          className="badge"
-                          style={{
-                            background: stageBg(lead.currentStage),
-                            color: 'oklch(0.2 0 0)',
-                          }}
-                        >
+                        <span className={stageBadgeClass(lead.currentStage)}>
                           {lead.currentStage ?? 'discovery'}
                         </span>
                         <span className="muted">
@@ -253,18 +247,18 @@ export default async function PipelinePage({
   );
 }
 
-function stageBg(stage: string | null | undefined): string {
+function stageBadgeClass(stage: string | null | undefined): string {
   switch (stage) {
     case 'discovery':
-      return 'oklch(0.85 0.13 240)';
+      return 'badge badge-stage-discovery';
     case 'engagement':
-      return 'oklch(0.85 0.12 195)';
+      return 'badge badge-stage-engagement';
     case 'pitch':
-      return 'oklch(0.85 0.14 145)';
+      return 'badge badge-stage-pitch';
     case 'closing':
-      return 'oklch(0.86 0 0)';
+      return 'badge badge-stage-closing';
     default:
-      return 'oklch(0.88 0 0)';
+      return 'badge';
   }
 }
 
@@ -292,19 +286,9 @@ function FunnelStrip({ counts }: { counts: Record<PipelineState, number> }) {
   ];
   const max = Math.max(1, ...stages.map((s) => counts[s.key]));
   return (
-    <section
-      style={{
-        margin: '0 0 1.25rem',
-        padding: '0.75rem 1rem',
-        borderRadius: '0.6rem',
-        background: 'oklch(0.98 0 0 / 0.6)',
-        border: '1px solid oklch(0.9 0 0)',
-      }}
-    >
-      <p className="muted" style={{ margin: '0 0 0.6rem', fontSize: '0.85em', fontWeight: 500 }}>
-        Pipeline funnel — click a bar to filter
-      </p>
-      <div style={{ display: 'grid', gap: '0.3rem' }}>
+    <section className="pipeline-funnel-card">
+      <p className="pipeline-funnel-head">Pipeline funnel — click a bar to filter</p>
+      <div className="pipeline-funnel-rows">
         {stages.map(({ key, label }) => {
           const n = counts[key];
           const pct = Math.round((n / max) * 100);
@@ -312,29 +296,19 @@ function FunnelStrip({ counts }: { counts: Record<PipelineState, number> }) {
             <Link
               key={key}
               href={`/pipeline?state=${key}`}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '7em 1fr 3em',
-                gap: '0.5rem',
-                alignItems: 'center',
-                padding: '0.15rem 0.25rem',
-                borderRadius: '0.3rem',
-                textDecoration: 'none',
-                color: 'inherit',
-              }}
+              className="pipeline-funnel-row"
             >
-              <span style={{ fontSize: '0.82em', opacity: 0.85 }}>{label}</span>
-              <div style={{ height: '0.65rem', background: 'oklch(0.93 0 0)', borderRadius: '0.3rem', overflow: 'hidden' }}>
+              <span className="pipeline-funnel-row-label">{label}</span>
+              <div className="pipeline-funnel-track">
                 <div
+                  className="pipeline-funnel-fill"
                   style={{
                     width: `${pct}%`,
-                    height: '100%',
-                    background: stateColor(key),
-                    borderRadius: '0.3rem',
+                    ['--pipeline-stage-color' as string]: stateColor(key),
                   }}
                 />
               </div>
-              <span style={{ fontSize: '0.9em', fontWeight: 600, textAlign: 'right' }}>{n}</span>
+              <span className="pipeline-funnel-row-count">{n}</span>
             </Link>
           );
         })}
@@ -344,12 +318,14 @@ function FunnelStrip({ counts }: { counts: Record<PipelineState, number> }) {
 }
 
 function stateColor(state: PipelineState): string {
-  if (state === 'relevant') return 'oklch(0.7 0.15 240)';
-  if (state === 'contacted') return 'oklch(0.72 0.13 200)';
-  if (state === 'replied') return 'oklch(0.74 0.13 175)';
-  if (state === 'contact_identified') return 'oklch(0.76 0.13 150)';
-  if (state === 'qualified') return 'oklch(0.78 0.16 130)';
-  if (state === 'handed_over') return 'oklch(0.78 0.18 110)';
-  if (state === 'synced_to_crm') return 'oklch(0.78 0.18 95)';
+  // Cold (blue) → warm (gold) gradient. Higher chroma so each
+  // stripe pops on the dark card backdrop.
+  if (state === 'relevant') return 'oklch(0.72 0.17 245)';
+  if (state === 'contacted') return 'oklch(0.74 0.15 210)';
+  if (state === 'replied') return 'oklch(0.76 0.15 185)';
+  if (state === 'contact_identified') return 'oklch(0.78 0.16 160)';
+  if (state === 'qualified') return 'oklch(0.78 0.18 140)';
+  if (state === 'handed_over') return 'oklch(0.8 0.19 120)';
+  if (state === 'synced_to_crm') return 'oklch(0.82 0.19 95)';
   return 'oklch(0.7 0 0)';
 }
