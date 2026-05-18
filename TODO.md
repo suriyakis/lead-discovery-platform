@@ -735,6 +735,133 @@ page for review. Cost: ~1–3¢ per autofill against the active AI provider.
 Static fetch only (SPAs return empty text); scanned-image PDFs need OCR
 (future).
 
+## Phase 50 — Vector storage as 5th provider capability + PDF/DOCX indexing
+
+- [x] **P50-01.** Schema migration `0035_groovy_unicorn.sql` — `vector_storage_provider` on `workspace_provider_settings`; `vector_storage_quota_mb_per_product` (int default 20) on `workspaces`; new `product_vector_stores` table; `external_provider_id` / `external_file_id` / `external_status` / `external_error` / `external_indexed_at` columns on `knowledge_sources`.
+- [x] **P50-02.** `IVectorStorageProvider` interface + `MockVectorStorageProvider`. Phase 45 cascade extended — `resolveActiveProvider` accepts `'vector_storage'`, `ALLOWED_VECTOR_STORAGE_PROVIDERS = ['mock', 'pgvector', 'openai']`.
+- [x] **P50-03.** `PgvectorVectorStorageProvider` wraps the self-hosted RAG path. No external store id.
+- [x] **P50-04.** `OpenAIVectorStorageProvider` — Wandizz pattern (per-product OpenAI Vector Store, Files API + `file_search` tool). Enforces per-product byte cap. BYOK key resolution. Idempotent detach. Audit-logged.
+- [x] **P50-06.** `/settings/integrations` UI: Vector Storage row in Active providers grid, per-product cap form, test-connection button.
+- [x] **P50-07.** `attachKnowledgeSourceViaProvider` auto-fires after `createKnowledgeSource`; status badge surfaces on `/knowledge/[id]` and `/products/[id]`.
+- [x] **P50 PDF/DOCX.** `rag.ts:extractDocumentText` now handles `application/pdf` via `pdf-parse` v1 (inner-module path) and DOCX via `mammoth`. Scanned PDFs throw a clean "no extractable text — switch to openai for OCR" rather than a cryptic invariant. New `mammoth` dep.
+- [x] **P50-09 (later).** `buildProductKnowledgeBlock` routed through `getVectorStorageProviderForCtx` so both rails are symmetric on read. `suggestReply` intentionally stays on `retrieve()` directly (workspace-wide + lessons fusion, no per-product anchor).
+- [x] **Operator decision (2026-05-17):** stick with `pgvector` (cheaper, self-hosted). The OpenAI rail stays as a dormant option. **717 → 760 total tests across the phase.**
+
+**Phase 50 complete.**
+
+To use: `/settings/integrations` → Active providers → pick `pgvector` for Vector Storage (default). Upload PDFs / DOCX as documents; wrap in a `knowledge_source`; the auto-attach pipeline chunks + embeds via the active Embedding provider (OpenAI `text-embedding-3-small` by default). Engagement + pitch drafts retrieve top-k chunks from this store at compose time.
+
+## Inline fix (2026-05-14) — server actions bodySizeLimit 1 MB → 32 MB
+
+- [x] **fix(uploads).** Next.js 15 server actions default to a 1 MB body cap; PDF datasheets >1 MB hit it before our code ran. `next.config.ts` bumps `experimental.serverActions.bodySizeLimit` to 32 MB. Meaningful gating remains the per-product cap.
+- [x] Companion nginx fix on agregat: `client_max_body_size 32m;` on the `discover.nulife.pl` vhost (otherwise 413 stops requests before Next sees them).
+
+## Inline fix (2026-05-14) — autoCloseNegative gate + P46 test fix
+
+- [x] **fix(outreach).** The Phase B/C/D/E staged-conversation engine added a second close path in `outreach-reply-handler` that ran unconditionally on `close_and_suppress`, ignoring the workspace `autoCloseNegative` flag. Unsubscribe + bounce stay defensive; `decline` (negative reply) now honors the workspace toggle.
+- [x] **fix(test).** P46 research-context test predated the Phase A discovery composer (which intentionally skips research). Test advances the lead to `engagement` so it exercises the AI path that consumes `researchContext`.
+
+## Phase 51 — IMAP backoff + reactivate + adaptive polling (fail2ban-safe)
+
+- [x] **P51-01.** Schema migration `0036_early_onslaught.sql`: `imap_consecutive_failures` (int default 0), `imap_next_sync_after` (nullable timestamp), `imap_empty_syncs` (int default 0) on `mailboxes`.
+- [x] **P51-02.** Pure helpers in `src/lib/services/imap-backoff.ts`. `classifyImapError` distinguishes auth (AUTHENTICATIONFAILED / Invalid credentials / LOGIN_DISABLED / Account locked) from transient. `computeBackoffMs` exponential 2 → 4 → 8 → 16 → 32 → 60 min cap. `nextSyncAfterEmpty` stretches quiet mailboxes to 15-min cadence after 5 empty syncs.
+- [x] **P51-03.** `handleImapTick` consumes the new columns: WHERE clause skips mailboxes whose cooldown gate hasn't elapsed; auth errors flip `status='failing'` (stops ticking until manual reactivation); transient errors increment the failure counter + push `imap_next_sync_after` by `computeBackoffMs(count)`.
+- [x] **P51-04.** `reactivateMailbox` service + UI on `/mailbox/[id]`: red banner + Reactivate button surface when `status='failing'`. Resets all backoff state.
+- [x] **P51-05.** 16 tests in `src/tests/imap-backoff.test.ts`. **733 / 733 total.**
+
+**Phase 51 complete.**
+
+Eliminates the prior failure mode where one mailbox with a stale password produced 30 failed IMAP logins/hour, every hour. Now: one rejection → `failing` status → operator-visible banner + Reactivate.
+
+## Inline fix (2026-05-14/15) — mailbox SSL/STARTTLS reliability
+
+- [x] **fix(mailbox).** `/mailbox/[id]/edit` IMAP SSL/TLS checkbox now actually saves when unchecked. The previous condition (`!== 'off'`) treated `null` as truthy and always wrote `imap_secure=true`. SMTP toggle was correct (`=== 'on'`); this brings IMAP into parity.
+- [x] **fix(mail).** Port-aware SSL/STARTTLS auto-correct (mirror Wandizz): SMTP 465 → secure=true, 587/25 → secure=false; IMAP 993 → secure=true, 143 → secure=false. Non-standard ports keep operator choice. Plus `tls: { rejectUnauthorized: false }` for self-signed certs common on shared hosts.
+
+## Phase 52 — Test email + inbox/outreach thread split
+
+- [x] **P52-01.** `sendTestEmail(ctx, input)` in `mail.ts` — same SMTP path as `sendMessage` but bypasses suppression / bounce / contact resolution, skips unsub footer + tracking pixel, does NOT persist a `mail_messages` row. Tags `X-LDP-Test: true`. Audit `mail.send_test`. `/mailbox/[id]/test` page with To/Subject/Body form + signature picker.
+- [x] **P52-02.** `listThreads` gains a `kind` filter (`outreach` / `inbox` / `all`) backed by an EXISTS over `outreach_thread_state`. `countThreadsByKind` returns the partition counts for tab badges.
+- [x] **P52-03.** `/mailbox/[id]` Threads section becomes three tabs (Outreach / Inbox / All) with counts. Empty-state copy is kind-aware. Outreach = threads with an `outreach_thread_state` row; Inbox = everything else.
+- [x] **P52-04.** 7 new tests. **733 → 740 total.**
+
+**Phase 52 complete.**
+
+Test sends never clutter the threads view; operator's own mail server keeps the sent copy. Inbox tab catches inbound mail not routed to outreach.
+
+## Phase 53 — Signature logo URL + live HTML preview
+
+- [x] **P53-01.** Schema migration `0037_steady_shocker.sql`: `logo_url` text column on `signatures` (separate from existing `logo_storage_key` — one is uploaded files, the other is externally hosted URLs).
+- [x] **P53-02.** `validateLogoUrl` service helper — only http(s), up to 2 KB, defensive against `javascript:` URLs slipping into rendered `<img src=…>`.
+- [x] **P53-03.** Renderer: row-level `logoUrl` wins over the explicit `logoUrl` arg (which `mail.send` pre-resolves from `logoStorageKey`). Logo cell drops out when both blank.
+- [x] **P53-04.** UI: SignatureForm gets a Logo URL input with HTTPS hint; existing rows get a separate Logo URL details block + a tiny `logo URL` badge on the header.
+- [x] **P53-05.** New `SignatureHtmlEditor` client component — replaces the bare textarea with a side-by-side editor + live HTML preview.
+- [x] **P53-06.** 10 new tests (4 service-layer for `logoUrl` validation; 6 pure renderer for precedence + XSS escape + bodyHtml override). **740 → 750 total.**
+
+**Phase 53 complete.**
+
+## Phase 54 — AI re-design for signatures
+
+- [x] **P54-01.** `redesignSignatureHtml(ctx, input)` service. Email-client-safe system prompt (inline CSS only, table-based, max 600 px, no `<script>`/`<iframe>`). Zod-validated JSON `{ bodyHtml }` response. `sanitizeSignatureHtml` strips `<script>`, `<iframe>`, `on*` event handlers, `javascript:` URLs. Records `usage_log` kind `ai.signature_redesign` + `audit_log` `signature.redesign`.
+- [x] **P54-02.** `POST /api/signatures/redesign` route handler — auth-gated, Zod-validated input.
+- [x] **P54-03.** `AISignatureRedesigner` client component. `useTransition` for pending state. Mounted in `SignatureForm` (new) and `SignatureHtmlEditor` (edit).
+- [x] **P54-04.** 5 tests. **750 → 755 total.**
+
+**Phase 54 complete.**
+
+## Phase 55 — Better signature redesigns (style presets + few-shot + smarter model)
+
+- [x] **P55-01.** Style preset chips in `AISignatureRedesigner` — Minimal / Branded / Two-column / Compact. Each chip prepends a canned style block to the AI prompt. Toggleable.
+- [x] **P55-02.** Rewritten system prompt with two worked examples (minimal single-column with inline title; branded two-column with logo + muted sub-line). Explicit 4-option title-placement guidance + visual hierarchy rules.
+- [x] **P55-03.** `pickRedesignModel` upgrade: Anthropic → keep Opus/Sonnet else `claude-sonnet-4-6`; OpenAI → keep gpt-5/4o/o3/mini else `gpt-5`. Temperature 0.6 → 0.85 for layout variation across regenerations.
+- [x] **Inline fix (2026-05-16).** AI redesign no longer outputs `b7` instead of `·`. System prompt forbids hex escapes / HTML entities for separators; temperature dropped 0.85 → 0.7; `sanitizeSignatureHtml` rewrites orphaned `b7` / `B7` / `0xB7` / truncated `&#xB7` to literal `·`. **755 → 757 total.**
+
+**Phase 55 complete.**
+
+## Phase 56 — Signatures workspace overhaul (Wandizz-style two-column)
+
+- [x] **P56-01.** `pickRedesignModel` always returns top tier — `claude-opus-4-7` / `gpt-5` regardless of workspace default. Operator decision: signatures designed once per operator; one Opus chat completion is rounding error.
+- [x] **P56-02.** New `SignaturesWorkspace` client component — two-column layout (list left, preview + raw HTML right). `SignatureForm` extended to support edit mode via new `initial` prop.
+- [x] **P56-03.** Per-signature send-test API + dialog: `POST /api/signatures/send-test` wraps `sendTestEmail`. `SendTestDialog` opens from an envelope icon top-right of the Live Preview card.
+- [x] **P56-04.** Anti-fabrication: Opus 4.7 / gpt-5 were substituting "real" company contacts from training data (Ecobeton UK → Francesco Nardese in prod). New `DATA INTEGRITY RULES` section in the system prompt + `detectFabrication` post-pass that throws if the output contains an email address not in the operator's input. 3 new tests.
+- [x] **Inline fix.** Card click reliability — `<li onClick>` was unreliable with nested forms. Card body now an explicit `<button>` spanning the row.
+
+**Phase 56 complete.** **757 → 760 total tests.**
+
+## Phase 57 — Communication workspace (list + filters + detail + reply composer)
+
+- [x] **P57-01.** `src/lib/services/communication.ts` — `listCommunication(ctx, filters)` joins `mail_threads` + `outreach_thread_state` + `qualified_leads` + `product_profiles` in one query; enriches with derived flags via correlated subqueries. Derived status: `scheduled > error > replied > sent > pending`. Filters: status, productId, search (subject / contact / email / product, case-insensitive), dateFrom / dateTo. `countCommunicationByStatus` for tab badges.
+- [x] **P57-02.** `/communication` landing page — sidebar Communication entry under Outreach. Status tabs (Total / Sent / Replied / Error / Scheduled) + filter row (search, product, date range).
+- [x] **P57-03.** `/communication/[threadId]` three-column detail — left: lead context (contact, product, notes); middle: state (pipeline state, outreach stage, last reply intent, scheduled sends, pipeline-events history); right: conversation + inline reply composer.
+- [x] **P57-04.** `mail.sendMessage` accepts `signatureId?: bigint | null`. `CommunicationReply` client component picks signature inline ("Default: {name}" badge). `POST /api/communication/reply` wraps `sendMessage`.
+- [x] **P57-05.** 9 cases in `src/tests/communication.test.ts`. **760 → 769 total.**
+- [x] **Inline fix.** Breadcrumb alignment (Lucide chevron was floating above text because `.lucide` class had no CSS rule defined — added global rule). Reply box → wider/taller (rows=14, min-height 22ch). Right column 1.6× width. Raw HTML pane uses themed `.signature-preview-text` class.
+
+**Phase 57 complete.**
+
+## Phase 58 — Automatic follow-ups (3 polite pings, weekly, cancel-on-reply)
+
+- [x] **P58-01.** Schema migration `0038_keen_korvac.sql` — new `outreach_follow_ups` table (workspace, lead, thread, stepNumber, totalSteps, scheduledFor, status, skipReason, queueEntryId, draftId, sentMessageId, processedAt). Statuses: pending / sent / skipped / failed. Skip reasons: replied / bounce / manual_cancel / product_archived / lead_closed. Unique index on (workspace, thread, step). Plus `workspaces` gains `followUpEnabled` / `followUpIntervalDays` (default 7) / `followUpMaxSteps` (default 3).
+- [x] **P58-02.** `src/lib/services/follow-up.ts` — `scheduleFollowUps`, `cancelFollowUps`, `processDueFollowUps` (worker entry), `listFollowUps`, `countFollowUpsByStatus`. Per-step re-verification on processOne (no inbound on thread, lead not closed, product still active).
+- [x] **P58-03.** `composeFollowUpDraft` in outreach-engine. System prompt locks tone (≤60 words, polite, non-intrusive, no re-pitch, no urgency tactics). Step N of M in the prompt. Final step gets a hard-coded "this is the last email" instruction.
+- [x] **P58-04.** Triggers: `mail.sendMessage` success on first outbound + thread linked to a qualified lead → schedule. `reply-classifier` inbound → `cancelFollowUps('replied')`.
+- [x] **P58-05.** New cron tick `outreach.follow_up.tick` (every 1 h) in `repeatables.ts`. Per-workspace fan-out.
+- [x] **P58-06.** UI: `CommunicationTabs` server component (Conversations / Follow-ups). New `/communication/follow-ups` page — schedule list with status chips, step badge (1/3, 2/3, 3/3), `final` badge on step N, Cancel button (pending rows only).
+- [x] **P58-07.** 8 tests in `src/tests/follow-up.test.ts`. **769 → 777 total.**
+
+**Phase 58 complete.**
+
+## Phase 59 — Full follow-up configuration + approval gate
+
+- [x] **P59-01.** Schema migration `0039_omniscient_living_tribunal.sql` — `workspaces.follow_up_require_approval` (bool default false) + `follow_up_step_configs` (jsonb, nullable; array of `{daysAfterPrev, customInstructions}`). `outreach_follow_ups` gains `staged_subject` + `staged_body` + new status value `awaiting_approval`.
+- [x] **P59-02.** Service: `loadSettings` reads jsonb when set, falls back to simple interval × maxSteps. `updateFollowUpConfig` admin-gated writer (validates step count 1–10, daysAfterPrev ≥ 1). `scheduleFollowUps` uses per-step `daysAfterPrev` cumulatively. `composeFollowUpDraft` accepts `customInstructions`. `processOne` branches on `requireApproval`: when on, persists subject + body to staged_*, flips status to `awaiting_approval`. New `approveFollowUp(ctx, id, override?)` + `rejectFollowUp(ctx, id)` helpers.
+- [x] **P59-03.** `/settings/outreach` (existing page, extended) — Follow-up configuration form. Enable + Require-approval toggles. Steps table with editable (daysAfterPrev, customInstructions) inputs + empty bottom row to add (clearing days drops the row on save).
+- [x] **P59-04.** `/communication/follow-ups` gains an `Awaiting approval` status tab. Rows in that state expand to an inline review form (editable Subject + Body textareas pre-filled with staged AI content + Approve & send / Reject buttons).
+- [x] **P59-05.** 4 new tests. **777 → 781 total.**
+- [x] **Inline fix (discoverability).** Outreach config link moved from collapsed Administration sidebar section into the always-open Outreach section. Configure follow-ups CTA added to the Follow-ups tab header.
+
+**Phase 59 complete.**
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
