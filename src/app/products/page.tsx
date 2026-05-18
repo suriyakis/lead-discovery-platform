@@ -11,7 +11,7 @@ import {
 import { canAdminWorkspace } from '@/lib/services/context';
 import {
   ProductProfileServiceError,
-  countProductProfileDependencies,
+  batchCountProductProfileDependencies,
   deleteProductProfile,
   listProductProfiles,
 } from '@/lib/services/product-profile';
@@ -46,21 +46,26 @@ export default async function ProductsPage({
     throw err;
   }
 
-  // Pull dependency counts in parallel so each row knows whether
-  // delete is safe (no activity) or blocked (real work would be lost).
+  // Pull dependency counts in one batched round-trip rather than N
+  // per-row queries — three GROUP BY scans regardless of how many
+  // products this workspace has.
   const isAdmin = canAdminWorkspace(ctx);
-  const deletableIds = isAdmin
-    ? new Set(
-        (await Promise.all(
-          profiles.map(async (p) => {
-            const d = await countProductProfileDependencies(ctx, p.id);
-            return d.qualifications + d.outreachDrafts + d.qualifiedLeads === 0
-              ? p.id.toString()
-              : null;
-          }),
-        )).filter((x): x is string => x !== null),
-      )
-    : new Set<string>();
+  let deletableIds = new Set<string>();
+  if (isAdmin) {
+    const deps = await batchCountProductProfileDependencies(
+      ctx,
+      profiles.map((p) => p.id),
+    );
+    for (const p of profiles) {
+      const d = deps.get(p.id.toString());
+      if (
+        d &&
+        d.qualifications + d.outreachDrafts + d.qualifiedLeads === 0
+      ) {
+        deletableIds.add(p.id.toString());
+      }
+    }
+  }
 
   async function destroy(formData: FormData): Promise<void> {
     'use server';

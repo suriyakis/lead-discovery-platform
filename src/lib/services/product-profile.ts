@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { productProfiles, type NewProductProfile, type ProductProfile } from '@/lib/db/schema/products';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
@@ -267,25 +267,99 @@ export async function countProductProfileDependencies(
   ctx: WorkspaceContext,
   id: bigint,
 ): Promise<ProductProfileDependencyCounts> {
-  const [q, o, l] = await Promise.all([
+  const all = await batchCountProductProfileDependencies(ctx, [id]);
+  return (
+    all.get(id.toString()) ?? {
+      qualifications: 0,
+      outreachDrafts: 0,
+      qualifiedLeads: 0,
+    }
+  );
+}
+
+/**
+ * Batched dependency counts — one round-trip per dependency table
+ * regardless of how many product ids you ask about. Returns a map
+ * keyed by id.toString() so callers can look up by stringified id
+ * without re-coercing bigints. Empty buckets default to all-zeros so
+ * the consumer doesn't have to guard against undefined.
+ *
+ * Used by list pages (e.g. /products) which would otherwise issue
+ * 3 * N queries. Three GROUP BY queries instead.
+ */
+export async function batchCountProductProfileDependencies(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  ids: ReadonlyArray<bigint>,
+): Promise<Map<string, ProductProfileDependencyCounts>> {
+  const out = new Map<string, ProductProfileDependencyCounts>();
+  if (ids.length === 0) return out;
+  for (const id of ids) {
+    out.set(id.toString(), {
+      qualifications: 0,
+      outreachDrafts: 0,
+      qualifiedLeads: 0,
+    });
+  }
+  const idList = ids as bigint[];
+
+  const [qRows, oRows, lRows] = await Promise.all([
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({
+        pid: qualifications.productProfileId,
+        n: sql<number>`count(*)::int`,
+      })
       .from(qualifications)
-      .where(eq(qualifications.productProfileId, id)),
+      .where(
+        and(
+          eq(qualifications.workspaceId, ctx.workspaceId),
+          inArray(qualifications.productProfileId, idList),
+        ),
+      )
+      .groupBy(qualifications.productProfileId),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({
+        pid: outreachDrafts.productProfileId,
+        n: sql<number>`count(*)::int`,
+      })
       .from(outreachDrafts)
-      .where(eq(outreachDrafts.productProfileId, id)),
+      .where(
+        and(
+          eq(outreachDrafts.workspaceId, ctx.workspaceId),
+          inArray(outreachDrafts.productProfileId, idList),
+        ),
+      )
+      .groupBy(outreachDrafts.productProfileId),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({
+        pid: qualifiedLeads.productProfileId,
+        n: sql<number>`count(*)::int`,
+      })
       .from(qualifiedLeads)
-      .where(eq(qualifiedLeads.productProfileId, id)),
+      .where(
+        and(
+          eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+          inArray(qualifiedLeads.productProfileId, idList),
+        ),
+      )
+      .groupBy(qualifiedLeads.productProfileId),
   ]);
-  return {
-    qualifications: q[0]?.n ?? 0,
-    outreachDrafts: o[0]?.n ?? 0,
-    qualifiedLeads: l[0]?.n ?? 0,
-  };
+
+  for (const r of qRows) {
+    const key = r.pid.toString();
+    const cur = out.get(key);
+    if (cur) cur.qualifications = r.n;
+  }
+  for (const r of oRows) {
+    const key = r.pid.toString();
+    const cur = out.get(key);
+    if (cur) cur.outreachDrafts = r.n;
+  }
+  for (const r of lRows) {
+    const key = r.pid.toString();
+    const cur = out.get(key);
+    if (cur) cur.qualifiedLeads = r.n;
+  }
+  return out;
 }
 
 /**

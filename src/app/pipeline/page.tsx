@@ -13,7 +13,7 @@ import {
   listLeads,
   type PipelineLeadRow,
 } from '@/lib/services/pipeline';
-import { hintsForLead, type Hint } from '@/lib/services/hints';
+import { hintsForLeads, type Hint } from '@/lib/services/hints';
 import { HintBadgeList } from '@/components/HintBadge';
 import { EmptyState } from '@/components/EmptyState';
 import type { PipelineState } from '@/lib/db/schema/pipeline';
@@ -86,14 +86,12 @@ export default async function PipelinePage({
     if (view === 'kanban' && stateKey === 'all') {
       leads = leads.filter((r) => r.lead.state !== 'closed');
     }
-    // Fetch hints for the visible leads in parallel.
-    const hintEntries = await Promise.all(
-      leads.map(async ({ lead }) => {
-        const hints = await hintsForLead(ctx, lead.id);
-        return [lead.id.toString(), hints] as const;
-      }),
+    // Batched: one pass for top qualification per product, one pass
+    // for pending drafts — 2 queries total regardless of lead count.
+    hintsByLead = await hintsForLeads(
+      ctx,
+      leads.map((r) => r.lead),
     );
-    hintsByLead = new Map(hintEntries);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {

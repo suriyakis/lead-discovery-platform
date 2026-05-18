@@ -12,7 +12,7 @@ import {
   listOutreachDrafts,
   type OutreachDraftRow,
 } from '@/lib/services/outreach';
-import { hintsForDraft, type Hint } from '@/lib/services/hints';
+import { hintsForDrafts, type Hint } from '@/lib/services/hints';
 import { HintBadgeList } from '@/components/HintBadge';
 import { EmptyState } from '@/components/EmptyState';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
@@ -52,13 +52,11 @@ export default async function DraftsPage({
       productProfileId: productFilter ?? undefined,
       limit: 200,
     });
-    const hintEntries = await Promise.all(
-      drafts.map(async ({ draft }) => {
-        const h = await hintsForDraft(ctx, draft.id);
-        return [draft.id.toString(), h] as const;
-      }),
+    // Batched: one outreach_queue scan instead of one per draft.
+    hintsByDraft = await hintsForDrafts(
+      ctx,
+      drafts.map((r) => r.draft),
     );
-    hintsByDraft = new Map(hintEntries);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {

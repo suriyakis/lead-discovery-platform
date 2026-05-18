@@ -5,11 +5,15 @@
 // derives them from current state. Pages call hintsForLead etc. and render
 // the result via <HintBadge> / <HintBadgeList>.
 
-import { and, count, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { qualifiedLeads, type QualifiedLead } from '@/lib/db/schema/pipeline';
-import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
+import {
+  outreachDrafts,
+  outreachQueue,
+  type OutreachDraft,
+} from '@/lib/db/schema/outreach';
 import { mailMessages, mailThreads, type MailThread } from '@/lib/db/schema/mailing';
 import type { WorkspaceContext } from './context';
 
@@ -95,6 +99,113 @@ export async function hintsForLead(
     });
   }
 
+  return out;
+}
+
+/**
+ * Batched variant of hintsForLead. Replaces N round-trips with 2:
+ *   1. Top qualification per (productProfileId) — DISTINCT ON in pg
+ *   2. All pending drafts matching the (reviewItemId, productProfileId)
+ *      pairs for the leads in question
+ * Returns Map<leadId.toString, Hint[]>. Empty list if a lead has no
+ * hints (so the caller doesn't have to default).
+ */
+export async function hintsForLeads(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  leads: ReadonlyArray<QualifiedLead>,
+): Promise<Map<string, Hint[]>> {
+  const out = new Map<string, Hint[]>();
+  if (leads.length === 0) return out;
+  for (const l of leads) out.set(l.id.toString(), []);
+
+  const productIds = Array.from(new Set(leads.map((l) => l.productProfileId)));
+  const reviewIds = Array.from(new Set(leads.map((l) => l.reviewItemId)));
+
+  // 1) Top qualification per product (DISTINCT ON product_profile_id
+  //    ORDER BY product_profile_id, relevance_score DESC). One scan
+  //    instead of one query per lead.
+  const topQualRows = await db.execute(sql`
+    SELECT DISTINCT ON (product_profile_id)
+      product_profile_id,
+      is_relevant,
+      relevance_score,
+      qualification_reason,
+      rejection_reason
+    FROM qualifications
+    WHERE workspace_id = ${ctx.workspaceId}
+      AND product_profile_id = ANY(${productIds})
+    ORDER BY product_profile_id, relevance_score DESC
+  `);
+  const topByProduct = new Map<
+    string,
+    {
+      isRelevant: boolean;
+      relevanceScore: number;
+      qualificationReason: string | null;
+      rejectionReason: string | null;
+    }
+  >();
+  for (const row of topQualRows as unknown as Array<Record<string, unknown>>) {
+    const pid = (row.product_profile_id as bigint | number).toString();
+    topByProduct.set(pid, {
+      isRelevant: row.is_relevant as boolean,
+      relevanceScore: row.relevance_score as number,
+      qualificationReason: (row.qualification_reason as string | null) ?? null,
+      rejectionReason: (row.rejection_reason as string | null) ?? null,
+    });
+  }
+
+  // 2) Pending drafts. One query for all (reviewItemId, productProfileId)
+  //    pairs in the lead set, then we match in JS — the alternative is
+  //    a row-constructor IN which Drizzle doesn't expose cleanly.
+  const draftRows =
+    reviewIds.length > 0 && productIds.length > 0
+      ? await db
+          .select({
+            id: outreachDrafts.id,
+            reviewItemId: outreachDrafts.reviewItemId,
+            productProfileId: outreachDrafts.productProfileId,
+          })
+          .from(outreachDrafts)
+          .where(
+            and(
+              eq(outreachDrafts.workspaceId, ctx.workspaceId),
+              inArray(outreachDrafts.reviewItemId, reviewIds),
+              inArray(outreachDrafts.productProfileId, productIds),
+              eq(outreachDrafts.status, 'draft'),
+            ),
+          )
+      : [];
+  const draftByPair = new Map<string, bigint>();
+  for (const d of draftRows) {
+    draftByPair.set(`${d.reviewItemId}:${d.productProfileId}`, d.id);
+  }
+
+  for (const lead of leads) {
+    const hints: Hint[] = [];
+    const top = topByProduct.get(lead.productProfileId.toString());
+    if (top) {
+      hints.push({
+        type: 'product_fit',
+        severity: top.isRelevant ? 'success' : 'warning',
+        text: `score ${top.relevanceScore}`,
+        detail: top.qualificationReason ?? top.rejectionReason ?? undefined,
+        icon: top.isRelevant ? 'check' : 'alert-triangle',
+      });
+    }
+    hints.push(...nextActionHintsForLead(lead));
+    const draftId = draftByPair.get(`${lead.reviewItemId}:${lead.productProfileId}`);
+    if (draftId !== undefined) {
+      hints.push({
+        type: 'pending_approval',
+        severity: 'action',
+        text: 'draft awaits approval',
+        icon: 'mail',
+        href: `/drafts/${draftId}`,
+      });
+    }
+    out.set(lead.id.toString(), hints);
+  }
   return out;
 }
 
@@ -271,6 +382,97 @@ export async function hintsForDraft(
     }
   }
 
+  return out;
+}
+
+/**
+ * Batched variant of hintsForDraft. One outreach_queue scan picks the
+ * most-recent queue row per draft via DISTINCT ON, then we compose the
+ * hints in JS from the already-fetched draft rows. The caller passes
+ * the OutreachDraft objects (already in scope on /drafts so no extra
+ * SELECT) — the function does NOT re-fetch drafts.
+ */
+export async function hintsForDrafts(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  drafts: ReadonlyArray<OutreachDraft>,
+): Promise<Map<string, Hint[]>> {
+  const out = new Map<string, Hint[]>();
+  if (drafts.length === 0) return out;
+  for (const d of drafts) out.set(d.id.toString(), []);
+
+  const draftIds = drafts.map((d) => d.id);
+  // Most-recent queue row per draft, single scan.
+  const queueRows = await db.execute(sql`
+    SELECT DISTINCT ON (draft_id)
+      draft_id,
+      status,
+      scheduled_send_at,
+      last_error
+    FROM outreach_queue
+    WHERE workspace_id = ${ctx.workspaceId}
+      AND draft_id = ANY(${draftIds})
+    ORDER BY draft_id, created_at DESC
+  `);
+  const queueByDraft = new Map<
+    string,
+    {
+      status: string;
+      scheduledSendAt: Date;
+      lastError: string | null;
+    }
+  >();
+  for (const row of queueRows as unknown as Array<Record<string, unknown>>) {
+    const did = (row.draft_id as bigint | number).toString();
+    queueByDraft.set(did, {
+      status: row.status as string,
+      scheduledSendAt: row.scheduled_send_at as Date,
+      lastError: (row.last_error as string | null) ?? null,
+    });
+  }
+
+  for (const draft of drafts) {
+    const hints: Hint[] = [];
+    if (draft.method === 'ai' || draft.method === 'hybrid') {
+      hints.push({
+        type: 'ai_generated',
+        severity: 'info',
+        text: 'AI draft — review carefully',
+        icon: 'sparkles',
+      });
+    }
+    if (draft.forbiddenStripped.length > 0) {
+      hints.push({
+        type: 'forbidden_stripped',
+        severity: 'warning',
+        text: `stripped ${draft.forbiddenStripped.length} forbidden phrase(s)`,
+        detail: draft.forbiddenStripped.join(', '),
+        icon: 'shield',
+      });
+    }
+    const q = queueByDraft.get(draft.id.toString());
+    if (q) {
+      if (q.status === 'queued') {
+        hints.push({
+          type: 'send_scheduled',
+          severity: 'info',
+          text: `scheduled ${q.scheduledSendAt.toLocaleString()}`,
+          icon: 'calendar',
+          href: `/mailbox/queue?status=queued`,
+        });
+      } else if (q.status === 'sent') {
+        hints.push({ type: 'sent', severity: 'success', text: 'sent', icon: 'check' });
+      } else if (q.status === 'failed') {
+        hints.push({
+          type: 'send_failed',
+          severity: 'warning',
+          text: 'send failed',
+          detail: q.lastError ?? undefined,
+          icon: 'alert-octagon',
+        });
+      }
+    }
+    out.set(draft.id.toString(), hints);
+  }
   return out;
 }
 
