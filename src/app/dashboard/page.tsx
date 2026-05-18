@@ -307,14 +307,14 @@ function CockpitGrid({
           icon={ListChecks}
           label="Pending review"
           value={signals.reviewPending}
-          href="/review"
+          href="/inbox?tab=review"
           tone={signals.reviewPending > 0 ? 'amber' : 'neutral'}
         />
         <SignalCard
           icon={PencilLine}
           label="Drafts awaiting approval"
           value={signals.drafts.total}
-          href="/drafts"
+          href="/inbox?tab=drafts"
           tone={signals.drafts.total > 0 ? 'amber' : 'neutral'}
           sub={`${signals.drafts.discovery} disc · ${signals.drafts.engagement} eng · ${signals.drafts.pitch} pitch · ${signals.drafts.closing} close`}
         />
@@ -322,7 +322,7 @@ function CockpitGrid({
           icon={MessageSquare}
           label="Inbound replies (7d)"
           value={signals.replies7d}
-          href="/mailbox"
+          href="/inbox?tab=replies"
           tone={signals.replies7d > 0 ? 'teal' : 'neutral'}
         />
         <SignalCard

@@ -16,6 +16,7 @@ import { usePathname } from 'next/navigation';
 import {
   AlertOctagon,
   AtSign,
+  Bell,
   BookOpen,
   CreditCard,
   Crown,
@@ -141,6 +142,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
 ];
 
 const PINNED: ReadonlyArray<NavItem> = [
+  { href: '/inbox', label: 'Inbox', icon: Bell, match: ['/inbox'] },
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
 ];
 
