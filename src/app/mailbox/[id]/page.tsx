@@ -18,7 +18,12 @@ import {
   reactivateMailbox,
   testMailboxConnection,
 } from '@/lib/services/mailbox';
-import { countThreadsByKind, listThreads, syncInbound } from '@/lib/services/mail';
+import {
+  countMessagesByFolder,
+  listMessages,
+  syncInbound,
+} from '@/lib/services/mail';
+import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { getOrCreateMailboxSendingLimits } from '@/lib/services/sending-policy';
 import {
   SUPPORTED_HOLIDAY_COUNTRIES,
@@ -31,7 +36,14 @@ export default async function MailboxDetail({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ message?: string; error?: string; view?: string }>;
+  searchParams: Promise<{
+    message?: string;
+    error?: string;
+    /** legacy alias kept so old bookmarks (`?view=outreach`) still load */
+    view?: string;
+    folder?: string;
+    q?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -61,14 +73,24 @@ export default async function MailboxDetail({
     throw err;
   }
 
-  // Phase 52: split thread list into Outreach (linked to a qualified
-  // lead) vs Inbox (everything else). Default to Outreach since that's
-  // the operator's work surface; Inbox is the catch-all for the rest.
-  const activeView: 'outreach' | 'inbox' | 'all' =
-    sp.view === 'inbox' || sp.view === 'all' ? sp.view : 'outreach';
-  const [threads, threadCounts] = await Promise.all([
-    listThreads(ctx, { mailboxId: id, limit: 100, kind: activeView }),
-    countThreadsByKind(ctx, id),
+  // P61: six-folder navigation (Inbox / Sent / Queued / Errors / Spam /
+  // Trash) derived from message-level state. Default Inbox so the
+  // operator lands on the work surface they expect from any mail client.
+  const folderParam = sp.folder ?? '';
+  const activeFolder: MailFolder = (
+    MAIL_FOLDERS as readonly string[]
+  ).includes(folderParam)
+    ? (folderParam as MailFolder)
+    : 'inbox';
+  const search = sp.q?.trim() ?? '';
+  const [messageRows, folderCounts] = await Promise.all([
+    listMessages(ctx, {
+      mailboxId: id,
+      folder: activeFolder,
+      limit: 100,
+      search: search || undefined,
+    }),
+    countMessagesByFolder(ctx, id),
   ]);
 
   async function runSync() {
@@ -397,59 +419,94 @@ export default async function MailboxDetail({
         ) : null}
 
         <section>
-          <h2>Conversations</h2>
+          <h2>Messages</h2>
           <p className="muted small">
-            <strong>Outreach</strong> = threads linked to a qualified lead
-            (drafts have been generated, the staged-conversation engine is
-            handling replies).{' '}
-            <strong>Inbox</strong> = inbound mail that hasn&apos;t been
-            routed to outreach yet — newsletters, replies on the wrong
-            address, anything you haven&apos;t turned into a lead.
+            Folders are derived from message state — a message can move
+            between them as it ages (queued → sent → trashed, for
+            example). The Errors folder surfaces failed and bounced sends.
+            Trash is auto-purged after the workspace retention window.
           </p>
           <div className="window-tabs" style={{ marginBottom: '0.75rem' }}>
-            <Link
-              href={`/mailbox/${id}?view=outreach`}
-              className={`window-tab${activeView === 'outreach' ? ' window-tab-active' : ''}`}
-            >
-              Outreach <span className="badge">{threadCounts.outreach}</span>
-            </Link>
-            <Link
-              href={`/mailbox/${id}?view=inbox`}
-              className={`window-tab${activeView === 'inbox' ? ' window-tab-active' : ''}`}
-            >
-              Inbox <span className="badge">{threadCounts.inbox}</span>
-            </Link>
-            <Link
-              href={`/mailbox/${id}?view=all`}
-              className={`window-tab${activeView === 'all' ? ' window-tab-active' : ''}`}
-            >
-              All <span className="badge">{threadCounts.all}</span>
-            </Link>
+            {MAIL_FOLDERS.map((f) => {
+              const href = `/mailbox/${id}?folder=${f}${
+                search ? `&q=${encodeURIComponent(search)}` : ''
+              }`;
+              return (
+                <Link
+                  key={f}
+                  href={href}
+                  className={`window-tab${activeFolder === f ? ' window-tab-active' : ''}`}
+                >
+                  {folderLabel(f)} <span className="badge">{folderCounts[f]}</span>
+                </Link>
+              );
+            })}
           </div>
-          {threads.length === 0 ? (
+
+          <form
+            method="get"
+            action={`/mailbox/${id}`}
+            className="action-row"
+            style={{ marginBottom: '0.75rem' }}
+          >
+            <input type="hidden" name="folder" value={activeFolder} />
+            <input
+              type="search"
+              name="q"
+              defaultValue={search}
+              placeholder={`Search ${folderLabel(activeFolder)}…`}
+              style={{ flex: 1 }}
+            />
+            <button type="submit">Search</button>
+            {search ? (
+              <Link href={`/mailbox/${id}?folder=${activeFolder}`}>Clear</Link>
+            ) : null}
+          </form>
+
+          {messageRows.length === 0 ? (
             <p className="muted">
-              {activeView === 'outreach'
-                ? 'No outreach conversations yet. When the engine generates an outbound draft and the recipient replies, the thread shows up here.'
-                : activeView === 'inbox'
-                  ? 'Inbox is empty. Inbound mail that arrives but isn’t linked to a qualified lead lands here.'
-                  : 'No conversations yet. Compose a message or run a sync.'}
+              {search
+                ? `No messages match "${search}" in ${folderLabel(activeFolder)}.`
+                : emptyFolderHint(activeFolder)}
             </p>
           ) : (
             <ul className="lead-list">
-              {threads.map((t) => (
-                <li key={t.id.toString()}>
-                  <div className="lead-row">
-                    <Link href={`/communication/${t.id}`}>{t.subject || '(no subject)'}</Link>
-                    <span className="muted">{t.messageCount} msg</span>
-                  </div>
-                  <div className="lead-meta">
-                    {t.participants.length > 0 ? (
-                      <span>{t.participants.slice(0, 4).join(', ')}{t.participants.length > 4 ? '…' : ''}</span>
-                    ) : null}
-                    {t.lastMessageAt ? <span>{t.lastMessageAt.toLocaleString()}</span> : null}
-                  </div>
-                </li>
-              ))}
+              {messageRows.map(({ message, thread }) => {
+                const peer = derivePeer(message);
+                const subject =
+                  message.subject || thread?.subject || '(no subject)';
+                const when =
+                  message.sentAt ??
+                  message.receivedAt ??
+                  message.createdAt;
+                return (
+                  <li key={message.id.toString()}>
+                    <div className="lead-row">
+                      {thread ? (
+                        <Link href={`/communication/${thread.id}`}>{subject}</Link>
+                      ) : (
+                        <span>{subject}</span>
+                      )}
+                      <span className={statusBadge(message.status)}>
+                        {message.status}
+                      </span>
+                    </div>
+                    <div className="lead-meta">
+                      <span>
+                        {message.direction === 'outbound' ? '→ ' : '← '}
+                        {peer || '(unknown)'}
+                      </span>
+                      <span>{when.toLocaleString()}</span>
+                      {activeFolder === 'errors' && message.failureReason ? (
+                        <span className="warn">{message.failureReason}</span>
+                      ) : null}
+                      {activeFolder === 'spam' && message.spamReason ? (
+                        <span className="muted">flag: {message.spamReason}</span>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
@@ -481,4 +538,50 @@ function clampInt(raw: FormDataEntryValue | null, min: number, max: number): num
   if (n < min) return min;
   if (n > max) return max;
   return Math.floor(n);
+}
+
+function folderLabel(f: MailFolder): string {
+  switch (f) {
+    case 'inbox':
+      return 'Inbox';
+    case 'sent':
+      return 'Sent';
+    case 'queued':
+      return 'Queued';
+    case 'errors':
+      return 'Errors';
+    case 'spam':
+      return 'Spam';
+    case 'trash':
+      return 'Trash';
+  }
+}
+
+function emptyFolderHint(f: MailFolder): string {
+  switch (f) {
+    case 'inbox':
+      return 'Inbox is empty. Inbound messages will land here as they arrive.';
+    case 'sent':
+      return 'Nothing sent yet. Compose a message or let the outreach engine generate one.';
+    case 'queued':
+      return 'No queued sends. Drafts the outreach engine schedules will sit here briefly before going out.';
+    case 'errors':
+      return 'No send failures. If a send bounces or fails, it will surface here with a retry option.';
+    case 'spam':
+      return 'Nothing flagged as spam.';
+    case 'trash':
+      return 'Trash is empty.';
+  }
+}
+
+function derivePeer(msg: {
+  direction: 'outbound' | 'inbound';
+  fromAddress: string;
+  fromName: string | null;
+  toAddresses: string[];
+}): string {
+  if (msg.direction === 'outbound') {
+    return msg.toAddresses[0] ?? '';
+  }
+  return msg.fromName ? `${msg.fromName} <${msg.fromAddress}>` : msg.fromAddress;
 }
