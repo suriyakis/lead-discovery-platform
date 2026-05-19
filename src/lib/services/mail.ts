@@ -2,7 +2,19 @@
 // outbound + inbound message is persisted, threaded by header heuristic,
 // and audit-logged. Suppression list is checked before every send.
 
-import { and, asc, desc, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   mailMessages,
@@ -13,6 +25,7 @@ import {
   type NewMailMessage,
   type NewMailThread,
 } from '@/lib/db/schema/mailing';
+import type { MailFolder } from './mail-folders';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 import { buildProviderFor } from './mailbox';
@@ -726,6 +739,143 @@ export async function getThread(
     )
     .orderBy(asc(mailMessages.createdAt));
   return { thread: threadRows[0], messages };
+}
+
+// ---- folders (P61) -------------------------------------------------
+
+/** Stays in sync with deriveFolder() in mail-folders.ts. Any change in
+ *  one place must update the other (the test matrix in
+ *  mail-folders.test.ts pins the cases). */
+function folderFilter(folder: MailFolder): SQL {
+  switch (folder) {
+    case 'trash':
+      return isNotNull(mailMessages.trashedAt);
+    case 'spam':
+      return and(
+        isNull(mailMessages.trashedAt),
+        isNotNull(mailMessages.spamAt),
+      ) as SQL;
+    case 'errors':
+      return and(
+        isNull(mailMessages.trashedAt),
+        isNull(mailMessages.spamAt),
+        inArray(mailMessages.status, ['failed', 'bounced']),
+      ) as SQL;
+    case 'queued':
+      return and(
+        isNull(mailMessages.trashedAt),
+        isNull(mailMessages.spamAt),
+        inArray(mailMessages.status, ['queued', 'sending']),
+      ) as SQL;
+    case 'sent':
+      return and(
+        isNull(mailMessages.trashedAt),
+        isNull(mailMessages.spamAt),
+        eq(mailMessages.direction, 'outbound'),
+        inArray(mailMessages.status, ['sent', 'delivered']),
+      ) as SQL;
+    case 'inbox':
+      return and(
+        isNull(mailMessages.trashedAt),
+        isNull(mailMessages.spamAt),
+        eq(mailMessages.direction, 'inbound'),
+      ) as SQL;
+  }
+}
+
+export interface ListMessagesFilter {
+  mailboxId: bigint;
+  folder: MailFolder;
+  limit?: number;
+  offset?: number;
+  /** Substring match against subject + from address + to addresses
+   *  (case-insensitive). */
+  search?: string;
+}
+
+export interface MessageListRow {
+  message: MailMessage;
+  thread: { id: bigint; subject: string } | null;
+}
+
+export async function listMessages(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  filter: ListMessagesFilter,
+): Promise<MessageListRow[]> {
+  const conditions: SQL[] = [
+    eq(mailMessages.workspaceId, ctx.workspaceId),
+    eq(mailMessages.mailboxId, filter.mailboxId),
+    folderFilter(filter.folder),
+  ];
+  if (filter.search && filter.search.trim()) {
+    const q = `%${filter.search.trim()}%`;
+    conditions.push(
+      or(
+        ilike(mailMessages.subject, q),
+        ilike(mailMessages.fromAddress, q),
+        sql`EXISTS (SELECT 1 FROM unnest(${mailMessages.toAddresses}) addr WHERE addr ILIKE ${q})`,
+      ) as SQL,
+    );
+  }
+
+  const limit = Math.min(Math.max(filter.limit ?? 100, 1), 500);
+  const offset = Math.max(filter.offset ?? 0, 0);
+
+  const rows = await db
+    .select({
+      message: mailMessages,
+      threadId: mailThreads.id,
+      threadSubject: mailThreads.subject,
+    })
+    .from(mailMessages)
+    .leftJoin(mailThreads, eq(mailMessages.threadId, mailThreads.id))
+    .where(and(...conditions))
+    .orderBy(desc(mailMessages.createdAt), desc(mailMessages.id))
+    .limit(limit)
+    .offset(offset);
+
+  return rows.map((r) => ({
+    message: r.message,
+    thread:
+      r.threadId !== null && r.threadSubject !== null
+        ? { id: r.threadId, subject: r.threadSubject }
+        : null,
+  }));
+}
+
+export type FolderCounts = Record<MailFolder, number>;
+
+/** Single query returning all six folder counts for a mailbox. Mirrors
+ *  the priority order in deriveFolder via COUNT(*) FILTER. */
+export async function countMessagesByFolder(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+): Promise<FolderCounts> {
+  const rows = await db
+    .select({
+      trash: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NOT NULL)::int`,
+      spam: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NULL AND ${mailMessages.spamAt} IS NOT NULL)::int`,
+      errors: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NULL AND ${mailMessages.spamAt} IS NULL AND ${mailMessages.status} IN ('failed','bounced'))::int`,
+      queued: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NULL AND ${mailMessages.spamAt} IS NULL AND ${mailMessages.status} IN ('queued','sending'))::int`,
+      sent: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NULL AND ${mailMessages.spamAt} IS NULL AND ${mailMessages.direction} = 'outbound' AND ${mailMessages.status} IN ('sent','delivered'))::int`,
+      inbox: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NULL AND ${mailMessages.spamAt} IS NULL AND ${mailMessages.direction} = 'inbound')::int`,
+    })
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        eq(mailMessages.mailboxId, mailboxId),
+      ),
+    );
+  const r = rows[0];
+  return {
+    inbox: r?.inbox ?? 0,
+    sent: r?.sent ?? 0,
+    queued: r?.queued ?? 0,
+    errors: r?.errors ?? 0,
+    spam: r?.spam ?? 0,
+    trash: r?.trash ?? 0,
+  };
 }
 
 export async function getMessage(

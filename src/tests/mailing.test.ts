@@ -22,14 +22,17 @@ import {
   updateMailbox,
 } from '@/lib/services/mailbox';
 import {
+  countMessagesByFolder,
   countThreadsByKind,
   getMessage,
   getThread,
+  listMessages,
   listThreads,
   sendMessage,
   sendTestEmail,
   syncInbound,
 } from '@/lib/services/mail';
+import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
 import {
   addSuppression,
@@ -1072,5 +1075,277 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     // mb2 has zero — counts for mb2 should be {0,0,0}.
     const countsMb2 = await countThreadsByKind(ctx(s.workspaceA, s.ownerA), mb2.id);
     expect(countsMb2).toEqual({ outreach: 0, inbox: 0, all: 0 });
+  });
+});
+
+// ============ folder listing + counts (P61) ===========================
+
+describe('listMessages + countMessagesByFolder (P61)', () => {
+  /** Insert a mail_messages row directly so we can pin (direction, status,
+   *  trashed_at, spam_at) without going through send/sync. messageId is
+   *  workspace-unique so we synthesise a stable one per call. */
+  let counter = 0;
+  async function seedMessage(
+    workspaceId: bigint,
+    mailboxId: bigint,
+    overrides: {
+      direction: 'inbound' | 'outbound';
+      status:
+        | 'queued'
+        | 'sending'
+        | 'sent'
+        | 'delivered'
+        | 'bounced'
+        | 'failed'
+        | 'received';
+      trashedAt?: Date | null;
+      spamAt?: Date | null;
+      spamReason?: string | null;
+      subject?: string;
+      fromAddress?: string;
+      toAddresses?: string[];
+    },
+  ) {
+    counter += 1;
+    const [row] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId,
+        mailboxId,
+        direction: overrides.direction,
+        status: overrides.status,
+        messageId: `<seed-${counter}-${Date.now()}@test.local>`,
+        fromAddress: overrides.fromAddress ?? 'sender@test.local',
+        toAddresses: overrides.toAddresses ?? ['rcpt@test.local'],
+        subject: overrides.subject ?? `subj-${counter}`,
+        trashedAt: overrides.trashedAt ?? null,
+        spamAt: overrides.spamAt ?? null,
+        spamReason: overrides.spamReason ?? null,
+      })
+      .returning();
+    return row!;
+  }
+
+  it('countMessagesByFolder returns zero for every folder on an empty mailbox', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    for (const f of MAIL_FOLDERS) {
+      expect(counts[f]).toBe(0);
+    }
+  });
+
+  it('bucketing — six messages, one per folder, counts and lists line up', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const w = s.workspaceA;
+    // Inbox: inbound received
+    await seedMessage(w, mb.id, { direction: 'inbound', status: 'received' });
+    // Sent: outbound delivered
+    await seedMessage(w, mb.id, { direction: 'outbound', status: 'delivered' });
+    // Queued: outbound queued
+    await seedMessage(w, mb.id, { direction: 'outbound', status: 'queued' });
+    // Errors: outbound failed
+    await seedMessage(w, mb.id, { direction: 'outbound', status: 'failed' });
+    // Spam: inbound received + spamAt set
+    await seedMessage(w, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      spamAt: new Date(),
+    });
+    // Trash: outbound sent + trashedAt set
+    await seedMessage(w, mb.id, {
+      direction: 'outbound',
+      status: 'sent',
+      trashedAt: new Date(),
+    });
+
+    const counts = await countMessagesByFolder(ctx(w, s.ownerA), mb.id);
+    expect(counts).toEqual({
+      inbox: 1,
+      sent: 1,
+      queued: 1,
+      errors: 1,
+      spam: 1,
+      trash: 1,
+    });
+
+    for (const folder of MAIL_FOLDERS) {
+      const rows = await listMessages(ctx(w, s.ownerA), {
+        mailboxId: mb.id,
+        folder,
+      });
+      expect(rows).toHaveLength(1);
+    }
+  });
+
+  it('priority: a trashed-and-spammed message lands in trash only', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedMessage(s.workspaceA, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      spamAt: new Date(),
+      trashedAt: new Date(),
+    });
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    expect(counts.trash).toBe(1);
+    expect(counts.spam).toBe(0);
+    expect(counts.inbox).toBe(0);
+  });
+
+  it('queued + sending both bucket as queued', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedMessage(s.workspaceA, mb.id, { direction: 'outbound', status: 'queued' });
+    await seedMessage(s.workspaceA, mb.id, { direction: 'outbound', status: 'sending' });
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    expect(counts.queued).toBe(2);
+    expect(counts.sent).toBe(0);
+  });
+
+  it('failed + bounced both bucket as errors', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedMessage(s.workspaceA, mb.id, { direction: 'outbound', status: 'failed' });
+    await seedMessage(s.workspaceA, mb.id, { direction: 'outbound', status: 'bounced' });
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    expect(counts.errors).toBe(2);
+    expect(counts.sent).toBe(0);
+  });
+
+  it('listMessages respects mailbox scoping', async () => {
+    const s = await setup();
+    const mb1 = await makeMailbox(s, s.workspaceA, s.ownerA, 'mb1');
+    const mb2 = await makeMailbox(s, s.workspaceA, s.ownerA, 'mb2');
+    await seedMessage(s.workspaceA, mb1.id, { direction: 'inbound', status: 'received' });
+    await seedMessage(s.workspaceA, mb1.id, { direction: 'inbound', status: 'received' });
+    await seedMessage(s.workspaceA, mb2.id, { direction: 'inbound', status: 'received' });
+    const rows1 = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb1.id,
+      folder: 'inbox',
+    });
+    const rows2 = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb2.id,
+      folder: 'inbox',
+    });
+    expect(rows1).toHaveLength(2);
+    expect(rows2).toHaveLength(1);
+  });
+
+  it('listMessages respects workspace isolation', async () => {
+    const s = await setup();
+    const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+    await seedMessage(s.workspaceA, mbA.id, { direction: 'inbound', status: 'received' });
+    await seedMessage(s.workspaceB, mbB.id, { direction: 'inbound', status: 'received' });
+    // workspace A asking about workspace B's mailbox: scope still A → 0.
+    const cross = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mbB.id,
+      folder: 'inbox',
+    });
+    expect(cross).toHaveLength(0);
+  });
+
+  it('search filters across subject, from, and to addresses (case-insensitive)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedMessage(s.workspaceA, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      subject: 'Acme Order',
+      fromAddress: 'buyer@acme.com',
+      toAddresses: ['us@nulife.pl'],
+    });
+    await seedMessage(s.workspaceA, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      subject: 'unrelated',
+      fromAddress: 'someone@other.com',
+      toAddresses: ['us@nulife.pl'],
+    });
+
+    const bySubject = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      search: 'acme',
+    });
+    expect(bySubject).toHaveLength(1);
+    expect(bySubject[0]!.message.subject).toBe('Acme Order');
+
+    const byFrom = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      search: 'BUYER@',
+    });
+    expect(byFrom).toHaveLength(1);
+
+    const byTo = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      search: 'us@nulife',
+    });
+    expect(byTo).toHaveLength(2);
+  });
+
+  it('listMessages orders newest first by createdAt', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const older = await seedMessage(s.workspaceA, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      subject: 'older',
+    });
+    // Force older to actually be older.
+    await db
+      .update(mailMessages)
+      .set({ createdAt: new Date(Date.now() - 60_000) })
+      .where(eq(mailMessages.id, older.id));
+    await seedMessage(s.workspaceA, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      subject: 'newer',
+    });
+    const rows = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+    });
+    expect(rows.map((r) => r.message.subject)).toEqual(['newer', 'older']);
+  });
+
+  it('limit + offset paginate', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    for (let i = 0; i < 5; i++) {
+      await seedMessage(s.workspaceA, mb.id, {
+        direction: 'inbound',
+        status: 'received',
+        subject: `msg-${i}`,
+      });
+    }
+    const page1 = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      limit: 2,
+      offset: 0,
+    });
+    const page2 = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      limit: 2,
+      offset: 2,
+    });
+    expect(page1).toHaveLength(2);
+    expect(page2).toHaveLength(2);
+    const ids1 = page1.map((r) => r.message.id);
+    const ids2 = page2.map((r) => r.message.id);
+    expect(ids1).not.toEqual(ids2);
+  });
+
+  // Make sure the folder type cast lives somewhere typed (catches accidental
+  // string-typing the helper).
+  it('MailFolder enum stays in lockstep with MAIL_FOLDERS', () => {
+    const folders: MailFolder[] = [...MAIL_FOLDERS];
+    expect(folders).toEqual(['inbox', 'sent', 'queued', 'errors', 'spam', 'trash']);
   });
 });
