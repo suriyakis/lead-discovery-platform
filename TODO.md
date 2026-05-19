@@ -881,6 +881,34 @@ workspace-scoped.
 
 **Phase 60 complete.**
 
+## Phase 61 — Full mailbox management (folders + trash + spam + errors)
+
+**Design lock (2026-05-19):** Folders are DERIVED from `(direction, status,
+trashed_at, spam_at)` — never stored as a column. Six folders:
+**Inbox · Sent · Queued · Errors · Spam · Trash**. Priority order
+**trash > spam > error > status**, so a trashed-and-spammed message lives in
+Trash. Folder is a *message-level* concept; the thread view still shows the
+full conversation but collapses hidden messages. Soft-delete via `trashed_at`
+keeps thread context intact; hard delete only happens for already-trashed
+rows (via the action or the auto-purge cron).
+
+- [x] **P61-01.** Migration `0042_striped_black_queen.sql` — `mail_messages` gains `trashed_at TIMESTAMPTZ`, `spam_at TIMESTAMPTZ`, `spam_reason TEXT`, all nullable. Existing 799 tests stay green (no behavior change yet). Commit `06a50e4`.
+- [x] **P61-02.** `src/lib/services/mail-folders.ts` — `MailFolder` type + `deriveFolder(msg): MailFolder` pure function. Priority: trashedAt → 'trash'; else spamAt → 'spam'; else status ∈ {failed, bounced} → 'errors'; else status ∈ {queued, sending} → 'queued'; else direction='outbound' → 'sent'; else 'inbox'. 13 tests in `src/tests/mail-folders.test.ts` covering priority order, inbound/outbound bucketing, and a full (direction × status × trashed × spam) matrix. **799 → 812 total.**
+- [ ] **P61-03.** Replace Phase-52 `kind`-tabbed thread listing with folder-aware message listing on `mail.ts`: `listMessages(ctx, {mailboxId, folder, limit, cursor, search})` returns paged messages joined with `mail_threads` (subject + peer). Folder filter is pushed into SQL (no in-memory filtering). `countMessagesByFolder(ctx, mailboxId)` returns all six counts in one query using `COUNT(*) FILTER` per folder. Drop `kind` from `listThreads` callers OR keep `listThreads` for the thread view only — decide during impl.
+- [ ] **P61-04.** Per-message actions in `mail.ts`: `moveToTrash(ctx, ids[])`, `restoreFromTrash(ctx, ids[])`, `markAsSpam(ctx, ids[], reason)`, `unmarkSpam(ctx, ids[])`, `permanentlyDelete(ctx, ids[])`. All batch-capable. `permanentlyDelete` hard-deletes the row and refuses any id whose `trashed_at IS NULL` (must trash first). Each action emits a workspace audit event with the actor + reason. Use `inArray()` for the id filter (see [[feedback_drizzle_any_trap]]).
+- [ ] **P61-05.** Mailbox detail UI rebuild — `/mailbox/[id]` swaps the `outreach | inbox | all` tabs for a six-folder nav (Inbox / Sent / Queued / Errors / Spam / Trash) with count badges. The body becomes a *message list* (not thread list). Each row: peer, subject, snippet, time, status pill. Click → opens the thread. URL: `?folder=inbox` etc. Default = Inbox.
+- [ ] **P61-06.** Message-list action bar — multi-select checkboxes + per-row inline menu. Buttons visible per folder: Inbox/Sent/Queued/Errors → "Trash", "Mark as spam"; Spam → "Not spam", "Trash"; Trash → "Restore", "Delete permanently". Permanent-delete is the only action with a confirm dialog. Bulk operations call P61-04 helpers.
+- [ ] **P61-07.** Errors folder UX. Each row surfaces `failureReason`, last attempt time, and a Retry button. Retry re-enqueues the original send via the existing outbound path (re-uses messageId so thread continuity holds). Hard-bounced messages (failureReason matches an SMTP 5xx permanent code) show a "Hard bounce" badge and disable Retry — retrying would just bounce again.
+- [ ] **P61-08.** Auto-spam on bounce loop. When an outbound message bounces, count bounces to the same recipient address in the last 14 days; if ≥3, set `spam_at = now()`, `spam_reason = 'bounce_loop'` on the new message. Logic in the existing post-bounce hook in `mail.ts`. Threshold (3 / 14d) lives as a constant for now; promote to workspace setting only if it misfires. Operator override = "Not spam" in the Spam folder.
+- [ ] **P61-09.** Auto-empty trash policy. `workspaces.trash_retention_days INT NOT NULL DEFAULT 30`. New cron tick `mail.trash.purge.tick` (daily) hard-deletes `mail_messages WHERE trashed_at < now() - interval '<retention> days'`, per-workspace fan-out matching the P58 / P60 cron pattern. UI: a new "Mailbox retention" section in `/settings/outreach` (or split into `/settings/mailbox` if the page is too dense) — admin-gated number input + "Empty trash now" button (calls a service helper that hard-deletes everything in trash regardless of age).
+- [ ] **P61-10.** Thread view (`/mailbox/threads/[id]`) — collapse trashed + spammed messages by default with a "Show N hidden message(s)" expander. Per-message action menu (Trash / Spam / Restore) right-aligned on each message bubble, so an operator can flag a single offending reply inside a long thread without leaving the conversation.
+- [ ] **P61-11.** Tests written alongside each task. Folder-derivation matrix (P61-02), service action tests with workspace isolation + batch semantics + admin gating (P61-04), bounce-loop detection and threshold edge cases (P61-08), cron purge respecting retention and idempotency (P61-09), retry preserving messageId + thread linkage (P61-07). Target +~20 tests. **799 → ~819 total.**
+- [ ] **P61-12.** Deploy. Migrations 0042 (already in tree) plus any added by P61-08 / P61-09. Host-side `pnpm db:migrate` (see [[feedback_lead_platform_migrate]]). Smoke: each of the six folders renders for an existing mailbox; trash → restore a message; spam → "Not spam" round-trip; Errors folder shows any failed sends and Retry succeeds; cron `mail.trash.purge.tick` registered in repeatables; old trashed message disappears after retention window (validate by setting retention=0 in a throwaway workspace and triggering the tick manually).
+
+**Open notes (resolve during impl, don't block plan):**
+- Phase 52's outreach-vs-inbox distinction: probably folds into the Inbox folder as a secondary filter chip ("Outreach only"). Decide in P61-05.
+- Bounce-loop threshold (3 / 14d) is a guess; tune after deploy if it fires too eagerly or not enough.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
