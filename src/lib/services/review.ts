@@ -10,6 +10,7 @@ import {
   type ReviewItem,
   type ReviewItemState,
 } from '@/lib/db/schema/review';
+import { qualifications } from '@/lib/db/schema/qualifications';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 import { recordFeedback } from './learning';
@@ -177,6 +178,7 @@ async function applyStateChange(
     if (to === 'approved') {
       updates.approvedByUserId = ctx.userId;
       updates.approvedAt = now;
+      updates.approvalReason = options.reason ?? null;
     } else if (to === 'rejected') {
       updates.rejectedByUserId = ctx.userId;
       updates.rejectedAt = now;
@@ -204,12 +206,89 @@ async function applyStateChange(
       },
     });
 
+    return { result, sourceRecordId: item.sourceRecordId };
+  }).then(async ({ result, sourceRecordId }) => {
+    // After commit, feed the decision into the learning layer so future
+    // qualifications can auto-approve / auto-reject similar records.
+    // Best-effort — failure logs but does not undo the state change.
+    if (to === 'approved' || to === 'rejected') {
+      try {
+        await feedDecisionIntoLearning(ctx, {
+          reviewItemId: result.id,
+          sourceRecordId,
+          decision: to,
+          reason: options.reason ?? null,
+        });
+      } catch (err) {
+        console.error(`[review.${to}] feedDecisionIntoLearning failed:`, err);
+      }
+    }
     return result;
   });
 }
 
-export const approveReviewItem = (ctx: WorkspaceContext, id: bigint) =>
-  applyStateChange(ctx, id, 'approved');
+/**
+ * For each product the qualifier matched against this source record, emit a
+ * learning event scoped to that product. When no qualifications exist (record
+ * predates Phase 7 or classification hasn't run), emit one workspace-scoped
+ * event with productProfileId=null so the signal isn't lost.
+ *
+ * actionType maps to lesson categories the heuristic / AI extractor recognise:
+ *   approved → qualification_positive
+ *   rejected → qualification_negative
+ */
+async function feedDecisionIntoLearning(
+  ctx: WorkspaceContext,
+  args: {
+    reviewItemId: bigint;
+    sourceRecordId: bigint;
+    decision: 'approved' | 'rejected';
+    reason: string | null;
+  },
+): Promise<void> {
+  const actionType =
+    args.decision === 'approved' ? 'qualification_positive' : 'qualification_negative';
+  const confidence = args.reason && args.reason.trim().length > 0 ? 75 : 60;
+
+  const quals = await db
+    .select({ productProfileId: qualifications.productProfileId })
+    .from(qualifications)
+    .where(
+      and(
+        eq(qualifications.workspaceId, ctx.workspaceId),
+        eq(qualifications.sourceRecordId, args.sourceRecordId),
+      ),
+    );
+
+  if (quals.length === 0) {
+    await recordFeedback(ctx, {
+      entityType: 'review_item',
+      entityId: args.reviewItemId.toString(),
+      productProfileId: null,
+      actionType,
+      originalComment: args.reason,
+      confidence,
+    });
+    return;
+  }
+
+  for (const q of quals) {
+    await recordFeedback(ctx, {
+      entityType: 'review_item',
+      entityId: args.reviewItemId.toString(),
+      productProfileId: q.productProfileId,
+      actionType,
+      originalComment: args.reason,
+      confidence,
+    });
+  }
+}
+
+export const approveReviewItem = (
+  ctx: WorkspaceContext,
+  id: bigint,
+  reason?: string | null,
+) => applyStateChange(ctx, id, 'approved', { reason: reason ?? null });
 
 export const rejectReviewItem = (
   ctx: WorkspaceContext,

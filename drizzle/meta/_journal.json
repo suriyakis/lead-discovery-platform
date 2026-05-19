@@ -281,6 +281,13 @@
       "when": 1779032248901,
       "tag": "0039_omniscient_living_tribunal",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1779171170577,
+      "tag": "0040_naive_phantom_reporter",
+      "breakpoints": true
     }
   ]
 }

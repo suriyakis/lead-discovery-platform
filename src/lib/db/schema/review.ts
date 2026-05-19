@@ -65,6 +65,7 @@ export const reviewItems = pgTable(
     }),
     rejectedAt: timestamp('rejected_at', { mode: 'date', withTimezone: true }),
     rejectionReason: text('rejection_reason'),
+    approvalReason: text('approval_reason'),
 
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .notNull()

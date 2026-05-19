@@ -72,10 +72,11 @@ export default async function ReviewDetail({
   const domain = normalized.domain as string | undefined;
 
   // ---- server actions ----
-  async function approve() {
+  async function approve(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
-    await approveReviewItem(c, id);
+    const reason = String(formData.get('reason') ?? '').trim() || null;
+    await approveReviewItem(c, id, reason);
     redirect(`/review/${id}`);
   }
   async function reject(formData: FormData) {
@@ -273,11 +274,6 @@ export default async function ReviewDetail({
           <section>
             <h2>Actions</h2>
             <div className="action-row">
-              <form action={approve}>
-                <button type="submit" className="primary-btn">
-                  Approve
-                </button>
-              </form>
               <form action={ignore}>
                 <button type="submit">Ignore</button>
               </form>
@@ -293,9 +289,22 @@ export default async function ReviewDetail({
               ) : null}
             </div>
 
+            <form action={approve} className="approve-form">
+              <label>
+                <span>Approve — why does this fit? (optional, teaches the knowledge base)</span>
+                <input
+                  name="reason"
+                  type="text"
+                  maxLength={500}
+                  placeholder="e.g. exact ICP, right buying role, active tender"
+                />
+              </label>
+              <button type="submit" className="primary-btn">Approve</button>
+            </form>
+
             <form action={reject} className="reject-form">
               <label>
-                <span>Reject with reason</span>
+                <span>Reject — why doesn&apos;t this fit? (teaches the knowledge base)</span>
                 <input
                   name="reason"
                   type="text"

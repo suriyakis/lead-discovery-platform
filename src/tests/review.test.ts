@@ -339,6 +339,167 @@ describe('assignment + dashboard counts', () => {
   });
 });
 
+// ---- learning feedback (P60-01) ---------------------------------------
+
+describe('approve/reject feeds the learning layer', () => {
+  it('reject with reason emits per-product learning events for every matched qualification', async () => {
+    const { createProductProfile } = await import('@/lib/services/product-profile');
+    const { qualifications } = await import('@/lib/db/schema/qualifications');
+    const { learningEvents } = await import('@/lib/db/schema/learning');
+    const s = await setup();
+    const { items, sourceRecords: sr } = await seedDiscovery(s, 1);
+    if (!items[0] || !sr[0]) return;
+
+    const productA = await createProductProfile(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      { name: 'Alpha' },
+    );
+    const productB = await createProductProfile(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      { name: 'Beta' },
+    );
+
+    // Engine matched this record against two products.
+    await db.insert(qualifications).values([
+      {
+        workspaceId: s.workspaceA,
+        sourceRecordId: sr[0].id,
+        productProfileId: productA.id,
+        isRelevant: true,
+        relevanceScore: 80,
+        confidence: 70,
+        method: 'rules',
+      },
+      {
+        workspaceId: s.workspaceA,
+        sourceRecordId: sr[0].id,
+        productProfileId: productB.id,
+        isRelevant: true,
+        relevanceScore: 60,
+        confidence: 65,
+        method: 'rules',
+      },
+    ]);
+
+    await rejectReviewItem(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      items[0].id,
+      'wrong sector — these are public-sector schools, not corporate',
+    );
+
+    const events = await db
+      .select()
+      .from(learningEvents)
+      .where(eq(learningEvents.workspaceId, s.workspaceA));
+    expect(events).toHaveLength(2);
+    expect(events.every((e) => e.actionType === 'qualification_negative')).toBe(true);
+    expect(events.every((e) => e.entityType === 'review_item')).toBe(true);
+    const productIds = events.map((e) => e.productProfileId).sort();
+    expect(productIds).toEqual([productA.id, productB.id].sort());
+  });
+
+  it('approve with reason emits per-product positive learning events', async () => {
+    const { createProductProfile } = await import('@/lib/services/product-profile');
+    const { qualifications } = await import('@/lib/db/schema/qualifications');
+    const { learningEvents } = await import('@/lib/db/schema/learning');
+    const s = await setup();
+    const { items, sourceRecords: sr } = await seedDiscovery(s, 1);
+    if (!items[0] || !sr[0]) return;
+
+    const product = await createProductProfile(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      { name: 'Gamma' },
+    );
+
+    await db.insert(qualifications).values({
+      workspaceId: s.workspaceA,
+      sourceRecordId: sr[0].id,
+      productProfileId: product.id,
+      isRelevant: true,
+      relevanceScore: 75,
+      confidence: 70,
+      method: 'rules',
+    });
+
+    const approved = await approveReviewItem(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      items[0].id,
+      'exact ICP — head of procurement, active RFP',
+    );
+    expect(approved.state).toBe('approved');
+    expect(approved.approvalReason).toBe(
+      'exact ICP — head of procurement, active RFP',
+    );
+
+    const events = await db
+      .select()
+      .from(learningEvents)
+      .where(eq(learningEvents.workspaceId, s.workspaceA));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.actionType).toBe('qualification_positive');
+    expect(events[0]?.productProfileId).toBe(product.id);
+    expect(events[0]?.originalComment).toBe(
+      'exact ICP — head of procurement, active RFP',
+    );
+  });
+
+  it('falls back to workspace-scoped event when no qualifications exist for the record', async () => {
+    const { learningEvents } = await import('@/lib/db/schema/learning');
+    const s = await setup();
+    const { items } = await seedDiscovery(s, 1);
+    if (!items[0]) return;
+
+    await rejectReviewItem(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      items[0].id,
+      'noise from this source',
+    );
+
+    const events = await db
+      .select()
+      .from(learningEvents)
+      .where(eq(learningEvents.workspaceId, s.workspaceA));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.productProfileId).toBeNull();
+    expect(events[0]?.actionType).toBe('qualification_negative');
+  });
+
+  it('learning events do not leak across workspaces', async () => {
+    const { createProductProfile } = await import('@/lib/services/product-profile');
+    const { qualifications } = await import('@/lib/db/schema/qualifications');
+    const { learningEvents } = await import('@/lib/db/schema/learning');
+    const s = await setup();
+    const { items, sourceRecords: sr } = await seedDiscovery(s, 1);
+    if (!items[0] || !sr[0]) return;
+
+    const productA = await createProductProfile(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      { name: 'A-Alpha' },
+    );
+    await db.insert(qualifications).values({
+      workspaceId: s.workspaceA,
+      sourceRecordId: sr[0].id,
+      productProfileId: productA.id,
+      isRelevant: true,
+      relevanceScore: 80,
+      confidence: 70,
+      method: 'rules',
+    });
+
+    await approveReviewItem(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      items[0].id,
+      'good',
+    );
+
+    const eventsB = await db
+      .select()
+      .from(learningEvents)
+      .where(eq(learningEvents.workspaceId, s.workspaceB));
+    expect(eventsB).toHaveLength(0);
+  });
+});
+
 // ---- error shape -------------------------------------------------------
 
 describe('error shape', () => {
