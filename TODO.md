@@ -877,7 +877,9 @@ workspace-scoped.
 - [x] **P60-05.** `knowledge.compact.tick` registered in `repeatables.ts` (weekly per workspace, fan-out matches the P58 follow-up tick). `/learning` page gains a compaction panel with last-run summary + "Compact now" button (admin-only). New `.compaction-panel` styling in `globals.css`.
 - [x] **P60-06.** `learning_lessons.application_count` + `last_applied_at` columns (migration 0041). New `recordLessonsApplied(ctx, lessonIds)` helper bumps both atomically — workspace-scoped, never throws, no-op on empty input. Wired into both real "lesson is consumed" callsites: `qualification.classifySourceRecord` (scoring loop) and `outreach.generateOutreachDraft` (prompt assembly). Compaction's stale-retirement uses these counters to distinguish dead-weight lessons from load-bearing ones.
 - [x] **P60-07.** Tests written alongside each task (no separate test phase). +4 review tests (per-product feedback emission, fallback to workspace-scoped when no qualifications, isolation), +4 learning AI-extractor tests (uses AI category, falls back when null, falls back on throw, rejects invalid category), +2 usage-tracking tests, +6 compaction tests (admin gate, merge with evidence union, keep-all, workspace isolation, audit emission, singleton skip). **781 → 797 total tests.**
-- [ ] **P60-08.** Deploy to agregat + smoke (apply migrations 0040 + 0041, exercise approve/reject on prod, manually trigger compaction).
+- [x] **P60-08.** Deployed 2026-05-19. SHA `a7c3076`. Migrations 0040 + 0041 applied via `ssh root@agregat "cd /opt/lead-discovery-platform && pnpm db:migrate"` (host-side, after deploy). Smoke: `/api/health` 200, `review_items.approval_reason` confirmed live, `learning_lessons.application_count` + `last_applied_at` confirmed live. Interactive smoke of approve-with-reason → learning event flow is operator-driven (cannot exercise as Claude without a session).
+
+**Phase 60 complete.**
 
 ## Discovered along the way
 
