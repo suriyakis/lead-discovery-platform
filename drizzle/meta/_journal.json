@@ -288,6 +288,13 @@
       "when": 1779171170577,
       "tag": "0040_naive_phantom_reporter",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1779172487658,
+      "tag": "0041_lonely_violations",
+      "breakpoints": true
     }
   ]
 }

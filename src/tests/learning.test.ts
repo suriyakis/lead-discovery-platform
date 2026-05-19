@@ -353,6 +353,73 @@ describe('error shape', () => {
   });
 });
 
+// ---- lesson usage tracking (P60-06) -----------------------------------
+
+describe('recordLessonsApplied', () => {
+  it('bumps applicationCount and sets lastAppliedAt for workspace-scoped lessons only', async () => {
+    const { recordLessonsApplied } = await import('@/lib/services/learning');
+    const s = await setup();
+    const lessonA = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'A1',
+      confidence: 70,
+    });
+    const lessonB = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'A2',
+      confidence: 70,
+    });
+    const lessonOther = await createLesson(ctx(s.workspaceB, s.ownerB, 'owner'), {
+      category: 'sector_preference',
+      rule: 'B1',
+      confidence: 70,
+    });
+
+    await recordLessonsApplied({ workspaceId: s.workspaceA }, [
+      lessonA.id,
+      lessonB.id,
+      lessonOther.id, // belongs to workspace B — must be ignored by the workspace guard
+    ]);
+
+    const refreshedA = await db
+      .select()
+      .from(learningLessons)
+      .where(eq(learningLessons.id, lessonA.id));
+    const refreshedB = await db
+      .select()
+      .from(learningLessons)
+      .where(eq(learningLessons.id, lessonB.id));
+    const refreshedOther = await db
+      .select()
+      .from(learningLessons)
+      .where(eq(learningLessons.id, lessonOther.id));
+
+    expect(refreshedA[0]?.applicationCount).toBe(1);
+    expect(refreshedA[0]?.lastAppliedAt).not.toBeNull();
+    expect(refreshedB[0]?.applicationCount).toBe(1);
+    expect(refreshedB[0]?.lastAppliedAt).not.toBeNull();
+    // Cross-workspace lesson untouched.
+    expect(refreshedOther[0]?.applicationCount).toBe(0);
+    expect(refreshedOther[0]?.lastAppliedAt).toBeNull();
+
+    // Re-application bumps the count, not just resets it.
+    await recordLessonsApplied({ workspaceId: s.workspaceA }, [lessonA.id]);
+    const reA = await db
+      .select()
+      .from(learningLessons)
+      .where(eq(learningLessons.id, lessonA.id));
+    expect(reA[0]?.applicationCount).toBe(2);
+  });
+
+  it('is a no-op for an empty id list', async () => {
+    const { recordLessonsApplied } = await import('@/lib/services/learning');
+    const s = await setup();
+    // Should not throw and should not flip anything.
+    await recordLessonsApplied({ workspaceId: s.workspaceA }, []);
+    expect(true).toBe(true);
+  });
+});
+
 // ---- AI extractor (P60-03) --------------------------------------------
 
 describe('extractLesson (AI-first with heuristic fallback)', () => {

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import {
@@ -527,6 +527,36 @@ export function applyLessonsToPrompt(
     .map((l, i) => `${i + 1}. [${l.category}] ${l.rule}`)
     .join('\n');
   return `${basePrompt}\n\nWorkspace-specific guidelines (in priority order):\n${guidelines}`;
+}
+
+/**
+ * Mark the given lessons as applied — bumps application_count + sets
+ * last_applied_at=NOW(). Callers pass this once per real "lesson used in
+ * a scoring/prompt step" event. Workspace-scoped guard so a misbehaving
+ * caller can't bump lessons from another tenant. Never throws — metrics
+ * write must not break the business call that triggered it.
+ */
+export async function recordLessonsApplied(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  lessonIds: readonly bigint[],
+): Promise<void> {
+  if (lessonIds.length === 0) return;
+  try {
+    await db
+      .update(learningLessons)
+      .set({
+        applicationCount: sql`${learningLessons.applicationCount} + 1`,
+        lastAppliedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(learningLessons.workspaceId, ctx.workspaceId),
+          inArray(learningLessons.id, lessonIds as bigint[]),
+        ),
+      );
+  } catch (err) {
+    console.error('[learning.recordLessonsApplied] failed:', err);
+  }
 }
 
 // ---- helpers -----------------------------------------------------------

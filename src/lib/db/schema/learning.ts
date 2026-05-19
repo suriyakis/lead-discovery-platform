@@ -112,6 +112,11 @@ export const learningLessons = pgTable(
       .default(sql`'{}'::bigint[]`),
     enabled: boolean('enabled').notNull().default(true),
     confidence: smallint('confidence').notNull().default(60),
+    /** P60-06: how many times the qualifier/outreach actually pulled this
+     *  lesson into a prompt/scoring step. Compaction (P60-04) uses this +
+     *  lastAppliedAt to retire dead-weight lessons. */
+    applicationCount: integer('application_count').notNull().default(0),
+    lastAppliedAt: timestamp('last_applied_at', { mode: 'date', withTimezone: true }),
     /** Phase 12: vector(1536) for similarity-based lesson retrieval. Populated by the indexer. */
     embedding: lessonEmbedding('embedding'),
     embeddingModel: text('embedding_model'),

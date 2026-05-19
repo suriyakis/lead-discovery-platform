@@ -13,7 +13,7 @@ import {
 import { reviewItems, type ReviewItem } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
 import type { WorkspaceContext } from './context';
-import { getRelevantLessons } from './learning';
+import { getRelevantLessons, recordLessonsApplied } from './learning';
 import {
   classifyRecord,
   type ClassifiableRecord,
@@ -87,6 +87,15 @@ export async function classifySourceRecord(
     const verdict = classifyRecord(classifiable, product, allLessons);
     const row = await upsertQualification(ctx.workspaceId, sourceRecord.id, product, verdict);
     inserted.push(row);
+
+    // P60-06: mark the lessons we just consumed for scoring. Drives
+    // compaction's "stale = low confidence + not applied recently" rule.
+    if (allLessons.length > 0) {
+      await recordLessonsApplied(
+        ctx,
+        allLessons.map((l) => l.id),
+      );
+    }
   }
 
   return inserted;

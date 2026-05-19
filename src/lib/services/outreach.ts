@@ -26,7 +26,7 @@ import {
 } from '@/lib/db/schema/outreach';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
-import { getRelevantLessons } from './learning';
+import { getRelevantLessons, recordLessonsApplied } from './learning';
 import {
   composeAiDraft,
   composeDiscoveryDraft,
@@ -96,6 +96,12 @@ export async function generateOutreachDraft(
     taskType: 'outreach',
   });
   const allLessons = [...lessons, ...wsLessons];
+  if (allLessons.length > 0) {
+    await recordLessonsApplied(
+      ctx,
+      allLessons.map((l) => l.id),
+    );
+  }
 
   const channel = input.channel?.trim() || 'email';
   // Detector cascade: input override → product description / instructions →
