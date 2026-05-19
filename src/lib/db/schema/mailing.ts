@@ -265,6 +265,16 @@ export const mailMessages = pgTable(
     translatedFromLanguage: text('translated_from_language'),
     translatedAt: timestamp('translated_at', { mode: 'date', withTimezone: true }),
 
+    /** P61: per-message folder state (derived folders, not a column).
+     *  trashed_at + spam_at are soft-delete style — the message stays in
+     *  the row store so threads keep their context, but the message
+     *  disappears from inbox/sent/errors views. Both nullable, both can
+     *  be set independently (a spammed message can also be trashed). */
+    trashedAt: timestamp('trashed_at', { mode: 'date', withTimezone: true }),
+    spamAt: timestamp('spam_at', { mode: 'date', withTimezone: true }),
+    /** Free-form why-it-was-flagged: 'manual', 'bounce_loop', 'reply_classifier', etc. */
+    spamReason: text('spam_reason'),
+
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
     }),
