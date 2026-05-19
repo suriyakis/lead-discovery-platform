@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
+import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { learningEvents, learningLessons } from '@/lib/db/schema/learning';
@@ -349,6 +350,105 @@ describe('error shape', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(LearningServiceError);
     }
+  });
+});
+
+// ---- AI extractor (P60-03) --------------------------------------------
+
+describe('extractLesson (AI-first with heuristic fallback)', () => {
+  function stubAi(
+    impl: () => Promise<{ category: string | null; rule: string; confidence: number }>,
+  ): IAIProvider {
+    return {
+      id: 'stub-ai',
+      model: 'stub-model',
+      async generateText() {
+        return {
+          text: '',
+          model: 'stub',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+      async generateJson(_input, schema) {
+        void _input;
+        const out = await impl();
+        return schema.parse(out);
+      },
+      estimateCost() {
+        return 0;
+      },
+      async healthCheck() {
+        return { ok: true };
+      },
+    };
+  }
+
+  afterAll(() => _setAIProviderForTests(null));
+
+  it('uses the AI-extracted category when the AI returns a valid lesson', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      stubAi(async () => ({
+        category: 'sector_preference',
+        rule: 'Avoid public-sector schools — corporate buyers convert better.',
+        confidence: 82,
+      })),
+    );
+    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      actionType: 'qualification_negative',
+      originalComment: 'wrong sector — these are public-sector schools, not corporate',
+    });
+    expect(lesson).not.toBeNull();
+    expect(lesson?.category).toBe('sector_preference');
+    expect(lesson?.confidence).toBe(82);
+    expect(lesson?.rule).toContain('public-sector');
+  });
+
+  it('falls back to the heuristic when the AI returns null category', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      stubAi(async () => ({ category: null, rule: '', confidence: 0 })),
+    );
+    // "wrong fit" matches the heuristic's false_positive pattern.
+    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      actionType: 'qualification_negative',
+      originalComment: 'wrong fit — not a real buyer',
+    });
+    expect(lesson).not.toBeNull();
+    expect(lesson?.category).toBe('false_positive');
+  });
+
+  it('falls back to the heuristic when the AI provider throws', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      stubAi(async () => {
+        throw new Error('upstream timeout');
+      }),
+    );
+    // "perfect" matches the heuristic's qualification_positive pattern.
+    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      actionType: 'qualification_positive',
+      originalComment: 'perfect fit, exactly the kind of buyer we want',
+    });
+    expect(lesson).not.toBeNull();
+    expect(lesson?.category).toBe('qualification_positive');
+  });
+
+  it('rejects an AI category that is not in the allow-list', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      stubAi(async () => ({
+        category: 'totally_made_up',
+        rule: 'should be ignored',
+        confidence: 90,
+      })),
+    );
+    // Heuristic also returns null for this neutral text, so no lesson at all.
+    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      actionType: 'qualification_negative',
+      originalComment: 'no clear signal here just some neutral text',
+    });
+    expect(lesson).toBeNull();
   });
 });
 

@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
+import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import {
   learningEvents,
@@ -8,8 +9,10 @@ import {
   type NewLearningEvent,
   type NewLearningLesson,
 } from '@/lib/db/schema/learning';
+import { getAIProviderForCtx } from '@/lib/ai';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
+import { recordUsage } from './usage';
 
 export class LearningServiceError extends Error {
   public readonly code: string;
@@ -67,17 +70,22 @@ export interface FeedbackInput {
 }
 
 /**
- * Append a feedback event and, when the heuristic extractor finds a clean
- * signal, also materialize a `learning_lessons` row linked back to the event.
+ * Append a feedback event and, when an extractor finds a clean signal,
+ * also materialize a `learning_lessons` row linked back to the event.
  *
- * The extractor is intentionally cheap and deterministic in Phase 5 so the
- * platform behaves the same with or without a configured AI provider.
- * Phase 7+ swaps the heuristic for the AI provider abstraction.
+ * Extraction order: AI provider first (when configured + workspace context),
+ * heuristic fallback on any AI failure or null. AI runs OUTSIDE the
+ * transaction so the network call doesn't tie up a DB connection.
  */
 export async function recordFeedback(
   ctx: WorkspaceContext,
   input: FeedbackInput,
 ): Promise<{ event: LearningEvent; lesson: LearningLesson | null }> {
+  // Extraction first (outside tx) so a slow / failing AI call doesn't hold
+  // a transaction open. extractLesson never throws — it falls back to the
+  // deterministic heuristic on any error.
+  const draft = await extractLesson(ctx, input.originalComment ?? null);
+
   return db.transaction(async (tx) => {
     const eventRow: NewLearningEvent = {
       workspaceId: ctx.workspaceId,
@@ -93,7 +101,6 @@ export async function recordFeedback(
     const insertedEvent = (await tx.insert(learningEvents).values(eventRow).returning())[0];
     if (!insertedEvent) throw invariant('learning_events insert returned no row');
 
-    const draft = extractLessonHeuristic(input.originalComment ?? null);
     let lesson: LearningLesson | null = null;
     if (draft) {
       const lessonRow: NewLearningLesson = {
@@ -135,12 +142,106 @@ export async function recordFeedback(
   });
 }
 
-// ---- heuristic extractor ----------------------------------------------
+// ---- extractor (AI first, heuristic fallback) -------------------------
 
-interface LessonDraft {
+export interface LessonDraft {
   category: LessonCategory;
   rule: string;
   confidence: number;
+}
+
+/**
+ * Try the workspace's AI provider first; fall back to the heuristic on any
+ * error. Never throws — extraction failures must never break the event
+ * write that called us.
+ */
+export async function extractLesson(
+  ctx: WorkspaceContext,
+  comment: string | null,
+): Promise<LessonDraft | null> {
+  if (!comment) return null;
+  const trimmed = comment.trim();
+  if (trimmed.length < 8) return null;
+  try {
+    const ai = await extractLessonAI(ctx, trimmed);
+    if (ai) return ai;
+  } catch (err) {
+    // Provider not configured, network error, schema-validation failure on
+    // mock provider, etc. Fall back to the deterministic heuristic.
+    console.error('[learning.extractLesson] AI extraction failed:', err);
+  }
+  return extractLessonHeuristic(trimmed);
+}
+
+const EXTRACTOR_SYSTEM_PROMPT = `You categorize a single operator note into ONE lesson the lead-discovery platform will reuse for future qualification.
+
+Allowed categories (pick the most specific):
+- qualification_positive: positive fit signal — this kind of record should be approved
+- qualification_negative: negative fit signal — this kind of record should be rejected
+- outreach_style: how the email should sound (tone, length, formality)
+- contact_role: which contact roles to target or avoid
+- sector_preference: which sectors/industries to favour or avoid
+- connector_quality: a source is noisy / outdated / unreliable
+- false_positive: the engine wrongly classified as relevant
+- false_negative: the engine wrongly classified as irrelevant
+- dedupe_hint: this looks like a duplicate of something we already have
+- general_instruction: a workspace-wide rule that doesn't fit above
+- reply_quality: how to handle inbound replies
+- product_positioning: how the product itself should be described
+
+Return a strict JSON object: {"category": "<one of the above or null>", "rule": "<a generalized one-sentence rule>", "confidence": <integer 0-100>}.
+- "rule" must generalize from the specific example so the platform can match similar cases later.
+- If the note carries no reusable signal, return {"category": null, "rule": "", "confidence": 0}.
+- Output JSON only, no prose.`;
+
+const ExtractorResultSchema = z.object({
+  category: z.string().nullable(),
+  rule: z.string(),
+  confidence: z.number().int().min(0).max(100),
+});
+
+export async function extractLessonAI(
+  ctx: WorkspaceContext,
+  comment: string,
+): Promise<LessonDraft | null> {
+  const provider = await getAIProviderForCtx(ctx);
+  const result = await provider.generateJson(
+    {
+      system: EXTRACTOR_SYSTEM_PROMPT,
+      prompt: `Operator note:\n"""${comment}"""`,
+    },
+    ExtractorResultSchema,
+    {
+      maxTokens: 256,
+      temperature: 0,
+      // Mock provider seeds on the prompt; including a stable marker lets
+      // tests deterministically inject a JSON response via mockSeed.
+      mockSeed: `learning.extract:${comment}`,
+    },
+  );
+
+  // Audit + cost: a lesson extraction is a billable AI call. Best-effort —
+  // a usage-log write failure must not lose a successful extraction.
+  try {
+    await recordUsage(ctx, {
+      kind: 'ai.learning_extract',
+      provider: provider.id,
+      units: 1n,
+      costEstimateCents: 0,
+      payload: { model: provider.model },
+    });
+  } catch (err) {
+    console.error('[learning.extractLessonAI] recordUsage failed:', err);
+  }
+
+  if (!result.category || !CATEGORY_SET.has(result.category)) return null;
+  const rule = result.rule.trim();
+  if (!rule) return null;
+  return {
+    category: result.category as LessonCategory,
+    rule: rule.slice(0, 1000),
+    confidence: clampConfidence(result.confidence),
+  };
 }
 
 /**
