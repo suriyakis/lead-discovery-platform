@@ -7,7 +7,12 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
+import { canAdminWorkspace } from '@/lib/services/context';
 import { LESSON_CATEGORIES, listLessons } from '@/lib/services/learning';
+import {
+  compactWorkspaceKnowledge,
+  lastCompactionRun,
+} from '@/lib/services/knowledge-compaction';
 
 const CATEGORY_FILTERS = [
   { key: 'all' as const, label: 'All' },
@@ -29,8 +34,11 @@ export default async function LearningPage({
   const showDisabled = sp.enabled === 'all';
 
   let lessons;
+  let isAdmin = false;
+  let lastCompaction: Awaited<ReturnType<typeof lastCompactionRun>> = null;
   try {
     const ctx = await getWorkspaceContext();
+    isAdmin = canAdminWorkspace(ctx);
     lessons = await listLessons(ctx, {
       ...(categoryKey !== 'all'
         ? { category: categoryKey as (typeof LESSON_CATEGORIES)[number] }
@@ -38,6 +46,7 @@ export default async function LearningPage({
       ...(showDisabled ? {} : { enabled: true }),
       limit: 500,
     });
+    lastCompaction = await lastCompactionRun(ctx);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -51,6 +60,13 @@ export default async function LearningPage({
       );
     }
     throw err;
+  }
+
+  async function runCompaction() {
+    'use server';
+    const c = await getWorkspaceContext();
+    await compactWorkspaceKnowledge(c);
+    redirect('/learning');
   }
 
   return (
@@ -70,6 +86,38 @@ export default async function LearningPage({
             + New lesson
           </Link>
         </div>
+
+        <section className="compaction-panel">
+          <div>
+            <strong>Knowledge compaction</strong>
+            <p className="muted">
+              Weekly AI pass that merges near-duplicate lessons and retires
+              stale low-confidence ones. Survivor lessons keep the full
+              evidence trail; retired ones are disabled, not deleted.
+            </p>
+            {lastCompaction ? (
+              <p className="muted">
+                Last run: {lastCompaction.at.toLocaleString()} ·{' '}
+                merged {String(lastCompaction.summary.mergedClusters ?? 0)}{' '}
+                clusters · retired{' '}
+                {String(
+                  (Number(lastCompaction.summary.retiredMergedCount ?? 0) +
+                    Number(lastCompaction.summary.retiredStaleCount ?? 0)),
+                )}{' '}
+                lessons
+              </p>
+            ) : (
+              <p className="muted">No compaction has run yet for this workspace.</p>
+            )}
+          </div>
+          {isAdmin ? (
+            <form action={runCompaction}>
+              <button type="submit" className="ghost-btn">
+                Compact now
+              </button>
+            </form>
+          ) : null}
+        </section>
 
         <div className="state-tabs">
           {CATEGORY_FILTERS.map((f) => {

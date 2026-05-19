@@ -862,6 +862,23 @@ Test sends never clutter the threads view; operator's own mail server keeps the 
 
 **Phase 59 complete.**
 
+## Phase 60 — Knowledge-first review loop (operator decisions feed AI-managed knowledge)
+
+**Design lock (2026-05-19):** "Knowledge is the source of knowledge." Every
+manual decision in the Review Queue must enrich the workspace knowledge
+base. Manual reject → product-scoped negative lesson. Manual approve →
+product-scoped positive lesson. Knowledge is AI-managed and compacted
+periodically so it stays at the most-useful size, not the biggest. Always
+workspace-scoped.
+
+- [x] **P60-01/02.** `applyStateChange` in review.ts feeds approve/reject into `recordFeedback` — looks up qualifications for the source record and emits one learning event per matched product (falls back to workspace-scoped event when no qualifications exist). New `review_items.approval_reason` column (migration 0040) + approve-with-reason UI input on `/review/[id]` mirroring the existing reject form. `approveReviewItem(ctx, id, reason?)` signature extended; `rejectReviewItem` unchanged.
+- [x] **P60-03.** AI-driven lesson extractor. `recordFeedback` now calls `extractLesson(ctx, comment)` which tries the workspace AI provider (via `getAIProviderForCtx`) first and falls back to the deterministic heuristic on any failure. Extraction runs OUTSIDE the DB transaction so a slow / failing AI call cannot tie up a connection. `usage_log` entry tagged `ai.learning_extract` per call. Resolves the long-standing "Phase 7+ swaps the heuristic for the AI provider abstraction" note.
+- [x] **P60-04.** `src/lib/services/knowledge-compaction.ts` — `compactWorkspaceKnowledge(ctx)` (admin-gated) + `compactWorkspaceKnowledgeUnattended(workspaceId)` (cron entry). Per-workspace pipeline: retire stale lessons (confidence < 40 AND `last_applied_at` older than 30 days or never applied AND createdAt older than 30 days) → cluster remaining enabled lessons by (productProfileId, category) → ask the AI per cluster to merge near-duplicates → update survivor row with the consolidated rule + unioned `evidence_event_ids`, disable the retired rows (no hard delete). Every merge / retire writes an audit event. `lastCompactionRun(ctx)` returns the most recent summary for UI display.
+- [x] **P60-05.** `knowledge.compact.tick` registered in `repeatables.ts` (weekly per workspace, fan-out matches the P58 follow-up tick). `/learning` page gains a compaction panel with last-run summary + "Compact now" button (admin-only). New `.compaction-panel` styling in `globals.css`.
+- [x] **P60-06.** `learning_lessons.application_count` + `last_applied_at` columns (migration 0041). New `recordLessonsApplied(ctx, lessonIds)` helper bumps both atomically — workspace-scoped, never throws, no-op on empty input. Wired into both real "lesson is consumed" callsites: `qualification.classifySourceRecord` (scoring loop) and `outreach.generateOutreachDraft` (prompt assembly). Compaction's stale-retirement uses these counters to distinguish dead-weight lessons from load-bearing ones.
+- [x] **P60-07.** Tests written alongside each task (no separate test phase). +4 review tests (per-product feedback emission, fallback to workspace-scoped when no qualifications, isolation), +4 learning AI-extractor tests (uses AI category, falls back when null, falls back on throw, rejects invalid category), +2 usage-tracking tests, +6 compaction tests (admin gate, merge with evidence union, keep-all, workspace isolation, audit emission, singleton skip). **781 → 797 total tests.**
+- [ ] **P60-08.** Deploy to agregat + smoke (apply migrations 0040 + 0041, exercise approve/reject on prod, manually trigger compaction).
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)

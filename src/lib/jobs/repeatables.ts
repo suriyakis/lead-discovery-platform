@@ -28,6 +28,7 @@ import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import { syncInbound } from '@/lib/services/mail';
 import { processDueFollowUps } from '@/lib/services/follow-up';
+import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import {
   classifyImapError,
   computeBackoffMs,
@@ -39,6 +40,10 @@ export const AUTOPILOT_TICK_MS = 5 * 60 * 1000;
 export const DRAIN_TICK_MS = 30 * 1000;
 export const IMAP_TICK_MS = 2 * 60 * 1000;
 export const FOLLOW_UP_TICK_MS = 60 * 60 * 1000;
+/** P60-05: knowledge compaction is heavy (AI per cluster). Weekly is enough
+ *  — lessons accumulate slowly and the platform can absorb a few days of
+ *  duplicates before the dilution matters. */
+export const KNOWLEDGE_COMPACT_TICK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function ownerCtx(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
   return makeWorkspaceContext({
@@ -216,6 +221,32 @@ const handleFollowUpTick: JobHandler = async () => {
   return { checked, sent, skipped, failed };
 };
 
+const handleKnowledgeCompactTick: JobHandler = async () => {
+  const wss = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.status, 'active'));
+  let processed = 0;
+  let merged = 0;
+  let retired = 0;
+  let failed = 0;
+  for (const ws of wss) {
+    try {
+      const summary = await compactWorkspaceKnowledgeUnattended(ws.id);
+      processed += 1;
+      merged += summary.mergedClusters;
+      retired += summary.retiredMergedCount + summary.retiredStaleCount;
+    } catch (err) {
+      failed++;
+      console.error(
+        `[knowledge.compact.tick] workspace=${ws.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return { workspaces: wss.length, processed, merged, retired, failed };
+};
+
 let registered = false;
 
 /**
@@ -232,6 +263,7 @@ export async function registerRepeatableJobs(
   q.on('outreach.drain.tick', handleDrainTick);
   q.on('mail.imap.tick', handleImapTick);
   q.on('outreach.follow_up.tick', handleFollowUpTick);
+  q.on('knowledge.compact.tick', handleKnowledgeCompactTick);
   if (!options.skipSchedule) {
     await q.enqueueRepeatable('autopilot.tick', {}, {
       everyMs: AUTOPILOT_TICK_MS,
@@ -248,6 +280,10 @@ export async function registerRepeatableJobs(
     await q.enqueueRepeatable('outreach.follow_up.tick', {}, {
       everyMs: FOLLOW_UP_TICK_MS,
       jobId: 'outreach-follow-up-tick',
+    });
+    await q.enqueueRepeatable('knowledge.compact.tick', {}, {
+      everyMs: KNOWLEDGE_COMPACT_TICK_MS,
+      jobId: 'knowledge-compact-tick',
     });
   }
   registered = true;

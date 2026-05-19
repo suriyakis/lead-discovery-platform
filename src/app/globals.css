@@ -2398,6 +2398,26 @@ button.primary-btn {
   margin-bottom: 1rem;
 }
 
+.compaction-panel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0 1.5rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  background: var(--brand-input);
+}
+
+.compaction-panel > div {
+  flex: 1;
+}
+
+.compaction-panel form {
+  flex-shrink: 0;
+}
+
 .reject-form,
 .approve-form {
   display: flex;
