@@ -35,7 +35,7 @@ import {
   researchLead,
 } from '@/lib/services/lead-research';
 import { Languages, Sparkles, Trash2 } from 'lucide-react';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type {
   CloseReason,
   PipelineState,
@@ -146,7 +146,7 @@ export default async function PipelineLeadDetail({
         .where(
           and(
             eq(mailThreads.workspaceId, ctx.workspaceId),
-            sql`${mailThreads.id} = ANY(${threadIdsForLead})`,
+            inArray(mailThreads.id, threadIdsForLead),
           ),
         )
     : [];

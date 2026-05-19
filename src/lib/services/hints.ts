@@ -121,21 +121,29 @@ export async function hintsForLeads(
   const productIds = Array.from(new Set(leads.map((l) => l.productProfileId)));
   const reviewIds = Array.from(new Set(leads.map((l) => l.reviewItemId)));
 
-  // 1) Top qualification per product (DISTINCT ON product_profile_id
-  //    ORDER BY product_profile_id, relevance_score DESC). One scan
-  //    instead of one query per lead.
-  const topQualRows = await db.execute(sql`
-    SELECT DISTINCT ON (product_profile_id)
-      product_profile_id,
-      is_relevant,
-      relevance_score,
-      qualification_reason,
-      rejection_reason
-    FROM qualifications
-    WHERE workspace_id = ${ctx.workspaceId}
-      AND product_profile_id = ANY(${productIds})
-    ORDER BY product_profile_id, relevance_score DESC
-  `);
+  // 1) Top qualification per product. Drizzle splats `${array}` into a
+  //    record-typed binding ($1, $2, …) inside raw `sql` templates, which
+  //    breaks `= ANY(...)`. Use the query builder + JS-side DISTINCT ON
+  //    emulation instead.
+  const allQualRows =
+    productIds.length > 0
+      ? await db
+          .select({
+            productProfileId: qualifications.productProfileId,
+            isRelevant: qualifications.isRelevant,
+            relevanceScore: qualifications.relevanceScore,
+            qualificationReason: qualifications.qualificationReason,
+            rejectionReason: qualifications.rejectionReason,
+          })
+          .from(qualifications)
+          .where(
+            and(
+              eq(qualifications.workspaceId, ctx.workspaceId),
+              inArray(qualifications.productProfileId, productIds),
+            ),
+          )
+          .orderBy(qualifications.productProfileId, desc(qualifications.relevanceScore))
+      : [];
   const topByProduct = new Map<
     string,
     {
@@ -145,13 +153,14 @@ export async function hintsForLeads(
       rejectionReason: string | null;
     }
   >();
-  for (const row of topQualRows as unknown as Array<Record<string, unknown>>) {
-    const pid = (row.product_profile_id as bigint | number).toString();
+  for (const row of allQualRows) {
+    const pid = row.productProfileId.toString();
+    if (topByProduct.has(pid)) continue; // first row per partition wins (DISTINCT ON)
     topByProduct.set(pid, {
-      isRelevant: row.is_relevant as boolean,
-      relevanceScore: row.relevance_score as number,
-      qualificationReason: (row.qualification_reason as string | null) ?? null,
-      rejectionReason: (row.rejection_reason as string | null) ?? null,
+      isRelevant: row.isRelevant,
+      relevanceScore: row.relevanceScore,
+      qualificationReason: row.qualificationReason,
+      rejectionReason: row.rejectionReason,
     });
   }
 
@@ -401,18 +410,24 @@ export async function hintsForDrafts(
   for (const d of drafts) out.set(d.id.toString(), []);
 
   const draftIds = drafts.map((d) => d.id);
-  // Most-recent queue row per draft, single scan.
-  const queueRows = await db.execute(sql`
-    SELECT DISTINCT ON (draft_id)
-      draft_id,
-      status,
-      scheduled_send_at,
-      last_error
-    FROM outreach_queue
-    WHERE workspace_id = ${ctx.workspaceId}
-      AND draft_id = ANY(${draftIds})
-    ORDER BY draft_id, created_at DESC
-  `);
+  // Most-recent queue row per draft. Use the builder + JS-side DISTINCT ON
+  // emulation — drizzle's raw `sql` template splats arrays into a record
+  // binding which `= ANY(...)` cannot consume.
+  const allQueueRows = await db
+    .select({
+      draftId: outreachQueue.draftId,
+      status: outreachQueue.status,
+      scheduledSendAt: outreachQueue.scheduledSendAt,
+      lastError: outreachQueue.lastError,
+    })
+    .from(outreachQueue)
+    .where(
+      and(
+        eq(outreachQueue.workspaceId, ctx.workspaceId),
+        inArray(outreachQueue.draftId, draftIds),
+      ),
+    )
+    .orderBy(outreachQueue.draftId, desc(outreachQueue.createdAt));
   const queueByDraft = new Map<
     string,
     {
@@ -421,12 +436,14 @@ export async function hintsForDrafts(
       lastError: string | null;
     }
   >();
-  for (const row of queueRows as unknown as Array<Record<string, unknown>>) {
-    const did = (row.draft_id as bigint | number).toString();
+  for (const row of allQueueRows) {
+    if (row.draftId === null) continue;
+    const did = row.draftId.toString();
+    if (queueByDraft.has(did)) continue; // first row per partition wins (DISTINCT ON)
     queueByDraft.set(did, {
-      status: row.status as string,
-      scheduledSendAt: row.scheduled_send_at as Date,
-      lastError: (row.last_error as string | null) ?? null,
+      status: row.status,
+      scheduledSendAt: row.scheduledSendAt,
+      lastError: row.lastError,
     });
   }
 

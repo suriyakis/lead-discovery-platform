@@ -7,7 +7,7 @@
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
@@ -83,7 +83,7 @@ export default async function WorkspaceAuditPage({
     ? await db
         .select({ id: users.id, name: users.name, email: users.email })
         .from(users)
-        .where(sql`${users.id} = ANY(${userIds})`)
+        .where(inArray(users.id, userIds))
     : [];
   const userById = new Map(userRows.map((u) => [u.id, u]));
 
