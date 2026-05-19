@@ -28,9 +28,14 @@ import {
   getThread,
   listMessages,
   listThreads,
+  markAsSpam,
+  moveToTrash,
+  permanentlyDelete,
+  restoreFromTrash,
   sendMessage,
   sendTestEmail,
   syncInbound,
+  unmarkSpam,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
@@ -1349,3 +1354,265 @@ describe('listMessages + countMessagesByFolder (P61)', () => {
     expect(folders).toEqual(['inbox', 'sent', 'queued', 'errors', 'spam', 'trash']);
   });
 });
+
+// ============ per-message actions (P61) ===============================
+
+describe('per-message actions (P61)', () => {
+  let counter = 0;
+  async function seed(
+    workspaceId: bigint,
+    mailboxId: bigint,
+    overrides: Partial<{
+      direction: 'inbound' | 'outbound';
+      status:
+        | 'queued'
+        | 'sending'
+        | 'sent'
+        | 'delivered'
+        | 'bounced'
+        | 'failed'
+        | 'received';
+      trashedAt: Date | null;
+      spamAt: Date | null;
+      spamReason: string | null;
+    }> = {},
+  ) {
+    counter += 1;
+    const [row] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId,
+        mailboxId,
+        direction: overrides.direction ?? 'inbound',
+        status: overrides.status ?? 'received',
+        messageId: `<action-${counter}-${Date.now()}@test.local>`,
+        fromAddress: 'sender@test.local',
+        toAddresses: ['rcpt@test.local'],
+        subject: `subj-${counter}`,
+        trashedAt: overrides.trashedAt ?? null,
+        spamAt: overrides.spamAt ?? null,
+        spamReason: overrides.spamReason ?? null,
+      })
+      .returning();
+    return row!;
+  }
+
+  describe('moveToTrash', () => {
+    it('sets trashed_at and moves message to trash folder', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      const result = await moveToTrash(ctx(s.workspaceA, s.ownerA), [m.id]);
+      expect(result.affected).toBe(1);
+      expect(result.ids).toEqual([m.id]);
+      const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+      expect(counts.trash).toBe(1);
+      expect(counts.inbox).toBe(0);
+    });
+
+    it('idempotent — re-trashing an already-trashed message is a no-op', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      await moveToTrash(ctx(s.workspaceA, s.ownerA), [m.id]);
+      const second = await moveToTrash(ctx(s.workspaceA, s.ownerA), [m.id]);
+      expect(second.affected).toBe(0);
+    });
+
+    it('batches across messages and returns the moved ids', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m1 = await seed(s.workspaceA, mb.id);
+      const m2 = await seed(s.workspaceA, mb.id);
+      const m3 = await seed(s.workspaceA, mb.id);
+      const result = await moveToTrash(ctx(s.workspaceA, s.ownerA), [
+        m1.id,
+        m2.id,
+        m3.id,
+      ]);
+      expect(result.affected).toBe(3);
+      expect(new Set(result.ids.map(String))).toEqual(
+        new Set([m1.id, m2.id, m3.id].map(String)),
+      );
+    });
+
+    it('does not cross workspace boundaries', async () => {
+      const s = await setup();
+      const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+      const inB = await seed(s.workspaceB, mbB.id);
+      const result = await moveToTrash(ctx(s.workspaceA, s.ownerA), [inB.id]);
+      expect(result.affected).toBe(0);
+      void mbA;
+    });
+
+    it('viewers cannot trash', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      await expect(
+        moveToTrash(ctx(s.workspaceA, s.ownerA, 'viewer'), [m.id]),
+      ).rejects.toThrow(/Permission denied/);
+    });
+
+    it('empty input is a no-op', async () => {
+      const s = await setup();
+      const result = await moveToTrash(ctx(s.workspaceA, s.ownerA), []);
+      expect(result).toEqual({ affected: 0, ids: [] });
+    });
+  });
+
+  describe('restoreFromTrash', () => {
+    it('clears trashed_at and brings the message back into its real folder', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id, { trashedAt: new Date() });
+      const result = await restoreFromTrash(ctx(s.workspaceA, s.ownerA), [m.id]);
+      expect(result.affected).toBe(1);
+      const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+      expect(counts.trash).toBe(0);
+      expect(counts.inbox).toBe(1);
+    });
+
+    it('no-op on non-trashed messages', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      const result = await restoreFromTrash(ctx(s.workspaceA, s.ownerA), [m.id]);
+      expect(result.affected).toBe(0);
+    });
+
+    it('restoring a spammed-and-trashed message reveals its spam state', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id, {
+        trashedAt: new Date(),
+        spamAt: new Date(),
+        spamReason: 'manual',
+      });
+      await restoreFromTrash(ctx(s.workspaceA, s.ownerA), [m.id]);
+      const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+      expect(counts.spam).toBe(1);
+      expect(counts.trash).toBe(0);
+    });
+  });
+
+  describe('markAsSpam', () => {
+    it('sets spam_at + spam_reason', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      const result = await markAsSpam(ctx(s.workspaceA, s.ownerA), [m.id], 'manual');
+      expect(result.affected).toBe(1);
+      const refreshed = await getMessage(ctx(s.workspaceA, s.ownerA), m.id);
+      expect(refreshed.spamAt).not.toBeNull();
+      expect(refreshed.spamReason).toBe('manual');
+    });
+
+    it('uses default reason "manual" when none supplied', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      await markAsSpam(ctx(s.workspaceA, s.ownerA), [m.id]);
+      const refreshed = await getMessage(ctx(s.workspaceA, s.ownerA), m.id);
+      expect(refreshed.spamReason).toBe('manual');
+    });
+
+    it('rejects empty / whitespace reason', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      await expect(
+        markAsSpam(ctx(s.workspaceA, s.ownerA), [m.id], '   '),
+      ).rejects.toThrow(/spam reason/);
+    });
+
+    it('idempotent on already-spammed messages', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id, { spamAt: new Date(), spamReason: 'first' });
+      const result = await markAsSpam(ctx(s.workspaceA, s.ownerA), [m.id], 'second');
+      expect(result.affected).toBe(0);
+      const refreshed = await getMessage(ctx(s.workspaceA, s.ownerA), m.id);
+      expect(refreshed.spamReason).toBe('first');
+    });
+  });
+
+  describe('unmarkSpam', () => {
+    it('clears spam_at and spam_reason', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id, {
+        spamAt: new Date(),
+        spamReason: 'manual',
+      });
+      const result = await unmarkSpam(ctx(s.workspaceA, s.ownerA), [m.id]);
+      expect(result.affected).toBe(1);
+      const refreshed = await getMessage(ctx(s.workspaceA, s.ownerA), m.id);
+      expect(refreshed.spamAt).toBeNull();
+      expect(refreshed.spamReason).toBeNull();
+    });
+
+    it('no-op on non-spammed messages', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id);
+      const result = await unmarkSpam(ctx(s.workspaceA, s.ownerA), [m.id]);
+      expect(result.affected).toBe(0);
+    });
+  });
+
+  describe('permanentlyDelete', () => {
+    it('deletes a trashed message and the row vanishes', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id, { trashedAt: new Date() });
+      const result = await permanentlyDelete(ctx(s.workspaceA, s.ownerA), [m.id]);
+      expect(result.affected).toBe(1);
+      await expect(getMessage(ctx(s.workspaceA, s.ownerA), m.id)).rejects.toThrow(/not found/);
+    });
+
+    it('refuses non-trashed messages (entire batch rejected)', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const trashed = await seed(s.workspaceA, mb.id, { trashedAt: new Date() });
+      const live = await seed(s.workspaceA, mb.id);
+      await expect(
+        permanentlyDelete(ctx(s.workspaceA, s.ownerA), [trashed.id, live.id]),
+      ).rejects.toThrow(/not in trash/);
+      // Neither row was deleted (batch atomicity).
+      const stillThereTrashed = await getMessage(ctx(s.workspaceA, s.ownerA), trashed.id);
+      const stillThereLive = await getMessage(ctx(s.workspaceA, s.ownerA), live.id);
+      expect(stillThereTrashed.id).toBe(trashed.id);
+      expect(stillThereLive.id).toBe(live.id);
+    });
+
+    it('refuses ids from another workspace', async () => {
+      const s = await setup();
+      const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+      const inB = await seed(s.workspaceB, mbB.id, { trashedAt: new Date() });
+      // A asks to delete B's id — invariant blocks it.
+      await expect(
+        permanentlyDelete(ctx(s.workspaceA, s.ownerA), [inB.id]),
+      ).rejects.toThrow(/not in trash/);
+      void mbA;
+    });
+
+    it('viewers cannot permanently delete', async () => {
+      const s = await setup();
+      const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+      const m = await seed(s.workspaceA, mb.id, { trashedAt: new Date() });
+      await expect(
+        permanentlyDelete(ctx(s.workspaceA, s.ownerA, 'viewer'), [m.id]),
+      ).rejects.toThrow(/Permission denied/);
+    });
+
+    it('empty input is a no-op', async () => {
+      const s = await setup();
+      const result = await permanentlyDelete(ctx(s.workspaceA, s.ownerA), []);
+      expect(result).toEqual({ affected: 0, ids: [] });
+    });
+  });
+});
+

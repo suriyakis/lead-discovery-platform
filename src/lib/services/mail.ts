@@ -896,6 +896,195 @@ export async function getMessage(
   return rows[0];
 }
 
+// ---- per-message actions (P61) -------------------------------------
+
+export interface ActionResult {
+  affected: number;
+  ids: bigint[];
+}
+
+/** Soft-delete a batch of messages — sets trashed_at = now() on every row
+ *  belonging to the workspace. Idempotent: messages already in trash stay
+ *  with their original trashedAt timestamp (NOT updated). Returns the ids
+ *  actually moved (excludes already-trashed). */
+export async function moveToTrash(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+): Promise<ActionResult> {
+  if (!canWrite(ctx)) throw permissionDenied('mail.move_to_trash');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const now = new Date();
+  const updated = await db
+    .update(mailMessages)
+    .set({ trashedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        inArray(mailMessages.id, [...ids]),
+        isNull(mailMessages.trashedAt),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  const movedIds = updated.map((r) => r.id);
+  if (movedIds.length > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.move_to_trash',
+      entityType: 'mail_message',
+      payload: { ids: movedIds.map(String), count: movedIds.length },
+    });
+  }
+  return { affected: movedIds.length, ids: movedIds };
+}
+
+/** Undo moveToTrash — clears trashed_at. Only affects currently-trashed
+ *  rows in the workspace. */
+export async function restoreFromTrash(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+): Promise<ActionResult> {
+  if (!canWrite(ctx)) throw permissionDenied('mail.restore_from_trash');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const now = new Date();
+  const updated = await db
+    .update(mailMessages)
+    .set({ trashedAt: null, updatedAt: now })
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        inArray(mailMessages.id, [...ids]),
+        isNotNull(mailMessages.trashedAt),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  const restoredIds = updated.map((r) => r.id);
+  if (restoredIds.length > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.restore_from_trash',
+      entityType: 'mail_message',
+      payload: { ids: restoredIds.map(String), count: restoredIds.length },
+    });
+  }
+  return { affected: restoredIds.length, ids: restoredIds };
+}
+
+/** Flag a batch as spam. Stamps spam_at = now() and stores the reason.
+ *  Idempotent on already-spammed rows. */
+export async function markAsSpam(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+  reason: string = 'manual',
+): Promise<ActionResult> {
+  if (!canWrite(ctx)) throw permissionDenied('mail.mark_as_spam');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const trimmed = reason.trim();
+  if (!trimmed) throw invalid('spam reason cannot be empty');
+  const now = new Date();
+  const updated = await db
+    .update(mailMessages)
+    .set({ spamAt: now, spamReason: trimmed, updatedAt: now })
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        inArray(mailMessages.id, [...ids]),
+        isNull(mailMessages.spamAt),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  const flaggedIds = updated.map((r) => r.id);
+  if (flaggedIds.length > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.mark_as_spam',
+      entityType: 'mail_message',
+      payload: {
+        ids: flaggedIds.map(String),
+        count: flaggedIds.length,
+        reason: trimmed,
+      },
+    });
+  }
+  return { affected: flaggedIds.length, ids: flaggedIds };
+}
+
+/** Undo markAsSpam — clears spam_at + spam_reason. */
+export async function unmarkSpam(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+): Promise<ActionResult> {
+  if (!canWrite(ctx)) throw permissionDenied('mail.unmark_spam');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const now = new Date();
+  const updated = await db
+    .update(mailMessages)
+    .set({ spamAt: null, spamReason: null, updatedAt: now })
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        inArray(mailMessages.id, [...ids]),
+        isNotNull(mailMessages.spamAt),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  const clearedIds = updated.map((r) => r.id);
+  if (clearedIds.length > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.unmark_spam',
+      entityType: 'mail_message',
+      payload: { ids: clearedIds.map(String), count: clearedIds.length },
+    });
+  }
+  return { affected: clearedIds.length, ids: clearedIds };
+}
+
+/** Hard-delete rows. Refuses to delete anything that isn't already in
+ *  trash — the UI guides the operator through trash first, then delete.
+ *  Throws if any requested id is missing (wrong workspace, wrong id, or
+ *  not trashed); the entire batch is rejected so the caller can show a
+ *  precise error. */
+export async function permanentlyDelete(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+): Promise<ActionResult> {
+  if (!canWrite(ctx)) throw permissionDenied('mail.permanently_delete');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  // Verify every id is in this workspace AND already trashed before we
+  // delete anything. A bulk delete with a permissive WHERE would silently
+  // drop ineligible ids and the operator would not notice.
+  const eligible = await db
+    .select({ id: mailMessages.id })
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        inArray(mailMessages.id, [...ids]),
+        isNotNull(mailMessages.trashedAt),
+      ),
+    );
+  if (eligible.length !== ids.length) {
+    throw invalid(
+      `permanentlyDelete: ${ids.length - eligible.length} of ${ids.length} id(s) are not in trash`,
+    );
+  }
+  const eligibleIds = eligible.map((r) => r.id);
+  const deleted = await db
+    .delete(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        inArray(mailMessages.id, eligibleIds),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  const deletedIds = deleted.map((r) => r.id);
+  if (deletedIds.length > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.permanently_delete',
+      entityType: 'mail_message',
+      payload: { ids: deletedIds.map(String), count: deletedIds.length },
+    });
+  }
+  return { affected: deletedIds.length, ids: deletedIds };
+}
+
 // ---- threading -----------------------------------------------------
 
 interface ThreadKeyInput {
