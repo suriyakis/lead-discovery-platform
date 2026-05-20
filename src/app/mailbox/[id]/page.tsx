@@ -20,11 +20,13 @@ import {
 } from '@/lib/services/mailbox';
 import {
   countMessagesByFolder,
+  isHardBounce,
   listMessages,
   markAsSpam,
   moveToTrash,
   permanentlyDelete,
   restoreFromTrash,
+  retrySend,
   syncInbound,
   unmarkSpam,
 } from '@/lib/services/mail';
@@ -249,6 +251,33 @@ export default async function MailboxDetail({
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       backToFolderError(formData, err instanceof Error ? err.message : 'delete failed');
+    }
+  }
+  async function retrySelected(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const ids = parseIds(formData);
+    try {
+      const r = await retrySend(c, ids);
+      const parts: string[] = [];
+      if (r.retried.length > 0)
+        parts.push(
+          r.retried.length === 1
+            ? '1 message resent'
+            : `${r.retried.length} messages resent`,
+        );
+      if (r.skippedHardBounce.length > 0)
+        parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
+      if (r.skippedIneligible.length > 0)
+        parts.push(`${r.skippedIneligible.length} ineligible`);
+      if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);
+      backToFolder(
+        formData,
+        parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.',
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      backToFolderError(formData, err instanceof Error ? err.message : 'retry failed');
     }
   }
 
@@ -587,6 +616,15 @@ export default async function MailboxDetail({
                 <span className="muted small">
                   Select message(s) then choose an action:
                 </span>
+                {activeFolder === 'errors' ? (
+                  <button
+                    type="submit"
+                    formAction={retrySelected}
+                    className="primary-btn"
+                  >
+                    Retry selected
+                  </button>
+                ) : null}
                 {activeFolder !== 'trash' ? (
                   <button type="submit" formAction={trashSelected}>
                     Move to trash
@@ -660,6 +698,9 @@ export default async function MailboxDetail({
                               {peer || '(unknown)'}
                             </span>
                             <span>{when.toLocaleString()}</span>
+                            {activeFolder === 'errors' && isHardBounce(message) ? (
+                              <span className="badge badge-bad">Hard bounce</span>
+                            ) : null}
                             {activeFolder === 'errors' && message.failureReason ? (
                               <span className="warn">
                                 {message.failureReason}

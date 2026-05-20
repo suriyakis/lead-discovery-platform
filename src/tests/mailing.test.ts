@@ -26,12 +26,14 @@ import {
   countThreadsByKind,
   getMessage,
   getThread,
+  isHardBounce,
   listMessages,
   listThreads,
   markAsSpam,
   moveToTrash,
   permanentlyDelete,
   restoreFromTrash,
+  retrySend,
   sendMessage,
   sendTestEmail,
   syncInbound,
@@ -1613,6 +1615,222 @@ describe('per-message actions (P61)', () => {
       const result = await permanentlyDelete(ctx(s.workspaceA, s.ownerA), []);
       expect(result).toEqual({ affected: 0, ids: [] });
     });
+  });
+});
+
+// ============ retry + hard-bounce detection (P61-07) ==================
+
+describe('isHardBounce (P61-07)', () => {
+  it('status="bounced" → hard bounce regardless of failureReason', () => {
+    expect(isHardBounce({ status: 'bounced', failureReason: null })).toBe(true);
+    expect(isHardBounce({ status: 'bounced', failureReason: '450 try later' })).toBe(true);
+  });
+
+  it('failureReason with a 5xx code → hard bounce', () => {
+    expect(isHardBounce({ status: 'failed', failureReason: '550 user unknown' })).toBe(true);
+    expect(isHardBounce({ status: 'failed', failureReason: 'SMTP error: 554 transaction failed' })).toBe(true);
+  });
+
+  it('failureReason without a 5xx code → not hard bounce', () => {
+    expect(isHardBounce({ status: 'failed', failureReason: '421 temporary failure' })).toBe(false);
+    expect(isHardBounce({ status: 'failed', failureReason: 'Connection timeout' })).toBe(false);
+    expect(isHardBounce({ status: 'failed', failureReason: null })).toBe(false);
+  });
+
+  it('non-failed status (sent, delivered, queued, received) → not hard bounce', () => {
+    expect(isHardBounce({ status: 'sent', failureReason: null })).toBe(false);
+    expect(isHardBounce({ status: 'delivered', failureReason: null })).toBe(false);
+    expect(isHardBounce({ status: 'queued', failureReason: null })).toBe(false);
+    expect(isHardBounce({ status: 'received', failureReason: null })).toBe(false);
+  });
+});
+
+describe('retrySend (P61-07)', () => {
+  let counter = 0;
+  async function seedFailed(
+    workspaceId: bigint,
+    mailboxId: bigint,
+    overrides: Partial<{
+      status: 'failed' | 'bounced';
+      failureReason: string | null;
+      toAddresses: string[];
+      subject: string;
+    }> = {},
+  ) {
+    counter += 1;
+    const [row] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId,
+        mailboxId,
+        direction: 'outbound',
+        status: overrides.status ?? 'failed',
+        messageId: `<retry-${counter}-${Date.now()}@test.local>`,
+        fromAddress: 'sender@test.local',
+        toAddresses: overrides.toAddresses ?? ['rcpt@test.local'],
+        subject: overrides.subject ?? `retryable-${counter}`,
+        bodyText: 'original body',
+        failureReason: overrides.failureReason ?? '421 temporary',
+      })
+      .returning();
+    return row!;
+  }
+
+  it('re-sends a retryable failed message and trashes the original', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const original = await seedFailed(s.workspaceA, mb.id);
+    const provider = new MockMailProvider();
+
+    const r = await retrySend(ctx(s.workspaceA, s.ownerA), [original.id], provider);
+    expect(r.retried.map(String)).toEqual([original.id.toString()]);
+    expect(r.skippedHardBounce).toEqual([]);
+    expect(r.skippedIneligible).toEqual([]);
+    expect(r.errors).toEqual([]);
+
+    // Original is now in trash.
+    const refreshed = await getMessage(ctx(s.workspaceA, s.ownerA), original.id);
+    expect(refreshed.trashedAt).not.toBeNull();
+
+    // A new outbound message exists with status='sent'.
+    const sentRows = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'sent',
+    });
+    expect(sentRows).toHaveLength(1);
+    expect(sentRows[0]!.message.subject).toBe(original.subject);
+  });
+
+  it('skips hard-bounced messages (status=bounced)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const bounced = await seedFailed(s.workspaceA, mb.id, {
+      status: 'bounced',
+      failureReason: '550 mailbox unavailable',
+    });
+    const provider = new MockMailProvider();
+    const r = await retrySend(ctx(s.workspaceA, s.ownerA), [bounced.id], provider);
+    expect(r.skippedHardBounce.map(String)).toEqual([bounced.id.toString()]);
+    expect(r.retried).toEqual([]);
+    // Original still in Errors folder, not trashed.
+    const refreshed = await getMessage(ctx(s.workspaceA, s.ownerA), bounced.id);
+    expect(refreshed.trashedAt).toBeNull();
+  });
+
+  it('skips hard-bounced messages (5xx in failureReason)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const fivexx = await seedFailed(s.workspaceA, mb.id, {
+      status: 'failed',
+      failureReason: '550 user unknown',
+    });
+    const provider = new MockMailProvider();
+    const r = await retrySend(ctx(s.workspaceA, s.ownerA), [fivexx.id], provider);
+    expect(r.skippedHardBounce.map(String)).toEqual([fivexx.id.toString()]);
+  });
+
+  it('skips ineligible messages (status=sent, status=received, inbound)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const [sent] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId: s.workspaceA,
+        mailboxId: mb.id,
+        direction: 'outbound',
+        status: 'sent',
+        messageId: `<ineligible-sent-${Date.now()}@test.local>`,
+        fromAddress: 'a@test.local',
+        toAddresses: ['b@test.local'],
+        subject: 'already sent',
+        bodyText: 'x',
+      })
+      .returning();
+    const [inbound] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId: s.workspaceA,
+        mailboxId: mb.id,
+        direction: 'inbound',
+        status: 'received',
+        messageId: `<ineligible-in-${Date.now()}@test.local>`,
+        fromAddress: 'x@test.local',
+        toAddresses: ['us@test.local'],
+        subject: 'inbound',
+        bodyText: 'x',
+      })
+      .returning();
+    const provider = new MockMailProvider();
+    const r = await retrySend(
+      ctx(s.workspaceA, s.ownerA),
+      [sent!.id, inbound!.id],
+      provider,
+    );
+    expect(r.skippedIneligible.map(String).sort()).toEqual(
+      [sent!.id.toString(), inbound!.id.toString()].sort(),
+    );
+    expect(r.retried).toEqual([]);
+  });
+
+  it('mixed batch: retries the retryable, skips the hard-bounced, skips the sent', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const retryable = await seedFailed(s.workspaceA, mb.id);
+    const hardBounce = await seedFailed(s.workspaceA, mb.id, {
+      status: 'bounced',
+    });
+    const [okSent] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId: s.workspaceA,
+        mailboxId: mb.id,
+        direction: 'outbound',
+        status: 'delivered',
+        messageId: `<mix-sent-${Date.now()}@test.local>`,
+        fromAddress: 'a@test.local',
+        toAddresses: ['b@test.local'],
+        subject: 'ok',
+        bodyText: 'x',
+      })
+      .returning();
+    const provider = new MockMailProvider();
+    const r = await retrySend(
+      ctx(s.workspaceA, s.ownerA),
+      [retryable.id, hardBounce.id, okSent!.id],
+      provider,
+    );
+    expect(r.retried.map(String)).toEqual([retryable.id.toString()]);
+    expect(r.skippedHardBounce.map(String)).toEqual([hardBounce.id.toString()]);
+    expect(r.skippedIneligible.map(String)).toEqual([okSent!.id.toString()]);
+  });
+
+  it('respects workspace isolation', async () => {
+    const s = await setup();
+    const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+    const inB = await seedFailed(s.workspaceB, mbB.id);
+    const provider = new MockMailProvider();
+    const r = await retrySend(ctx(s.workspaceA, s.ownerA), [inB.id], provider);
+    expect(r.retried).toEqual([]);
+    expect(r.skippedHardBounce).toEqual([]);
+    expect(r.skippedIneligible).toEqual([]);
+    void mbA;
+  });
+
+  it('viewers cannot retry', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const m = await seedFailed(s.workspaceA, mb.id);
+    await expect(
+      retrySend(ctx(s.workspaceA, s.ownerA, 'viewer'), [m.id]),
+    ).rejects.toThrow(/Permission denied/);
+  });
+
+  it('empty input is a no-op', async () => {
+    const s = await setup();
+    const r = await retrySend(ctx(s.workspaceA, s.ownerA), []);
+    expect(r.retried).toEqual([]);
+    expect(r.errors).toEqual([]);
   });
 });
 

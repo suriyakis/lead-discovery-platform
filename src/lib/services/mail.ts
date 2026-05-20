@@ -1085,6 +1085,127 @@ export async function permanentlyDelete(
   return { affected: deletedIds.length, ids: deletedIds };
 }
 
+// ---- retry (P61-07) ------------------------------------------------
+
+const HARD_BOUNCE_RE = /\b5\d{2}\b/;
+
+/** A message is "hard bounced" if either:
+ *    - its status is 'bounced' (which is only set by the DSN parser on
+ *      a permanent receiver-side rejection), or
+ *    - its failureReason carries an SMTP 5xx response code.
+ *  Hard bounces are not retryable — the receiving server has actively
+ *  refused delivery and re-sending will just bounce again. */
+export function isHardBounce(msg: {
+  status: MailMessage['status'];
+  failureReason: string | null;
+}): boolean {
+  if (msg.status === 'bounced') return true;
+  return msg.failureReason ? HARD_BOUNCE_RE.test(msg.failureReason) : false;
+}
+
+export interface RetryResult {
+  retried: bigint[];
+  skippedHardBounce: bigint[];
+  skippedIneligible: bigint[];
+  errors: Array<{ id: bigint; error: string }>;
+}
+
+/** Re-send a batch of failed messages. For each id we look up the
+ *  original row, skip ineligible ones (not outbound, not in
+ *  failed/bounced), skip hard bounces, and otherwise call sendMessage
+ *  with the original payload. On success we trash the original so the
+ *  Errors folder stays clean — the new send gets its own row + its own
+ *  messageId and threads onto the same conversation. */
+export async function retrySend(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+  providerOverride?: IMailProvider,
+): Promise<RetryResult> {
+  if (!canWrite(ctx)) throw permissionDenied('mail.retry_send');
+  const result: RetryResult = {
+    retried: [],
+    skippedHardBounce: [],
+    skippedIneligible: [],
+    errors: [],
+  };
+  if (ids.length === 0) return result;
+
+  const originals = await db
+    .select()
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        inArray(mailMessages.id, [...ids]),
+      ),
+    );
+
+  for (const original of originals) {
+    if (
+      original.direction !== 'outbound' ||
+      (original.status !== 'failed' && original.status !== 'bounced')
+    ) {
+      result.skippedIneligible.push(original.id);
+      continue;
+    }
+    if (isHardBounce(original)) {
+      result.skippedHardBounce.push(original.id);
+      continue;
+    }
+    try {
+      await sendMessage(ctx, {
+        mailboxId: original.mailboxId,
+        to: original.toAddresses.map((address) => ({ address })),
+        cc: original.ccAddresses.map((address) => ({ address })),
+        bcc: original.bccAddresses.map((address) => ({ address })),
+        subject: original.subject,
+        text: original.bodyText ?? undefined,
+        html: original.bodyHtml ?? undefined,
+        inReplyTo: original.inReplyTo ?? undefined,
+        references: original.references,
+        sourceDraftId: original.sourceDraftId ?? undefined,
+        providerOverride,
+      });
+      // Trash the original so a successful retry actually clears the
+      // Errors folder. The full history stays in audit_log + the row
+      // is recoverable from Trash if the operator needs to inspect it.
+      const now = new Date();
+      await db
+        .update(mailMessages)
+        .set({ trashedAt: now, updatedAt: now })
+        .where(eq(mailMessages.id, original.id));
+      result.retried.push(original.id);
+    } catch (err) {
+      result.errors.push({
+        id: original.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (
+    result.retried.length > 0 ||
+    result.errors.length > 0 ||
+    result.skippedHardBounce.length > 0
+  ) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.retry_send',
+      entityType: 'mail_message',
+      payload: {
+        retried: result.retried.map(String),
+        skippedHardBounce: result.skippedHardBounce.map(String),
+        skippedIneligible: result.skippedIneligible.map(String),
+        errors: result.errors.map((e) => ({
+          id: e.id.toString(),
+          error: e.error,
+        })),
+      },
+    });
+  }
+
+  return result;
+}
+
 // ---- threading -----------------------------------------------------
 
 interface ThreadKeyInput {
