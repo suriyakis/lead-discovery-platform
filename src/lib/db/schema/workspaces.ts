@@ -133,6 +133,12 @@ export const workspaces = pgTable('workspaces', {
    *  followUpMaxSteps fields above. */
   followUpStepConfigs: jsonb('follow_up_step_configs'),
 
+  /** P61-09: how long a message stays in Trash before the daily purge
+   *  cron hard-deletes it. 30d default matches operator expectation from
+   *  Gmail / Outlook. Set 0 to keep the cron from ever deleting (the
+   *  operator can still manually Empty trash now). Cap at 365d. */
+  trashRetentionDays: integer('trash_retention_days').notNull().default(30),
+
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),

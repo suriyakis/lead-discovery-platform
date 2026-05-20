@@ -302,6 +302,13 @@
       "when": 1779216397651,
       "tag": "0042_striped_black_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1779264113018,
+      "tag": "0043_volatile_mesmero",
+      "breakpoints": true
     }
   ]
 }

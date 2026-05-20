@@ -26,7 +26,7 @@ import {
 } from '@/lib/services/context';
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
-import { syncInbound } from '@/lib/services/mail';
+import { purgeOldTrashUnattended, syncInbound } from '@/lib/services/mail';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import {
@@ -44,6 +44,10 @@ export const FOLLOW_UP_TICK_MS = 60 * 60 * 1000;
  *  — lessons accumulate slowly and the platform can absorb a few days of
  *  duplicates before the dilution matters. */
 export const KNOWLEDGE_COMPACT_TICK_MS = 7 * 24 * 60 * 60 * 1000;
+/** P61-09: daily mail trash purge. The actual retention window is
+ *  per-workspace (workspaces.trash_retention_days, default 30); this is
+ *  just how often we check. */
+export const MAIL_TRASH_PURGE_TICK_MS = 24 * 60 * 60 * 1000;
 
 function ownerCtx(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
   return makeWorkspaceContext({
@@ -221,6 +225,28 @@ const handleFollowUpTick: JobHandler = async () => {
   return { checked, sent, skipped, failed };
 };
 
+const handleMailTrashPurgeTick: JobHandler = async () => {
+  const wss = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.status, 'active'));
+  let totalDeleted = 0;
+  let failed = 0;
+  for (const ws of wss) {
+    try {
+      const result = await purgeOldTrashUnattended(ws.id);
+      totalDeleted += result.deleted;
+    } catch (err) {
+      failed++;
+      console.error(
+        `[mail.trash.purge.tick] workspace=${ws.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return { workspaces: wss.length, deleted: totalDeleted, failed };
+};
+
 const handleKnowledgeCompactTick: JobHandler = async () => {
   const wss = await db
     .select()
@@ -264,6 +290,7 @@ export async function registerRepeatableJobs(
   q.on('mail.imap.tick', handleImapTick);
   q.on('outreach.follow_up.tick', handleFollowUpTick);
   q.on('knowledge.compact.tick', handleKnowledgeCompactTick);
+  q.on('mail.trash.purge.tick', handleMailTrashPurgeTick);
   if (!options.skipSchedule) {
     await q.enqueueRepeatable('autopilot.tick', {}, {
       everyMs: AUTOPILOT_TICK_MS,
@@ -284,6 +311,10 @@ export async function registerRepeatableJobs(
     await q.enqueueRepeatable('knowledge.compact.tick', {}, {
       everyMs: KNOWLEDGE_COMPACT_TICK_MS,
       jobId: 'knowledge-compact-tick',
+    });
+    await q.enqueueRepeatable('mail.trash.purge.tick', {}, {
+      everyMs: MAIL_TRASH_PURGE_TICK_MS,
+      jobId: 'mail-trash-purge-tick',
     });
   }
   registered = true;

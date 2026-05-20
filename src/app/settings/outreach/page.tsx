@@ -7,6 +7,7 @@ import {
   MessageSquareReply,
   Pencil,
   Plus,
+  Trash2,
   X,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
@@ -29,6 +30,13 @@ import {
   updateFollowUpConfig,
   type FollowUpStepConfig,
 } from '@/lib/services/follow-up';
+import {
+  TRASH_RETENTION_DAYS_MAX,
+  TRASH_RETENTION_DAYS_MIN,
+  emptyTrashNow,
+  updateTrashRetentionDays,
+} from '@/lib/services/mail';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 const STEP_DESCRIPTORS = [
@@ -88,6 +96,50 @@ export default async function OutreachSettingsPage({
       if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof WorkspaceServiceError ? err.message : 'failed';
+      redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function saveRetention(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const raw = Number(formData.get('trashRetentionDays'));
+    try {
+      const result = await updateTrashRetentionDays(
+        c,
+        Number.isFinite(raw) ? Math.floor(raw) : 30,
+      );
+      redirect(
+        '/settings/outreach?message=' +
+          encodeURIComponent(
+            result.trashRetentionDays === 0
+              ? 'Trash purge disabled (set days > 0 to re-enable).'
+              : `Trash now auto-purges after ${result.trashRetentionDays} days.`,
+          ),
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'retention save failed';
+      redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function purgeNow() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      const result = await emptyTrashNow(c);
+      redirect(
+        '/settings/outreach?message=' +
+          encodeURIComponent(
+            result.deleted === 0
+              ? 'Trash was already empty.'
+              : `${result.deleted} message${result.deleted === 1 ? '' : 's'} permanently deleted.`,
+          ),
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'empty trash failed';
       redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
     }
   }
@@ -349,6 +401,51 @@ export default async function OutreachSettingsPage({
           <Link href="/communication/follow-ups" className="ghost-btn">
             See live schedule →
           </Link>
+        </div>
+      </form>
+
+      {/* ---------- Mailbox retention card (P61-09) ---------- */}
+      <form action={saveRetention} className="config-card">
+        <header className="config-card-header">
+          <Trash2 className="config-card-icon" aria-hidden="true" />
+          <div>
+            <h2 className="config-card-title">Mailbox retention</h2>
+            <p className="config-card-desc">
+              How long a message stays in <strong>Trash</strong> before the
+              daily purge cron hard-deletes it. Set to 0 to disable the
+              auto-purge — you can still empty trash manually from this
+              page.
+            </p>
+          </div>
+        </header>
+
+        <label className="config-card-row">
+          <span>Auto-purge trash after</span>
+          <span className="config-card-inline">
+            <input
+              type="number"
+              name="trashRetentionDays"
+              min={TRASH_RETENTION_DAYS_MIN}
+              max={TRASH_RETENTION_DAYS_MAX}
+              step={1}
+              defaultValue={ws.trashRetentionDays}
+              style={{ width: '6rem' }}
+            />
+            <span className="muted small">days (0 = never)</span>
+          </span>
+        </label>
+
+        <div className="config-card-actions">
+          <button type="submit" className="primary-btn">
+            Save retention
+          </button>
+          <ConfirmFormButton
+            formAction={purgeNow}
+            message="Empty the trash NOW? This permanently deletes every trashed message in this workspace."
+            className="ghost-btn"
+          >
+            Empty trash now
+          </ConfirmFormButton>
         </div>
       </form>
     </AppShell>

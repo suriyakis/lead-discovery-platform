@@ -12,6 +12,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   or,
   sql,
   type SQL,
@@ -1148,6 +1149,98 @@ export async function permanentlyDelete(
     });
   }
   return { affected: deletedIds.length, ids: deletedIds };
+}
+
+// ---- trash purge (P61-09) ------------------------------------------
+
+export const TRASH_RETENTION_DAYS_MIN = 0;
+export const TRASH_RETENTION_DAYS_MAX = 365;
+export const TRASH_RETENTION_DAYS_DEFAULT = 30;
+
+export interface TrashPurgeResult {
+  deleted: number;
+  retentionDays: number;
+}
+
+/** Unattended (cron) version: hard-delete rows in this workspace whose
+ *  `trashed_at` is older than the workspace's `trash_retention_days`.
+ *  A retention of 0 disables auto-purge (operator can still manually
+ *  Empty trash now). Returns the count + the resolved retention so the
+ *  cron logs are self-explanatory. */
+export async function purgeOldTrashUnattended(
+  workspaceId: bigint,
+): Promise<TrashPurgeResult> {
+  const { workspaces } = await import('@/lib/db/schema/workspaces');
+  const rows = await db
+    .select({ retentionDays: workspaces.trashRetentionDays })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  const retentionDays = rows[0]?.retentionDays ?? TRASH_RETENTION_DAYS_DEFAULT;
+  if (retentionDays <= 0) return { deleted: 0, retentionDays };
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  const deleted = await db
+    .delete(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, workspaceId),
+        isNotNull(mailMessages.trashedAt),
+        lt(mailMessages.trashedAt, cutoff),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  return { deleted: deleted.length, retentionDays };
+}
+
+/** Admin-gated "Empty trash now" — hard-deletes EVERY trashed message
+ *  in the workspace regardless of age. Emits an audit event. */
+export async function emptyTrashNow(
+  ctx: WorkspaceContext,
+): Promise<{ deleted: number }> {
+  const { canAdminWorkspace } = await import('./context');
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('mail.empty_trash_now');
+  const deleted = await db
+    .delete(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        isNotNull(mailMessages.trashedAt),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  if (deleted.length > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.empty_trash_now',
+      entityType: 'mail_message',
+      payload: { count: deleted.length },
+    });
+  }
+  return { deleted: deleted.length };
+}
+
+/** Update workspaces.trash_retention_days. Admin-gated. Clamps to
+ *  [TRASH_RETENTION_DAYS_MIN, TRASH_RETENTION_DAYS_MAX]. */
+export async function updateTrashRetentionDays(
+  ctx: WorkspaceContext,
+  days: number,
+): Promise<{ trashRetentionDays: number }> {
+  const { canAdminWorkspace } = await import('./context');
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('mail.update_retention');
+  if (!Number.isInteger(days)) throw invalid('trash_retention_days must be an integer');
+  const clamped = Math.max(
+    TRASH_RETENTION_DAYS_MIN,
+    Math.min(TRASH_RETENTION_DAYS_MAX, days),
+  );
+  const { workspaces } = await import('@/lib/db/schema/workspaces');
+  await db
+    .update(workspaces)
+    .set({ trashRetentionDays: clamped, updatedAt: new Date() })
+    .where(eq(workspaces.id, ctx.workspaceId));
+  await recordAuditEvent(ctx, {
+    kind: 'mail.update_trash_retention',
+    payload: { trashRetentionDays: clamped },
+  });
+  return { trashRetentionDays: clamped };
 }
 
 // ---- bounce-loop auto-spam (P61-08) --------------------------------

@@ -26,6 +26,7 @@ import {
   countMessagesByFolder,
   countThreadsByKind,
   detectBounceLoop,
+  emptyTrashNow,
   getMessage,
   getThread,
   isHardBounce,
@@ -34,12 +35,15 @@ import {
   markAsSpam,
   moveToTrash,
   permanentlyDelete,
+  purgeOldTrashUnattended,
   restoreFromTrash,
   retrySend,
   sendMessage,
   sendTestEmail,
   syncInbound,
+  TRASH_RETENTION_DAYS_MAX,
   unmarkSpam,
+  updateTrashRetentionDays,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
@@ -2071,6 +2075,224 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
     const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
     expect(counts.errors).toBe(4);
     expect(counts.spam).toBe(0);
+  });
+});
+
+// ============ trash purge (P61-09) ====================================
+
+describe('purgeOldTrashUnattended (P61-09)', () => {
+  async function seedTrashed(
+    workspaceId: bigint,
+    mailboxId: bigint,
+    trashedAt: Date,
+  ) {
+    const [row] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId,
+        mailboxId,
+        direction: 'inbound',
+        status: 'received',
+        messageId: `<purge-${Date.now()}-${Math.random()}@test.local>`,
+        fromAddress: 'x@test.local',
+        toAddresses: ['us@test.local'],
+        subject: 'old trash',
+        trashedAt,
+      })
+      .returning();
+    return row!;
+  }
+
+  it('hard-deletes trashed rows older than workspace retention window', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    // Default retention = 30 days.
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    const recent = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    const a = await seedTrashed(s.workspaceA, mb.id, old);
+    const b = await seedTrashed(s.workspaceA, mb.id, recent);
+    const result = await purgeOldTrashUnattended(s.workspaceA);
+    expect(result.deleted).toBe(1);
+    expect(result.retentionDays).toBe(30);
+    // a is gone; b survives.
+    await expect(getMessage(ctx(s.workspaceA, s.ownerA), a.id)).rejects.toThrow(/not found/);
+    const survivor = await getMessage(ctx(s.workspaceA, s.ownerA), b.id);
+    expect(survivor.id).toBe(b.id);
+  });
+
+  it('does not touch non-trashed rows (even if very old)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const [m] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId: s.workspaceA,
+        mailboxId: mb.id,
+        direction: 'inbound',
+        status: 'received',
+        messageId: `<survive-${Date.now()}@test.local>`,
+        fromAddress: 'x@test.local',
+        toAddresses: ['us@test.local'],
+        subject: 'old but not trashed',
+        trashedAt: null,
+      })
+      .returning();
+    // Force createdAt far in the past too.
+    await db
+      .update(mailMessages)
+      .set({ createdAt: new Date(Date.now() - 1000 * 24 * 60 * 60 * 1000) })
+      .where(eq(mailMessages.id, m!.id));
+    const result = await purgeOldTrashUnattended(s.workspaceA);
+    expect(result.deleted).toBe(0);
+    const survivor = await getMessage(ctx(s.workspaceA, s.ownerA), m!.id);
+    expect(survivor.id).toBe(m!.id);
+  });
+
+  it('retention 0 disables auto-purge (still safe to call)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await updateTrashRetentionDays(ctx(s.workspaceA, s.ownerA), 0);
+    // Seed a year-old trashed row.
+    await seedTrashed(
+      s.workspaceA,
+      mb.id,
+      new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
+    );
+    const result = await purgeOldTrashUnattended(s.workspaceA);
+    expect(result.deleted).toBe(0);
+    expect(result.retentionDays).toBe(0);
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    expect(counts.trash).toBe(1);
+  });
+
+  it('respects per-workspace retention setting', async () => {
+    const s = await setup();
+    const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+    await updateTrashRetentionDays(ctx(s.workspaceA, s.ownerA), 7);
+    await updateTrashRetentionDays(ctx(s.workspaceB, s.ownerB), 60);
+    // 14-day-old trashed message in each workspace.
+    const trashed14 = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    await seedTrashed(s.workspaceA, mbA.id, trashed14);
+    const survivor = await seedTrashed(s.workspaceB, mbB.id, trashed14);
+    const ra = await purgeOldTrashUnattended(s.workspaceA);
+    const rb = await purgeOldTrashUnattended(s.workspaceB);
+    expect(ra.deleted).toBe(1); // 14 > 7
+    expect(rb.deleted).toBe(0); // 14 < 60
+    // workspace B's row survived.
+    const stillThere = await getMessage(ctx(s.workspaceB, s.ownerB), survivor.id);
+    expect(stillThere.id).toBe(survivor.id);
+  });
+
+  it('does not cross workspace boundaries', async () => {
+    const s = await setup();
+    const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+    const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    await seedTrashed(s.workspaceA, mbA.id, old);
+    const inB = await seedTrashed(s.workspaceB, mbB.id, old);
+    // Run purge for A only — B's old trash must survive.
+    await purgeOldTrashUnattended(s.workspaceA);
+    const stillInB = await getMessage(ctx(s.workspaceB, s.ownerB), inB.id);
+    expect(stillInB.id).toBe(inB.id);
+  });
+});
+
+describe('emptyTrashNow (P61-09)', () => {
+  async function seedTrashed(
+    workspaceId: bigint,
+    mailboxId: bigint,
+    trashedAt: Date = new Date(),
+  ) {
+    const [row] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId,
+        mailboxId,
+        direction: 'inbound',
+        status: 'received',
+        messageId: `<en-${Date.now()}-${Math.random()}@test.local>`,
+        fromAddress: 'x@test.local',
+        toAddresses: ['us@test.local'],
+        subject: 'trash',
+        trashedAt,
+      })
+      .returning();
+    return row!;
+  }
+
+  it('hard-deletes every trashed message regardless of age', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedTrashed(s.workspaceA, mb.id, new Date()); // just trashed
+    await seedTrashed(
+      s.workspaceA,
+      mb.id,
+      new Date(Date.now() - 200 * 24 * 60 * 60 * 1000),
+    );
+    const r = await emptyTrashNow(ctx(s.workspaceA, s.ownerA));
+    expect(r.deleted).toBe(2);
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    expect(counts.trash).toBe(0);
+  });
+
+  it('admin-gated — viewers + members blocked', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedTrashed(s.workspaceA, mb.id);
+    await expect(
+      emptyTrashNow(ctx(s.workspaceA, s.ownerA, 'viewer')),
+    ).rejects.toThrow(/Permission denied/);
+    await expect(
+      emptyTrashNow(ctx(s.workspaceA, s.ownerA, 'member')),
+    ).rejects.toThrow(/Permission denied/);
+  });
+
+  it('does not cross workspace boundaries', async () => {
+    const s = await setup();
+    const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+    await seedTrashed(s.workspaceA, mbA.id);
+    const inB = await seedTrashed(s.workspaceB, mbB.id);
+    await emptyTrashNow(ctx(s.workspaceA, s.ownerA));
+    const stillThere = await getMessage(ctx(s.workspaceB, s.ownerB), inB.id);
+    expect(stillThere.id).toBe(inB.id);
+  });
+});
+
+describe('updateTrashRetentionDays (P61-09)', () => {
+  it('persists the setting and returns the clamped value', async () => {
+    const s = await setup();
+    const r = await updateTrashRetentionDays(ctx(s.workspaceA, s.ownerA), 14);
+    expect(r.trashRetentionDays).toBe(14);
+  });
+
+  it('clamps to [0, MAX]', async () => {
+    const s = await setup();
+    const lo = await updateTrashRetentionDays(ctx(s.workspaceA, s.ownerA), -5);
+    expect(lo.trashRetentionDays).toBe(0);
+    const hi = await updateTrashRetentionDays(
+      ctx(s.workspaceA, s.ownerA),
+      TRASH_RETENTION_DAYS_MAX + 1000,
+    );
+    expect(hi.trashRetentionDays).toBe(TRASH_RETENTION_DAYS_MAX);
+  });
+
+  it('rejects non-integers', async () => {
+    const s = await setup();
+    await expect(
+      updateTrashRetentionDays(ctx(s.workspaceA, s.ownerA), 3.5),
+    ).rejects.toThrow(/integer/);
+  });
+
+  it('admin-gated', async () => {
+    const s = await setup();
+    await expect(
+      updateTrashRetentionDays(ctx(s.workspaceA, s.ownerA, 'viewer'), 7),
+    ).rejects.toThrow(/Permission denied/);
+    await expect(
+      updateTrashRetentionDays(ctx(s.workspaceA, s.ownerA, 'member'), 7),
+    ).rejects.toThrow(/Permission denied/);
   });
 });
 
