@@ -24,6 +24,12 @@ import { qualifiedLeads, pipelineEvents } from '@/lib/db/schema/pipeline';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import { listSignatures, defaultSignature } from '@/lib/services/signatures';
 import { getMailbox } from '@/lib/services/mailbox';
+import {
+  markAsSpam,
+  moveToTrash,
+  restoreFromTrash,
+  unmarkSpam,
+} from '@/lib/services/mail';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function CommunicationDetail({
@@ -72,6 +78,80 @@ export default async function CommunicationDetail({
       ),
     )
     .orderBy(mailMessages.createdAt);
+
+  // P61-10: split into visible (in-conversation) vs hidden (trashed or
+  // spammed). Hidden messages live inside a <details> expander so the
+  // thread reads clean by default but the audit trail is one click away.
+  const visibleMessages = messages.filter(
+    (m) => !m.trashedAt && !m.spamAt,
+  );
+  const hiddenMessages = messages.filter(
+    (m) => m.trashedAt || m.spamAt,
+  );
+
+  // P61-10: per-message actions inside the thread view. Each takes a
+  // single message id (passed via .bind()) and redirects back to this
+  // thread. No-op on rows that already match the target state.
+  async function trashMessage(messageIdStr: string) {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await moveToTrash(c, [BigInt(messageIdStr)]);
+      redirect(`/communication/${threadId}?message=Message+moved+to+trash`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(
+        `/communication/${threadId}?error=${encodeURIComponent(
+          err instanceof Error ? err.message : 'trash failed',
+        )}`,
+      );
+    }
+  }
+  async function restoreMessage(messageIdStr: string) {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await restoreFromTrash(c, [BigInt(messageIdStr)]);
+      redirect(`/communication/${threadId}?message=Message+restored`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(
+        `/communication/${threadId}?error=${encodeURIComponent(
+          err instanceof Error ? err.message : 'restore failed',
+        )}`,
+      );
+    }
+  }
+  async function spamMessage(messageIdStr: string) {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await markAsSpam(c, [BigInt(messageIdStr)], 'manual');
+      redirect(`/communication/${threadId}?message=Message+flagged+as+spam`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(
+        `/communication/${threadId}?error=${encodeURIComponent(
+          err instanceof Error ? err.message : 'spam failed',
+        )}`,
+      );
+    }
+  }
+  async function unspamMessage(messageIdStr: string) {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await unmarkSpam(c, [BigInt(messageIdStr)]);
+      redirect(`/communication/${threadId}?message=Spam+flag+cleared`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(
+        `/communication/${threadId}?error=${encodeURIComponent(
+          err instanceof Error ? err.message : 'unspam failed',
+        )}`,
+      );
+    }
+  }
 
   // Linked outreach state → lead → product.
   const [ots] = await db
@@ -393,70 +473,61 @@ export default async function CommunicationDetail({
               No messages yet — drafts only.
             </p>
           ) : (
-            <ul
-              style={{
-                listStyle: 'none',
-                margin: 0,
-                padding: 0,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '0.6rem',
-                maxHeight: 380,
-                overflow: 'auto',
-                marginBottom: '0.75rem',
-              }}
-            >
-              {messages.map((m: MailMessage) => (
-                <li
-                  key={m.id.toString()}
-                  style={{
-                    padding: '0.5rem 0.75rem',
-                    borderRadius: '0.35rem',
-                    background:
-                      m.direction === 'inbound'
-                        ? 'rgba(28, 100, 242, 0.08)'
-                        : 'rgba(0, 0, 0, 0.04)',
-                    borderLeft:
-                      m.direction === 'inbound'
-                        ? '3px solid #1c64f2'
-                        : '3px solid rgba(0,0,0,0.25)',
-                  }}
-                >
-                  <div
+            <>
+              <ul
+                style={{
+                  listStyle: 'none',
+                  margin: 0,
+                  padding: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.6rem',
+                  maxHeight: 380,
+                  overflow: 'auto',
+                  marginBottom: '0.75rem',
+                }}
+              >
+                {visibleMessages.map((m: MailMessage) =>
+                  renderMessageBubble(m, {
+                    onTrash: trashMessage,
+                    onSpam: spamMessage,
+                    onRestore: restoreMessage,
+                    onUnspam: unspamMessage,
+                  }),
+                )}
+              </ul>
+              {hiddenMessages.length > 0 ? (
+                <details style={{ marginBottom: '0.75rem' }}>
+                  <summary
+                    style={{ cursor: 'pointer', fontSize: '0.82em' }}
+                    className="muted"
+                  >
+                    Show {hiddenMessages.length} hidden message
+                    {hiddenMessages.length === 1 ? '' : 's'} (trashed / spam)
+                  </summary>
+                  <ul
                     style={{
+                      listStyle: 'none',
+                      margin: '0.5rem 0 0',
+                      padding: 0,
                       display: 'flex',
-                      justifyContent: 'space-between',
-                      fontSize: '0.78em',
+                      flexDirection: 'column',
+                      gap: '0.6rem',
+                      opacity: 0.75,
                     }}
                   >
-                    <span>
-                      <Mail
-                        className="lucide"
-                        style={{ width: 14, height: 14 }}
-                      />{' '}
-                      <strong>{m.direction === 'inbound' ? '↓' : '↑'}</strong>{' '}
-                      {m.fromAddress}
-                    </span>
-                    <span className="muted">
-                      {(m.receivedAt ?? m.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  <pre
-                    style={{
-                      margin: '0.4rem 0 0',
-                      fontFamily: 'inherit',
-                      fontSize: '0.85em',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      maxHeight: 200,
-                      overflow: 'auto',
-                    }}
-                  >
-                    {(m.bodyText ?? '(no plain text body)').slice(0, 4000)}
-                  </pre>
-                </li>
-              ))}
-            </ul>
+                    {hiddenMessages.map((m: MailMessage) =>
+                      renderMessageBubble(m, {
+                        onTrash: trashMessage,
+                        onSpam: spamMessage,
+                        onRestore: restoreMessage,
+                        onUnspam: unspamMessage,
+                      }),
+                    )}
+                  </ul>
+                </details>
+              ) : null}
+            </>
           )}
 
           {sp.message ? <p className="form-message">{sp.message}</p> : null}
@@ -475,5 +546,144 @@ export default async function CommunicationDetail({
         </section>
       </div>
     </AppShell>
+  );
+}
+
+interface MessageBubbleActions {
+  onTrash: (id: string) => Promise<void>;
+  onSpam: (id: string) => Promise<void>;
+  onRestore: (id: string) => Promise<void>;
+  onUnspam: (id: string) => Promise<void>;
+}
+
+function renderMessageBubble(
+  m: MailMessage,
+  actions: MessageBubbleActions,
+) {
+  const idStr = m.id.toString();
+  const inTrash = m.trashedAt !== null;
+  const inSpam = m.spamAt !== null;
+  return (
+    <li
+      key={idStr}
+      style={{
+        padding: '0.5rem 0.75rem',
+        borderRadius: '0.35rem',
+        background:
+          m.direction === 'inbound'
+            ? 'rgba(28, 100, 242, 0.08)'
+            : 'rgba(0, 0, 0, 0.04)',
+        borderLeft:
+          m.direction === 'inbound'
+            ? '3px solid #1c64f2'
+            : '3px solid rgba(0,0,0,0.25)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: '0.78em',
+          gap: '0.5rem',
+        }}
+      >
+        <span>
+          <Mail
+            className="lucide"
+            style={{ width: 14, height: 14 }}
+          />{' '}
+          <strong>{m.direction === 'inbound' ? '↓' : '↑'}</strong>{' '}
+          {m.fromAddress}
+          {inTrash ? (
+            <span className="badge badge-bad" style={{ marginLeft: '0.4rem' }}>
+              trashed
+            </span>
+          ) : null}
+          {inSpam ? (
+            <span className="badge badge-warn" style={{ marginLeft: '0.4rem' }}>
+              spam{m.spamReason ? `: ${m.spamReason}` : ''}
+            </span>
+          ) : null}
+        </span>
+        <span
+          className="muted"
+          style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+        >
+          <span>{(m.receivedAt ?? m.createdAt).toLocaleString()}</span>
+          {/* Per-message action menu — small inline forms keyed by id. */}
+          {!inTrash ? (
+            <form
+              action={actions.onTrash.bind(null, idStr)}
+              style={{ display: 'inline' }}
+            >
+              <button
+                type="submit"
+                className="ghost-btn"
+                style={{ padding: '0.05rem 0.4rem', fontSize: '0.78em' }}
+                title="Move to trash"
+              >
+                Trash
+              </button>
+            </form>
+          ) : (
+            <form
+              action={actions.onRestore.bind(null, idStr)}
+              style={{ display: 'inline' }}
+            >
+              <button
+                type="submit"
+                className="ghost-btn"
+                style={{ padding: '0.05rem 0.4rem', fontSize: '0.78em' }}
+              >
+                Restore
+              </button>
+            </form>
+          )}
+          {!inSpam && !inTrash ? (
+            <form
+              action={actions.onSpam.bind(null, idStr)}
+              style={{ display: 'inline' }}
+            >
+              <button
+                type="submit"
+                className="ghost-btn"
+                style={{ padding: '0.05rem 0.4rem', fontSize: '0.78em' }}
+                title="Flag as spam"
+              >
+                Spam
+              </button>
+            </form>
+          ) : null}
+          {inSpam && !inTrash ? (
+            <form
+              action={actions.onUnspam.bind(null, idStr)}
+              style={{ display: 'inline' }}
+            >
+              <button
+                type="submit"
+                className="ghost-btn"
+                style={{ padding: '0.05rem 0.4rem', fontSize: '0.78em' }}
+              >
+                Not spam
+              </button>
+            </form>
+          ) : null}
+        </span>
+      </div>
+      <pre
+        style={{
+          margin: '0.4rem 0 0',
+          fontFamily: 'inherit',
+          fontSize: '0.85em',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          maxHeight: 200,
+          overflow: 'auto',
+        }}
+      >
+        {(m.bodyText ?? '(no plain text body)').slice(0, 4000)}
+      </pre>
+    </li>
   );
 }
