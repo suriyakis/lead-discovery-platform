@@ -850,7 +850,9 @@ function folderFilter(folder: MailFolder): SQL {
 }
 
 export interface ListMessagesFilter {
-  mailboxId: bigint;
+  /** Omit to list across every mailbox in the workspace (Gmail-style
+   *  unified inbox). Set to scope to a single mailbox. */
+  mailboxId?: bigint;
   folder: MailFolder;
   limit?: number;
   offset?: number;
@@ -870,9 +872,11 @@ export async function listMessages(
 ): Promise<MessageListRow[]> {
   const conditions: SQL[] = [
     eq(mailMessages.workspaceId, ctx.workspaceId),
-    eq(mailMessages.mailboxId, filter.mailboxId),
     folderFilter(filter.folder),
   ];
+  if (filter.mailboxId !== undefined) {
+    conditions.push(eq(mailMessages.mailboxId, filter.mailboxId));
+  }
   if (filter.search && filter.search.trim()) {
     const q = `%${filter.search.trim()}%`;
     conditions.push(
@@ -911,12 +915,18 @@ export async function listMessages(
 
 export type FolderCounts = Record<MailFolder, number>;
 
-/** Single query returning all six folder counts for a mailbox. Mirrors
- *  the priority order in deriveFolder via COUNT(*) FILTER. */
+/** Single query returning all six folder counts. Pass `mailboxId` to
+ *  scope to a single mailbox, or omit for the workspace-wide unified
+ *  inbox count. Mirrors the priority order in deriveFolder via
+ *  COUNT(*) FILTER. */
 export async function countMessagesByFolder(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  mailboxId: bigint,
+  mailboxId?: bigint,
 ): Promise<FolderCounts> {
+  const where: SQL[] = [eq(mailMessages.workspaceId, ctx.workspaceId)];
+  if (mailboxId !== undefined) {
+    where.push(eq(mailMessages.mailboxId, mailboxId));
+  }
   const rows = await db
     .select({
       trash: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NOT NULL)::int`,
@@ -927,12 +937,7 @@ export async function countMessagesByFolder(
       inbox: sql<number>`COUNT(*) FILTER (WHERE ${mailMessages.trashedAt} IS NULL AND ${mailMessages.spamAt} IS NULL AND ${mailMessages.direction} = 'inbound')::int`,
     })
     .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.mailboxId, mailboxId),
-      ),
-    );
+    .where(and(...where));
   const r = rows[0];
   return {
     inbox: r?.inbox ?? 0,
