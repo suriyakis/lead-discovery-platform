@@ -7,6 +7,7 @@ import {
   asc,
   desc,
   eq,
+  gt,
   ilike,
   inArray,
   isNotNull,
@@ -208,7 +209,8 @@ export async function sendMessage(
     // the error object; we match conservatively to avoid suppressing on
     // transient network errors.
     const e = err as { responseCode?: number; message?: string };
-    if (e?.responseCode && e.responseCode >= 500 && e.responseCode < 600) {
+    const responseCode = e?.responseCode ?? null;
+    if (responseCode && responseCode >= 500 && responseCode < 600) {
       for (const recipient of input.to) {
         try {
           await recordBounce(ctx, recipient.address, 'hard', e.message ?? null);
@@ -216,7 +218,7 @@ export async function sendMessage(
           // best-effort
         }
       }
-    } else if (e?.responseCode && e.responseCode >= 400 && e.responseCode < 500) {
+    } else if (responseCode && responseCode >= 400 && responseCode < 500) {
       for (const recipient of input.to) {
         try {
           await recordBounce(ctx, recipient.address, 'soft', e.message ?? null);
@@ -224,6 +226,69 @@ export async function sendMessage(
           // best-effort
         }
       }
+    }
+    // P61-08: persist the failure as a mail_messages row so it lands in
+    // the Errors folder AND so future bounce-loop detection has the
+    // history to count against. We never let the persistence fail bubble
+    // up — the send already threw and that contract is preserved.
+    try {
+      const failureReason = e?.message ?? (err instanceof Error ? err.message : String(err));
+      const failedStatus: MailMessage['status'] =
+        responseCode && responseCode >= 500 && responseCode < 600
+          ? 'bounced'
+          : 'failed';
+      const primaryAddress = input.to[0]?.address ?? null;
+      const isLoop =
+        primaryAddress !== null &&
+        (await detectBounceLoop(ctx, mailbox.id, primaryAddress));
+      const failedThread = await ensureThread(ctx, mailbox.id, {
+        subject,
+        inReplyTo: input.inReplyTo ?? null,
+        references: input.references ? [...input.references] : [],
+        participants: collectParticipants(out),
+      });
+      const failedRow: NewMailMessage = {
+        workspaceId: ctx.workspaceId,
+        mailboxId: mailbox.id,
+        threadId: failedThread.id,
+        direction: 'outbound',
+        status: failedStatus,
+        messageId: `<failed-${randomUUID()}@${mailbox.fromAddress.split('@')[1] ?? 'local'}>`,
+        inReplyTo: input.inReplyTo ?? null,
+        references: input.references ? [...input.references] : [],
+        fromAddress: mailbox.fromAddress,
+        fromName: mailbox.fromName ?? null,
+        toAddresses: input.to.map((a) => a.address),
+        ccAddresses: input.cc?.map((a) => a.address) ?? [],
+        bccAddresses: input.bcc?.map((a) => a.address) ?? [],
+        subject,
+        bodyText: input.text ?? null,
+        bodyHtml: input.html ?? null,
+        headers: headers as unknown as Record<string, unknown>,
+        attachments: [],
+        failureReason:
+          responseCode
+            ? `${responseCode} ${failureReason}`.slice(0, 4000)
+            : failureReason.slice(0, 4000),
+        sourceDraftId: input.sourceDraftId ?? null,
+        spamAt: isLoop ? new Date() : null,
+        spamReason: isLoop ? 'bounce_loop' : null,
+        createdBy: ctx.userId,
+      };
+      await db.insert(mailMessages).values(failedRow);
+      await touchThread(failedThread.id);
+      if (isLoop) {
+        await recordAuditEvent(ctx, {
+          kind: 'mail.bounce_loop_auto_spam',
+          entityType: 'mail_message',
+          payload: {
+            recipient: primaryAddress,
+            mailboxId: mailbox.id.toString(),
+          },
+        });
+      }
+    } catch (persistErr) {
+      console.error('[mail.send] failed to persist failure row:', persistErr);
     }
     throw err;
   }
@@ -1083,6 +1148,46 @@ export async function permanentlyDelete(
     });
   }
   return { affected: deletedIds.length, ids: deletedIds };
+}
+
+// ---- bounce-loop auto-spam (P61-08) --------------------------------
+
+/** Threshold for auto-flagging the next bounce as spam.
+ *  Three prior failures from the same address in the last 14 days makes
+ *  the next attempt a bounce loop. Constant lives here (not workspace
+ *  setting) until the data tells us otherwise. */
+export const BOUNCE_LOOP_THRESHOLD = 3;
+export const BOUNCE_LOOP_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** True when the recipient address has accumulated at least
+ *  (BOUNCE_LOOP_THRESHOLD - 1) prior bounces in the trailing window —
+ *  in other words, the caller is about to write the threshold-th
+ *  failure and should flag it spam_reason='bounce_loop'.
+ *
+ *  Workspace-scoped, mailbox-scoped, recipient-exact-match. The address
+ *  is checked against the `to_addresses[]` array, not against from /
+ *  cc / bcc — bounce loops only make sense for the primary recipient. */
+export async function detectBounceLoop(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+  recipient: string,
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - BOUNCE_LOOP_WINDOW_MS);
+  const rows = await db
+    .select({ c: sql<number>`COUNT(*)::int` })
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        eq(mailMessages.mailboxId, mailboxId),
+        eq(mailMessages.direction, 'outbound'),
+        inArray(mailMessages.status, ['failed', 'bounced']),
+        sql`${recipient} = ANY (${mailMessages.toAddresses})`,
+        gt(mailMessages.createdAt, cutoff),
+      ),
+    );
+  const count = rows[0]?.c ?? 0;
+  return count >= BOUNCE_LOOP_THRESHOLD - 1;
 }
 
 // ---- retry (P61-07) ------------------------------------------------

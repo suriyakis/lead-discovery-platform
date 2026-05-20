@@ -22,8 +22,10 @@ import {
   updateMailbox,
 } from '@/lib/services/mailbox';
 import {
+  BOUNCE_LOOP_THRESHOLD,
   countMessagesByFolder,
   countThreadsByKind,
+  detectBounceLoop,
   getMessage,
   getThread,
   isHardBounce,
@@ -1831,6 +1833,244 @@ describe('retrySend (P61-07)', () => {
     const r = await retrySend(ctx(s.workspaceA, s.ownerA), []);
     expect(r.retried).toEqual([]);
     expect(r.errors).toEqual([]);
+  });
+});
+
+// ============ bounce-loop auto-spam (P61-08) ==========================
+
+describe('detectBounceLoop (P61-08)', () => {
+  async function seedFailure(
+    workspaceId: bigint,
+    mailboxId: bigint,
+    recipient: string,
+    overrides: Partial<{ status: 'failed' | 'bounced'; createdAt: Date }> = {},
+  ) {
+    const [row] = await db
+      .insert(mailMessages)
+      .values({
+        workspaceId,
+        mailboxId,
+        direction: 'outbound',
+        status: overrides.status ?? 'failed',
+        messageId: `<bl-${Date.now()}-${Math.random()}@test.local>`,
+        fromAddress: 'sender@test.local',
+        toAddresses: [recipient],
+        subject: 'past failure',
+      })
+      .returning();
+    if (overrides.createdAt) {
+      await db
+        .update(mailMessages)
+        .set({ createdAt: overrides.createdAt })
+        .where(eq(mailMessages.id, row!.id));
+    }
+    return row!;
+  }
+
+  it('false when no prior failures', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb.id, 'a@b.com'),
+    ).toBe(false);
+  });
+
+  it('false at THRESHOLD - 2 prior failures', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    // BOUNCE_LOOP_THRESHOLD = 3, so 1 prior failure is below the line.
+    await seedFailure(s.workspaceA, mb.id, 'loop@test.com');
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb.id, 'loop@test.com'),
+    ).toBe(false);
+  });
+
+  it('true at THRESHOLD - 1 prior failures (next bounce IS the loop)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    for (let i = 0; i < BOUNCE_LOOP_THRESHOLD - 1; i++) {
+      await seedFailure(s.workspaceA, mb.id, 'loop@test.com');
+    }
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb.id, 'loop@test.com'),
+    ).toBe(true);
+  });
+
+  it('mixed status (failed + bounced) both count toward the threshold', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedFailure(s.workspaceA, mb.id, 'mix@test.com', { status: 'failed' });
+    await seedFailure(s.workspaceA, mb.id, 'mix@test.com', { status: 'bounced' });
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb.id, 'mix@test.com'),
+    ).toBe(true);
+  });
+
+  it('failures older than 14 days do not count', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    await seedFailure(s.workspaceA, mb.id, 'old@test.com', { createdAt: old });
+    await seedFailure(s.workspaceA, mb.id, 'old@test.com', { createdAt: old });
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb.id, 'old@test.com'),
+    ).toBe(false);
+  });
+
+  it('different recipients are counted independently', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await seedFailure(s.workspaceA, mb.id, 'alice@test.com');
+    await seedFailure(s.workspaceA, mb.id, 'alice@test.com');
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb.id, 'alice@test.com'),
+    ).toBe(true);
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb.id, 'bob@test.com'),
+    ).toBe(false);
+  });
+
+  it('different mailboxes are counted independently', async () => {
+    const s = await setup();
+    const mb1 = await makeMailbox(s, s.workspaceA, s.ownerA, 'mb1');
+    const mb2 = await makeMailbox(s, s.workspaceA, s.ownerA, 'mb2');
+    await seedFailure(s.workspaceA, mb1.id, 'shared@test.com');
+    await seedFailure(s.workspaceA, mb1.id, 'shared@test.com');
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb1.id, 'shared@test.com'),
+    ).toBe(true);
+    expect(
+      await detectBounceLoop(ctx(s.workspaceA, s.ownerA), mb2.id, 'shared@test.com'),
+    ).toBe(false);
+  });
+
+  it('workspace isolation — A failures do not influence B', async () => {
+    const s = await setup();
+    const mbA = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const mbB = await makeMailbox(s, s.workspaceB, s.ownerB);
+    await seedFailure(s.workspaceA, mbA.id, 'x@test.com');
+    await seedFailure(s.workspaceA, mbA.id, 'x@test.com');
+    expect(
+      await detectBounceLoop(ctx(s.workspaceB, s.ownerB), mbB.id, 'x@test.com'),
+    ).toBe(false);
+  });
+});
+
+describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
+  class AlwaysFailingProvider extends MockMailProvider {
+    constructor(private code: number = 550, private detail = 'mailbox unavailable') {
+      super();
+    }
+    async send(_message: import('@/lib/mail').OutboundMessage): Promise<import('@/lib/mail').SendResult> {
+      const err = new Error(this.detail) as Error & { responseCode: number };
+      err.responseCode = this.code;
+      throw err;
+    }
+  }
+
+  // Throws *without* a responseCode so the suppression list (Phase 17)
+  // stays empty — letting us attempt multiple sends to the same address
+  // without the suppressed-on-first-bounce gate firing before the SMTP
+  // layer is reached. Mirrors real-world transport-level errors with
+  // no SMTP code attached, or soft-bounces whose suppression TTL has
+  // expired between attempts.
+  class TransportErrorProvider extends MockMailProvider {
+    async send(): Promise<never> {
+      throw new Error('transport error: no response code');
+    }
+  }
+
+  it('persists a failed mail_messages row when SMTP send throws', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const provider = new AlwaysFailingProvider(550, 'rejected');
+    await expect(
+      sendMessage(ctx(s.workspaceA, s.ownerA), {
+        mailboxId: mb.id,
+        to: [{ address: 'broken@test.com' }],
+        subject: 'attempt 1',
+        text: 'body',
+        providerOverride: provider,
+      }),
+    ).rejects.toThrow();
+    // 5xx → status 'bounced'.
+    const errorsRows = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'errors',
+    });
+    expect(errorsRows).toHaveLength(1);
+    expect(errorsRows[0]!.message.status).toBe('bounced');
+    expect(errorsRows[0]!.message.failureReason).toMatch(/rejected/);
+  });
+
+  it('non-5xx send error persists as status=failed (not bounced)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    // No responseCode → goes through as 'failed'.
+    const provider = new TransportErrorProvider();
+    await expect(
+      sendMessage(ctx(s.workspaceA, s.ownerA), {
+        mailboxId: mb.id,
+        to: [{ address: 'someone@test.com' }],
+        subject: 'attempt',
+        text: 'x',
+        providerOverride: provider,
+      }),
+    ).rejects.toThrow();
+    const errorsRows = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'errors',
+    });
+    expect(errorsRows).toHaveLength(1);
+    expect(errorsRows[0]!.message.status).toBe('failed');
+  });
+
+  it('the threshold-th consecutive bounce to the same address gets auto-flagged spam_reason=bounce_loop', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const provider = new TransportErrorProvider();
+    for (let i = 0; i < BOUNCE_LOOP_THRESHOLD; i++) {
+      await expect(
+        sendMessage(ctx(s.workspaceA, s.ownerA), {
+          mailboxId: mb.id,
+          to: [{ address: 'loop@test.com' }],
+          subject: `try ${i + 1}`,
+          text: 'x',
+          providerOverride: provider,
+        }),
+      ).rejects.toThrow();
+    }
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    // First (THRESHOLD - 1) bounces sit in Errors; the THRESHOLD-th is
+    // auto-pulled into Spam by the bounce-loop detector.
+    expect(counts.errors).toBe(BOUNCE_LOOP_THRESHOLD - 1);
+    expect(counts.spam).toBe(1);
+    const spamRows = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'spam',
+    });
+    expect(spamRows[0]!.message.spamReason).toBe('bounce_loop');
+  });
+
+  it('mixed recipients do not trigger the loop on each other', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const provider = new TransportErrorProvider();
+    // 2 sends to alice, 2 sends to bob — neither hits the threshold.
+    for (const addr of ['alice@test.com', 'alice@test.com', 'bob@test.com', 'bob@test.com']) {
+      await expect(
+        sendMessage(ctx(s.workspaceA, s.ownerA), {
+          mailboxId: mb.id,
+          to: [{ address: addr }],
+          subject: 'mixed',
+          text: 'x',
+          providerOverride: provider,
+        }),
+      ).rejects.toThrow();
+    }
+    const counts = await countMessagesByFolder(ctx(s.workspaceA, s.ownerA), mb.id);
+    expect(counts.errors).toBe(4);
+    expect(counts.spam).toBe(0);
   });
 });
 
