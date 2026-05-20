@@ -21,9 +21,15 @@ import {
 import {
   countMessagesByFolder,
   listMessages,
+  markAsSpam,
+  moveToTrash,
+  permanentlyDelete,
+  restoreFromTrash,
   syncInbound,
+  unmarkSpam,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { getOrCreateMailboxSendingLimits } from '@/lib/services/sending-policy';
 import {
   SUPPORTED_HOLIDAY_COUNTRIES,
@@ -146,6 +152,103 @@ export default async function MailboxDetail({
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'reactivate failed';
       redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  // ---- P61-06 bulk actions on the folder view ----
+  function backToFolder(formData: FormData, message: string) {
+    const folder = String(formData.get('folder') ?? 'inbox');
+    const q = String(formData.get('q') ?? '');
+    const params = new URLSearchParams({ folder });
+    if (q) params.set('q', q);
+    params.set('message', message);
+    redirect(`/mailbox/${id}?${params.toString()}`);
+  }
+  function backToFolderError(formData: FormData, message: string) {
+    const folder = String(formData.get('folder') ?? 'inbox');
+    const q = String(formData.get('q') ?? '');
+    const params = new URLSearchParams({ folder });
+    if (q) params.set('q', q);
+    params.set('error', message);
+    redirect(`/mailbox/${id}?${params.toString()}`);
+  }
+  function parseIds(formData: FormData): bigint[] {
+    const out: bigint[] = [];
+    for (const raw of formData.getAll('ids')) {
+      const s = String(raw);
+      if (!/^\d+$/.test(s)) continue;
+      try {
+        out.push(BigInt(s));
+      } catch {
+        // skip
+      }
+    }
+    return out;
+  }
+  function affectedNote(verb: string, n: number): string {
+    if (n === 0) return `No messages ${verb} (nothing was selected or eligible).`;
+    if (n === 1) return `1 message ${verb}.`;
+    return `${n} messages ${verb}.`;
+  }
+
+  async function trashSelected(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const ids = parseIds(formData);
+    try {
+      const r = await moveToTrash(c, ids);
+      backToFolder(formData, affectedNote('moved to trash', r.affected));
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      backToFolderError(formData, err instanceof Error ? err.message : 'trash failed');
+    }
+  }
+  async function restoreSelected(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const ids = parseIds(formData);
+    try {
+      const r = await restoreFromTrash(c, ids);
+      backToFolder(formData, affectedNote('restored', r.affected));
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      backToFolderError(formData, err instanceof Error ? err.message : 'restore failed');
+    }
+  }
+  async function spamSelected(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const ids = parseIds(formData);
+    try {
+      const r = await markAsSpam(c, ids, 'manual');
+      backToFolder(formData, affectedNote('flagged as spam', r.affected));
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      backToFolderError(formData, err instanceof Error ? err.message : 'mark-spam failed');
+    }
+  }
+  async function unspamSelected(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const ids = parseIds(formData);
+    try {
+      const r = await unmarkSpam(c, ids);
+      backToFolder(formData, affectedNote('un-flagged', r.affected));
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      backToFolderError(formData, err instanceof Error ? err.message : 'unmark failed');
+    }
+  }
+  async function deleteSelected(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const ids = parseIds(formData);
+    try {
+      const r = await permanentlyDelete(c, ids);
+      backToFolder(formData, affectedNote('permanently deleted', r.affected));
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      backToFolderError(formData, err instanceof Error ? err.message : 'delete failed');
     }
   }
 
@@ -470,44 +573,111 @@ export default async function MailboxDetail({
                 : emptyFolderHint(activeFolder)}
             </p>
           ) : (
-            <ul className="lead-list">
-              {messageRows.map(({ message, thread }) => {
-                const peer = derivePeer(message);
-                const subject =
-                  message.subject || thread?.subject || '(no subject)';
-                const when =
-                  message.sentAt ??
-                  message.receivedAt ??
-                  message.createdAt;
-                return (
-                  <li key={message.id.toString()}>
-                    <div className="lead-row">
-                      {thread ? (
-                        <Link href={`/communication/${thread.id}`}>{subject}</Link>
-                      ) : (
-                        <span>{subject}</span>
-                      )}
-                      <span className={statusBadge(message.status)}>
-                        {message.status}
-                      </span>
-                    </div>
-                    <div className="lead-meta">
-                      <span>
-                        {message.direction === 'outbound' ? '→ ' : '← '}
-                        {peer || '(unknown)'}
-                      </span>
-                      <span>{when.toLocaleString()}</span>
-                      {activeFolder === 'errors' && message.failureReason ? (
-                        <span className="warn">{message.failureReason}</span>
-                      ) : null}
-                      {activeFolder === 'spam' && message.spamReason ? (
-                        <span className="muted">flag: {message.spamReason}</span>
-                      ) : null}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <form>
+              {/* Carry the active folder + search forward through every
+                  bulk action so the redirect lands the operator back on
+                  the same view they acted from. */}
+              <input type="hidden" name="folder" value={activeFolder} />
+              <input type="hidden" name="q" value={search} />
+
+              <div
+                className="action-row"
+                style={{ marginBottom: '0.5rem', flexWrap: 'wrap' }}
+              >
+                <span className="muted small">
+                  Select message(s) then choose an action:
+                </span>
+                {activeFolder !== 'trash' ? (
+                  <button type="submit" formAction={trashSelected}>
+                    Move to trash
+                  </button>
+                ) : null}
+                {activeFolder !== 'spam' && activeFolder !== 'trash' ? (
+                  <button type="submit" formAction={spamSelected}>
+                    Mark as spam
+                  </button>
+                ) : null}
+                {activeFolder === 'spam' ? (
+                  <button type="submit" formAction={unspamSelected}>
+                    Not spam
+                  </button>
+                ) : null}
+                {activeFolder === 'trash' ? (
+                  <button type="submit" formAction={restoreSelected}>
+                    Restore
+                  </button>
+                ) : null}
+                {activeFolder === 'trash' ? (
+                  <ConfirmFormButton
+                    formAction={deleteSelected}
+                    message="Permanently delete the selected message(s)? This cannot be undone."
+                    className="ghost-btn"
+                  >
+                    Delete permanently
+                  </ConfirmFormButton>
+                ) : null}
+              </div>
+
+              <ul className="lead-list">
+                {messageRows.map(({ message, thread }) => {
+                  const peer = derivePeer(message);
+                  const subject =
+                    message.subject || thread?.subject || '(no subject)';
+                  const when =
+                    message.sentAt ??
+                    message.receivedAt ??
+                    message.createdAt;
+                  const cbId = `msg-${message.id.toString()}`;
+                  return (
+                    <li key={message.id.toString()}>
+                      <div
+                        className="lead-row"
+                        style={{ alignItems: 'flex-start', gap: '0.5rem' }}
+                      >
+                        <input
+                          id={cbId}
+                          type="checkbox"
+                          name="ids"
+                          value={message.id.toString()}
+                          style={{ marginTop: '0.35rem' }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div className="lead-row">
+                            {thread ? (
+                              <Link href={`/communication/${thread.id}`}>
+                                {subject}
+                              </Link>
+                            ) : (
+                              <label htmlFor={cbId}>{subject}</label>
+                            )}
+                            <span className={statusBadge(message.status)}>
+                              {message.status}
+                            </span>
+                          </div>
+                          <div className="lead-meta">
+                            <span>
+                              {message.direction === 'outbound' ? '→ ' : '← '}
+                              {peer || '(unknown)'}
+                            </span>
+                            <span>{when.toLocaleString()}</span>
+                            {activeFolder === 'errors' && message.failureReason ? (
+                              <span className="warn">
+                                {message.failureReason}
+                              </span>
+                            ) : null}
+                            {activeFolder === 'spam' && message.spamReason ? (
+                              <span className="muted">
+                                flag: {message.spamReason}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </form>
           )}
         </section>
 
