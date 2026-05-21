@@ -48,7 +48,15 @@ const FOLDER_LABELS: Record<MailFolder, string> = {
   trash: 'Trash',
 };
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE_OPTIONS = [10, 50, 100] as const;
+const PAGE_SIZE_DEFAULT = 50;
+function clampPageSize(raw: string | undefined): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return PAGE_SIZE_DEFAULT;
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(n)
+    ? n
+    : PAGE_SIZE_DEFAULT;
+}
 
 function emptyFolderTitle(f: MailFolder): string {
   switch (f) {
@@ -127,6 +135,7 @@ export default async function CommunicationPage({
     from?: string;
     to?: string;
     page?: string;
+    perPage?: string;
     message?: string;
     error?: string;
   }>;
@@ -170,8 +179,9 @@ export default async function CommunicationPage({
     sp.productId && /^\d+$/.test(sp.productId) ? BigInt(sp.productId) : undefined;
   const dateFrom = parseDateOrUndefined(sp.from);
   const dateTo = parseDateOrUndefined(sp.to);
+  const pageSize = clampPageSize(sp.perPage);
   const pageNum = Math.max(1, parseInt(sp.page ?? '1', 10) || 1);
-  const offset = (pageNum - 1) * PAGE_SIZE;
+  const offset = (pageNum - 1) * pageSize;
 
   const sharedFilter = {
     mailboxId: mailboxIdFilter,
@@ -185,14 +195,14 @@ export default async function CommunicationPage({
 
   const [messageRows, totalMatching, folderCounts, mailboxes, products] =
     await Promise.all([
-      listMessages(ctx, { ...sharedFilter, limit: PAGE_SIZE, offset }),
+      listMessages(ctx, { ...sharedFilter, limit: pageSize, offset }),
       countMessagesMatching(ctx, sharedFilter),
       countMessagesByFolder(ctx, mailboxIdFilter),
       listMailboxes(ctx),
       listProductProfiles(ctx, { includeArchived: false }),
     ]);
 
-  const totalPages = Math.max(1, Math.ceil(totalMatching / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(totalMatching / pageSize));
   const safePage = Math.min(pageNum, totalPages);
 
   const mailboxNameById = new Map(
@@ -235,7 +245,7 @@ export default async function CommunicationPage({
   }
   function makeRedirectParams(formData: FormData): URLSearchParams {
     const params = new URLSearchParams();
-    for (const key of ['folder', 'q', 'mailboxId', 'source', 'productId', 'from', 'to', 'page'] as const) {
+    for (const key of ['folder', 'q', 'mailboxId', 'source', 'productId', 'from', 'to', 'page', 'perPage'] as const) {
       const v = String(formData.get(key) ?? '');
       if (v) params.set(key, v);
     }
@@ -316,6 +326,7 @@ export default async function CommunicationPage({
     q: string;
     mailboxId: string;
     page: number;
+    perPage: number;
   }>): string {
     const params = new URLSearchParams();
     const f = overrides.folder ?? activeFolder;
@@ -336,6 +347,8 @@ export default async function CommunicationPage({
     if (mb) params.set('mailboxId', mb);
     const pg = overrides.page ?? 1;
     if (pg > 1) params.set('page', String(pg));
+    const ps = overrides.perPage ?? pageSize;
+    if (ps !== PAGE_SIZE_DEFAULT) params.set('perPage', String(ps));
     const qs = params.toString();
     return qs ? `/communication?${qs}` : '/communication';
   }
@@ -560,6 +573,21 @@ export default async function CommunicationPage({
                 <span>
                   Showing {offset + 1}–{Math.min(offset + serialisedRows.length, totalMatching)} of {totalMatching}
                 </span>
+                <div className="mail-pagination-perpage">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <Link
+                      key={size}
+                      href={buildHref({ perPage: size, page: 1 })}
+                      className={size === pageSize ? 'is-active' : ''}
+                      aria-label={`Show ${size} per page`}
+                    >
+                      {size}
+                    </Link>
+                  ))}
+                  <span className="muted small" style={{ marginLeft: '0.4rem' }}>
+                    per page
+                  </span>
+                </div>
                 <div className="mail-pagination-controls">
                   {safePage > 1 ? (
                     <Link

@@ -5077,3 +5077,30 @@ button.primary-btn {
 .mail-shell {
   align-items: start;
 }
+
+/* P61-18 per-page selector inside .mail-pagination */
+.mail-pagination-perpage {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+.mail-pagination-perpage a {
+  padding: 0.25rem 0.55rem;
+  border-radius: 0.3rem;
+  text-decoration: none;
+  color: var(--brand-muted);
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.mail-pagination-perpage a:hover {
+  color: var(--brand-fg);
+  background: var(--brand-input);
+}
+.mail-pagination-perpage a.is-active {
+  color: var(--brand-primary-foreground);
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  font-weight: 600;
+}
