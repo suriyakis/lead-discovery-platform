@@ -1293,6 +1293,28 @@ export async function emptyTrashNow(
   return { deleted: deleted.length };
 }
 
+/** P61-23: toggle IMAP auto-sync for the workspace. Admin-gated.
+ *  When set to false the IMAP cron tick skips this workspace entirely;
+ *  the operator only ever pulls mail via the manual Sync button.
+ *  Returns the new value (true / false). */
+export async function updateImapAutoSync(
+  ctx: WorkspaceContext,
+  enabled: boolean,
+): Promise<{ imapAutoSyncEnabled: boolean }> {
+  const { canAdminWorkspace } = await import('./context');
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('mail.update_auto_sync');
+  const { workspaces } = await import('@/lib/db/schema/workspaces');
+  await db
+    .update(workspaces)
+    .set({ imapAutoSyncEnabled: enabled, updatedAt: new Date() })
+    .where(eq(workspaces.id, ctx.workspaceId));
+  await recordAuditEvent(ctx, {
+    kind: 'mail.update_auto_sync',
+    payload: { imapAutoSyncEnabled: enabled },
+  });
+  return { imapAutoSyncEnabled: enabled };
+}
+
 /** Update workspaces.trash_retention_days. Admin-gated. Clamps to
  *  [TRASH_RETENTION_DAYS_MIN, TRASH_RETENTION_DAYS_MAX]. */
 export async function updateTrashRetentionDays(

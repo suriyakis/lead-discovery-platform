@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "imap_auto_sync_enabled" boolean DEFAULT true NOT NULL;

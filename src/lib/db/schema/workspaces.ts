@@ -137,7 +137,15 @@ export const workspaces = pgTable('workspaces', {
    *  cron hard-deletes it. 30d default matches operator expectation from
    *  Gmail / Outlook. Set 0 to keep the cron from ever deleting (the
    *  operator can still manually Empty trash now). Cap at 365d. */
-  trashRetentionDays: integer('trash_retention_days').notNull().default(30),
+   trashRetentionDays: integer('trash_retention_days').notNull().default(30),
+
+  /** P61-23: when true, the IMAP cron polls every active mailbox in
+   *  this workspace on the standard cadence (2-min, adaptive to 15-min
+   *  when quiet). When false the cron skips the workspace entirely and
+   *  the operator only ever pulls mail via the manual Sync button on
+   *  /communication or /mailbox/[id]. Default true matches the
+   *  Gmail/Outlook expectation. */
+  imapAutoSyncEnabled: boolean('imap_auto_sync_enabled').notNull().default(true),
 
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()

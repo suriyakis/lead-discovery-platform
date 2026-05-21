@@ -7,6 +7,7 @@ import {
   MessageSquareReply,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
@@ -34,6 +35,7 @@ import {
   TRASH_RETENTION_DAYS_MAX,
   TRASH_RETENTION_DAYS_MIN,
   emptyTrashNow,
+  updateImapAutoSync,
   updateTrashRetentionDays,
 } from '@/lib/services/mail';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
@@ -96,6 +98,27 @@ export default async function OutreachSettingsPage({
       if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof WorkspaceServiceError ? err.message : 'failed';
+      redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function saveAutoSync(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const enabled = formData.get('imapAutoSyncEnabled') === 'on';
+    try {
+      const r = await updateImapAutoSync(c, enabled);
+      redirect(
+        '/settings/outreach?message=' +
+          encodeURIComponent(
+            r.imapAutoSyncEnabled
+              ? 'Auto-sync ON — IMAP cron will poll every active mailbox.'
+              : 'Auto-sync OFF — mailboxes will only sync when you click Sync.',
+          ),
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'auto-sync save failed';
       redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
     }
   }
@@ -401,6 +424,39 @@ export default async function OutreachSettingsPage({
           <Link href="/communication/follow-ups" className="ghost-btn">
             See live schedule →
           </Link>
+        </div>
+      </form>
+
+      {/* ---------- Auto-sync card (P61-23) ---------- */}
+      <form action={saveAutoSync} className="config-card">
+        <header className="config-card-header">
+          <RefreshCw className="config-card-icon" aria-hidden="true" />
+          <div>
+            <h2 className="config-card-title">Mailbox auto-sync</h2>
+            <p className="config-card-desc">
+              When on, the IMAP cron polls every active mailbox in this
+              workspace on a 2-minute cadence (adaptive — slows to 15 min
+              when nothing new arrives). When off, mailboxes never poll on
+              their own and you pull new mail only via the{' '}
+              <strong>Sync</strong> button in{' '}
+              <Link href="/communication">Communication</Link>. The
+              fail2ban-defense backoff still applies in both modes.
+            </p>
+          </div>
+        </header>
+
+        <label className="config-card-row">
+          <span>Auto-sync</span>
+          <ToggleSwitch
+            name="imapAutoSyncEnabled"
+            defaultChecked={ws.imapAutoSyncEnabled}
+          />
+        </label>
+
+        <div className="config-card-actions">
+          <button type="submit" className="primary-btn">
+            Save auto-sync
+          </button>
         </div>
       </form>
 

@@ -108,10 +108,17 @@ const handleDrainTick: JobHandler = async () => {
 const handleImapTick: JobHandler = async () => {
   // Active workspaces only. Inner loop selects each workspace's IMAP-
   // enabled, status=active mailboxes whose cooldown gate has elapsed.
+  // P61-23: workspaces with imapAutoSyncEnabled=false skip auto-sync
+  // entirely (operator only ever pulls via the manual Sync button).
   const wss = await db
     .select()
     .from(workspaces)
-    .where(eq(workspaces.status, 'active'));
+    .where(
+      and(
+        eq(workspaces.status, 'active'),
+        eq(workspaces.imapAutoSyncEnabled, true),
+      ),
+    );
   let synced = 0;
   let failed = 0;
   let skipped = 0;

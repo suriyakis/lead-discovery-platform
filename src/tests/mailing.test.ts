@@ -44,6 +44,7 @@ import {
   syncInbound,
   TRASH_RETENTION_DAYS_MAX,
   unmarkSpam,
+  updateImapAutoSync,
   updateTrashRetentionDays,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
@@ -2311,6 +2312,43 @@ describe('emptyTrashNow (P61-09)', () => {
     await emptyTrashNow(ctx(s.workspaceA, s.ownerA));
     const stillThere = await getMessage(ctx(s.workspaceB, s.ownerB), inB.id);
     expect(stillThere.id).toBe(inB.id);
+  });
+});
+
+describe('updateImapAutoSync (P61-23)', () => {
+  it('round-trips and returns the new value', async () => {
+    const s = await setup();
+    const offResult = await updateImapAutoSync(ctx(s.workspaceA, s.ownerA), false);
+    expect(offResult.imapAutoSyncEnabled).toBe(false);
+    const { workspaces } = await import('@/lib/db/schema/workspaces');
+    const [refreshed] = await db
+      .select({ flag: workspaces.imapAutoSyncEnabled })
+      .from(workspaces)
+      .where(eq(workspaces.id, s.workspaceA));
+    expect(refreshed!.flag).toBe(false);
+    const onResult = await updateImapAutoSync(ctx(s.workspaceA, s.ownerA), true);
+    expect(onResult.imapAutoSyncEnabled).toBe(true);
+  });
+
+  it('admin-gated — viewers + members blocked', async () => {
+    const s = await setup();
+    await expect(
+      updateImapAutoSync(ctx(s.workspaceA, s.ownerA, 'viewer'), false),
+    ).rejects.toThrow(/Permission denied/);
+    await expect(
+      updateImapAutoSync(ctx(s.workspaceA, s.ownerA, 'member'), false),
+    ).rejects.toThrow(/Permission denied/);
+  });
+
+  it('per-workspace — flipping A leaves B alone', async () => {
+    const s = await setup();
+    await updateImapAutoSync(ctx(s.workspaceA, s.ownerA), false);
+    const { workspaces } = await import('@/lib/db/schema/workspaces');
+    const [b] = await db
+      .select({ flag: workspaces.imapAutoSyncEnabled })
+      .from(workspaces)
+      .where(eq(workspaces.id, s.workspaceB));
+    expect(b!.flag).toBe(true);
   });
 });
 
