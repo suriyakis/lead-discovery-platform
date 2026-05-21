@@ -4904,3 +4904,176 @@ button.primary-btn {
     grid-column: 3;
   }
 }
+
+/* ============ P61-17 dashboard, filters, pagination ============ */
+
+.mail-dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  max-width: none !important;
+}
+.mail-metric {
+  position: relative;
+  padding: 0.95rem 1.1rem;
+  border-radius: 0.65rem;
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--brand-primary) 6%, var(--brand-card)) 0%,
+    var(--brand-card-elevated) 100%
+  );
+  border: 1px solid var(--brand-border);
+  overflow: hidden;
+  isolation: isolate;
+}
+.mail-metric::before {
+  content: '';
+  position: absolute;
+  inset: -40% -40% auto auto;
+  width: 8rem;
+  height: 8rem;
+  border-radius: 999px;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklab, var(--accent) 36%, transparent),
+    transparent
+  );
+  opacity: 0.5;
+  z-index: -1;
+}
+.mail-metric[data-accent='blue'] {
+  --accent: var(--brand-primary);
+}
+.mail-metric[data-accent='teal'] {
+  --accent: var(--brand-accent-teal);
+}
+.mail-metric[data-accent='amber'] {
+  --accent: var(--brand-accent-amber);
+}
+.mail-metric[data-accent='red'] {
+  --accent: oklch(0.7 0.18 25);
+}
+.mail-metric-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--brand-muted);
+  margin-bottom: 0.45rem;
+}
+.mail-metric-label .lucide {
+  width: 1rem;
+  height: 1rem;
+  color: var(--accent);
+}
+.mail-metric-value {
+  font-size: 1.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-fg);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+.mail-metric-sub {
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+}
+
+/* Filters bar */
+.mail-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.5rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+}
+.mail-filters > label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+}
+.mail-filters select,
+.mail-filters input[type='date'] {
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.35rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-fg);
+  font-size: 0.82rem;
+}
+
+/* Segment toggle for source (App / All / External) */
+.mail-segment {
+  display: inline-flex;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.45rem;
+  padding: 0.15rem;
+  gap: 0.1rem;
+}
+.mail-segment a {
+  padding: 0.3rem 0.65rem;
+  border-radius: 0.3rem;
+  font-size: 0.8rem;
+  text-decoration: none;
+  color: var(--brand-muted);
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.mail-segment a.is-active {
+  background: var(--brand-primary);
+  color: var(--brand-primary-foreground);
+  font-weight: 600;
+}
+.mail-segment a:not(.is-active):hover {
+  color: var(--brand-fg);
+  background: var(--brand-card-elevated);
+}
+
+/* Pagination */
+.mail-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--brand-border);
+  border-top: none;
+  border-radius: 0 0 0.55rem 0.55rem;
+  background: var(--brand-card-elevated);
+  font-size: 0.82rem;
+  color: var(--brand-muted);
+  gap: 0.5rem;
+}
+.mail-pagination-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.mail-pagination-controls a,
+.mail-pagination-controls span {
+  padding: 0.25rem 0.55rem;
+  border-radius: 0.3rem;
+  text-decoration: none;
+  color: var(--brand-fg);
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+}
+.mail-pagination-controls .is-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Folder rail tweaks — make sure the rail sits next to the new
+   content stack (dashboard + filters + list). */
+.mail-shell {
+  align-items: start;
+}

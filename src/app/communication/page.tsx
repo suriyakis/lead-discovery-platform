@@ -1,6 +1,14 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { Search } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Inbox,
+  Mail,
+  Search,
+  Send,
+  TrendingUp,
+} from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import {
   CommunicationFolderView,
@@ -14,8 +22,10 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { listMailboxes } from '@/lib/services/mailbox';
+import { listProductProfiles } from '@/lib/services/product-profile';
 import {
   countMessagesByFolder,
+  countMessagesMatching,
   isHardBounce,
   listMessages,
   markAsSpam,
@@ -24,6 +34,7 @@ import {
   restoreFromTrash,
   retrySend,
   unmarkSpam,
+  type MailSourceFilter,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -36,6 +47,8 @@ const FOLDER_LABELS: Record<MailFolder, string> = {
   spam: 'Spam',
   trash: 'Trash',
 };
+
+const PAGE_SIZE = 50;
 
 function emptyFolderTitle(f: MailFolder): string {
   switch (f) {
@@ -62,7 +75,7 @@ function emptyFolderHint(f: MailFolder): string {
     case 'queued':
       return 'Outreach drafts waiting to send sit here briefly.';
     case 'errors':
-      return 'Failed sends + bounces show up here. We surface a Retry button for soft errors.';
+      return 'Failed sends + bounces show up here. Retry button surfaces for soft errors.';
     case 'spam':
       return 'Manual + auto-flagged spam lives here. Use Not spam to reverse.';
     case 'trash':
@@ -84,10 +97,22 @@ function derivePeer(msg: {
 
 function snippetOf(body: string | null): string {
   if (!body) return '';
-  return body
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 140);
+  return body.replace(/\s+/g, ' ').trim().slice(0, 140);
+}
+
+function parseDateOrUndefined(raw: string | undefined): Date | undefined {
+  if (!raw) return undefined;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+function toDateInputValue(d: Date | undefined): string {
+  if (!d) return '';
+  // Local YYYY-MM-DD for <input type="date">
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export default async function CommunicationPage({
@@ -97,6 +122,11 @@ export default async function CommunicationPage({
     folder?: string;
     mailboxId?: string;
     q?: string;
+    source?: string;
+    productId?: string;
+    from?: string;
+    to?: string;
+    page?: string;
     message?: string;
     error?: string;
   }>;
@@ -131,17 +161,39 @@ export default async function CommunicationPage({
   const search = sp.q?.trim() ?? '';
   const mailboxIdFilter =
     sp.mailboxId && /^\d+$/.test(sp.mailboxId) ? BigInt(sp.mailboxId) : undefined;
+  const sourceParam = sp.source ?? '';
+  const source: MailSourceFilter =
+    sourceParam === 'outreach' || sourceParam === 'external'
+      ? sourceParam
+      : 'all';
+  const productId =
+    sp.productId && /^\d+$/.test(sp.productId) ? BigInt(sp.productId) : undefined;
+  const dateFrom = parseDateOrUndefined(sp.from);
+  const dateTo = parseDateOrUndefined(sp.to);
+  const pageNum = Math.max(1, parseInt(sp.page ?? '1', 10) || 1);
+  const offset = (pageNum - 1) * PAGE_SIZE;
 
-  const [messageRows, folderCounts, mailboxes] = await Promise.all([
-    listMessages(ctx, {
-      folder: activeFolder,
-      mailboxId: mailboxIdFilter,
-      limit: 200,
-      search: search || undefined,
-    }),
-    countMessagesByFolder(ctx, mailboxIdFilter),
-    listMailboxes(ctx),
-  ]);
+  const sharedFilter = {
+    mailboxId: mailboxIdFilter,
+    folder: activeFolder,
+    search: search || undefined,
+    dateFrom,
+    dateTo,
+    source: source !== 'all' ? source : undefined,
+    productId,
+  };
+
+  const [messageRows, totalMatching, folderCounts, mailboxes, products] =
+    await Promise.all([
+      listMessages(ctx, { ...sharedFilter, limit: PAGE_SIZE, offset }),
+      countMessagesMatching(ctx, sharedFilter),
+      countMessagesByFolder(ctx, mailboxIdFilter),
+      listMailboxes(ctx),
+      listProductProfiles(ctx, { includeArchived: false }),
+    ]);
+
+  const totalPages = Math.max(1, Math.ceil(totalMatching / PAGE_SIZE));
+  const safePage = Math.min(pageNum, totalPages);
 
   const mailboxNameById = new Map(
     mailboxes.map((mb) => [mb.id.toString(), mb.name]),
@@ -170,8 +222,7 @@ export default async function CommunicationPage({
     }),
   );
 
-  // Server actions (one per bulk op). Each parses ids[] from the
-  // posted FormData and bounces back to the same folder + search.
+  // ---- server actions ----
   function backToFolder(formData: FormData, msg: string) {
     const params = makeRedirectParams(formData);
     params.set('message', msg);
@@ -183,12 +234,12 @@ export default async function CommunicationPage({
     redirect(`/communication?${params.toString()}`);
   }
   function makeRedirectParams(formData: FormData): URLSearchParams {
-    const folder = String(formData.get('folder') ?? 'inbox');
-    const q = String(formData.get('q') ?? '');
-    const mailboxId = String(formData.get('mailboxId') ?? '');
-    const params = new URLSearchParams({ folder });
-    if (q) params.set('q', q);
-    if (mailboxId) params.set('mailboxId', mailboxId);
+    const params = new URLSearchParams();
+    for (const key of ['folder', 'q', 'mailboxId', 'source', 'productId', 'from', 'to', 'page'] as const) {
+      const v = String(formData.get(key) ?? '');
+      if (v) params.set(key, v);
+    }
+    if (!params.get('folder')) params.set('folder', 'inbox');
     return params;
   }
   function parseIds(formData: FormData): bigint[] {
@@ -196,11 +247,7 @@ export default async function CommunicationPage({
     for (const raw of formData.getAll('ids')) {
       const s = String(raw);
       if (!/^\d+$/.test(s)) continue;
-      try {
-        out.push(BigInt(s));
-      } catch {
-        // skip
-      }
+      try { out.push(BigInt(s)); } catch {}
     }
     return out;
   }
@@ -209,66 +256,40 @@ export default async function CommunicationPage({
     if (n === 1) return `1 message ${verb}.`;
     return `${n} messages ${verb}.`;
   }
-
   async function trashSelected(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
     const ids = parseIds(formData);
-    try {
-      const r = await moveToTrash(c, ids);
-      backToFolder(formData, affectedNote('moved to trash', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'trash failed');
-    }
+    try { const r = await moveToTrash(c, ids); backToFolder(formData, affectedNote('moved to trash', r.affected)); }
+    catch (err) { if (isNextRedirectError(err)) throw err; backToFolderError(formData, err instanceof Error ? err.message : 'trash failed'); }
   }
   async function restoreSelected(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
     const ids = parseIds(formData);
-    try {
-      const r = await restoreFromTrash(c, ids);
-      backToFolder(formData, affectedNote('restored', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'restore failed');
-    }
+    try { const r = await restoreFromTrash(c, ids); backToFolder(formData, affectedNote('restored', r.affected)); }
+    catch (err) { if (isNextRedirectError(err)) throw err; backToFolderError(formData, err instanceof Error ? err.message : 'restore failed'); }
   }
   async function spamSelected(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
     const ids = parseIds(formData);
-    try {
-      const r = await markAsSpam(c, ids, 'manual');
-      backToFolder(formData, affectedNote('flagged as spam', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'mark-spam failed');
-    }
+    try { const r = await markAsSpam(c, ids, 'manual'); backToFolder(formData, affectedNote('flagged as spam', r.affected)); }
+    catch (err) { if (isNextRedirectError(err)) throw err; backToFolderError(formData, err instanceof Error ? err.message : 'mark-spam failed'); }
   }
   async function unspamSelected(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
     const ids = parseIds(formData);
-    try {
-      const r = await unmarkSpam(c, ids);
-      backToFolder(formData, affectedNote('un-flagged', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'unmark failed');
-    }
+    try { const r = await unmarkSpam(c, ids); backToFolder(formData, affectedNote('un-flagged', r.affected)); }
+    catch (err) { if (isNextRedirectError(err)) throw err; backToFolderError(formData, err instanceof Error ? err.message : 'unmark failed'); }
   }
   async function deleteSelected(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
     const ids = parseIds(formData);
-    try {
-      const r = await permanentlyDelete(c, ids);
-      backToFolder(formData, affectedNote('permanently deleted', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'delete failed');
-    }
+    try { const r = await permanentlyDelete(c, ids); backToFolder(formData, affectedNote('permanently deleted', r.affected)); }
+    catch (err) { if (isNextRedirectError(err)) throw err; backToFolderError(formData, err instanceof Error ? err.message : 'delete failed'); }
   }
   async function retrySelected(formData: FormData) {
     'use server';
@@ -277,70 +298,209 @@ export default async function CommunicationPage({
     try {
       const r = await retrySend(c, ids);
       const parts: string[] = [];
-      if (r.retried.length > 0)
-        parts.push(
-          r.retried.length === 1
-            ? '1 message resent'
-            : `${r.retried.length} messages resent`,
-        );
-      if (r.skippedHardBounce.length > 0)
-        parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
-      if (r.skippedIneligible.length > 0)
-        parts.push(`${r.skippedIneligible.length} ineligible`);
+      if (r.retried.length > 0) parts.push(r.retried.length === 1 ? '1 message resent' : `${r.retried.length} messages resent`);
+      if (r.skippedHardBounce.length > 0) parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
+      if (r.skippedIneligible.length > 0) parts.push(`${r.skippedIneligible.length} ineligible`);
       if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);
-      backToFolder(
-        formData,
-        parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.',
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'retry failed');
-    }
+      backToFolder(formData, parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.');
+    } catch (err) { if (isNextRedirectError(err)) throw err; backToFolderError(formData, err instanceof Error ? err.message : 'retry failed'); }
+  }
+
+  // ---- helpers for URL building in JSX ----
+  function buildHref(overrides: Partial<{
+    folder: MailFolder;
+    source: MailSourceFilter;
+    productId: string;
+    from: string;
+    to: string;
+    q: string;
+    mailboxId: string;
+    page: number;
+  }>): string {
+    const params = new URLSearchParams();
+    const f = overrides.folder ?? activeFolder;
+    if (f !== 'inbox') params.set('folder', f);
+    const s = overrides.source ?? source;
+    if (s !== 'all') params.set('source', s);
+    const pId = overrides.productId !== undefined
+      ? overrides.productId
+      : productId?.toString() ?? '';
+    if (pId) params.set('productId', pId);
+    const fr = overrides.from !== undefined ? overrides.from : toDateInputValue(dateFrom);
+    if (fr) params.set('from', fr);
+    const toV = overrides.to !== undefined ? overrides.to : toDateInputValue(dateTo);
+    if (toV) params.set('to', toV);
+    const qv = overrides.q !== undefined ? overrides.q : search;
+    if (qv) params.set('q', qv);
+    const mb = overrides.mailboxId !== undefined ? overrides.mailboxId : mailboxIdFilter?.toString() ?? '';
+    if (mb) params.set('mailboxId', mb);
+    const pg = overrides.page ?? 1;
+    if (pg > 1) params.set('page', String(pg));
+    const qs = params.toString();
+    return qs ? `/communication?${qs}` : '/communication';
   }
 
   return (
     <AppShell>
+      {/* ============ Dashboard ============ */}
+      <section className="mail-dashboard" aria-label="Communication summary">
+        <div className="mail-metric" data-accent="blue">
+          <div className="mail-metric-label">
+            <Inbox className="lucide" /> Inbox
+          </div>
+          <div className="mail-metric-value">{folderCounts.inbox}</div>
+          <div className="mail-metric-sub">Awaiting your attention</div>
+        </div>
+        <div className="mail-metric" data-accent="teal">
+          <div className="mail-metric-label">
+            <Send className="lucide" /> Sent
+          </div>
+          <div className="mail-metric-value">{folderCounts.sent}</div>
+          <div className="mail-metric-sub">Delivered or in transit</div>
+        </div>
+        <div className="mail-metric" data-accent="amber">
+          <div className="mail-metric-label">
+            <Mail className="lucide" /> Queued
+          </div>
+          <div className="mail-metric-value">{folderCounts.queued}</div>
+          <div className="mail-metric-sub">Drafts waiting to send</div>
+        </div>
+        <div className="mail-metric" data-accent="red">
+          <div className="mail-metric-label">
+            <TrendingUp className="lucide" /> Needs attention
+          </div>
+          <div className="mail-metric-value">
+            {folderCounts.errors + folderCounts.spam}
+          </div>
+          <div className="mail-metric-sub">
+            {folderCounts.errors} errors · {folderCounts.spam} spam
+          </div>
+        </div>
+      </section>
+
+      {/* ============ Filters ============ */}
+      <form
+        method="get"
+        action="/communication"
+        className="mail-filters"
+        role="search"
+      >
+        <input type="hidden" name="folder" value={activeFolder} />
+        {mailboxIdFilter !== undefined ? (
+          <input type="hidden" name="mailboxId" value={mailboxIdFilter.toString()} />
+        ) : null}
+
+        <div className="mail-segment" role="tablist" aria-label="Conversation source">
+          <Link
+            href={buildHref({ source: 'all', page: 1 })}
+            className={source === 'all' ? 'is-active' : ''}
+          >
+            All
+          </Link>
+          <Link
+            href={buildHref({ source: 'outreach', page: 1 })}
+            className={source === 'outreach' ? 'is-active' : ''}
+          >
+            App conversations
+          </Link>
+          <Link
+            href={buildHref({ source: 'external', page: 1 })}
+            className={source === 'external' ? 'is-active' : ''}
+          >
+            External email
+          </Link>
+        </div>
+
+        <input type="hidden" name="source" value={source !== 'all' ? source : ''} />
+
+        <label>
+          <span>Product</span>
+          <select
+            name="productId"
+            defaultValue={productId?.toString() ?? ''}
+          >
+            <option value="">All</option>
+            {products.map((p) => (
+              <option key={p.id.toString()} value={p.id.toString()}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          <span>From</span>
+          <input
+            type="date"
+            name="from"
+            defaultValue={toDateInputValue(dateFrom)}
+          />
+        </label>
+        <label>
+          <span>To</span>
+          <input
+            type="date"
+            name="to"
+            defaultValue={toDateInputValue(dateTo)}
+          />
+        </label>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flex: '1 1 220px', minWidth: 200 }}>
+          <Search className="lucide" style={{ opacity: 0.6 }} />
+          <input
+            type="search"
+            name="q"
+            defaultValue={search}
+            placeholder={`Search ${FOLDER_LABELS[activeFolder]}…`}
+            style={{
+              flex: 1,
+              padding: '0.35rem 0.55rem',
+              borderRadius: '0.35rem',
+              background: 'var(--brand-input)',
+              border: '1px solid var(--brand-border)',
+              color: 'var(--brand-fg)',
+              fontSize: '0.82rem',
+            }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.35rem' }}>
+          <button type="submit" className="primary-btn">Apply</button>
+          {(search || mailboxIdFilter !== undefined || productId !== undefined || dateFrom || dateTo || source !== 'all') ? (
+            <Link href={`/communication?folder=${activeFolder}`} className="ghost-btn">
+              Reset
+            </Link>
+          ) : null}
+        </div>
+      </form>
+
+      {/* ============ 2-pane layout ============ */}
       <div className="mail-shell">
-        {/* Left rail — folders + mailbox picker */}
         <aside className="mail-rail" aria-label="Mail folders">
           <div className="mail-rail-section-title">Folders</div>
           {MAIL_FOLDERS.map((f) => {
-            const params = new URLSearchParams({ folder: f });
-            if (mailboxIdFilter !== undefined)
-              params.set('mailboxId', mailboxIdFilter.toString());
             const isActive = f === activeFolder;
             return (
               <Link
                 key={f}
-                href={`/communication?${params.toString()}`}
+                href={buildHref({ folder: f, page: 1 })}
                 className={`mail-rail-item${isActive ? ' is-active' : ''}`}
                 aria-current={isActive ? 'page' : undefined}
               >
                 <FolderIcon folder={f} />
                 <span>{FOLDER_LABELS[f]}</span>
-                <span className="mail-rail-item-count">
-                  {folderCounts[f]}
-                </span>
+                <span className="mail-rail-item-count">{folderCounts[f]}</span>
               </Link>
             );
           })}
           {mailboxes.length > 1 ? (
-            <form
-              method="get"
-              action="/communication"
-              className="mail-rail-mailbox-select"
-            >
+            <form method="get" action="/communication" className="mail-rail-mailbox-select">
               <input type="hidden" name="folder" value={activeFolder} />
-              {search ? (
-                <input type="hidden" name="q" value={search} />
-              ) : null}
-              <label className="mail-rail-section-title" style={{ padding: 0 }}>
-                Mailbox
-              </label>
-              <select
-                name="mailboxId"
-                defaultValue={mailboxIdFilter?.toString() ?? ''}
-              >
+              {search ? <input type="hidden" name="q" value={search} /> : null}
+              {source !== 'all' ? <input type="hidden" name="source" value={source} /> : null}
+              {productId !== undefined ? <input type="hidden" name="productId" value={productId.toString()} /> : null}
+              <label className="mail-rail-section-title" style={{ padding: 0 }}>Mailbox</label>
+              <select name="mailboxId" defaultValue={mailboxIdFilter?.toString() ?? ''}>
                 <option value="">All mailboxes</option>
                 {mailboxes.map((m) => (
                   <option key={m.id.toString()} value={m.id.toString()}>
@@ -348,58 +508,15 @@ export default async function CommunicationPage({
                   </option>
                 ))}
               </select>
-              <button
-                type="submit"
-                className="ghost-btn"
-                style={{ fontSize: '0.78rem', padding: '0.3rem 0.5rem' }}
-              >
+              <button type="submit" className="ghost-btn" style={{ fontSize: '0.78rem', padding: '0.3rem 0.5rem' }}>
                 Apply
               </button>
             </form>
           ) : null}
         </aside>
 
-        {/* Right pane — search + list */}
         <div className="mail-content">
-          <form
-            method="get"
-            action="/communication"
-            className="mail-search"
-            role="search"
-          >
-            <input type="hidden" name="folder" value={activeFolder} />
-            {mailboxIdFilter !== undefined ? (
-              <input
-                type="hidden"
-                name="mailboxId"
-                value={mailboxIdFilter.toString()}
-              />
-            ) : null}
-            <Search className="lucide" style={{ opacity: 0.6 }} />
-            <input
-              type="search"
-              name="q"
-              defaultValue={search}
-              placeholder={`Search ${FOLDER_LABELS[activeFolder]} — subject, from, to…`}
-            />
-            {search ? (
-              <Link
-                href={
-                  mailboxIdFilter !== undefined
-                    ? `/communication?folder=${activeFolder}&mailboxId=${mailboxIdFilter}`
-                    : `/communication?folder=${activeFolder}`
-                }
-                className="ghost-btn"
-                style={{ fontSize: '0.78rem' }}
-              >
-                Clear
-              </Link>
-            ) : null}
-          </form>
-
-          {sp.message ? (
-            <p className="mail-flash info">{sp.message}</p>
-          ) : null}
+          {sp.message ? <p className="mail-flash info">{sp.message}</p> : null}
           {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
 
           {serialisedRows.length === 0 ? (
@@ -408,34 +525,70 @@ export default async function CommunicationPage({
                 <FolderIcon folder={activeFolder} />
               </div>
               <p className="mail-empty-title">
-                {search
-                  ? `No messages match "${search}" in ${FOLDER_LABELS[activeFolder]}`
+                {search || productId !== undefined || dateFrom || dateTo || source !== 'all'
+                  ? `No messages match these filters`
                   : emptyFolderTitle(activeFolder)}
               </p>
               <p style={{ margin: 0 }}>
-                {search
-                  ? 'Try a broader search term, switch mailbox, or clear filters.'
+                {search || productId !== undefined || dateFrom || dateTo || source !== 'all'
+                  ? 'Reset the filters above to widen the view, or switch folder.'
                   : emptyFolderHint(activeFolder)}
               </p>
             </div>
           ) : (
-            <CommunicationFolderView
-              folder={activeFolder}
-              hiddenInputs={{
-                folder: activeFolder,
-                q: search,
-                mailboxId: mailboxIdFilter?.toString() ?? '',
-              }}
-              rows={serialisedRows}
-              actions={{
-                trash: trashSelected,
-                spam: spamSelected,
-                unspam: unspamSelected,
-                restore: restoreSelected,
-                delete: deleteSelected,
-                retry: retrySelected,
-              }}
-            />
+            <>
+              <CommunicationFolderView
+                folder={activeFolder}
+                hiddenInputs={{
+                  folder: activeFolder,
+                  q: search,
+                  mailboxId: mailboxIdFilter?.toString() ?? '',
+                }}
+                rows={serialisedRows}
+                actions={{
+                  trash: trashSelected,
+                  spam: spamSelected,
+                  unspam: unspamSelected,
+                  restore: restoreSelected,
+                  delete: deleteSelected,
+                  retry: retrySelected,
+                }}
+              />
+
+              {/* Pagination footer */}
+              <div className="mail-pagination">
+                <span>
+                  Showing {offset + 1}–{Math.min(offset + serialisedRows.length, totalMatching)} of {totalMatching}
+                </span>
+                <div className="mail-pagination-controls">
+                  {safePage > 1 ? (
+                    <Link
+                      href={buildHref({ page: safePage - 1 })}
+                      aria-label="Previous page"
+                    >
+                      <ChevronLeft className="lucide" /> Prev
+                    </Link>
+                  ) : (
+                    <span className="is-disabled" aria-disabled="true">
+                      <ChevronLeft className="lucide" /> Prev
+                    </span>
+                  )}
+                  <span>Page {safePage} of {totalPages}</span>
+                  {safePage < totalPages ? (
+                    <Link
+                      href={buildHref({ page: safePage + 1 })}
+                      aria-label="Next page"
+                    >
+                      Next <ChevronRight className="lucide" />
+                    </Link>
+                  ) : (
+                    <span className="is-disabled" aria-disabled="true">
+                      Next <ChevronRight className="lucide" />
+                    </span>
+                  )}
+                </div>
+              </div>
+            </>
           )}
         </div>
       </div>

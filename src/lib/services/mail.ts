@@ -849,6 +849,8 @@ function folderFilter(folder: MailFolder): SQL {
   }
 }
 
+export type MailSourceFilter = 'all' | 'outreach' | 'external';
+
 export interface ListMessagesFilter {
   /** Omit to list across every mailbox in the workspace (Gmail-style
    *  unified inbox). Set to scope to a single mailbox. */
@@ -859,19 +861,26 @@ export interface ListMessagesFilter {
   /** Substring match against subject + from address + to addresses
    *  (case-insensitive). */
   search?: string;
+  /** P61-17: filter by date range on mail_messages.createdAt. */
+  dateFrom?: Date;
+  dateTo?: Date;
+  /** P61-17: 'outreach' = thread is linked to an outreach_thread_state
+   *  row (i.e., app-driven conversation); 'external' = NOT linked
+   *  (random inbound, manual sends); 'all' = both. */
+  source?: MailSourceFilter;
+  /** P61-17: filter to messages whose thread is linked to a qualified
+   *  lead for this product. */
+  productId?: bigint;
 }
 
-export interface MessageListRow {
-  message: MailMessage;
-  thread: { id: bigint; subject: string } | null;
-}
-
-export async function listMessages(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+/** Shared WHERE-clause builder for listMessages + countMessagesMatching.
+ *  Splitting it out so both helpers stay in lockstep. */
+async function buildMessageFilterConditions(
+  workspaceId: bigint,
   filter: ListMessagesFilter,
-): Promise<MessageListRow[]> {
+): Promise<SQL[]> {
   const conditions: SQL[] = [
-    eq(mailMessages.workspaceId, ctx.workspaceId),
+    eq(mailMessages.workspaceId, workspaceId),
     folderFilter(filter.folder),
   ];
   if (filter.mailboxId !== undefined) {
@@ -887,6 +896,51 @@ export async function listMessages(
       ) as SQL,
     );
   }
+  if (filter.dateFrom) {
+    conditions.push(sql`${mailMessages.createdAt} >= ${filter.dateFrom}` as SQL);
+  }
+  if (filter.dateTo) {
+    conditions.push(sql`${mailMessages.createdAt} <= ${filter.dateTo}` as SQL);
+  }
+  if (filter.source === 'outreach' || filter.source === 'external') {
+    const { outreachThreadState } = await import('@/lib/db/schema/outreach');
+    const exists = sql`EXISTS (
+      SELECT 1 FROM ${outreachThreadState}
+      WHERE ${outreachThreadState.threadId} = ${mailMessages.threadId}
+        AND ${outreachThreadState.workspaceId} = ${mailMessages.workspaceId}
+    )`;
+    conditions.push(
+      filter.source === 'outreach'
+        ? (exists as unknown as SQL)
+        : (sql`NOT ${exists}` as unknown as SQL),
+    );
+  }
+  if (filter.productId !== undefined) {
+    const { outreachThreadState } = await import('@/lib/db/schema/outreach');
+    const { qualifiedLeads } = await import('@/lib/db/schema/pipeline');
+    conditions.push(
+      sql`EXISTS (
+        SELECT 1 FROM ${outreachThreadState}
+        JOIN ${qualifiedLeads} ON ${qualifiedLeads.id} = ${outreachThreadState.qualifiedLeadId}
+        WHERE ${outreachThreadState.threadId} = ${mailMessages.threadId}
+          AND ${outreachThreadState.workspaceId} = ${mailMessages.workspaceId}
+          AND ${qualifiedLeads.productProfileId} = ${filter.productId}
+      )` as SQL,
+    );
+  }
+  return conditions;
+}
+
+export interface MessageListRow {
+  message: MailMessage;
+  thread: { id: bigint; subject: string } | null;
+}
+
+export async function listMessages(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  filter: ListMessagesFilter,
+): Promise<MessageListRow[]> {
+  const conditions = await buildMessageFilterConditions(ctx.workspaceId, filter);
 
   const limit = Math.min(Math.max(filter.limit ?? 100, 1), 500);
   const offset = Math.max(filter.offset ?? 0, 0);
@@ -911,6 +965,20 @@ export async function listMessages(
         ? { id: r.threadId, subject: r.threadSubject }
         : null,
   }));
+}
+
+/** P61-17: total count of messages matching `filter`. Same WHERE as
+ *  listMessages. Drives pagination + dashboard totals. */
+export async function countMessagesMatching(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  filter: ListMessagesFilter,
+): Promise<number> {
+  const conditions = await buildMessageFilterConditions(ctx.workspaceId, filter);
+  const rows = await db
+    .select({ c: sql<number>`COUNT(*)::int` })
+    .from(mailMessages)
+    .where(and(...conditions));
+  return rows[0]?.c ?? 0;
 }
 
 export type FolderCounts = Record<MailFolder, number>;
