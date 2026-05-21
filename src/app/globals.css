@@ -4645,3 +4645,262 @@ button.primary-btn {
     grid-template-columns: auto 1fr auto;
   }
 }
+
+/* ============ P61-16 mail-client two-pane layout =============== */
+
+.mail-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 1.25rem;
+  align-items: start;
+  min-height: 60vh;
+}
+.mail-shell > * {
+  max-width: none !important;
+}
+
+/* Left rail — folder list (Outlook-style) */
+.mail-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.4rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.55rem;
+  position: sticky;
+  top: 1rem;
+}
+.mail-rail-section-title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--brand-muted);
+  padding: 0.6rem 0.75rem 0.3rem;
+}
+.mail-rail-item {
+  display: grid;
+  grid-template-columns: 1rem 1fr auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  color: var(--brand-fg);
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: background 0.1s ease;
+}
+.mail-rail-item:hover {
+  background: var(--brand-card-elevated);
+}
+.mail-rail-item.is-active {
+  background: color-mix(in oklab, var(--brand-primary) 22%, var(--brand-card));
+  color: var(--brand-fg);
+  font-weight: 600;
+}
+.mail-rail-item.is-active .mail-rail-item-count {
+  color: var(--brand-fg);
+}
+.mail-rail-item .lucide {
+  width: 1rem;
+  height: 1rem;
+  opacity: 0.85;
+}
+.mail-rail-item-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+}
+
+.mail-rail-mailbox-select {
+  margin: 0.6rem 0.3rem 0.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.mail-rail-mailbox-select select {
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.35rem;
+  color: var(--brand-fg);
+  font-size: 0.82rem;
+}
+
+/* Right pane — list area */
+.mail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* Search bar at top of content */
+.mail-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.8rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.5rem;
+}
+.mail-search input[type='search'] {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--brand-fg);
+  outline: none;
+  font-size: 0.92rem;
+}
+
+/* Gmail-style dense rows */
+.mail-list {
+  border-radius: 0.55rem;
+  overflow: hidden;
+  border: 1px solid var(--brand-border);
+  background: var(--brand-card);
+}
+.mail-row {
+  display: grid;
+  grid-template-columns: 1.5rem 200px minmax(0, 1fr) 80px;
+  gap: 0.85rem;
+  padding: 0.5rem 0.85rem;
+  border-bottom: 1px solid var(--brand-border);
+  align-items: center;
+  min-height: 2.4rem;
+  cursor: default;
+  position: relative;
+}
+.mail-row:last-child {
+  border-bottom: none;
+}
+.mail-row:hover {
+  background: var(--brand-card-elevated);
+}
+.mail-row.is-checked {
+  background: color-mix(in oklab, var(--brand-primary) 14%, var(--brand-card));
+}
+.mail-row-check input {
+  width: 1rem;
+  height: 1rem;
+  cursor: pointer;
+  margin: 0;
+}
+
+.mail-row-peer {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--brand-fg);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.mail-row-direction {
+  color: var(--brand-muted);
+  font-weight: 400;
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+
+/* Single-line subject + snippet, snippet muted right after subject */
+.mail-row-body {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.88rem;
+}
+.mail-row-subject {
+  color: var(--brand-fg);
+  font-weight: 500;
+  text-decoration: none;
+  margin-right: 0.4rem;
+}
+.mail-row-subject:hover {
+  text-decoration: underline;
+}
+.mail-row-snippet {
+  color: var(--brand-muted);
+  font-weight: 400;
+}
+
+.mail-row-meta {
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.mail-row-mailbox {
+  display: none; /* hide tag in dense view, show in subject if needed */
+}
+.mail-row-hints {
+  display: inline-flex;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  margin-left: 0.4rem;
+}
+.mail-row-hint {
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem;
+  background: var(--brand-input);
+  color: var(--brand-muted);
+}
+.mail-row-hint-bad {
+  color: oklch(0.85 0.16 25);
+  background: color-mix(in oklab, oklch(0.6 0.2 25) 22%, var(--brand-input));
+}
+
+/* Toolbar attaches to the top of the list seamlessly */
+.mail-toolbar {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--brand-border);
+  border-bottom: none;
+  border-radius: 0.55rem 0.55rem 0 0;
+  background: var(--brand-card-elevated);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.mail-list-with-toolbar {
+  border-radius: 0 0 0.55rem 0.55rem;
+  border-top: none;
+}
+
+/* Hide the old folder strip we still ship but no longer want here */
+.mail-folder-strip {
+  display: none !important;
+}
+
+/* Narrow screens — stack rail above content */
+@media (max-width: 900px) {
+  .mail-shell {
+    grid-template-columns: 1fr;
+  }
+  .mail-rail {
+    position: relative;
+    top: auto;
+  }
+  .mail-row {
+    grid-template-columns: 1.5rem 1fr 70px;
+  }
+  .mail-row-peer {
+    grid-row: 1;
+    grid-column: 2;
+  }
+  .mail-row-body {
+    grid-row: 2;
+    grid-column: 2;
+  }
+  .mail-row-meta {
+    grid-row: 1 / span 2;
+    grid-column: 3;
+  }
+}

@@ -300,54 +300,12 @@ export default async function CommunicationPage({
 
   return (
     <AppShell>
-      <div className="mail-page">
-        {/* Search + mailbox filter (single compact row) */}
-        <form
-          method="get"
-          action="/communication"
-          className="mail-topbar"
-          role="search"
-        >
-          <input type="hidden" name="folder" value={activeFolder} />
-          <div className="mail-topbar-search">
-            <Search className="lucide" style={{ opacity: 0.6 }} />
-            <input
-              type="search"
-              name="q"
-              defaultValue={search}
-              placeholder={`Search ${FOLDER_LABELS[activeFolder]}…`}
-            />
-          </div>
-          <select
-            name="mailboxId"
-            defaultValue={mailboxIdFilter?.toString() ?? ''}
-            aria-label="Filter by mailbox"
-          >
-            <option value="">All mailboxes</option>
-            {mailboxes.map((m) => (
-              <option key={m.id.toString()} value={m.id.toString()}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-          <button type="submit" className="primary-btn">
-            Apply
-          </button>
-          {search || mailboxIdFilter !== undefined ? (
-            <Link
-              href={`/communication?folder=${activeFolder}`}
-              className="ghost-btn"
-            >
-              Clear
-            </Link>
-          ) : null}
-        </form>
-
-        {/* Folder pills */}
-        <nav className="mail-folder-strip" aria-label="Mail folders">
+      <div className="mail-shell">
+        {/* Left rail — folders + mailbox picker */}
+        <aside className="mail-rail" aria-label="Mail folders">
+          <div className="mail-rail-section-title">Folders</div>
           {MAIL_FOLDERS.map((f) => {
             const params = new URLSearchParams({ folder: f });
-            if (search) params.set('q', search);
             if (mailboxIdFilter !== undefined)
               params.set('mailboxId', mailboxIdFilter.toString());
             const isActive = f === activeFolder;
@@ -355,60 +313,131 @@ export default async function CommunicationPage({
               <Link
                 key={f}
                 href={`/communication?${params.toString()}`}
-                className={`mail-folder-tab${isActive ? ' is-active' : ''}`}
+                className={`mail-rail-item${isActive ? ' is-active' : ''}`}
                 aria-current={isActive ? 'page' : undefined}
               >
                 <FolderIcon folder={f} />
                 <span>{FOLDER_LABELS[f]}</span>
-                <span className="mail-folder-tab-count">
+                <span className="mail-rail-item-count">
                   {folderCounts[f]}
                 </span>
               </Link>
             );
           })}
-        </nav>
+          {mailboxes.length > 1 ? (
+            <form
+              method="get"
+              action="/communication"
+              className="mail-rail-mailbox-select"
+            >
+              <input type="hidden" name="folder" value={activeFolder} />
+              {search ? (
+                <input type="hidden" name="q" value={search} />
+              ) : null}
+              <label className="mail-rail-section-title" style={{ padding: 0 }}>
+                Mailbox
+              </label>
+              <select
+                name="mailboxId"
+                defaultValue={mailboxIdFilter?.toString() ?? ''}
+              >
+                <option value="">All mailboxes</option>
+                {mailboxes.map((m) => (
+                  <option key={m.id.toString()} value={m.id.toString()}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                className="ghost-btn"
+                style={{ fontSize: '0.78rem', padding: '0.3rem 0.5rem' }}
+              >
+                Apply
+              </button>
+            </form>
+          ) : null}
+        </aside>
 
-        {sp.message ? (
-          <p className="mail-flash info">{sp.message}</p>
-        ) : null}
-        {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
+        {/* Right pane — search + list */}
+        <div className="mail-content">
+          <form
+            method="get"
+            action="/communication"
+            className="mail-search"
+            role="search"
+          >
+            <input type="hidden" name="folder" value={activeFolder} />
+            {mailboxIdFilter !== undefined ? (
+              <input
+                type="hidden"
+                name="mailboxId"
+                value={mailboxIdFilter.toString()}
+              />
+            ) : null}
+            <Search className="lucide" style={{ opacity: 0.6 }} />
+            <input
+              type="search"
+              name="q"
+              defaultValue={search}
+              placeholder={`Search ${FOLDER_LABELS[activeFolder]} — subject, from, to…`}
+            />
+            {search ? (
+              <Link
+                href={
+                  mailboxIdFilter !== undefined
+                    ? `/communication?folder=${activeFolder}&mailboxId=${mailboxIdFilter}`
+                    : `/communication?folder=${activeFolder}`
+                }
+                className="ghost-btn"
+                style={{ fontSize: '0.78rem' }}
+              >
+                Clear
+              </Link>
+            ) : null}
+          </form>
 
-        {/* List or empty state */}
-        {serialisedRows.length === 0 ? (
-          <div className="mail-empty">
-            <div className="mail-empty-icon">
-              <FolderIcon folder={activeFolder} />
+          {sp.message ? (
+            <p className="mail-flash info">{sp.message}</p>
+          ) : null}
+          {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
+
+          {serialisedRows.length === 0 ? (
+            <div className="mail-empty">
+              <div className="mail-empty-icon">
+                <FolderIcon folder={activeFolder} />
+              </div>
+              <p className="mail-empty-title">
+                {search
+                  ? `No messages match "${search}" in ${FOLDER_LABELS[activeFolder]}`
+                  : emptyFolderTitle(activeFolder)}
+              </p>
+              <p style={{ margin: 0 }}>
+                {search
+                  ? 'Try a broader search term, switch mailbox, or clear filters.'
+                  : emptyFolderHint(activeFolder)}
+              </p>
             </div>
-            <p className="mail-empty-title">
-              {search
-                ? `No messages match "${search}" in ${FOLDER_LABELS[activeFolder]}`
-                : emptyFolderTitle(activeFolder)}
-            </p>
-            <p style={{ margin: 0 }}>
-              {search
-                ? 'Try a broader search term, switch mailbox, or clear filters.'
-                : emptyFolderHint(activeFolder)}
-            </p>
-          </div>
-        ) : (
-          <CommunicationFolderView
-            folder={activeFolder}
-            hiddenInputs={{
-              folder: activeFolder,
-              q: search,
-              mailboxId: mailboxIdFilter?.toString() ?? '',
-            }}
-            rows={serialisedRows}
-            actions={{
-              trash: trashSelected,
-              spam: spamSelected,
-              unspam: unspamSelected,
-              restore: restoreSelected,
-              delete: deleteSelected,
-              retry: retrySelected,
-            }}
-          />
-        )}
+          ) : (
+            <CommunicationFolderView
+              folder={activeFolder}
+              hiddenInputs={{
+                folder: activeFolder,
+                q: search,
+                mailboxId: mailboxIdFilter?.toString() ?? '',
+              }}
+              rows={serialisedRows}
+              actions={{
+                trash: trashSelected,
+                spam: spamSelected,
+                unspam: unspamSelected,
+                restore: restoreSelected,
+                delete: deleteSelected,
+                retry: retrySelected,
+              }}
+            />
+          )}
+        </div>
       </div>
     </AppShell>
   );

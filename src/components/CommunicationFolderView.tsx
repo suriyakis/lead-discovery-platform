@@ -182,7 +182,7 @@ export function CommunicationFolderView({
       </div>
 
       {rows.length === 0 ? null : (
-        <ul className="mail-list">
+        <ul className="mail-list mail-list-with-toolbar">
           {rows.map((row) => (
             <MailRow
               key={row.id}
@@ -212,7 +212,7 @@ function MailRow({
   const when = new Date(row.whenIso);
   return (
     <li className={`mail-row${checked ? ' is-checked' : ''}`}>
-      <label className="mail-row-check" onClick={(e) => e.stopPropagation()}>
+      <label className="mail-row-check">
         <input
           type="checkbox"
           name="ids"
@@ -222,14 +222,11 @@ function MailRow({
           aria-label={`Select ${row.subject || '(no subject)'}`}
         />
       </label>
-      <div className="mail-row-peer">
+      <div className="mail-row-peer" title={row.peer}>
         <span className="mail-row-direction" aria-hidden="true">
-          {row.direction === 'outbound' ? '↗' : '↘'}
+          {row.direction === 'outbound' ? '→' : '←'}
         </span>
-        <span className="mail-row-peer-name">{row.peer || '(unknown)'}</span>
-        {row.mailboxName ? (
-          <span className="mail-row-mailbox">{row.mailboxName}</span>
-        ) : null}
+        <span>{row.peer || '(unknown)'}</span>
       </div>
       <div className="mail-row-body">
         {row.threadId ? (
@@ -245,7 +242,7 @@ function MailRow({
           </span>
         )}
         {row.snippet ? (
-          <span className="mail-row-snippet"> — {row.snippet}</span>
+          <span className="mail-row-snippet">— {row.snippet}</span>
         ) : null}
         <FolderHints row={row} folder={folder} />
       </div>
