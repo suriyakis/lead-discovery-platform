@@ -8,11 +8,13 @@ import {
   desc,
   eq,
   gt,
+  gte,
   ilike,
   inArray,
   isNotNull,
   isNull,
   lt,
+  lte,
   or,
   sql,
   type SQL,
@@ -897,10 +899,10 @@ async function buildMessageFilterConditions(
     );
   }
   if (filter.dateFrom) {
-    conditions.push(sql`${mailMessages.createdAt} >= ${filter.dateFrom}` as SQL);
+    conditions.push(gte(mailMessages.createdAt, filter.dateFrom));
   }
   if (filter.dateTo) {
-    conditions.push(sql`${mailMessages.createdAt} <= ${filter.dateTo}` as SQL);
+    conditions.push(lte(mailMessages.createdAt, filter.dateTo));
   }
   if (filter.source === 'outreach' || filter.source === 'external') {
     const { outreachThreadState } = await import('@/lib/db/schema/outreach');

@@ -108,9 +108,17 @@ function snippetOf(body: string | null): string {
   return body.replace(/\s+/g, ' ').trim().slice(0, 140);
 }
 
-function parseDateOrUndefined(raw: string | undefined): Date | undefined {
+function parseDateStart(raw: string | undefined): Date | undefined {
   if (!raw) return undefined;
-  const d = new Date(raw);
+  // <input type="date"> emits YYYY-MM-DD. Anchor to local midnight so
+  // "from = 2026-05-20" includes everything that day regardless of TZ.
+  const d = new Date(`${raw}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+function parseDateEnd(raw: string | undefined): Date | undefined {
+  if (!raw) return undefined;
+  // "to = 2026-05-20" should match through 23:59:59.999 local.
+  const d = new Date(`${raw}T23:59:59.999`);
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
@@ -177,8 +185,8 @@ export default async function CommunicationPage({
       : 'all';
   const productId =
     sp.productId && /^\d+$/.test(sp.productId) ? BigInt(sp.productId) : undefined;
-  const dateFrom = parseDateOrUndefined(sp.from);
-  const dateTo = parseDateOrUndefined(sp.to);
+  const dateFrom = parseDateStart(sp.from);
+  const dateTo = parseDateEnd(sp.to);
   const pageSize = clampPageSize(sp.perPage);
   const pageNum = Math.max(1, parseInt(sp.page ?? '1', 10) || 1);
   const offset = (pageNum - 1) * pageSize;

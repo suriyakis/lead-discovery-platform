@@ -24,6 +24,7 @@ import {
 import {
   BOUNCE_LOOP_THRESHOLD,
   countMessagesByFolder,
+  countMessagesMatching,
   countThreadsByKind,
   detectBounceLoop,
   emptyTrashNow,
@@ -1324,6 +1325,59 @@ describe('listMessages + countMessagesByFolder (P61)', () => {
       folder: 'inbox',
     });
     expect(rows.map((r) => r.message.subject)).toEqual(['newer', 'older']);
+  });
+
+  it('dateFrom / dateTo bind correctly (P61-19 regression — Drizzle gte/lte, not raw sql)', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    const old = await seedMessage(s.workspaceA, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      subject: 'old',
+    });
+    await db
+      .update(mailMessages)
+      .set({ createdAt: new Date('2026-01-15T12:00:00Z') })
+      .where(eq(mailMessages.id, old.id));
+    const recent = await seedMessage(s.workspaceA, mb.id, {
+      direction: 'inbound',
+      status: 'received',
+      subject: 'recent',
+    });
+    await db
+      .update(mailMessages)
+      .set({ createdAt: new Date('2026-05-15T12:00:00Z') })
+      .where(eq(mailMessages.id, recent.id));
+    // from-only
+    const after = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      dateFrom: new Date('2026-03-01T00:00:00Z'),
+    });
+    expect(after.map((r) => r.message.subject)).toEqual(['recent']);
+    // to-only
+    const before = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      dateTo: new Date('2026-03-01T00:00:00Z'),
+    });
+    expect(before.map((r) => r.message.subject)).toEqual(['old']);
+    // both — narrow window matches neither
+    const noneInWindow = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'inbox',
+      dateFrom: new Date('2026-02-01T00:00:00Z'),
+      dateTo: new Date('2026-04-01T00:00:00Z'),
+    });
+    expect(noneInWindow).toHaveLength(0);
+    // countMessagesMatching uses the same filter
+    expect(
+      await countMessagesMatching(ctx(s.workspaceA, s.ownerA), {
+        mailboxId: mb.id,
+        folder: 'inbox',
+        dateFrom: new Date('2026-03-01T00:00:00Z'),
+      }),
+    ).toBe(1);
   });
 
   it('limit + offset paginate', async () => {
