@@ -2,7 +2,7 @@
 // lowercased email). Polymorphic associations let one contact attach to
 // multiple qualified_leads, mail_threads, mail_messages, source_records.
 
-import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   contactAssociations,
@@ -427,6 +427,7 @@ export interface ListContactsFilter {
   status?: 'active' | 'archived';
   tag?: string;
   limit?: number;
+  offset?: number;
 }
 
 export async function listContacts(
@@ -440,26 +441,207 @@ export async function listContacts(
       eq(contacts.companyDomain, filter.companyDomain.trim().toLowerCase()),
     );
   }
-  const limit = Math.min(filter.limit ?? 200, 1000);
-  let rows = await db
+  if (filter.q && filter.q.trim()) {
+    const q = `%${filter.q.trim()}%`;
+    conditions.push(
+      sql`(${contacts.email} ILIKE ${q} OR COALESCE(${contacts.name}, '') ILIKE ${q} OR COALESCE(${contacts.companyName}, '') ILIKE ${q})` as SQL,
+    );
+  }
+  if (filter.tag) {
+    conditions.push(sql`${filter.tag} = ANY(${contacts.tags})` as SQL);
+  }
+  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 1000);
+  const offset = Math.max(filter.offset ?? 0, 0);
+  return db
     .select()
     .from(contacts)
     .where(and(...conditions))
     .orderBy(asc(contacts.email))
-    .limit(limit);
-  if (filter.q) {
-    const q = filter.q.trim().toLowerCase();
-    rows = rows.filter(
-      (c) =>
-        c.email.includes(q) ||
-        (c.name?.toLowerCase().includes(q) ?? false) ||
-        (c.companyName?.toLowerCase().includes(q) ?? false),
+    .limit(limit)
+    .offset(offset);
+}
+
+/** Total matching the filter (ignores limit + offset). Drives
+ *  pagination + dashboard counts. */
+export async function countContacts(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  filter: ListContactsFilter = {},
+): Promise<number> {
+  const conditions: SQL[] = [eq(contacts.workspaceId, ctx.workspaceId)];
+  if (filter.status) conditions.push(eq(contacts.status, filter.status));
+  if (filter.companyDomain) {
+    conditions.push(
+      eq(contacts.companyDomain, filter.companyDomain.trim().toLowerCase()),
+    );
+  }
+  if (filter.q && filter.q.trim()) {
+    const q = `%${filter.q.trim()}%`;
+    conditions.push(
+      sql`(${contacts.email} ILIKE ${q} OR COALESCE(${contacts.name}, '') ILIKE ${q} OR COALESCE(${contacts.companyName}, '') ILIKE ${q})` as SQL,
     );
   }
   if (filter.tag) {
-    rows = rows.filter((c) => c.tags.includes(filter.tag!));
+    conditions.push(sql`${filter.tag} = ANY(${contacts.tags})` as SQL);
   }
-  return rows;
+  const rows = await db
+    .select({ c: sql<number>`COUNT(*)::int` })
+    .from(contacts)
+    .where(and(...conditions));
+  return rows[0]?.c ?? 0;
+}
+
+/** Active + archived + total + new-this-week counts for the dashboard. */
+export async function contactsDashboardSummary(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<{
+  total: number;
+  active: number;
+  archived: number;
+  newThisWeek: number;
+  uniqueCompanies: number;
+}> {
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const rows = await db
+    .select({
+      total: sql<number>`COUNT(*)::int`,
+      active: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'active')::int`,
+      archived: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'archived')::int`,
+      newThisWeek: sql<number>`COUNT(*) FILTER (WHERE ${contacts.createdAt} >= ${weekAgo})::int`,
+      uniqueCompanies: sql<number>`COUNT(DISTINCT ${contacts.companyName}) FILTER (WHERE ${contacts.companyName} IS NOT NULL)::int`,
+    })
+    .from(contacts)
+    .where(eq(contacts.workspaceId, ctx.workspaceId));
+  const r = rows[0];
+  return {
+    total: r?.total ?? 0,
+    active: r?.active ?? 0,
+    archived: r?.archived ?? 0,
+    newThisWeek: r?.newThisWeek ?? 0,
+    uniqueCompanies: r?.uniqueCompanies ?? 0,
+  };
+}
+
+/** Distinct tags across the workspace's contacts. Used to populate
+ *  the tag filter dropdown. */
+export async function listAllContactTags(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<string[]> {
+  const rows = await db
+    .select({
+      tag: sql<string>`UNNEST(${contacts.tags})`,
+    })
+    .from(contacts)
+    .where(eq(contacts.workspaceId, ctx.workspaceId));
+  const set = new Set<string>();
+  for (const r of rows) {
+    if (r.tag && r.tag.trim()) set.add(r.tag);
+  }
+  return [...set].sort();
+}
+
+// ---- bulk actions --------------------------------------------------
+
+export interface BulkResult {
+  affected: number;
+  ids: bigint[];
+}
+
+export async function bulkArchiveContacts(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+): Promise<BulkResult> {
+  if (!canWrite(ctx)) throw denied('contacts.bulk_archive');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const now = new Date();
+  const updated = await db
+    .update(contacts)
+    .set({ status: 'archived', updatedAt: now })
+    .where(
+      and(
+        eq(contacts.workspaceId, ctx.workspaceId),
+        inArray(contacts.id, [...ids]),
+        eq(contacts.status, 'active'),
+      ),
+    )
+    .returning({ id: contacts.id });
+  return { affected: updated.length, ids: updated.map((r) => r.id) };
+}
+
+export async function bulkUnarchiveContacts(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+): Promise<BulkResult> {
+  if (!canWrite(ctx)) throw denied('contacts.bulk_unarchive');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const now = new Date();
+  const updated = await db
+    .update(contacts)
+    .set({ status: 'active', updatedAt: now })
+    .where(
+      and(
+        eq(contacts.workspaceId, ctx.workspaceId),
+        inArray(contacts.id, [...ids]),
+        eq(contacts.status, 'archived'),
+      ),
+    )
+    .returning({ id: contacts.id });
+  return { affected: updated.length, ids: updated.map((r) => r.id) };
+}
+
+/** Add a tag to every selected contact. Idempotent — already-tagged
+ *  rows are skipped. */
+export async function bulkAddTag(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+  tag: string,
+): Promise<BulkResult> {
+  if (!canWrite(ctx)) throw denied('contacts.bulk_add_tag');
+  const trimmed = tag.trim();
+  if (!trimmed) throw invalid('tag cannot be empty');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const updated = await db
+    .update(contacts)
+    .set({
+      tags: sql`(
+        SELECT ARRAY(SELECT DISTINCT UNNEST(${contacts.tags} || ARRAY[${trimmed}]::text[]))
+      )`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(contacts.workspaceId, ctx.workspaceId),
+        inArray(contacts.id, [...ids]),
+      ),
+    )
+    .returning({ id: contacts.id });
+  return { affected: updated.length, ids: updated.map((r) => r.id) };
+}
+
+/** Remove a tag from every selected contact. No-op when the tag isn't
+ *  present on a row. */
+export async function bulkRemoveTag(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+  tag: string,
+): Promise<BulkResult> {
+  if (!canWrite(ctx)) throw denied('contacts.bulk_remove_tag');
+  const trimmed = tag.trim();
+  if (!trimmed) throw invalid('tag cannot be empty');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const updated = await db
+    .update(contacts)
+    .set({
+      tags: sql`array_remove(${contacts.tags}, ${trimmed})`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(contacts.workspaceId, ctx.workspaceId),
+        inArray(contacts.id, [...ids]),
+      ),
+    )
+    .returning({ id: contacts.id });
+  return { affected: updated.length, ids: updated.map((r) => r.id) };
 }
 
 export interface ContactDetail {
