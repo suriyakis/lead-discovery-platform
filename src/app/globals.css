@@ -5148,3 +5148,37 @@ button.primary-btn {
   width: 1.05rem;
   height: 1.05rem;
 }
+
+/* P61-22 Sync mailbox button */
+.mail-sync-form {
+  margin: 0 0.3rem 0.5rem;
+}
+.mail-sync-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.85rem;
+  background: var(--brand-card-elevated);
+  color: var(--brand-fg);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.4rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+.mail-sync-btn:hover {
+  background: var(--brand-input);
+  border-color: color-mix(in oklab, var(--brand-primary) 50%, var(--brand-border));
+}
+.mail-sync-btn .lucide {
+  width: 1rem;
+  height: 1rem;
+  opacity: 0.85;
+}
+.mail-sync-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

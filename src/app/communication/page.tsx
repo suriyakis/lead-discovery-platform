@@ -6,6 +6,7 @@ import {
   Inbox,
   Mail,
   PenSquare,
+  RefreshCw,
   Send,
   TrendingUp,
 } from 'lucide-react';
@@ -34,6 +35,7 @@ import {
   permanentlyDelete,
   restoreFromTrash,
   retrySend,
+  syncInbound,
   unmarkSpam,
   type MailSourceFilter,
 } from '@/lib/services/mail';
@@ -322,6 +324,55 @@ export default async function CommunicationPage({
     try { const r = await permanentlyDelete(c, ids); backToFolder(formData, affectedNote('permanently deleted', r.affected)); }
     catch (err) { if (isNextRedirectError(err)) throw err; backToFolderError(formData, err instanceof Error ? err.message : 'delete failed'); }
   }
+  async function syncMailbox(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    // Lazy-resolve mailboxes here — server actions can't close over the
+    // page's outer mailboxes list without serialising it (it's
+    // server-only state). Re-fetch with a fresh ctx.
+    const { listMailboxes: refetch } = await import('@/lib/services/mailbox');
+    const all = await refetch(c);
+    const filterIdRaw = formData.get('mailboxId');
+    const filterId =
+      typeof filterIdRaw === 'string' && /^\d+$/.test(filterIdRaw)
+        ? BigInt(filterIdRaw)
+        : null;
+    const targets = filterId
+      ? all.filter((mb) => mb.id === filterId && mb.imapHost)
+      : all.filter((mb) => mb.status === 'active' && mb.imapHost);
+    if (targets.length === 0) {
+      backToFolderError(
+        formData,
+        filterId
+          ? 'Selected mailbox has no IMAP configured.'
+          : 'No active IMAP-enabled mailbox to sync.',
+      );
+    }
+    let totalFetched = 0;
+    let totalInserted = 0;
+    const failures: string[] = [];
+    for (const mb of targets) {
+      try {
+        const r = await syncInbound(c, mb.id);
+        totalFetched += r.fetched;
+        totalInserted += r.inserted;
+      } catch (err) {
+        failures.push(
+          `${mb.name}: ${err instanceof Error ? err.message : 'failed'}`,
+        );
+      }
+    }
+    if (failures.length > 0 && totalInserted === 0) {
+      backToFolderError(formData, `Sync failed — ${failures.join('; ')}`);
+    } else {
+      const summary =
+        targets.length === 1
+          ? `Synced ${targets[0]!.name} — fetched ${totalFetched}, new ${totalInserted}.`
+          : `Synced ${targets.length} mailboxes — fetched ${totalFetched}, new ${totalInserted}${failures.length ? ` (${failures.length} failed)` : ''}.`;
+      backToFolder(formData, summary);
+    }
+  }
+
   async function retrySelected(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -466,6 +517,40 @@ export default async function CommunicationPage({
               <span>Set up mailbox</span>
             </Link>
           )}
+
+          {/* Sync — pulls inbound for the active mailbox, or all when
+              no mailbox filter is set. */}
+          {mailboxes.length > 0 ? (
+            <form action={syncMailbox} className="mail-sync-form">
+              <input
+                type="hidden"
+                name="folder"
+                value={activeFolder}
+              />
+              {mailboxIdFilter !== undefined ? (
+                <input
+                  type="hidden"
+                  name="mailboxId"
+                  value={mailboxIdFilter.toString()}
+                />
+              ) : null}
+              <button
+                type="submit"
+                className="mail-sync-btn"
+                title={
+                  mailboxIdFilter !== undefined
+                    ? 'Force-sync the selected mailbox now'
+                    : 'Force-sync every active mailbox now'
+                }
+              >
+                <RefreshCw className="lucide" />
+                <span>
+                  {mailboxIdFilter !== undefined ? 'Sync mailbox' : 'Sync all'}
+                </span>
+              </button>
+            </form>
+          ) : null}
+
           <div className="mail-rail-section-title">Folders</div>
           {MAIL_FOLDERS.map((f) => {
             const isActive = f === activeFolder;
