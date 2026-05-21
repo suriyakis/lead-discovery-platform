@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Inbox,
   Mail,
-  Search,
   Send,
   TrendingUp,
 } from 'lucide-react';
@@ -15,6 +14,7 @@ import {
   FolderIcon,
   type FolderViewRow,
 } from '@/components/CommunicationFolderView';
+import { MailFilterForm } from '@/components/MailFilterForm';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -399,101 +399,37 @@ export default async function CommunicationPage({
         </div>
       </section>
 
-      {/* ============ Filters ============ */}
-      <form
-        method="get"
-        action="/communication"
-        className="mail-filters"
-        role="search"
-      >
-        <input type="hidden" name="folder" value={activeFolder} />
-        {mailboxIdFilter !== undefined ? (
-          <input type="hidden" name="mailboxId" value={mailboxIdFilter.toString()} />
-        ) : null}
-
-        <div className="mail-segment" role="tablist" aria-label="Conversation source">
-          <Link
-            href={buildHref({ source: 'all', page: 1 })}
-            className={source === 'all' ? 'is-active' : ''}
-          >
-            All
-          </Link>
-          <Link
-            href={buildHref({ source: 'outreach', page: 1 })}
-            className={source === 'outreach' ? 'is-active' : ''}
-          >
-            App conversations
-          </Link>
-          <Link
-            href={buildHref({ source: 'external', page: 1 })}
-            className={source === 'external' ? 'is-active' : ''}
-          >
-            External email
-          </Link>
-        </div>
-
-        <input type="hidden" name="source" value={source !== 'all' ? source : ''} />
-
-        <label>
-          <span>Product</span>
-          <select
-            name="productId"
-            defaultValue={productId?.toString() ?? ''}
-          >
-            <option value="">All</option>
-            {products.map((p) => (
-              <option key={p.id.toString()} value={p.id.toString()}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          <span>From</span>
-          <input
-            type="date"
-            name="from"
-            defaultValue={toDateInputValue(dateFrom)}
-          />
-        </label>
-        <label>
-          <span>To</span>
-          <input
-            type="date"
-            name="to"
-            defaultValue={toDateInputValue(dateTo)}
-          />
-        </label>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flex: '1 1 220px', minWidth: 200 }}>
-          <Search className="lucide" style={{ opacity: 0.6 }} />
-          <input
-            type="search"
-            name="q"
-            defaultValue={search}
-            placeholder={`Search ${FOLDER_LABELS[activeFolder]}…`}
-            style={{
-              flex: 1,
-              padding: '0.35rem 0.55rem',
-              borderRadius: '0.35rem',
-              background: 'var(--brand-input)',
-              border: '1px solid var(--brand-border)',
-              color: 'var(--brand-fg)',
-              fontSize: '0.82rem',
-            }}
-          />
-        </div>
-
-        <div style={{ display: 'flex', gap: '0.35rem' }}>
-          <button type="submit" className="primary-btn">Apply</button>
-          {(search || mailboxIdFilter !== undefined || productId !== undefined || dateFrom || dateTo || source !== 'all') ? (
-            <Link href={`/communication?folder=${activeFolder}`} className="ghost-btn">
-              Reset
-            </Link>
-          ) : null}
-        </div>
-      </form>
+      {/* ============ Filters (auto-submit on change) ============ */}
+      <MailFilterForm
+        activeFolder={activeFolder}
+        source={source}
+        productId={productId?.toString() ?? ''}
+        dateFrom={toDateInputValue(dateFrom)}
+        dateTo={toDateInputValue(dateTo)}
+        search={search}
+        mailboxId={mailboxIdFilter?.toString() ?? ''}
+        products={products.map((p) => ({
+          id: p.id.toString(),
+          name: p.name,
+        }))}
+        folderLabel={FOLDER_LABELS[activeFolder]}
+        hasActiveFilters={
+          !!(
+            search ||
+            mailboxIdFilter !== undefined ||
+            productId !== undefined ||
+            dateFrom ||
+            dateTo ||
+            source !== 'all'
+          )
+        }
+        resetHref={`/communication?folder=${activeFolder}`}
+        segmentLinks={{
+          all: buildHref({ source: 'all', page: 1 }),
+          outreach: buildHref({ source: 'outreach', page: 1 }),
+          external: buildHref({ source: 'external', page: 1 }),
+        }}
+      />
 
       {/* ============ 2-pane layout ============ */}
       <div className="mail-shell">
