@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Inbox,
   Mail,
+  PenSquare,
   Send,
   TrendingUp,
 } from 'lucide-react';
@@ -216,6 +217,18 @@ export default async function CommunicationPage({
   const mailboxNameById = new Map(
     mailboxes.map((mb) => [mb.id.toString(), mb.name]),
   );
+
+  // Compose routes to: the currently-filtered mailbox if set, else the
+  // workspace's default mailbox, else the first available mailbox. Null
+  // when no mailbox exists (button disabled with a setup hint).
+  const composeMailbox =
+    (mailboxIdFilter !== undefined
+      ? mailboxes.find((mb) => mb.id === mailboxIdFilter)
+      : undefined) ??
+    mailboxes.find((mb) => mb.isDefault && mb.status === 'active') ??
+    mailboxes.find((mb) => mb.status === 'active') ??
+    mailboxes[0] ??
+    null;
   const serialisedRows: FolderViewRow[] = messageRows.map(
     ({ message, thread }) => ({
       id: message.id.toString(),
@@ -434,6 +447,25 @@ export default async function CommunicationPage({
       {/* ============ 2-pane layout ============ */}
       <div className="mail-shell">
         <aside className="mail-rail" aria-label="Mail folders">
+          {composeMailbox ? (
+            <Link
+              href={`/mailbox/${composeMailbox.id}/compose`}
+              className="mail-compose-btn"
+              title={`Compose from ${composeMailbox.name}`}
+            >
+              <PenSquare className="lucide" />
+              <span>Compose</span>
+            </Link>
+          ) : (
+            <Link
+              href="/mailbox"
+              className="mail-compose-btn is-disabled"
+              title="Set up a mailbox to send messages"
+            >
+              <PenSquare className="lucide" />
+              <span>Set up mailbox</span>
+            </Link>
+          )}
           <div className="mail-rail-section-title">Folders</div>
           {MAIL_FOLDERS.map((f) => {
             const isActive = f === activeFolder;

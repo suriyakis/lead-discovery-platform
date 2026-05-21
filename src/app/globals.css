@@ -5104,3 +5104,47 @@ button.primary-btn {
   border-color: var(--brand-primary);
   font-weight: 600;
 }
+
+/* P61-21 Compose button at top of folder rail */
+.mail-compose-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0.1rem 0.3rem 0.5rem;
+  padding: 0.65rem 1rem;
+  background: linear-gradient(
+    135deg,
+    var(--brand-primary) 0%,
+    color-mix(in oklab, var(--brand-primary) 80%, oklch(0.6 0.2 280)) 100%
+  );
+  color: var(--brand-primary-foreground);
+  border-radius: 0.5rem;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.92rem;
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--brand-primary) 35%, transparent);
+  transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.08s ease;
+}
+.mail-compose-btn:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px color-mix(in oklab, var(--brand-primary) 45%, transparent);
+}
+.mail-compose-btn:active {
+  transform: translateY(0);
+}
+.mail-compose-btn.is-disabled {
+  background: var(--brand-input);
+  color: var(--brand-muted);
+  box-shadow: none;
+  font-weight: 500;
+}
+.mail-compose-btn.is-disabled:hover {
+  filter: none;
+  transform: none;
+}
+.mail-compose-btn .lucide {
+  width: 1.05rem;
+  height: 1.05rem;
+}
