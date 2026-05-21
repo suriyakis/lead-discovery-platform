@@ -3,7 +3,11 @@ import { redirect } from 'next/navigation';
 import { MessagesSquare, Search } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { CommunicationTabs } from '@/components/CommunicationTabs';
-import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import {
+  CommunicationFolderView,
+  FolderIcon,
+  type FolderViewRow,
+} from '@/components/CommunicationFolderView';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -13,6 +17,7 @@ import {
 import { listMailboxes } from '@/lib/services/mailbox';
 import {
   countMessagesByFolder,
+  isHardBounce,
   listMessages,
   markAsSpam,
   moveToTrash,
@@ -24,6 +29,68 @@ import {
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { countFollowUpsByStatus } from '@/lib/services/follow-up';
 import { isNextRedirectError } from '@/lib/server-redirect';
+
+const FOLDER_LABELS: Record<MailFolder, string> = {
+  inbox: 'Inbox',
+  sent: 'Sent',
+  queued: 'Queued',
+  errors: 'Errors',
+  spam: 'Spam',
+  trash: 'Trash',
+};
+
+function emptyFolderTitle(f: MailFolder): string {
+  switch (f) {
+    case 'inbox':
+      return 'Inbox is clear';
+    case 'sent':
+      return 'No sent messages';
+    case 'queued':
+      return 'Nothing in the queue';
+    case 'errors':
+      return 'No errors';
+    case 'spam':
+      return 'No spam';
+    case 'trash':
+      return 'Trash is empty';
+  }
+}
+function emptyFolderHint(f: MailFolder): string {
+  switch (f) {
+    case 'inbox':
+      return 'Inbound mail across every mailbox will land here.';
+    case 'sent':
+      return 'Sent + delivered messages will collect here.';
+    case 'queued':
+      return 'Outreach drafts waiting to send sit here briefly.';
+    case 'errors':
+      return 'Failed sends + bounces show up here. We surface a Retry button for soft errors.';
+    case 'spam':
+      return 'Manual + auto-flagged spam lives here. Use Not spam to reverse.';
+    case 'trash':
+      return 'Soft-deleted messages. Auto-purges after the workspace retention window.';
+  }
+}
+
+function derivePeer(msg: {
+  direction: 'outbound' | 'inbound';
+  fromAddress: string;
+  fromName: string | null;
+  toAddresses: string[];
+}): string {
+  if (msg.direction === 'outbound') {
+    return msg.toAddresses[0] ?? '';
+  }
+  return msg.fromName ? `${msg.fromName} <${msg.fromAddress}>` : msg.fromAddress;
+}
+
+function snippetOf(body: string | null): string {
+  if (!body) return '';
+  return body
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140);
+}
 
 export default async function CommunicationPage({
   searchParams,
@@ -80,9 +147,35 @@ export default async function CommunicationPage({
       countFollowUpsByStatus(ctx),
     ]);
 
-  // Server actions — bulk per-folder operations. Each parses ids[] from
-  // FormData, calls the matching helper, and redirects back to the
-  // same folder + search + mailbox filter.
+  const mailboxNameById = new Map(
+    mailboxes.map((mb) => [mb.id.toString(), mb.name]),
+  );
+  const serialisedRows: FolderViewRow[] = messageRows.map(
+    ({ message, thread }) => ({
+      id: message.id.toString(),
+      threadId: thread?.id?.toString() ?? null,
+      subject: message.subject || thread?.subject || '(no subject)',
+      snippet: snippetOf(message.bodyText),
+      direction: message.direction as 'inbound' | 'outbound',
+      peer: derivePeer(message),
+      whenIso: (
+        message.sentAt ??
+        message.receivedAt ??
+        message.createdAt
+      ).toISOString(),
+      status: message.status,
+      failureReason: message.failureReason,
+      spamReason: message.spamReason,
+      mailboxName: mailboxNameById.get(message.mailboxId.toString()) ?? null,
+      isHardBounce: isHardBounce({
+        status: message.status,
+        failureReason: message.failureReason,
+      }),
+    }),
+  );
+
+  // Server actions (one per bulk op). Each parses ids[] from the
+  // posted FormData and bounces back to the same folder + search.
   function backToFolder(formData: FormData, msg: string) {
     const params = makeRedirectParams(formData);
     params.set('message', msg);
@@ -218,12 +311,10 @@ export default async function CommunicationPage({
             <MessagesSquare className="lucide" /> Communication
           </h1>
           <p className="page-lede">
-            Every message across every mailbox in this workspace. Folders are
-            derived from message state — a message moves from{' '}
-            <strong>Queued → Sent</strong>, or gets pulled into{' '}
-            <strong>Errors</strong> / <strong>Spam</strong> /{' '}
-            <strong>Trash</strong>. Trash auto-purges after the workspace
-            retention window.
+            Unified message view across every mailbox in this workspace.
+            Folders are derived from message state — Inbox &amp; Sent are
+            the day-to-day surface; Errors, Spam, and Trash collect anything
+            that needs attention.
           </p>
         </div>
       </div>
@@ -237,305 +328,116 @@ export default async function CommunicationPage({
       {sp.message ? <p className="form-info">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      {/* Folder tabs */}
-      <div className="window-tabs" style={{ marginBottom: '0.75rem' }}>
+      {/* Folder strip */}
+      <nav className="mail-folder-strip" aria-label="Mail folders">
         {MAIL_FOLDERS.map((f) => {
           const params = new URLSearchParams({ folder: f });
           if (search) params.set('q', search);
           if (mailboxIdFilter !== undefined)
             params.set('mailboxId', mailboxIdFilter.toString());
+          const isActive = f === activeFolder;
           return (
             <Link
               key={f}
               href={`/communication?${params.toString()}`}
-              className={`window-tab${activeFolder === f ? ' window-tab-active' : ''}`}
+              className={`mail-folder-tab${isActive ? ' is-active' : ''}`}
+              aria-current={isActive ? 'page' : undefined}
             >
-              {folderLabel(f)} <span className="badge">{folderCounts[f]}</span>
+              <FolderIcon folder={f} />
+              <span>{FOLDER_LABELS[f]}</span>
+              <span className="mail-folder-tab-count">{folderCounts[f]}</span>
             </Link>
           );
         })}
-      </div>
+      </nav>
 
-      {/* Search + mailbox filter */}
+      {/* Filter row */}
       <form
         method="get"
         action="/communication"
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '0.5rem',
-          alignItems: 'flex-end',
-          marginBottom: '0.75rem',
-        }}
+        className="mail-filter-row"
+        role="search"
       >
         <input type="hidden" name="folder" value={activeFolder} />
-        <label style={{ flex: '2 1 280px', minWidth: 220 }}>
-          <span className="muted" style={{ fontSize: '0.75rem' }}>
-            Search (subject, from, to)
-          </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <Search
-              className="lucide"
-              style={{ width: 16, height: 16, color: 'var(--brand-muted)' }}
-            />
-            <input
-              type="search"
-              name="q"
-              defaultValue={search}
-              placeholder={`Search ${folderLabel(activeFolder)}…`}
-              style={{ flex: 1 }}
-            />
-          </div>
-        </label>
-        <label style={{ flex: '1 1 180px', minWidth: 160 }}>
-          <span className="muted" style={{ fontSize: '0.75rem' }}>
-            Mailbox
-          </span>
-          <select
-            name="mailboxId"
-            defaultValue={mailboxIdFilter?.toString() ?? ''}
-          >
-            <option value="">— all mailboxes —</option>
-            {mailboxes.map((m) => (
-              <option key={m.id.toString()} value={m.id.toString()}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div style={{ display: 'flex', gap: '0.4rem' }}>
-          <button type="submit" className="primary-btn">
-            Apply
-          </button>
-          {search || mailboxIdFilter !== undefined ? (
-            <Link
-              href={`/communication?folder=${activeFolder}`}
-              className="ghost-btn"
-            >
-              Clear
-            </Link>
-          ) : null}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            flex: '1 1 280px',
+            minWidth: 240,
+          }}
+        >
+          <Search className="lucide" style={{ opacity: 0.6 }} />
+          <input
+            type="search"
+            name="q"
+            defaultValue={search}
+            placeholder={`Search ${FOLDER_LABELS[activeFolder]} — subject, from, to…`}
+            style={{ flex: 1 }}
+          />
         </div>
+        <select
+          name="mailboxId"
+          defaultValue={mailboxIdFilter?.toString() ?? ''}
+          aria-label="Filter by mailbox"
+        >
+          <option value="">All mailboxes</option>
+          {mailboxes.map((m) => (
+            <option key={m.id.toString()} value={m.id.toString()}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+        <button type="submit" className="primary-btn">
+          Apply
+        </button>
+        {search || mailboxIdFilter !== undefined ? (
+          <Link
+            href={`/communication?folder=${activeFolder}`}
+            className="ghost-btn"
+          >
+            Clear
+          </Link>
+        ) : null}
       </form>
 
-      {/* Message list with bulk-action bar */}
-      {messageRows.length === 0 ? (
-        <div className="empty-state">
-          <p style={{ margin: 0, fontWeight: 600 }}>
+      {/* Message list (client component owns selection state) */}
+      {serialisedRows.length === 0 ? (
+        <div className="mail-empty">
+          <div className="mail-empty-icon">
+            <FolderIcon folder={activeFolder} />
+          </div>
+          <p className="mail-empty-title">
             {search
-              ? `No messages match "${search}" in ${folderLabel(activeFolder)}.`
+              ? `No messages match "${search}" in ${FOLDER_LABELS[activeFolder]}`
+              : emptyFolderTitle(activeFolder)}
+          </p>
+          <p style={{ margin: 0 }}>
+            {search
+              ? 'Try a broader search term, switch mailbox, or clear filters.'
               : emptyFolderHint(activeFolder)}
           </p>
         </div>
       ) : (
-        <form>
-          {/* Carry the active folder + search + mailbox forward so the
-              post-action redirect lands on the same view. */}
-          <input type="hidden" name="folder" value={activeFolder} />
-          <input type="hidden" name="q" value={search} />
-          <input
-            type="hidden"
-            name="mailboxId"
-            value={mailboxIdFilter?.toString() ?? ''}
-          />
-
-          <div
-            className="action-row"
-            style={{
-              marginBottom: '0.5rem',
-              flexWrap: 'wrap',
-              gap: '0.4rem',
-              alignItems: 'center',
-            }}
-          >
-            <span className="muted small">
-              Select message(s) then choose an action:
-            </span>
-            {activeFolder === 'errors' ? (
-              <button
-                type="submit"
-                formAction={retrySelected}
-                className="primary-btn"
-              >
-                Retry selected
-              </button>
-            ) : null}
-            {activeFolder !== 'trash' ? (
-              <button type="submit" formAction={trashSelected}>
-                Move to trash
-              </button>
-            ) : null}
-            {activeFolder !== 'spam' && activeFolder !== 'trash' ? (
-              <button type="submit" formAction={spamSelected}>
-                Mark as spam
-              </button>
-            ) : null}
-            {activeFolder === 'spam' ? (
-              <button type="submit" formAction={unspamSelected}>
-                Not spam
-              </button>
-            ) : null}
-            {activeFolder === 'trash' ? (
-              <button type="submit" formAction={restoreSelected}>
-                Restore
-              </button>
-            ) : null}
-            {activeFolder === 'trash' ? (
-              <ConfirmFormButton
-                formAction={deleteSelected}
-                message="Permanently delete the selected message(s)? This cannot be undone."
-                className="ghost-btn"
-              >
-                Delete permanently
-              </ConfirmFormButton>
-            ) : null}
-          </div>
-
-          <ul
-            className="profile-list"
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.4rem',
-              margin: 0,
-              padding: 0,
-              listStyle: 'none',
-            }}
-          >
-            {messageRows.map(({ message, thread }) => {
-              const peer = derivePeer(message);
-              const subject =
-                message.subject || thread?.subject || '(no subject)';
-              const when =
-                message.sentAt ?? message.receivedAt ?? message.createdAt;
-              const mailboxName =
-                mailboxes.find((mb) => mb.id === message.mailboxId)?.name ?? null;
-              return (
-                <li key={message.id.toString()}>
-                  <div
-                    className="lead-row"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '0.6rem',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      name="ids"
-                      value={message.id.toString()}
-                      style={{ marginTop: '0.35rem' }}
-                      aria-label={`Select message ${subject}`}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.5rem',
-                          flexWrap: 'wrap',
-                        }}
-                      >
-                        {thread ? (
-                          <Link
-                            href={`/communication/${thread.id}`}
-                            style={{ fontSize: '0.95em', fontWeight: 600 }}
-                          >
-                            {subject}
-                          </Link>
-                        ) : (
-                          <strong style={{ fontSize: '0.95em' }}>
-                            {subject}
-                          </strong>
-                        )}
-                        <span className={statusBadgeClass(message.status)}>
-                          {message.status}
-                        </span>
-                        {mailboxName ? (
-                          <span className="badge">{mailboxName}</span>
-                        ) : null}
-                      </div>
-                      <div
-                        className="muted"
-                        style={{ fontSize: '0.78em', marginTop: '0.2rem' }}
-                      >
-                        <span>
-                          {message.direction === 'outbound' ? '→ ' : '← '}
-                          {peer || '(unknown)'}
-                        </span>
-                        <span> · {when.toLocaleString()}</span>
-                        {activeFolder === 'errors' && message.failureReason ? (
-                          <span className="warn">
-                            {' · '}
-                            {message.failureReason}
-                          </span>
-                        ) : null}
-                        {activeFolder === 'spam' && message.spamReason ? (
-                          <span> · flag: {message.spamReason}</span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </form>
+        <CommunicationFolderView
+          folder={activeFolder}
+          hiddenInputs={{
+            folder: activeFolder,
+            q: search,
+            mailboxId: mailboxIdFilter?.toString() ?? '',
+          }}
+          rows={serialisedRows}
+          actions={{
+            trash: trashSelected,
+            spam: spamSelected,
+            unspam: unspamSelected,
+            restore: restoreSelected,
+            delete: deleteSelected,
+            retry: retrySelected,
+          }}
+        />
       )}
     </AppShell>
   );
-}
-
-function folderLabel(f: MailFolder): string {
-  switch (f) {
-    case 'inbox':
-      return 'Inbox';
-    case 'sent':
-      return 'Sent';
-    case 'queued':
-      return 'Queued';
-    case 'errors':
-      return 'Errors';
-    case 'spam':
-      return 'Spam';
-    case 'trash':
-      return 'Trash';
-  }
-}
-
-function emptyFolderHint(f: MailFolder): string {
-  switch (f) {
-    case 'inbox':
-      return 'Inbox is empty. Inbound mail across all mailboxes will land here as it arrives.';
-    case 'sent':
-      return 'Nothing sent yet across any mailbox. Compose a message or let the outreach engine generate one.';
-    case 'queued':
-      return 'No queued sends. Drafts the outreach engine schedules will sit here briefly before going out.';
-    case 'errors':
-      return 'No send failures. If a send bounces or fails, it will surface here with a retry option.';
-    case 'spam':
-      return 'Nothing flagged as spam.';
-    case 'trash':
-      return 'Trash is empty.';
-  }
-}
-
-function derivePeer(msg: {
-  direction: 'outbound' | 'inbound';
-  fromAddress: string;
-  fromName: string | null;
-  toAddresses: string[];
-}): string {
-  if (msg.direction === 'outbound') {
-    return msg.toAddresses[0] ?? '';
-  }
-  return msg.fromName ? `${msg.fromName} <${msg.fromAddress}>` : msg.fromAddress;
-}
-
-function statusBadgeClass(status: string): string {
-  if (status === 'sent' || status === 'delivered' || status === 'received')
-    return 'badge';
-  if (status === 'queued' || status === 'sending') return 'badge';
-  if (status === 'failed' || status === 'bounced') return 'badge badge-bad';
-  return 'badge';
 }
