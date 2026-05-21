@@ -1,8 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { MessagesSquare, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
-import { CommunicationTabs } from '@/components/CommunicationTabs';
 import {
   CommunicationFolderView,
   FolderIcon,
@@ -27,7 +26,6 @@ import {
   unmarkSpam,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
-import { countFollowUpsByStatus } from '@/lib/services/follow-up';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 const FOLDER_LABELS: Record<MailFolder, string> = {
@@ -134,18 +132,16 @@ export default async function CommunicationPage({
   const mailboxIdFilter =
     sp.mailboxId && /^\d+$/.test(sp.mailboxId) ? BigInt(sp.mailboxId) : undefined;
 
-  const [messageRows, folderCounts, mailboxes, followUpCounts] =
-    await Promise.all([
-      listMessages(ctx, {
-        folder: activeFolder,
-        mailboxId: mailboxIdFilter,
-        limit: 200,
-        search: search || undefined,
-      }),
-      countMessagesByFolder(ctx, mailboxIdFilter),
-      listMailboxes(ctx),
-      countFollowUpsByStatus(ctx),
-    ]);
+  const [messageRows, folderCounts, mailboxes] = await Promise.all([
+    listMessages(ctx, {
+      folder: activeFolder,
+      mailboxId: mailboxIdFilter,
+      limit: 200,
+      search: search || undefined,
+    }),
+    countMessagesByFolder(ctx, mailboxIdFilter),
+    listMailboxes(ctx),
+  ]);
 
   const mailboxNameById = new Map(
     mailboxes.map((mb) => [mb.id.toString(), mb.name]),
@@ -304,140 +300,116 @@ export default async function CommunicationPage({
 
   return (
     <AppShell>
-      <div className="page-header">
-        <div className="page-intro">
-          <p className="page-eyebrow">Outreach</p>
-          <h1 className="page-title">
-            <MessagesSquare className="lucide" /> Communication
-          </h1>
-          <p className="page-lede">
-            Unified message view across every mailbox in this workspace.
-            Folders are derived from message state — Inbox &amp; Sent are
-            the day-to-day surface; Errors, Spam, and Trash collect anything
-            that needs attention.
-          </p>
-        </div>
-      </div>
-
-      <CommunicationTabs
-        active="conversations"
-        conversationsCount={folderCounts.inbox + folderCounts.sent}
-        followUpsPendingCount={followUpCounts.pending}
-      />
-
-      {sp.message ? <p className="form-info">{sp.message}</p> : null}
-      {sp.error ? <p className="form-error">{sp.error}</p> : null}
-
-      {/* Folder strip */}
-      <nav className="mail-folder-strip" aria-label="Mail folders">
-        {MAIL_FOLDERS.map((f) => {
-          const params = new URLSearchParams({ folder: f });
-          if (search) params.set('q', search);
-          if (mailboxIdFilter !== undefined)
-            params.set('mailboxId', mailboxIdFilter.toString());
-          const isActive = f === activeFolder;
-          return (
-            <Link
-              key={f}
-              href={`/communication?${params.toString()}`}
-              className={`mail-folder-tab${isActive ? ' is-active' : ''}`}
-              aria-current={isActive ? 'page' : undefined}
-            >
-              <FolderIcon folder={f} />
-              <span>{FOLDER_LABELS[f]}</span>
-              <span className="mail-folder-tab-count">{folderCounts[f]}</span>
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* Filter row */}
-      <form
-        method="get"
-        action="/communication"
-        className="mail-filter-row"
-        role="search"
-      >
-        <input type="hidden" name="folder" value={activeFolder} />
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.4rem',
-            flex: '1 1 280px',
-            minWidth: 240,
-          }}
+      <div className="mail-page">
+        {/* Search + mailbox filter (single compact row) */}
+        <form
+          method="get"
+          action="/communication"
+          className="mail-topbar"
+          role="search"
         >
-          <Search className="lucide" style={{ opacity: 0.6 }} />
-          <input
-            type="search"
-            name="q"
-            defaultValue={search}
-            placeholder={`Search ${FOLDER_LABELS[activeFolder]} — subject, from, to…`}
-            style={{ flex: 1 }}
-          />
-        </div>
-        <select
-          name="mailboxId"
-          defaultValue={mailboxIdFilter?.toString() ?? ''}
-          aria-label="Filter by mailbox"
-        >
-          <option value="">All mailboxes</option>
-          {mailboxes.map((m) => (
-            <option key={m.id.toString()} value={m.id.toString()}>
-              {m.name}
-            </option>
-          ))}
-        </select>
-        <button type="submit" className="primary-btn">
-          Apply
-        </button>
-        {search || mailboxIdFilter !== undefined ? (
-          <Link
-            href={`/communication?folder=${activeFolder}`}
-            className="ghost-btn"
-          >
-            Clear
-          </Link>
-        ) : null}
-      </form>
-
-      {/* Message list (client component owns selection state) */}
-      {serialisedRows.length === 0 ? (
-        <div className="mail-empty">
-          <div className="mail-empty-icon">
-            <FolderIcon folder={activeFolder} />
+          <input type="hidden" name="folder" value={activeFolder} />
+          <div className="mail-topbar-search">
+            <Search className="lucide" style={{ opacity: 0.6 }} />
+            <input
+              type="search"
+              name="q"
+              defaultValue={search}
+              placeholder={`Search ${FOLDER_LABELS[activeFolder]}…`}
+            />
           </div>
-          <p className="mail-empty-title">
-            {search
-              ? `No messages match "${search}" in ${FOLDER_LABELS[activeFolder]}`
-              : emptyFolderTitle(activeFolder)}
-          </p>
-          <p style={{ margin: 0 }}>
-            {search
-              ? 'Try a broader search term, switch mailbox, or clear filters.'
-              : emptyFolderHint(activeFolder)}
-          </p>
-        </div>
-      ) : (
-        <CommunicationFolderView
-          folder={activeFolder}
-          hiddenInputs={{
-            folder: activeFolder,
-            q: search,
-            mailboxId: mailboxIdFilter?.toString() ?? '',
-          }}
-          rows={serialisedRows}
-          actions={{
-            trash: trashSelected,
-            spam: spamSelected,
-            unspam: unspamSelected,
-            restore: restoreSelected,
-            delete: deleteSelected,
-            retry: retrySelected,
-          }}
-        />
-      )}
+          <select
+            name="mailboxId"
+            defaultValue={mailboxIdFilter?.toString() ?? ''}
+            aria-label="Filter by mailbox"
+          >
+            <option value="">All mailboxes</option>
+            {mailboxes.map((m) => (
+              <option key={m.id.toString()} value={m.id.toString()}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+          <button type="submit" className="primary-btn">
+            Apply
+          </button>
+          {search || mailboxIdFilter !== undefined ? (
+            <Link
+              href={`/communication?folder=${activeFolder}`}
+              className="ghost-btn"
+            >
+              Clear
+            </Link>
+          ) : null}
+        </form>
+
+        {/* Folder pills */}
+        <nav className="mail-folder-strip" aria-label="Mail folders">
+          {MAIL_FOLDERS.map((f) => {
+            const params = new URLSearchParams({ folder: f });
+            if (search) params.set('q', search);
+            if (mailboxIdFilter !== undefined)
+              params.set('mailboxId', mailboxIdFilter.toString());
+            const isActive = f === activeFolder;
+            return (
+              <Link
+                key={f}
+                href={`/communication?${params.toString()}`}
+                className={`mail-folder-tab${isActive ? ' is-active' : ''}`}
+                aria-current={isActive ? 'page' : undefined}
+              >
+                <FolderIcon folder={f} />
+                <span>{FOLDER_LABELS[f]}</span>
+                <span className="mail-folder-tab-count">
+                  {folderCounts[f]}
+                </span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        {sp.message ? (
+          <p className="mail-flash info">{sp.message}</p>
+        ) : null}
+        {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
+
+        {/* List or empty state */}
+        {serialisedRows.length === 0 ? (
+          <div className="mail-empty">
+            <div className="mail-empty-icon">
+              <FolderIcon folder={activeFolder} />
+            </div>
+            <p className="mail-empty-title">
+              {search
+                ? `No messages match "${search}" in ${FOLDER_LABELS[activeFolder]}`
+                : emptyFolderTitle(activeFolder)}
+            </p>
+            <p style={{ margin: 0 }}>
+              {search
+                ? 'Try a broader search term, switch mailbox, or clear filters.'
+                : emptyFolderHint(activeFolder)}
+            </p>
+          </div>
+        ) : (
+          <CommunicationFolderView
+            folder={activeFolder}
+            hiddenInputs={{
+              folder: activeFolder,
+              q: search,
+              mailboxId: mailboxIdFilter?.toString() ?? '',
+            }}
+            rows={serialisedRows}
+            actions={{
+              trash: trashSelected,
+              spam: spamSelected,
+              unspam: unspamSelected,
+              restore: restoreSelected,
+              delete: deleteSelected,
+              retry: retrySelected,
+            }}
+          />
+        )}
+      </div>
     </AppShell>
   );
 }

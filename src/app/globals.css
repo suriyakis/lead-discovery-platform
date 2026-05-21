@@ -4540,3 +4540,108 @@ button.primary-btn {
     grid-row: 2;
   }
 }
+
+/* ============ P61-15 mail-client tightening ===================== */
+
+/* Let the mail view use the full app-main column width — Gmail-style
+   wide layout, not the 72rem narrow column the rest of the app uses. */
+.mail-page > * {
+  max-width: none !important;
+}
+.mail-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+/* Tighter folder strip — no big card, just a row of pills */
+.mail-folder-strip {
+  background: transparent;
+  border: none;
+  padding: 0;
+  gap: 0.15rem;
+}
+.mail-folder-tab {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+/* Combined top bar: search + mailbox filter in a single compact row */
+.mail-topbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mail-topbar .mail-topbar-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1 1 320px;
+  min-width: 260px;
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.4rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+}
+.mail-topbar .mail-topbar-search input[type='search'] {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--brand-fg);
+  outline: none;
+  font-size: 0.9rem;
+}
+.mail-topbar select {
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.4rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-fg);
+  min-width: 180px;
+}
+
+/* Slimmer toolbar */
+.mail-toolbar {
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.45rem 0.45rem 0 0;
+}
+
+/* Denser rows — Gmail-like single-line density */
+.mail-row {
+  padding: 0.55rem 0.85rem;
+  font-size: 0.88rem;
+  grid-template-columns: auto 200px 1fr 90px;
+}
+.mail-row-peer {
+  font-size: 0.84rem;
+}
+.mail-row-mailbox {
+  font-size: 0.66rem;
+}
+.mail-row-meta {
+  text-align: right;
+}
+
+/* Flash messages — slimmer */
+.mail-flash {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+}
+.mail-flash.info {
+  background: color-mix(in oklab, var(--brand-primary) 14%, var(--brand-card));
+  color: var(--brand-fg);
+  border: 1px solid color-mix(in oklab, var(--brand-primary) 35%, transparent);
+}
+.mail-flash.error {
+  background: color-mix(in oklab, oklch(0.6 0.2 25) 14%, var(--brand-card));
+  color: oklch(0.92 0.08 25);
+  border: 1px solid color-mix(in oklab, oklch(0.6 0.2 25) 35%, transparent);
+}
+
+@media (max-width: 800px) {
+  .mail-row {
+    grid-template-columns: auto 1fr auto;
+  }
+}
