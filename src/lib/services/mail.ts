@@ -30,6 +30,12 @@ import {
   type NewMailThread,
 } from '@/lib/db/schema/mailing';
 import type { MailFolder } from './mail-folders';
+import {
+  classifyImapError,
+  computeBackoffMs,
+  nextSyncAfterEmpty,
+  TRANSIENT_FAILURE_PAUSE_THRESHOLD,
+} from './imap-backoff';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 import { buildProviderFor } from './mailbox';
@@ -1224,6 +1230,93 @@ export async function permanentlyDelete(
     });
   }
   return { affected: deletedIds.length, ids: deletedIds };
+}
+
+// ---- safe-sync (P61-25) --------------------------------------------
+
+export type SafeSyncOutcome =
+  | { kind: 'synced'; fetched: number; inserted: number; duplicates: number }
+  | { kind: 'auth_failed'; message: string }
+  | { kind: 'transient_failed'; message: string; consecutiveFailures: number; pausedAt: boolean };
+
+/** Wraps syncInbound + the cron's post-result mailbox bookkeeping into
+ *  one helper so both the IMAP tick (mail.imap.tick) AND the manual
+ *  Sync button apply the same auth/backoff/auto-pause logic. Without
+ *  this, manual clicks bypass the fail2ban defense and a broken
+ *  mailbox can rack up failed LOGINs from operator impatience.
+ *
+ *  Caller passes the resolved mailbox row — this helper does NOT
+ *  enforce the imap_next_sync_after cooldown gate; that's the cron's
+ *  job. Manual sync is explicitly "do it now". */
+export async function safeSyncOne(
+  ctx: WorkspaceContext,
+  mailbox: { id: bigint; imapConsecutiveFailures: number; imapEmptySyncs: number },
+): Promise<SafeSyncOutcome> {
+  try {
+    const result = await syncInbound(ctx, mailbox.id);
+    // Success — reset failure counters, apply adaptive empty-sync delay.
+    const nextEmpty =
+      result.fetched === 0 ? mailbox.imapEmptySyncs + 1 : 0;
+    const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);
+    await db
+      .update(mailboxes)
+      .set({
+        imapConsecutiveFailures: 0,
+        imapNextSyncAfter: adaptiveNext,
+        imapEmptySyncs: nextEmpty,
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(mailboxes.id, mailbox.id));
+    return {
+      kind: 'synced',
+      fetched: result.fetched,
+      inserted: result.inserted,
+      duplicates: result.duplicates,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const cls = classifyImapError(err);
+    const nextCount = mailbox.imapConsecutiveFailures + 1;
+
+    // Auto-pause when:
+    //   - error signature matches an auth failure, OR
+    //   - we've crossed the transient-failure threshold without ever
+    //     getting a clean sync (slow-burn fail2ban defense).
+    const shouldPause =
+      cls === 'auth' || nextCount >= TRANSIENT_FAILURE_PAUSE_THRESHOLD;
+
+    if (shouldPause) {
+      await db
+        .update(mailboxes)
+        .set({
+          status: 'failing',
+          lastError: msg.slice(0, 2000),
+          imapConsecutiveFailures: nextCount,
+          imapNextSyncAfter: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(mailboxes.id, mailbox.id));
+      return { kind: 'auth_failed', message: msg };
+    }
+
+    const cooldown = computeBackoffMs(nextCount);
+    await db
+      .update(mailboxes)
+      .set({
+        imapConsecutiveFailures: nextCount,
+        imapNextSyncAfter: new Date(Date.now() + cooldown),
+        lastError: msg.slice(0, 2000),
+        updatedAt: new Date(),
+      })
+      .where(eq(mailboxes.id, mailbox.id));
+    return {
+      kind: 'transient_failed',
+      message: msg,
+      consecutiveFailures: nextCount,
+      pausedAt: false,
+    };
+  }
 }
 
 // ---- trash purge (P61-09) ------------------------------------------

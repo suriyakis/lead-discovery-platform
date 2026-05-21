@@ -18,7 +18,7 @@ import {
   permanentlyDelete,
   restoreFromTrash,
   retrySend,
-  syncInbound,
+  safeSyncOne,
   unmarkSpam,
 } from '@/lib/services/mail';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -191,37 +191,64 @@ export async function syncMailbox(formData: FormData): Promise<void> {
       ? BigInt(filterIdRaw)
       : null;
   const targets = filterId
-    ? all.filter((mb) => mb.id === filterId && mb.imapHost)
-    : all.filter((mb) => mb.status === 'active' && mb.imapHost);
+    ? all.filter(
+        (mb) => mb.id === filterId && mb.imapHost && mb.status !== 'archived',
+      )
+    : all.filter(
+        (mb) => mb.status === 'active' && mb.imapHost,
+      );
   if (targets.length === 0) {
     backToFolderError(
       formData,
       filterId
-        ? 'Selected mailbox has no IMAP configured.'
+        ? 'Selected mailbox has no IMAP configured or is archived.'
         : 'No active IMAP-enabled mailbox to sync.',
     );
   }
+
+  let synced = 0;
   let totalFetched = 0;
   let totalInserted = 0;
   const failures: string[] = [];
+  const paused: string[] = [];
   for (const mb of targets) {
-    try {
-      const r = await syncInbound(c, mb.id);
-      totalFetched += r.fetched;
-      totalInserted += r.inserted;
-    } catch (err) {
+    const outcome = await safeSyncOne(c, mb);
+    if (outcome.kind === 'synced') {
+      synced++;
+      totalFetched += outcome.fetched;
+      totalInserted += outcome.inserted;
+    } else if (outcome.kind === 'auth_failed') {
+      paused.push(`${mb.name} (paused: ${truncate(outcome.message)})`);
+    } else {
       failures.push(
-        `${mb.name}: ${err instanceof Error ? err.message : 'failed'}`,
+        `${mb.name} (will back off: ${truncate(outcome.message)})`,
       );
     }
   }
-  if (failures.length > 0 && totalInserted === 0) {
-    backToFolderError(formData, `Sync failed — ${failures.join('; ')}`);
-  } else {
-    const summary =
-      targets.length === 1
-        ? `Synced ${targets[0]!.name} — fetched ${totalFetched}, new ${totalInserted}.`
-        : `Synced ${targets.length} mailboxes — fetched ${totalFetched}, new ${totalInserted}${failures.length ? ` (${failures.length} failed)` : ''}.`;
-    backToFolder(formData, summary);
+
+  // Build a single sentence that reports both wins and losses so a
+  // partial-success batch reads as a partial success, not a failure.
+  const parts: string[] = [];
+  if (synced > 0) {
+    parts.push(
+      synced === 1
+        ? `Synced ${targets.find((t) => true)?.name ?? '1 mailbox'} — fetched ${totalFetched}, new ${totalInserted}`
+        : `Synced ${synced} mailbox(es) — fetched ${totalFetched}, new ${totalInserted}`,
+    );
   }
+  if (paused.length > 0) parts.push(`auto-paused: ${paused.join('; ')}`);
+  if (failures.length > 0) parts.push(`failed: ${failures.join('; ')}`);
+
+  if (synced === 0) {
+    backToFolderError(
+      formData,
+      parts.length > 0 ? parts.join(' · ') : 'Nothing to sync.',
+    );
+  } else {
+    backToFolder(formData, parts.join(' · ') + '.');
+  }
+}
+
+function truncate(s: string, n = 80): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }

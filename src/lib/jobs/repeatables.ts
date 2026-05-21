@@ -26,7 +26,7 @@ import {
 } from '@/lib/services/context';
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
-import { purgeOldTrashUnattended, syncInbound } from '@/lib/services/mail';
+import { purgeOldTrashUnattended, safeSyncOne, syncInbound } from '@/lib/services/mail';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import {
@@ -143,58 +143,20 @@ const handleImapTick: JobHandler = async () => {
     if (eligible.length === 0) continue;
     const ctx = ownerCtx(ws.id, ws.ownerUserId);
     for (const mb of eligible) {
-      try {
-        const result = await syncInbound(ctx, mb.id);
-        // Success path — reset failure counter, adjust adaptive poll.
-        const nextEmpty = result.fetched === 0 ? mb.imapEmptySyncs + 1 : 0;
-        const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);
-        await db
-          .update(mailboxes)
-          .set({
-            imapConsecutiveFailures: 0,
-            imapNextSyncAfter: adaptiveNext,
-            imapEmptySyncs: nextEmpty,
-            lastError: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(mailboxes.id, mb.id));
+      const outcome = await safeSyncOne(ctx, mb);
+      if (outcome.kind === 'synced') {
         synced++;
-      } catch (err) {
+      } else if (outcome.kind === 'auth_failed') {
         failed++;
-        const msg = err instanceof Error ? err.message : String(err);
-        const cls = classifyImapError(err);
-        if (cls === 'auth') {
-          // Permanent — stop ticking until the operator reactivates.
-          await db
-            .update(mailboxes)
-            .set({
-              status: 'failing',
-              lastError: msg.slice(0, 2000),
-              imapNextSyncAfter: null,
-              updatedAt: new Date(),
-            })
-            .where(eq(mailboxes.id, mb.id));
-          markedFailing++;
-          console.error(
-            `[imap.tick] workspace=${ws.id} mailbox=${mb.id} auth-failed: ${msg}`,
-          );
-        } else {
-          // Transient — exponential backoff.
-          const nextCount = mb.imapConsecutiveFailures + 1;
-          const cooldown = computeBackoffMs(nextCount);
-          await db
-            .update(mailboxes)
-            .set({
-              imapConsecutiveFailures: nextCount,
-              imapNextSyncAfter: new Date(Date.now() + cooldown),
-              lastError: msg.slice(0, 2000),
-              updatedAt: new Date(),
-            })
-            .where(eq(mailboxes.id, mb.id));
-          console.error(
-            `[imap.tick] workspace=${ws.id} mailbox=${mb.id} transient failure ${nextCount} (next in ${Math.round(cooldown / 60000)}m): ${msg}`,
-          );
-        }
+        markedFailing++;
+        console.error(
+          `[imap.tick] workspace=${ws.id} mailbox=${mb.id} auth-or-stuck-failed: ${outcome.message}`,
+        );
+      } else {
+        failed++;
+        console.error(
+          `[imap.tick] workspace=${ws.id} mailbox=${mb.id} transient failure ${outcome.consecutiveFailures}: ${outcome.message}`,
+        );
       }
     }
   }

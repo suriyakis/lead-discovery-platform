@@ -34,6 +34,14 @@ const AUTH_SIGNATURES: readonly string[] = [
   'Account locked',
 ];
 
+/** After this many CONSECUTIVE 'transient' failures (e.g. the generic
+ *  imapflow "Command failed" with no auth signature), treat the
+ *  mailbox as effectively dead and stop polling — same as an auth
+ *  failure. The cap defeats slow-burn fail2ban risk for misconfigured
+ *  mailboxes whose error text never tripped an AUTH signature.
+ *  Tracked as imap_consecutive_failures in the schema. */
+export const TRANSIENT_FAILURE_PAUSE_THRESHOLD = 10;
+
 export function classifyImapError(err: unknown): ImapErrorClass {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
