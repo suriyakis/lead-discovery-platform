@@ -1,6 +1,15 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import {
+  ArrowLeft,
+  Play,
+  Save,
+  Trash2,
+  Archive,
+  ArchiveRestore,
+} from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -10,17 +19,43 @@ import {
 import { canWrite } from '@/lib/services/context';
 import {
   ConnectorServiceError,
+  deleteRecipe,
   getConnectorRow,
   getRecipe,
   startRun,
+  updateRecipe,
 } from '@/lib/services/connector-run';
+import { isNextRedirectError } from '@/lib/server-redirect';
+
+function parseJsonOrEmpty(raw: string, label: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`${label} must be a JSON object`);
+    }
+    return parsed as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(
+      `${label} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function parseLines(raw: string): string[] {
+  return raw
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
 
 export default async function RecipeDetailPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string; recipeId: string }>;
-  searchParams: Promise<{ error?: string; ran?: string }>;
+  searchParams: Promise<{ error?: string; ran?: string; message?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -40,13 +75,13 @@ export default async function RecipeDetailPage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) redirect('/connectors');
-    if (err instanceof ConnectorServiceError && err.code === 'not_found') redirect(`/connectors/${connectorId}`);
+    if (err instanceof ConnectorServiceError && err.code === 'not_found')
+      redirect(`/connectors/${connectorId}`);
     throw err;
   }
   if (recipe.connectorId !== connector.id) redirect(`/connectors/${connectorId}`);
 
-  const canRun = canWrite(ctx);
-  const selectors = recipe.selectors as Record<string, unknown>;
+  const canEdit = canWrite(ctx);
 
   async function runNow(): Promise<void> {
     'use server';
@@ -55,6 +90,7 @@ export default async function RecipeDetailPage({
       const { run } = await startRun(c, { connectorId, recipeId });
       redirect(`/connectors/${connectorId}/runs/${run.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof ConnectorServiceError) {
         redirect(
           `/connectors/${connectorId}/recipes/${recipeId}?error=${encodeURIComponent(err.code)}`,
@@ -64,48 +100,281 @@ export default async function RecipeDetailPage({
     }
   }
 
+  async function save(formData: FormData): Promise<void> {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      const name = String(formData.get('name') ?? '').trim();
+      const active = formData.get('active') === 'on';
+      const seedUrls = parseLines(String(formData.get('seedUrls') ?? ''));
+      const searchQueries = parseLines(
+        String(formData.get('searchQueries') ?? ''),
+      );
+      const selectors = parseJsonOrEmpty(
+        String(formData.get('selectors') ?? ''),
+        'Selectors',
+      );
+      const paginationRules = parseJsonOrEmpty(
+        String(formData.get('paginationRules') ?? ''),
+        'Pagination rules',
+      );
+      const enrichmentRules = parseJsonOrEmpty(
+        String(formData.get('enrichmentRules') ?? ''),
+        'Enrichment rules',
+      );
+      const normalizationMapping = parseJsonOrEmpty(
+        String(formData.get('normalizationMapping') ?? ''),
+        'Normalization mapping',
+      );
+      const evidenceRules = parseJsonOrEmpty(
+        String(formData.get('evidenceRules') ?? ''),
+        'Evidence rules',
+      );
+      await updateRecipe(c, recipeId, {
+        name,
+        active,
+        seedUrls,
+        searchQueries,
+        selectors,
+        paginationRules,
+        enrichmentRules,
+        normalizationMapping,
+        evidenceRules,
+      });
+      redirect(
+        `/connectors/${connectorId}/recipes/${recipeId}?message=${encodeURIComponent('Recipe saved')}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof ConnectorServiceError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'save failed';
+      redirect(
+        `/connectors/${connectorId}/recipes/${recipeId}?error=${encodeURIComponent(m)}`,
+      );
+    }
+  }
+
+  async function archiveOrRestore(formData: FormData): Promise<void> {
+    'use server';
+    const c = await getWorkspaceContext();
+    const targetActive = formData.get('active') === 'on';
+    try {
+      await updateRecipe(c, recipeId, { active: targetActive });
+      redirect(
+        `/connectors/${connectorId}/recipes/${recipeId}?message=${encodeURIComponent(
+          targetActive ? 'Recipe activated' : 'Recipe archived',
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof Error ? err.message : 'failed';
+      redirect(
+        `/connectors/${connectorId}/recipes/${recipeId}?error=${encodeURIComponent(m)}`,
+      );
+    }
+  }
+
+  async function destroy(): Promise<void> {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await deleteRecipe(c, recipeId);
+      redirect(
+        `/connectors/${connectorId}?message=${encodeURIComponent('Recipe deleted')}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'delete failed';
+      redirect(
+        `/connectors/${connectorId}/recipes/${recipeId}?error=${encodeURIComponent(m)}`,
+      );
+    }
+  }
+
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
-          <Link href="/connectors">Connectors</Link> /{' '}
-          <Link href={`/connectors/${connectorId}`}>{connector.name}</Link> / {recipe.name}
-        </p>
-        <h1>{recipe.name}</h1>
-        <p>
-          <span className="badge">{recipe.templateType}</span>{' '}
-          <span className={recipe.active ? 'badge badge-good' : 'badge badge-bad'}>
-            {recipe.active ? 'active' : 'inactive'}
-          </span>
-        </p>
+      <div className="recipe-page">
+        <Link
+          href={`/connectors/${connectorId}`}
+          className="recipe-back"
+          aria-label="Back to connector"
+        >
+          <ArrowLeft className="lucide" /> {connector.name}
+        </Link>
+        <header className="recipe-header">
+          <div>
+            <h1 className="recipe-title">{recipe.name}</h1>
+            <div className="recipe-header-meta">
+              <span className="badge">{recipe.templateType}</span>
+              <span
+                className={
+                  recipe.active ? 'badge badge-good' : 'badge badge-bad'
+                }
+              >
+                {recipe.active ? 'active' : 'archived'}
+              </span>
+              <span className="muted">
+                last updated {recipe.updatedAt.toLocaleString()}
+              </span>
+            </div>
+          </div>
+          {canEdit ? (
+            <div className="recipe-header-actions">
+              <form action={runNow}>
+                <button type="submit" className="primary-btn">
+                  <Play className="lucide" /> Run now
+                </button>
+              </form>
+            </div>
+          ) : null}
+        </header>
 
-        {sp.error ? <p className="form-error">Error: {sp.error}</p> : null}
-        {sp.ran ? <p className="form-success">Run started.</p> : null}
+        {sp.message ? <p className="mail-flash info">{sp.message}</p> : null}
+        {sp.error ? <p className="mail-flash error">Error: {sp.error}</p> : null}
+        {sp.ran ? <p className="mail-flash info">Run started.</p> : null}
 
-        <section>
-          <h2>Configuration</h2>
-          <pre className="json-block">{JSON.stringify(selectors, null, 2)}</pre>
-          <p className="muted">
-            (Inline editor for recipe configuration arrives with template-specific recipe edit
-            forms in a later iteration. For now the configuration is read-only via the UI; you
-            can re-run the recipe and create variants by adding new recipes.)
-          </p>
-        </section>
+        {!canEdit ? (
+          <p className="muted">Read-only — your role can&apos;t edit recipes.</p>
+        ) : (
+          <form action={save} className="recipe-form">
+            <div className="recipe-form-grid">
+              <label>
+                <span>Name</span>
+                <input
+                  type="text"
+                  name="name"
+                  defaultValue={recipe.name}
+                  maxLength={200}
+                  required
+                />
+              </label>
+              <label className="recipe-toggle-row">
+                <input
+                  type="checkbox"
+                  name="active"
+                  defaultChecked={recipe.active}
+                />
+                <span>Active (participates in crawl runs)</span>
+              </label>
+            </div>
 
-        {canRun ? (
-          <section>
-            <h2>Run this recipe</h2>
-            <p className="muted">
-              Starts the connector synchronously. The recipe is snapshotted into the run, so
-              future edits don&apos;t affect this run&apos;s history.
-            </p>
-            <form action={runNow}>
+            <label>
+              <span>Seed URLs (one per line)</span>
+              <textarea
+                name="seedUrls"
+                rows={4}
+                defaultValue={recipe.seedUrls.join('\n')}
+                placeholder={'https://example.com/listing\nhttps://example.com/page-2'}
+              />
+            </label>
+
+            <label>
+              <span>Search queries (one per line)</span>
+              <textarea
+                name="searchQueries"
+                rows={4}
+                defaultValue={recipe.searchQueries.join('\n')}
+                placeholder={'EU CE marking 2026\nplaster spray applicator'}
+              />
+            </label>
+
+            <details className="recipe-json-group">
+              <summary>Selectors (JSON)</summary>
+              <textarea
+                name="selectors"
+                rows={6}
+                defaultValue={JSON.stringify(recipe.selectors, null, 2)}
+              />
+            </details>
+
+            <details className="recipe-json-group">
+              <summary>Pagination rules (JSON)</summary>
+              <textarea
+                name="paginationRules"
+                rows={5}
+                defaultValue={JSON.stringify(recipe.paginationRules, null, 2)}
+              />
+            </details>
+
+            <details className="recipe-json-group">
+              <summary>Enrichment rules (JSON)</summary>
+              <textarea
+                name="enrichmentRules"
+                rows={5}
+                defaultValue={JSON.stringify(recipe.enrichmentRules, null, 2)}
+              />
+            </details>
+
+            <details className="recipe-json-group">
+              <summary>Normalization mapping (JSON)</summary>
+              <textarea
+                name="normalizationMapping"
+                rows={5}
+                defaultValue={JSON.stringify(
+                  recipe.normalizationMapping,
+                  null,
+                  2,
+                )}
+              />
+            </details>
+
+            <details className="recipe-json-group">
+              <summary>Evidence rules (JSON)</summary>
+              <textarea
+                name="evidenceRules"
+                rows={5}
+                defaultValue={JSON.stringify(recipe.evidenceRules, null, 2)}
+              />
+            </details>
+
+            <div className="recipe-form-actions">
               <button type="submit" className="primary-btn">
-                Run now
+                <Save className="lucide" /> Save changes
               </button>
-            </form>
+            </div>
+          </form>
+        )}
+
+        {canEdit ? (
+          <section className="recipe-danger">
+            <h2 className="recipe-danger-title">Lifecycle</h2>
+            <p className="muted">
+              Archiving keeps the recipe but stops it from participating in
+              automated runs. Deleting removes it entirely — past runs keep
+              their snapshot but lose the live link.
+            </p>
+            <div className="recipe-danger-actions">
+              {recipe.active ? (
+                <form action={archiveOrRestore}>
+                  <button type="submit" className="ghost-btn">
+                    <Archive className="lucide" /> Archive
+                  </button>
+                </form>
+              ) : (
+                <form action={archiveOrRestore}>
+                  <input type="hidden" name="active" value="on" />
+                  <button type="submit" className="ghost-btn">
+                    <ArchiveRestore className="lucide" /> Restore
+                  </button>
+                </form>
+              )}
+              <form action={destroy}>
+                <ConfirmFormButton
+                  message={`Delete "${recipe.name}" permanently? Past runs keep their snapshot but lose the live link. This cannot be undone.`}
+                  className="ghost-btn danger"
+                >
+                  <Trash2 className="lucide" /> Delete permanently
+                </ConfirmFormButton>
+              </form>
+            </div>
           </section>
         ) : null}
-      </AppShell>
+      </div>
+    </AppShell>
   );
 }

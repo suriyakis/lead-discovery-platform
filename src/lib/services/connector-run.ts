@@ -133,6 +133,135 @@ export async function getRecipe(
   return r;
 }
 
+// ---- recipe edit / archive / delete (P62-01) -----------------------
+
+export interface UpdateRecipeInput {
+  name?: string;
+  active?: boolean;
+  seedUrls?: ReadonlyArray<string>;
+  searchQueries?: ReadonlyArray<string>;
+  selectors?: Record<string, unknown>;
+  paginationRules?: Record<string, unknown>;
+  enrichmentRules?: Record<string, unknown>;
+  normalizationMapping?: Record<string, unknown>;
+  evidenceRules?: Record<string, unknown>;
+}
+
+function sanitiseJsonObject(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ConnectorServiceError(
+      `${label}: must be a JSON object`,
+      'invalid_input',
+    );
+  }
+  return value as Record<string, unknown>;
+}
+
+export async function updateRecipe(
+  ctx: WorkspaceContext,
+  id: bigint,
+  input: UpdateRecipeInput,
+): Promise<ConnectorRecipe> {
+  if (!canWrite(ctx)) throw permissionDenied('update recipe');
+  await getRecipe(ctx, id);
+  const updates: Partial<NewConnectorRecipe> & { updatedAt: Date } = {
+    updatedAt: new Date(),
+  };
+  if (input.name !== undefined) {
+    const trimmed = input.name.trim();
+    if (!trimmed) {
+      throw new ConnectorServiceError('name cannot be empty', 'invalid_input');
+    }
+    updates.name = trimmed.slice(0, 200);
+  }
+  if (input.active !== undefined) updates.active = input.active;
+  if (input.seedUrls !== undefined) {
+    updates.seedUrls = [...input.seedUrls]
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
+  if (input.searchQueries !== undefined) {
+    updates.searchQueries = [...input.searchQueries]
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
+  if (input.selectors !== undefined) {
+    updates.selectors = sanitiseJsonObject(input.selectors, 'selectors');
+  }
+  if (input.paginationRules !== undefined) {
+    updates.paginationRules = sanitiseJsonObject(
+      input.paginationRules,
+      'paginationRules',
+    );
+  }
+  if (input.enrichmentRules !== undefined) {
+    updates.enrichmentRules = sanitiseJsonObject(
+      input.enrichmentRules,
+      'enrichmentRules',
+    );
+  }
+  if (input.normalizationMapping !== undefined) {
+    updates.normalizationMapping = sanitiseJsonObject(
+      input.normalizationMapping,
+      'normalizationMapping',
+    );
+  }
+  if (input.evidenceRules !== undefined) {
+    updates.evidenceRules = sanitiseJsonObject(
+      input.evidenceRules,
+      'evidenceRules',
+    );
+  }
+  const [row] = await db
+    .update(connectorRecipes)
+    .set(updates)
+    .where(
+      and(
+        eq(connectorRecipes.workspaceId, ctx.workspaceId),
+        eq(connectorRecipes.id, id),
+      ),
+    )
+    .returning();
+  if (!row) throw invariant('connector_recipes update returned no row');
+  await recordAuditEvent(ctx, {
+    kind: 'connector_recipe.update',
+    entityType: 'connector_recipe',
+    entityId: id,
+    payload: { fields: Object.keys(updates).filter((k) => k !== 'updatedAt') },
+  });
+  return row;
+}
+
+/** Hard-delete a recipe. Past runs lose their FK link (ON DELETE SET NULL)
+ *  but keep their recipe_snapshot for audit. Refuses if the recipe is the
+ *  target of any active outreach plan — caller should detach first. */
+export async function deleteRecipe(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<{ deleted: bigint }> {
+  if (!canWrite(ctx)) throw permissionDenied('delete recipe');
+  const recipe = await getRecipe(ctx, id);
+  const result = await db
+    .delete(connectorRecipes)
+    .where(
+      and(
+        eq(connectorRecipes.workspaceId, ctx.workspaceId),
+        eq(connectorRecipes.id, id),
+      ),
+    )
+    .returning({ id: connectorRecipes.id });
+  if (result.length === 0) {
+    throw invariant('connector_recipes delete returned no row');
+  }
+  await recordAuditEvent(ctx, {
+    kind: 'connector_recipe.delete',
+    entityType: 'connector_recipe',
+    entityId: id,
+    payload: { name: recipe.name, connectorId: recipe.connectorId.toString() },
+  });
+  return { deleted: id };
+}
+
 // ---- runs -------------------------------------------------------------
 
 export interface StartRunInput {
