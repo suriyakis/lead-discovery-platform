@@ -222,3 +222,69 @@ export type SourceRecord = typeof sourceRecords.$inferSelect;
 export type NewSourceRecord = typeof sourceRecords.$inferInsert;
 export type ConnectorTemplateType = (typeof connectorTemplateType.enumValues)[number];
 export type ConnectorRunStatus = (typeof connectorRunStatus.enumValues)[number];
+
+/**
+ * Phase 62 — Crawl Engine. A `crawl_plan` is a named, scheduled bundle
+ * of:
+ *   - recipes to run (recipeIds)
+ *   - product profiles to qualify against (productProfileIds)
+ *   - cadence (intervalMinutes)
+ *   - allowed-running hours (quietStartHour / quietEndHour — wraps
+ *     midnight if start > end; null both = always on)
+ *   - timezone (for quiet-hour interpretation)
+ *
+ * A workspace can have many plans. Each plan's recipes fire as separate
+ * connector_runs on tick. lastRunAt / nextRunAt power the engine
+ * scheduler. lastRunSummary stores per-recipe success/fail counts for
+ * the dashboard.
+ */
+export const crawlPlans = pgTable(
+  'crawl_plans',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    intervalMinutes: integer('interval_minutes').notNull().default(60),
+    /** 0–23, or null to disable the quiet-hour gate. */
+    quietStartHour: integer('quiet_start_hour'),
+    quietEndHour: integer('quiet_end_hour'),
+    timezone: text('timezone').notNull().default('Europe/Warsaw'),
+    /** bigint[] referencing connector_recipes.id. Soft FK — we filter
+     *  at run time so a deleted recipe just drops from the next tick. */
+    recipeIds: bigint('recipe_ids', { mode: 'bigint' })
+      .array()
+      .notNull()
+      .default(sql`'{}'::bigint[]`),
+    /** bigint[] referencing product_profiles.id. Passed to startRun
+     *  as productProfileIds so the connector knows which products to
+     *  qualify the resulting source_records against. */
+    productProfileIds: bigint('product_profile_ids', { mode: 'bigint' })
+      .array()
+      .notNull()
+      .default(sql`'{}'::bigint[]`),
+    lastRunAt: timestamp('last_run_at', { mode: 'date', withTimezone: true }),
+    nextRunAt: timestamp('next_run_at', { mode: 'date', withTimezone: true }),
+    /** Last tick's summary as JSON. */
+    lastRunSummary: jsonb('last_run_summary'),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    workspaceIdx: index('crawl_plans_ws_idx').on(table.workspaceId),
+    workspaceEnabledIdx: index('crawl_plans_ws_enabled_idx').on(
+      table.workspaceId,
+      table.enabled,
+    ),
+    nextRunIdx: index('crawl_plans_next_run_idx').on(table.nextRunAt),
+  }),
+);
+
+export type CrawlPlan = typeof crawlPlans.$inferSelect;
+export type NewCrawlPlan = typeof crawlPlans.$inferInsert;

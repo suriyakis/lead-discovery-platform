@@ -27,6 +27,7 @@ import {
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import { purgeOldTrashUnattended, safeSyncOne, syncInbound } from '@/lib/services/mail';
+import { processDueCrawlPlans } from '@/lib/services/crawl-engine';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import {
@@ -48,6 +49,10 @@ export const KNOWLEDGE_COMPACT_TICK_MS = 7 * 24 * 60 * 60 * 1000;
  *  per-workspace (workspaces.trash_retention_days, default 30); this is
  *  just how often we check. */
 export const MAIL_TRASH_PURGE_TICK_MS = 24 * 60 * 60 * 1000;
+/** P62-02: Crawl Engine cadence. 5 min is the finest granularity any
+ *  plan can ever fire at (validated by MIN_INTERVAL_MINUTES). Plans
+ *  with longer intervals just get checked-and-skipped until due. */
+export const CRAWL_ENGINE_TICK_MS = 5 * 60 * 1000;
 
 function ownerCtx(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
   return makeWorkspaceContext({
@@ -194,6 +199,40 @@ const handleFollowUpTick: JobHandler = async () => {
   return { checked, sent, skipped, failed };
 };
 
+const handleCrawlEngineTick: JobHandler = async () => {
+  const wss = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.status, 'active'));
+  const now = new Date();
+  let processed = 0;
+  let inQuiet = 0;
+  let totalStarted = 0;
+  let totalFailed = 0;
+  for (const ws of wss) {
+    const ctx = ownerCtx(ws.id, ws.ownerUserId);
+    try {
+      const result = await processDueCrawlPlans(ctx, now);
+      processed += result.processed;
+      inQuiet += result.inQuietHours;
+      totalStarted += result.totalStartedRuns;
+      totalFailed += result.totalFailedRecipes;
+    } catch (err) {
+      console.error(
+        `[crawl.engine.tick] workspace=${ws.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return {
+    workspaces: wss.length,
+    processed,
+    inQuietHours: inQuiet,
+    totalStartedRuns: totalStarted,
+    totalFailedRecipes: totalFailed,
+  };
+};
+
 const handleMailTrashPurgeTick: JobHandler = async () => {
   const wss = await db
     .select()
@@ -260,6 +299,7 @@ export async function registerRepeatableJobs(
   q.on('outreach.follow_up.tick', handleFollowUpTick);
   q.on('knowledge.compact.tick', handleKnowledgeCompactTick);
   q.on('mail.trash.purge.tick', handleMailTrashPurgeTick);
+  q.on('crawl.engine.tick', handleCrawlEngineTick);
   if (!options.skipSchedule) {
     await q.enqueueRepeatable('autopilot.tick', {}, {
       everyMs: AUTOPILOT_TICK_MS,
@@ -284,6 +324,10 @@ export async function registerRepeatableJobs(
     await q.enqueueRepeatable('mail.trash.purge.tick', {}, {
       everyMs: MAIL_TRASH_PURGE_TICK_MS,
       jobId: 'mail-trash-purge-tick',
+    });
+    await q.enqueueRepeatable('crawl.engine.tick', {}, {
+      everyMs: CRAWL_ENGINE_TICK_MS,
+      jobId: 'crawl-engine-tick',
     });
   }
   registered = true;

@@ -6005,3 +6005,218 @@ button.primary-btn {
   color: oklch(0.85 0.16 25);
   border-color: color-mix(in oklab, oklch(0.55 0.18 25) 30%, var(--brand-border));
 }
+/* ============ P62-03 crawl engine page =================== */
+
+.crawl-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.crawl-page > * { max-width: none !important; }
+
+.crawl-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--brand-muted);
+  text-decoration: none;
+  width: fit-content;
+}
+.crawl-back:hover { color: var(--brand-fg); }
+
+.crawl-header {
+  padding: 1rem 1.2rem;
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--brand-accent-teal) 18%, var(--brand-card)) 0%,
+    color-mix(in oklab, var(--brand-primary) 14%, var(--brand-card)) 100%
+  );
+  border: 1px solid var(--brand-border);
+  border-radius: 0.75rem;
+}
+.crawl-title {
+  margin: 0 0 0.3rem;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.crawl-title .lucide {
+  color: var(--brand-accent-amber);
+  width: 1.5rem;
+  height: 1.5rem;
+}
+.crawl-lede {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--brand-muted);
+  max-width: 70ch;
+}
+
+.crawl-plans-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.crawl-plan-card {
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+  padding: 1rem 1.2rem;
+  transition: opacity 0.1s ease;
+}
+.crawl-plan-card.is-disabled {
+  opacity: 0.65;
+}
+
+.crawl-plan-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.crawl-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.crawl-plan-name {
+  flex: 1;
+  min-width: 240px;
+  padding: 0.55rem 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  color: var(--brand-fg);
+}
+.crawl-plan-name:hover,
+.crawl-plan-name:focus {
+  background: var(--brand-input);
+  border-color: var(--brand-border);
+  outline: none;
+}
+
+.crawl-plan-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--brand-fg);
+}
+.crawl-plan-toggle input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.crawl-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.65rem;
+}
+.crawl-plan-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--brand-muted);
+}
+.crawl-plan-form label > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.crawl-plan-form input[type="number"],
+.crawl-plan-form input[type="text"]:not(.crawl-plan-name),
+.crawl-plan-form select {
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.4rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-fg);
+  font-size: 0.88rem;
+}
+
+.crawl-plan-fieldset {
+  border: 1px dashed var(--brand-border);
+  border-radius: 0.55rem;
+  padding: 0.7rem 0.85rem 0.85rem;
+  margin: 0;
+  background: color-mix(in oklab, var(--brand-input) 35%, var(--brand-card));
+}
+.crawl-plan-fieldset > legend {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--brand-fg);
+  padding: 0 0.4rem;
+}
+
+.crawl-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.3rem 0.65rem;
+}
+.crawl-checkbox-row {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.45rem !important;
+  font-size: 0.85rem !important;
+  color: var(--brand-fg) !important;
+  padding: 0.25rem 0;
+}
+.crawl-checkbox-row input[type="checkbox"]:disabled + span {
+  opacity: 0.5;
+}
+
+.crawl-plan-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--brand-border);
+  padding-top: 0.7rem;
+}
+.crawl-plan-status {
+  font-size: 0.78rem;
+  color: var(--brand-fg);
+}
+.crawl-plan-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.crawl-plan-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.crawl-plan-actions .danger {
+  color: oklch(0.85 0.16 25);
+  border-color: color-mix(in oklab, oklch(0.55 0.18 25) 30%, var(--brand-border));
+}
+
+.crawl-new {
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+  padding: 1rem 1.2rem;
+}
+.crawl-section-title {
+  margin: 0 0 0.85rem;
+  font-size: 1rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.crawl-section-title .lucide {
+  color: var(--brand-muted);
+}

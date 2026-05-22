@@ -70,11 +70,16 @@ export default async function ConnectorsPage() {
               (internet_search, mock, …). Recipes hold the per-search settings.
             </p>
           </div>
-          {isAdmin ? (
-            <Link href="/connectors/new" className="primary-btn">
-              + New connector
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <Link href="/connectors/engine" className="ghost-btn">
+              ⚡ Crawl Engine
             </Link>
-          ) : null}
+            {isAdmin ? (
+              <Link href="/connectors/new" className="primary-btn">
+                + New connector
+              </Link>
+            ) : null}
+          </div>
         </div>
 
         <section>
