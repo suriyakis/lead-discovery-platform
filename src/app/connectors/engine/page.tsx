@@ -20,13 +20,13 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { listProductProfiles } from '@/lib/services/product-profile';
 import { listConnectors, listRecipes } from '@/lib/services/connector-run';
 import {
   listCrawlPlans,
   MAX_INTERVAL_MINUTES,
   MIN_INTERVAL_MINUTES,
 } from '@/lib/services/crawl-engine';
+import { listProductProfiles } from '@/lib/services/product-profile';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   createPlan,
@@ -96,10 +96,25 @@ export default async function CrawlEnginePage({
             <p className="crawl-lede">
               Scheduled bundles of recipes that fire automatically on a
               cadence. Each plan picks <strong>which recipes</strong>{' '}
-              to run, <strong>which products</strong> to qualify the
-              results against, an <strong>interval</strong>, and an
-              optional <strong>quiet-hour window</strong> (so the engine
-              respects the local working day at the host site).
+              to run, an <strong>interval</strong>, and an optional{' '}
+              <strong>quiet-hour window</strong> (so the engine
+              respects the local working day at the host site).{' '}
+              {products.length > 0 ? (
+                <>
+                  Discovered records are auto-qualified against{' '}
+                  <Link href="/products">
+                    all {products.length} active{' '}
+                    product profile{products.length === 1 ? '' : 's'}
+                  </Link>{' '}
+                  in this workspace — the qualification engine picks the
+                  best fit per record.
+                </>
+              ) : (
+                <>
+                  Discovered records will be auto-qualified once you{' '}
+                  <Link href="/products">add a product profile</Link>.
+                </>
+              )}
             </p>
           </div>
         </header>
@@ -247,35 +262,6 @@ export default async function CrawlEnginePage({
                       )}
                     </fieldset>
 
-                    <fieldset className="crawl-plan-fieldset">
-                      <legend>Products to qualify results against</legend>
-                      {products.length === 0 ? (
-                        <p className="muted small">
-                          No products yet —{' '}
-                          <Link href="/products">create one</Link> first.
-                        </p>
-                      ) : (
-                        <div className="crawl-checkbox-grid">
-                          {products.map((prod) => (
-                            <label
-                              key={prod.id.toString()}
-                              className="crawl-checkbox-row"
-                            >
-                              <input
-                                type="checkbox"
-                                name="productProfileIds"
-                                value={prod.id.toString()}
-                                defaultChecked={p.productProfileIds
-                                  .map(String)
-                                  .includes(prod.id.toString())}
-                              />
-                              <span>{prod.name}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                    </fieldset>
-
                     <footer className="crawl-plan-foot">
                       <div className="crawl-plan-status">
                         {p.lastRunAt ? (
@@ -412,25 +398,6 @@ export default async function CrawlEnginePage({
                         <span className="muted small"> (archived)</span>
                       )}
                     </span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-
-            <fieldset className="crawl-plan-fieldset">
-              <legend>Products to qualify against</legend>
-              <div className="crawl-checkbox-grid">
-                {products.map((prod) => (
-                  <label
-                    key={prod.id.toString()}
-                    className="crawl-checkbox-row"
-                  >
-                    <input
-                      type="checkbox"
-                      name="productProfileIds"
-                      value={prod.id.toString()}
-                    />
-                    <span>{prod.name}</span>
                   </label>
                 ))}
               </div>

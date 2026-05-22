@@ -117,7 +117,7 @@ describe('createCrawlPlan', () => {
     const { recipe } = await makeMockRecipe(s, s.workspaceA, s.ownerA, 'r1');
     const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
       name: 'Widget',
-      description: 'Widgets for the EU market',
+      shortDescription: 'Widgets for the EU market',
     });
     const plan = await createCrawlPlan(ctx(s.workspaceA, s.ownerA), {
       name: 'Hourly widgets',
@@ -296,20 +296,21 @@ describe('runCrawlPlanNow + processDueCrawlPlans', () => {
     const plan = await createCrawlPlan(ctx(s.workspaceA, s.ownerA), {
       name: 'p',
       intervalMinutes: 60,
-      // 0..24 = always quiet (every hour falls inside [0, 24))
+      // Quiet 0..23 covers every hour except 23:00 — noon UTC falls
+      // inside.
       quietStartHour: 0,
       quietEndHour: 23,
       timezone: 'UTC',
       recipeIds: [recipe.id],
       productProfileIds: [],
     });
-    // Force the plan due NOW.
+    // Pin "now" to 12:00 UTC so the quiet check covers it, AND force
+    // nextRunAt to be in the past *relative to that synthetic now*.
+    const noonUtc = new Date('2026-05-22T12:00:00Z');
     await db
       .update(crawlPlans)
-      .set({ nextRunAt: new Date(Date.now() - 60_000) })
+      .set({ nextRunAt: new Date(noonUtc.getTime() - 60_000) })
       .where(eq(crawlPlans.id, plan.id));
-    // Pin "now" to 12:00 UTC so the quiet check covers it.
-    const noonUtc = new Date('2026-05-22T12:00:00Z');
     const summary = await processDueCrawlPlans(
       ctx(s.workspaceA, s.ownerA),
       noonUtc,
