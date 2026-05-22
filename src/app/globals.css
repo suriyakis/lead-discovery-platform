@@ -6308,3 +6308,71 @@ button.primary-btn {
 .pipeline-step-detail a {
   color: var(--brand-accent-teal);
 }
+/* ============ P62-07 inline autopilot toggles in pipeline panel ===== */
+
+.pipeline-status-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+.pipeline-status-head .pipeline-status-title {
+  margin: 0;
+}
+.pipeline-status-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.pipeline-status-toolbar .primary-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.pipeline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+  color: var(--brand-fg);
+  cursor: pointer;
+}
+.pipeline-toggle input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.pipeline-toggle-master {
+  font-size: 0.88rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 999px;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  margin-top: 0;
+}
+.pipeline-toggle-master input[type="checkbox"]:checked + span strong {
+  color: var(--brand-accent-teal);
+}
+
+.pipeline-inline-input {
+  width: 4ch;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.3rem;
+  background: var(--brand-card-elevated);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-fg);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.82rem;
+  text-align: center;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.pipeline-inline-input::-webkit-outer-spin-button,
+.pipeline-inline-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

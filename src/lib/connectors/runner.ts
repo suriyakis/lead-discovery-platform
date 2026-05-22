@@ -172,6 +172,27 @@ export async function runConnectorRun(
 
   const result: RunResult = { status: finalStatus, recordCount };
   if (fatalError) result.error = fatalError;
+
+  // P62-07: when a crawl succeeded with new records, kick the
+  // autopilot pipeline immediately so harvested records flow through
+  // approve+draft+enqueue within seconds instead of waiting for the
+  // next autopilot.tick. Fire-and-forget — autopilot has its own
+  // permission gates + emergency-pause check, and any failure here
+  // must NOT propagate back into the connector run status. Inline
+  // import to avoid a top-level cycle between runner and autopilot.
+  if (finalStatus === 'succeeded' && recordCount > 0) {
+    void (async () => {
+      try {
+        const { runOnce } = await import('@/lib/services/autopilot');
+        await runOnce(ctx);
+      } catch (err) {
+        console.error(
+          '[runner] autopilot.runOnce after-crawl hook failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+  }
   return result;
 }
 

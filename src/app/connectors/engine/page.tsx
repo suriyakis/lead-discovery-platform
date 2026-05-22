@@ -37,6 +37,7 @@ import {
   createPlan,
   deletePlanAction,
   runPlanAction,
+  saveAutopilot,
   savePlan,
 } from './actions';
 
@@ -130,11 +131,41 @@ export default async function CrawlEnginePage({
         ) : null}
         {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
 
-        {/* Pipeline status — what happens after the recipes run */}
-        <section className="pipeline-status" aria-label="Pipeline status">
-          <h2 className="pipeline-status-title">
-            <Bot className="lucide" /> Pipeline after crawl
-          </h2>
+        {/* Pipeline status — what happens after the recipes run.
+            Form wraps the panel so the operator can toggle autopilot
+            inline without navigating to /autopilot. */}
+        <form
+          action={saveAutopilot}
+          className="pipeline-status"
+          aria-label="Pipeline status"
+        >
+          <header className="pipeline-status-head">
+            <h2 className="pipeline-status-title">
+              <Bot className="lucide" /> Pipeline after crawl
+            </h2>
+            <div className="pipeline-status-toolbar">
+              <label className="pipeline-toggle pipeline-toggle-master">
+                <input
+                  type="checkbox"
+                  name="autopilotEnabled"
+                  defaultChecked={
+                    autopilot.autopilotEnabled && !autopilot.emergencyPause
+                  }
+                />
+                <span>
+                  Autopilot{' '}
+                  <strong>
+                    {autopilot.autopilotEnabled && !autopilot.emergencyPause
+                      ? 'ON'
+                      : 'OFF'}
+                  </strong>
+                </span>
+              </label>
+              <button type="submit" className="primary-btn">
+                <Save className="lucide" /> Save
+              </button>
+            </div>
+          </header>
           <ol className="pipeline-steps">
             <li className="pipeline-step is-on">
               <span className="pipeline-step-icon">
@@ -206,31 +237,27 @@ export default async function CrawlEnginePage({
                   3. Auto-approve high-scoring records
                 </div>
                 <p className="pipeline-step-detail">
-                  {!autopilot.autopilotEnabled ? (
-                    <>
-                      Autopilot is off — every record routes to the{' '}
-                      <Link href="/review">review queue</Link> for manual
-                      approval.
-                    </>
-                  ) : autopilot.emergencyPause ? (
-                    <>
-                      Emergency-paused. <Link href="/autopilot">Resume</Link>{' '}
-                      to auto-approve.
-                    </>
-                  ) : !autopilot.enableAutoApproveProjects ? (
-                    <>
-                      Auto-approve disabled. Records still land in the{' '}
-                      <Link href="/review">review queue</Link>.
-                    </>
-                  ) : (
-                    <>
-                      Approving records with score ≥{' '}
-                      <strong>{autopilot.autoApproveThreshold}</strong>{' '}
-                      (max {autopilot.maxApprovalsPerRun}/run).{' '}
-                      <Link href="/autopilot">Tune autopilot</Link>.
-                    </>
-                  )}
+                  Approving records with relevance score ≥{' '}
+                  <input
+                    type="number"
+                    name="autoApproveThreshold"
+                    defaultValue={autopilot.autoApproveThreshold}
+                    min={0}
+                    max={100}
+                    className="pipeline-inline-input"
+                    aria-label="Auto-approve threshold (0–100)"
+                  />{' '}
+                  / 100. Otherwise → <Link href="/review">review queue</Link>{' '}
+                  for manual triage.
                 </p>
+                <label className="pipeline-toggle">
+                  <input
+                    type="checkbox"
+                    name="enableAutoApproveProjects"
+                    defaultChecked={autopilot.enableAutoApproveProjects}
+                  />
+                  <span>Enable auto-approve</span>
+                </label>
               </div>
             </li>
             <li
@@ -256,27 +283,21 @@ export default async function CrawlEnginePage({
                   4. Generate + enqueue outreach
                 </div>
                 <p className="pipeline-step-detail">
-                  {!autopilot.autopilotEnabled || autopilot.emergencyPause ? (
-                    <>
-                      Off. Approved records sit in the queue without drafts.
-                    </>
-                  ) : !autopilot.enableAutoEnqueueOutreach ? (
-                    <>
-                      Auto-enqueue disabled — generate drafts manually from{' '}
-                      <Link href="/drafts">Drafts</Link>.
-                    </>
-                  ) : (
-                    <>
-                      AI drafts a personalised email per approved record
-                      using its best-fit product profile pitch and queues it
-                      for send (max {autopilot.maxEnqueuesPerRun}/run).
-                    </>
-                  )}
+                  AI drafts a personalised email per approved record using its
+                  best-fit product profile pitch and queues it for send.
                 </p>
+                <label className="pipeline-toggle">
+                  <input
+                    type="checkbox"
+                    name="enableAutoEnqueueOutreach"
+                    defaultChecked={autopilot.enableAutoEnqueueOutreach}
+                  />
+                  <span>Enable auto-outreach</span>
+                </label>
               </div>
             </li>
           </ol>
-        </section>
+        </form>
 
         {/* Existing plans */}
         {plans.length === 0 ? (
