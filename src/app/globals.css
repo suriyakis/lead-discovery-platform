@@ -6220,3 +6220,91 @@ button.primary-btn {
 .crawl-section-title .lucide {
   color: var(--brand-muted);
 }
+/* ============ P62-06 pipeline status panel =================== */
+
+.pipeline-status {
+  padding: 1rem 1.2rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+}
+.pipeline-status-title {
+  margin: 0 0 0.85rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--brand-fg);
+}
+.pipeline-status-title .lucide {
+  color: var(--brand-accent-teal);
+}
+
+.pipeline-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.pipeline-step {
+  display: grid;
+  grid-template-columns: 2.4rem 1fr;
+  gap: 0.85rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.55rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  position: relative;
+  align-items: center;
+}
+.pipeline-step.is-on {
+  border-color: color-mix(in oklab, var(--brand-accent-teal) 45%, var(--brand-border));
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--brand-accent-teal) 12%, var(--brand-card)) 0%,
+    var(--brand-card-elevated) 100%
+  );
+}
+.pipeline-step.is-off {
+  opacity: 0.7;
+}
+
+.pipeline-step-icon {
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--brand-card-elevated);
+  border: 1px solid var(--brand-border);
+}
+.pipeline-step.is-on .pipeline-step-icon {
+  background: color-mix(in oklab, var(--brand-accent-teal) 30%, var(--brand-card));
+  border-color: color-mix(in oklab, var(--brand-accent-teal) 60%, var(--brand-border));
+}
+.pipeline-step-icon .lucide {
+  width: 1.05rem;
+  height: 1.05rem;
+  color: var(--brand-accent-teal);
+}
+.pipeline-step.is-off .pipeline-step-icon .lucide {
+  color: var(--brand-muted);
+}
+
+.pipeline-step-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--brand-fg);
+}
+.pipeline-step-detail {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
+  color: var(--brand-muted);
+}
+.pipeline-step-detail a {
+  color: var(--brand-accent-teal);
+}

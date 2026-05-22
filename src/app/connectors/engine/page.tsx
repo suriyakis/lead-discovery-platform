@@ -2,9 +2,13 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import {
   ArrowLeft,
+  Bot,
+  CheckCircle2,
   Clock,
   Globe2,
+  Mail,
   Moon,
+  PauseCircle,
   Play,
   Plus,
   Save,
@@ -27,6 +31,7 @@ import {
   MIN_INTERVAL_MINUTES,
 } from '@/lib/services/crawl-engine';
 import { listProductProfiles } from '@/lib/services/product-profile';
+import { getAutopilotSettings } from '@/lib/services/autopilot';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   createPlan,
@@ -65,11 +70,12 @@ export default async function CrawlEnginePage({
     throw err;
   }
 
-  const [plans, recipes, connectors, products] = await Promise.all([
+  const [plans, recipes, connectors, products, autopilot] = await Promise.all([
     listCrawlPlans(ctx),
     listRecipes(ctx),
     listConnectors(ctx),
     listProductProfiles(ctx, { includeArchived: false }),
+    getAutopilotSettings(ctx),
   ]);
 
   const connectorNameById = new Map(
@@ -123,6 +129,154 @@ export default async function CrawlEnginePage({
           <p className="mail-flash info">{sp.message}</p>
         ) : null}
         {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
+
+        {/* Pipeline status — what happens after the recipes run */}
+        <section className="pipeline-status" aria-label="Pipeline status">
+          <h2 className="pipeline-status-title">
+            <Bot className="lucide" /> Pipeline after crawl
+          </h2>
+          <ol className="pipeline-steps">
+            <li className="pipeline-step is-on">
+              <span className="pipeline-step-icon">
+                <Zap className="lucide" />
+              </span>
+              <div>
+                <div className="pipeline-step-title">1. Crawl + scrape</div>
+                <p className="pipeline-step-detail">
+                  {plans.filter((p) => p.enabled).length}/{plans.length} crawl
+                  plan{plans.length === 1 ? '' : 's'} enabled. Recipes write
+                  source_records.
+                </p>
+              </div>
+            </li>
+            <li
+              className={
+                products.length > 0 ? 'pipeline-step is-on' : 'pipeline-step is-off'
+              }
+            >
+              <span className="pipeline-step-icon">
+                {products.length > 0 ? (
+                  <CheckCircle2 className="lucide" />
+                ) : (
+                  <PauseCircle className="lucide" />
+                )}
+              </span>
+              <div>
+                <div className="pipeline-step-title">
+                  2. Qualify against products
+                </div>
+                <p className="pipeline-step-detail">
+                  {products.length === 0 ? (
+                    <>
+                      No active product profiles —{' '}
+                      <Link href="/products">add one</Link> so records get
+                      scored.
+                    </>
+                  ) : (
+                    <>
+                      Scoring each record against{' '}
+                      <strong>{products.length}</strong> active product
+                      profile{products.length === 1 ? '' : 's'}. Best fit
+                      wins.
+                    </>
+                  )}
+                </p>
+              </div>
+            </li>
+            <li
+              className={
+                autopilot.autopilotEnabled &&
+                !autopilot.emergencyPause &&
+                autopilot.enableAutoApproveProjects
+                  ? 'pipeline-step is-on'
+                  : 'pipeline-step is-off'
+              }
+            >
+              <span className="pipeline-step-icon">
+                {autopilot.autopilotEnabled &&
+                !autopilot.emergencyPause &&
+                autopilot.enableAutoApproveProjects ? (
+                  <CheckCircle2 className="lucide" />
+                ) : (
+                  <PauseCircle className="lucide" />
+                )}
+              </span>
+              <div>
+                <div className="pipeline-step-title">
+                  3. Auto-approve high-scoring records
+                </div>
+                <p className="pipeline-step-detail">
+                  {!autopilot.autopilotEnabled ? (
+                    <>
+                      Autopilot is off — every record routes to the{' '}
+                      <Link href="/review">review queue</Link> for manual
+                      approval.
+                    </>
+                  ) : autopilot.emergencyPause ? (
+                    <>
+                      Emergency-paused. <Link href="/autopilot">Resume</Link>{' '}
+                      to auto-approve.
+                    </>
+                  ) : !autopilot.enableAutoApproveProjects ? (
+                    <>
+                      Auto-approve disabled. Records still land in the{' '}
+                      <Link href="/review">review queue</Link>.
+                    </>
+                  ) : (
+                    <>
+                      Approving records with score ≥{' '}
+                      <strong>{autopilot.autoApproveThreshold}</strong>{' '}
+                      (max {autopilot.maxApprovalsPerRun}/run).{' '}
+                      <Link href="/autopilot">Tune autopilot</Link>.
+                    </>
+                  )}
+                </p>
+              </div>
+            </li>
+            <li
+              className={
+                autopilot.autopilotEnabled &&
+                !autopilot.emergencyPause &&
+                autopilot.enableAutoEnqueueOutreach
+                  ? 'pipeline-step is-on'
+                  : 'pipeline-step is-off'
+              }
+            >
+              <span className="pipeline-step-icon">
+                {autopilot.autopilotEnabled &&
+                !autopilot.emergencyPause &&
+                autopilot.enableAutoEnqueueOutreach ? (
+                  <Mail className="lucide" />
+                ) : (
+                  <PauseCircle className="lucide" />
+                )}
+              </span>
+              <div>
+                <div className="pipeline-step-title">
+                  4. Generate + enqueue outreach
+                </div>
+                <p className="pipeline-step-detail">
+                  {!autopilot.autopilotEnabled || autopilot.emergencyPause ? (
+                    <>
+                      Off. Approved records sit in the queue without drafts.
+                    </>
+                  ) : !autopilot.enableAutoEnqueueOutreach ? (
+                    <>
+                      Auto-enqueue disabled — generate drafts manually from{' '}
+                      <Link href="/drafts">Drafts</Link>.
+                    </>
+                  ) : (
+                    <>
+                      AI drafts a personalised email per approved record
+                      using its best-fit product profile pitch and queues it
+                      for send (max {autopilot.maxEnqueuesPerRun}/run).
+                    </>
+                  )}
+                </p>
+              </div>
+            </li>
+          </ol>
+        </section>
 
         {/* Existing plans */}
         {plans.length === 0 ? (
