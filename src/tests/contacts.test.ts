@@ -12,8 +12,15 @@ import {
   ContactServiceError,
   archiveContact,
   attachContact,
+  bulkAddTag,
+  bulkArchiveContacts,
+  bulkRemoveTag,
+  bulkUnarchiveContacts,
+  contactsDashboardSummary,
+  countContacts,
   getContactByEmail,
   getContactDetail,
+  listAllContactTags,
   listContacts,
   mergeContacts,
   updateContact,
@@ -367,5 +374,218 @@ describe('mergeContacts', () => {
     await expect(
       mergeContacts(ctx(s.workspaceA, s.ownerA), a.id, b.id),
     ).rejects.toBeInstanceOf(ContactServiceError);
+  });
+});
+
+// ============ Dashboard + bulk + tags (P61-26 / P61-27) ===============
+
+describe('contactsDashboardSummary (P61-27 regression — Date binding)', () => {
+  it('runs without throwing a postgres.js Date wire-bind error', async () => {
+    // P61-27: previously failed with
+    //   TypeError: Received an instance of Date
+    // because the newThisWeek query embedded a JS Date directly in a
+    // raw sql template. This test fires the query end-to-end so the
+    // wire-protocol bind is exercised against a real connection.
+    const s = await setup();
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'fresh@new.com',
+      name: 'Fresh New',
+      companyName: 'Acme',
+    });
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'archived@old.com',
+    });
+    await archiveContact(
+      ctx(s.workspaceA, s.ownerA),
+      (await getContactByEmail(ctx(s.workspaceA, s.ownerA), 'archived@old.com'))!.id,
+    );
+    const summary = await contactsDashboardSummary(ctx(s.workspaceA, s.ownerA));
+    expect(summary.total).toBe(2);
+    expect(summary.active).toBe(1);
+    expect(summary.archived).toBe(1);
+    expect(summary.newThisWeek).toBe(2);
+    expect(summary.uniqueCompanies).toBe(1);
+  });
+
+  it('isolates per-workspace', async () => {
+    const s = await setup();
+    await upsertContact(ctx(s.workspaceA, s.ownerA), { email: 'a@x.com' });
+    await upsertContact(ctx(s.workspaceA, s.ownerA), { email: 'b@x.com' });
+    await upsertContact(ctx(s.workspaceB, s.ownerB), { email: 'c@x.com' });
+    expect(
+      (await contactsDashboardSummary(ctx(s.workspaceA, s.ownerA))).total,
+    ).toBe(2);
+    expect(
+      (await contactsDashboardSummary(ctx(s.workspaceB, s.ownerB))).total,
+    ).toBe(1);
+  });
+});
+
+describe('countContacts (P61-26)', () => {
+  it('returns the total matching the filter', async () => {
+    const s = await setup();
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@acme.com',
+      companyName: 'Acme',
+    });
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'b@acme.com',
+      companyName: 'Acme',
+    });
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'c@other.com',
+    });
+    expect(await countContacts(ctx(s.workspaceA, s.ownerA))).toBe(3);
+    expect(
+      await countContacts(ctx(s.workspaceA, s.ownerA), { q: 'acme' }),
+    ).toBe(2);
+    expect(
+      await countContacts(ctx(s.workspaceA, s.ownerA), { companyDomain: 'acme.com' }),
+    ).toBe(2);
+  });
+
+  it('listContacts offset + limit pages independently', async () => {
+    const s = await setup();
+    for (let i = 0; i < 5; i++) {
+      await upsertContact(ctx(s.workspaceA, s.ownerA), {
+        email: `p${i}@x.com`,
+      });
+    }
+    const page1 = await listContacts(ctx(s.workspaceA, s.ownerA), {
+      limit: 2,
+      offset: 0,
+    });
+    const page2 = await listContacts(ctx(s.workspaceA, s.ownerA), {
+      limit: 2,
+      offset: 2,
+    });
+    expect(page1).toHaveLength(2);
+    expect(page2).toHaveLength(2);
+    expect(page1.map((c) => c.email)).not.toEqual(page2.map((c) => c.email));
+  });
+});
+
+describe('listAllContactTags (P61-26)', () => {
+  it('returns distinct tags across the workspace', async () => {
+    const s = await setup();
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@x.com',
+      tags: ['vip', 'eu'],
+    });
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'b@x.com',
+      tags: ['vip', 'us'],
+    });
+    const tags = await listAllContactTags(ctx(s.workspaceA, s.ownerA));
+    expect(tags.sort()).toEqual(['eu', 'us', 'vip']);
+  });
+
+  it('does not bleed across workspaces', async () => {
+    const s = await setup();
+    await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@x.com',
+      tags: ['eu'],
+    });
+    await upsertContact(ctx(s.workspaceB, s.ownerB), {
+      email: 'b@x.com',
+      tags: ['ap'],
+    });
+    expect(
+      await listAllContactTags(ctx(s.workspaceA, s.ownerA)),
+    ).toEqual(['eu']);
+  });
+});
+
+describe('bulk contact actions (P61-26)', () => {
+  it('bulkArchive marks active rows archived, skips already-archived', async () => {
+    const s = await setup();
+    const a = await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@x.com',
+    });
+    const b = await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'b@x.com',
+    });
+    const r1 = await bulkArchiveContacts(ctx(s.workspaceA, s.ownerA), [
+      a.id,
+      b.id,
+    ]);
+    expect(r1.affected).toBe(2);
+    // Second call no-ops (already archived).
+    const r2 = await bulkArchiveContacts(ctx(s.workspaceA, s.ownerA), [
+      a.id,
+      b.id,
+    ]);
+    expect(r2.affected).toBe(0);
+  });
+
+  it('bulkUnarchive only restores archived rows', async () => {
+    const s = await setup();
+    const a = await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@x.com',
+    });
+    const b = await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'b@x.com',
+    });
+    await archiveContact(ctx(s.workspaceA, s.ownerA), a.id);
+    const r = await bulkUnarchiveContacts(ctx(s.workspaceA, s.ownerA), [
+      a.id,
+      b.id,
+    ]);
+    expect(r.affected).toBe(1);
+    expect(r.ids[0]).toBe(a.id);
+  });
+
+  it('bulkAddTag is idempotent (no duplicate on already-tagged)', async () => {
+    const s = await setup();
+    const a = await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@x.com',
+      tags: ['vip'],
+    });
+    await bulkAddTag(ctx(s.workspaceA, s.ownerA), [a.id], 'vip');
+    const refreshed = await getContactByEmail(
+      ctx(s.workspaceA, s.ownerA),
+      'a@x.com',
+    );
+    expect(refreshed!.tags).toEqual(['vip']);
+  });
+
+  it('bulkAddTag + bulkRemoveTag round-trip', async () => {
+    const s = await setup();
+    const a = await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@x.com',
+    });
+    await bulkAddTag(ctx(s.workspaceA, s.ownerA), [a.id], 'european');
+    let refreshed = await getContactByEmail(
+      ctx(s.workspaceA, s.ownerA),
+      'a@x.com',
+    );
+    expect(refreshed!.tags).toContain('european');
+    await bulkRemoveTag(ctx(s.workspaceA, s.ownerA), [a.id], 'european');
+    refreshed = await getContactByEmail(ctx(s.workspaceA, s.ownerA), 'a@x.com');
+    expect(refreshed!.tags).not.toContain('european');
+  });
+
+  it('viewers cannot run bulk actions', async () => {
+    const s = await setup();
+    const a = await upsertContact(ctx(s.workspaceA, s.ownerA), {
+      email: 'a@x.com',
+    });
+    await expect(
+      bulkArchiveContacts(ctx(s.workspaceA, s.ownerA, 'viewer'), [a.id]),
+    ).rejects.toThrow(/Permission denied/);
+    await expect(
+      bulkAddTag(ctx(s.workspaceA, s.ownerA, 'viewer'), [a.id], 'vip'),
+    ).rejects.toThrow(/Permission denied/);
+  });
+
+  it('workspace isolation — A actions never touch B rows', async () => {
+    const s = await setup();
+    const inB = await upsertContact(ctx(s.workspaceB, s.ownerB), {
+      email: 'b@x.com',
+    });
+    const r = await bulkArchiveContacts(ctx(s.workspaceA, s.ownerA), [
+      inB.id,
+    ]);
+    expect(r.affected).toBe(0);
   });
 });
