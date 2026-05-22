@@ -500,13 +500,18 @@ export async function contactsDashboardSummary(
   newThisWeek: number;
   uniqueCompanies: number;
 }> {
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  // P61-27: postgres.js cannot bind a JS Date through a raw `sql`
+  // template (same bug pattern as P61-08/09/19). Pass an ISO string
+  // with explicit ::timestamptz cast — Postgres parses it natively.
+  const weekAgoIso = new Date(
+    Date.now() - 7 * 24 * 60 * 60 * 1000,
+  ).toISOString();
   const rows = await db
     .select({
       total: sql<number>`COUNT(*)::int`,
       active: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'active')::int`,
       archived: sql<number>`COUNT(*) FILTER (WHERE ${contacts.status} = 'archived')::int`,
-      newThisWeek: sql<number>`COUNT(*) FILTER (WHERE ${contacts.createdAt} >= ${weekAgo})::int`,
+      newThisWeek: sql<number>`COUNT(*) FILTER (WHERE ${contacts.createdAt} >= ${weekAgoIso}::timestamptz)::int`,
       uniqueCompanies: sql<number>`COUNT(DISTINCT ${contacts.companyName}) FILTER (WHERE ${contacts.companyName} IS NOT NULL)::int`,
     })
     .from(contacts)
