@@ -44,6 +44,7 @@ import {
   Users,
   Users2,
   Workflow,
+  Zap,
 } from 'lucide-react';
 
 interface NavItem {
@@ -72,6 +73,12 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     title: 'Discovery',
     defaultOpen: true,
     items: [
+      {
+        href: '/connectors/engine',
+        label: 'Crawl Engine',
+        icon: Zap,
+        match: ['/connectors/engine'],
+      },
       { href: '/products', label: 'Products', icon: ShoppingBag },
       { href: '/connectors', label: 'Connectors', icon: Network },
       { href: '/review', label: 'Review queue', icon: ListChecks, countKey: 'reviewPending' },

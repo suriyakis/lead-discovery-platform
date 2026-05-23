@@ -21,6 +21,7 @@ import {
   Sparkles,
   TrendingUp,
   Workflow,
+  Zap,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
@@ -42,6 +43,14 @@ interface ModuleTile {
 }
 
 const MODULES: ReadonlyArray<ModuleTile> = [
+  {
+    href: '/connectors/engine',
+    title: 'Crawl Engine',
+    blurb:
+      'The autonomous heart — scheduled crawls feed the qualification + outreach pipeline.',
+    icon: Zap,
+    tone: 'primary',
+  },
   {
     href: '/products',
     title: 'Product Profiles',

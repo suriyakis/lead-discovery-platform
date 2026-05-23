@@ -21,6 +21,7 @@ export const NAV_ROUTES: ReadonlyArray<NavRoute> = [
   { href: '/dashboard', label: 'Dashboard', group: 'Pinned', icon: 'LayoutDashboard' },
 
   // Discovery
+  { href: '/connectors/engine', label: 'Crawl Engine', group: 'Discovery', icon: 'Zap' },
   { href: '/products', label: 'Products', group: 'Discovery', icon: 'ShoppingBag' },
   { href: '/connectors', label: 'Connectors', group: 'Discovery', icon: 'Network' },
   { href: '/review', label: 'Review queue', group: 'Discovery', icon: 'ListChecks' },
