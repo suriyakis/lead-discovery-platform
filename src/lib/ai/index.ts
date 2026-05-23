@@ -10,6 +10,7 @@
 // `getAIProviderForCtx(ctx)` to honor a workspace-supplied BYOK key.
 
 import { createHash } from 'node:crypto';
+import { GeminiAIProvider } from './gemini';
 import type { ZodSchema } from 'zod';
 
 export interface AIGenInput {
@@ -407,9 +408,12 @@ export function getAIProvider(): IAIProvider {
     case 'anthropic':
       cached = AnthropicAIProvider.fromEnv();
       return cached;
+    case 'gemini':
+      cached = GeminiAIProvider.fromEnv();
+      return cached;
     default:
       throw new Error(
-        `Unknown AI_PROVIDER: ${id}. Supported: "mock" | "openai" | "anthropic".`,
+        `Unknown AI_PROVIDER: ${id}. Supported: "mock" | "openai" | "anthropic" | "gemini".`,
       );
   }
 }
@@ -473,6 +477,23 @@ export async function getAIProviderForCtx(
       apiKey: resolved.key,
       model: wsModel ?? process.env.AI_MODEL,
       baseUrl: process.env.ANTHROPIC_BASE_URL,
+    });
+  }
+  if (id === 'gemini') {
+    const resolved = await resolveProviderKey(
+      ctx,
+      'gemini.apiKey',
+      'GEMINI_API_KEY',
+    );
+    if (!resolved) {
+      throw new Error(
+        'AI provider=gemini but no key configured (workspace or platform).',
+      );
+    }
+    return new GeminiAIProvider({
+      apiKey: resolved.key,
+      model: wsModel ?? process.env.AI_MODEL,
+      baseUrl: process.env.GEMINI_BASE_URL,
     });
   }
   throw new Error(`Unknown AI provider id from cascade: ${id}`);

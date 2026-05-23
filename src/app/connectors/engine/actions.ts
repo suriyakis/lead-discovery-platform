@@ -164,6 +164,27 @@ export async function saveAutopilot(formData: FormData): Promise<void> {
   }
 }
 
+export async function reclassifyAll(formData: FormData): Promise<void> {
+  const c = await getWorkspaceContext();
+  try {
+    const { reclassifyWorkspace } = await import('@/lib/services/qualification');
+    const r = await reclassifyWorkspace(c);
+    redirect(
+      `/connectors/engine?message=${encodeURIComponent(
+        `Re-classified ${r.recordCount} record(s) — ${r.qualificationCount} qualifications written.`,
+      )}`,
+    );
+  } catch (err) {
+    if (isNextRedirectError(err)) throw err;
+    redirect(
+      `/connectors/engine?error=${encodeURIComponent(
+        err instanceof Error ? err.message : 'reclassify failed',
+      )}`,
+    );
+  }
+  void formData;
+}
+
 export async function deletePlanAction(formData: FormData): Promise<void> {
   const c = await getWorkspaceContext();
   const idStr = String(formData.get('id') ?? '');

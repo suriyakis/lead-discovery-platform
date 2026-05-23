@@ -77,8 +77,17 @@ describe('getAIProvider factory', () => {
   });
 
   it('throws on unknown AI_PROVIDER', () => {
-    process.env.AI_PROVIDER = 'gemini';
+    process.env.AI_PROVIDER = 'cohere';
     expect(() => getAIProvider()).toThrow(/Unknown AI_PROVIDER/);
+  });
+
+  it('returns GeminiAIProvider when AI_PROVIDER=gemini and key is set (P62-09)', async () => {
+    process.env.AI_PROVIDER = 'gemini';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    const provider = getAIProvider();
+    expect(provider.id).toBe('gemini');
+    const { GeminiAIProvider } = await import('@/lib/ai/gemini');
+    expect(provider).toBeInstanceOf(GeminiAIProvider);
   });
 });
 

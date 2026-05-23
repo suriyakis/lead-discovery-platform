@@ -36,6 +36,7 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   createPlan,
   deletePlanAction,
+  reclassifyAll,
   runPlanAction,
   saveAutopilot,
   savePlan,
@@ -163,6 +164,14 @@ export default async function CrawlEnginePage({
               </label>
               <button type="submit" className="primary-btn">
                 <Save className="lucide" /> Save
+              </button>
+              <button
+                type="submit"
+                formAction={reclassifyAll}
+                className="ghost-btn"
+                title="Re-run AI qualification on every source record in this workspace. Useful after changing the AI provider, model, or product profile."
+              >
+                Re-classify all
               </button>
             </div>
           </header>

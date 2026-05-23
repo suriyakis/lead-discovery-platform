@@ -35,7 +35,12 @@ const invalid = (msg: string) =>
 
 // ─── Allowed values per capability ────────────────────────────────────
 
-export const ALLOWED_AI_PROVIDERS = ['mock', 'openai', 'anthropic'] as const;
+export const ALLOWED_AI_PROVIDERS = [
+  'mock',
+  'openai',
+  'anthropic',
+  'gemini',
+] as const;
 export type AiProviderId = (typeof ALLOWED_AI_PROVIDERS)[number];
 
 export const ALLOWED_EMBEDDING_PROVIDERS = ['mock', 'openai'] as const;
@@ -82,6 +87,7 @@ export const AI_MODELS: Record<string, readonly string[]> = {
     'claude-sonnet-4',
     'claude-haiku-4-5',
   ],
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
   mock: ['mock-1'],
 };
 
