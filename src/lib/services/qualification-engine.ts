@@ -36,7 +36,10 @@ export interface ClassificationVerdict {
     contributions: Array<{ kind: string; value: string; delta: number }>;
     matchedLessonIds: bigint[];
   };
-  method: 'rules';
+  /** 'rules' = deterministic keyword engine; 'ai' = workspace AI provider
+   *  classifier (Wandizz-style); 'rules_fallback' = AI was attempted but
+   *  failed and the rules engine produced this verdict instead. */
+  method: 'rules' | 'ai' | 'rules_fallback';
 }
 
 interface SignalContribution {

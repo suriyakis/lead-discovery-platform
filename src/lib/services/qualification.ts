@@ -84,7 +84,27 @@ export async function classifySourceRecord(
     );
     const allLessons = [...lessons, ...wsLessons];
 
-    const verdict = classifyRecord(classifiable, product, allLessons);
+    // P62-08: try AI-based qualification first (Wandizz-style). Fall back
+    // to the deterministic rules engine on any AI failure (provider down,
+    // schema validation error, etc.) — never block lead creation on a
+    // missing AI key or a transient outage.
+    let verdict: ClassificationVerdict;
+    try {
+      const { classifyRecordWithAI } = await import('./qualification-ai');
+      verdict = await classifyRecordWithAI(
+        ctx,
+        classifiable,
+        product,
+        allLessons,
+      );
+    } catch (err) {
+      console.error(
+        `[qualification] AI classify failed (product=${product.id}), falling back to rules:`,
+        err instanceof Error ? err.message : err,
+      );
+      const rulesVerdict = classifyRecord(classifiable, product, allLessons);
+      verdict = { ...rulesVerdict, method: 'rules_fallback' };
+    }
     const row = await upsertQualification(ctx.workspaceId, sourceRecord.id, product, verdict);
     inserted.push(row);
 
