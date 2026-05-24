@@ -577,21 +577,19 @@ export default async function IntegrationsPage({
           </p>
           {isAdmin ? (
             <form action={saveActiveProviders} className="active-providers-grid">
-              <ProviderSelect
-                label="AI provider (drafts, learning, research, etc.)"
-                name="aiProvider"
-                workspaceValue={providerSettings.aiProvider}
-                envFallback={aiProviderEnv}
-                resolved={aiActive}
-                options={ALLOWED_AI_PROVIDERS}
-              />
-              <ModelSelect
-                label="AI model"
-                name="aiModel"
-                workspaceValue={providerSettings.aiModel}
-                activeProviderId={aiActive.id}
-                catalog={AI_MODELS}
-              />
+              <div className="provider-select provider-select-group">
+                <span>AI provider (drafts, learning, research, etc.)</span>
+                <ProviderModelPair
+                  providers={ALLOWED_AI_PROVIDERS}
+                  catalog={AI_MODELS}
+                  providerName="aiProvider"
+                  modelName="aiModel"
+                  initialProvider={providerSettings.aiProvider}
+                  initialModel={providerSettings.aiModel}
+                  envFallbackLabel={aiProviderEnv}
+                  resolved={aiActive}
+                />
+              </div>
               <div className="provider-select provider-select-group">
                 <span>Internet Data Extraction</span>
                 <ProviderModelPair
@@ -613,21 +611,19 @@ export default async function IntegrationsPage({
                 resolved={embeddingActive}
                 options={ALLOWED_EMBEDDING_PROVIDERS}
               />
-              <ProviderSelect
-                label="Research grounding provider"
-                name="researchProvider"
-                workspaceValue={providerSettings.researchProvider}
-                envFallback={researchProviderEnv}
-                resolved={researchActive}
-                options={ALLOWED_RESEARCH_PROVIDERS}
-              />
-              <ModelSelect
-                label="Research model"
-                name="researchModel"
-                workspaceValue={providerSettings.researchModel}
-                activeProviderId={researchActive.id}
-                catalog={RESEARCH_MODELS}
-              />
+              <div className="provider-select provider-select-group">
+                <span>Research grounding</span>
+                <ProviderModelPair
+                  providers={ALLOWED_RESEARCH_PROVIDERS}
+                  catalog={RESEARCH_MODELS}
+                  providerName="researchProvider"
+                  modelName="researchModel"
+                  initialProvider={providerSettings.researchProvider}
+                  initialModel={providerSettings.researchModel}
+                  envFallbackLabel={researchProviderEnv}
+                  resolved={researchActive}
+                />
+              </div>
               <ProviderSelect
                 label="Web search provider"
                 name="searchProvider"
