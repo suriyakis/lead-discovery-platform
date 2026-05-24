@@ -144,6 +144,12 @@ export default async function IntegrationsPage({
   // and env is set, or vice versa).
   const providerSettings = await getProviderSettings(ctx);
   const aiActive = await resolveActiveProvider(ctx, 'ai', aiProviderEnv);
+  // P62-11: qualification provider — falls back to the workspace's AI
+  // provider when not explicitly set. The pseudo-capability isn't in
+  // resolveActiveProvider's union, so compute it directly.
+  const qualificationActive = providerSettings.qualificationProvider?.trim()
+    ? { id: providerSettings.qualificationProvider.trim(), source: 'workspace' as const }
+    : { id: aiActive.id, source: aiActive.source };
   const embeddingActive = await resolveActiveProvider(
     ctx,
     'embedding',
@@ -326,6 +332,8 @@ export default async function IntegrationsPage({
     const researchModelRaw = String(formData.get('researchModel') ?? '').trim();
     const search = String(formData.get('searchProvider') ?? '');
     const vectorStorage = String(formData.get('vectorStorageProvider') ?? '');
+    const qual = String(formData.get('qualificationProvider') ?? '');
+    const qualModelRaw = String(formData.get('qualificationModel') ?? '').trim();
     const aiPick = ai === '__env__' ? null : (ai as AiProviderId);
     const aiModelPick = aiModelRaw === '' || aiModelRaw === '__default__' ? null : aiModelRaw;
     const embeddingPick = embedding === '__env__' ? null : (embedding as EmbeddingProviderId);
@@ -339,6 +347,11 @@ export default async function IntegrationsPage({
       vectorStorage === '__env__'
         ? null
         : (vectorStorage as VectorStorageProviderId);
+    // P62-11: __env__ means "inherit the workspace's AI provider", same
+    // empty-string semantic as the other dropdowns. Stored as null.
+    const qualPick = qual === '__env__' ? null : (qual as AiProviderId);
+    const qualModelPick =
+      qualModelRaw === '' || qualModelRaw === '__default__' ? null : qualModelRaw;
     try {
       await updateProviderSettings(c, {
         aiProvider: aiPick,
@@ -348,6 +361,8 @@ export default async function IntegrationsPage({
         researchModel: researchModelPick,
         searchProvider: searchPick,
         vectorStorageProvider: vectorStoragePick,
+        qualificationProvider: qualPick,
+        qualificationModel: qualModelPick,
       });
       redirect('/settings/integrations?ok=providers-saved');
     } catch (err) {
@@ -562,7 +577,7 @@ export default async function IntegrationsPage({
           {isAdmin ? (
             <form action={saveActiveProviders} className="active-providers-grid">
               <ProviderSelect
-                label="AI provider"
+                label="AI provider (drafts, learning, research, etc.)"
                 name="aiProvider"
                 workspaceValue={providerSettings.aiProvider}
                 envFallback={aiProviderEnv}
@@ -574,6 +589,21 @@ export default async function IntegrationsPage({
                 name="aiModel"
                 workspaceValue={providerSettings.aiModel}
                 activeProviderId={aiActive.id}
+                catalog={AI_MODELS}
+              />
+              <ProviderSelect
+                label="Qualification provider"
+                name="qualificationProvider"
+                workspaceValue={providerSettings.qualificationProvider}
+                envFallback={`(inherits AI: ${aiActive.id})`}
+                resolved={qualificationActive}
+                options={ALLOWED_AI_PROVIDERS}
+              />
+              <ModelSelect
+                label="Qualification model"
+                name="qualificationModel"
+                workspaceValue={providerSettings.qualificationModel}
+                activeProviderId={qualificationActive.id}
                 catalog={AI_MODELS}
               />
               <ProviderSelect

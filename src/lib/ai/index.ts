@@ -499,6 +499,84 @@ export async function getAIProviderForCtx(
   throw new Error(`Unknown AI provider id from cascade: ${id}`);
 }
 
+/**
+ * P62-11: qualification-specific provider. Cascade:
+ *   1. workspace.qualificationProvider + qualificationModel
+ *   2. workspace.aiProvider + aiModel        (legacy fall-through)
+ *   3. process.env.AI_PROVIDER + AI_MODEL
+ *   4. 'mock'
+ *
+ * Same API-key cascade as the general AI provider (workspace BYOK
+ * `<vendor>.apiKey` → platform env). Returns the same IAIProvider so
+ * call sites stay vendor-agnostic.
+ */
+export async function getQualificationProviderForCtx(
+  ctx: { workspaceId: bigint },
+): Promise<IAIProvider> {
+  // Test injection wins (same as getAIProviderForCtx).
+  if (cached) return cached;
+  const { getProviderSettings } = await import('@/lib/services/provider-settings');
+  const settings = await getProviderSettings(ctx);
+  const qpId = settings.qualificationProvider?.trim();
+  // If the workspace hasn't picked a qualification provider, defer
+  // entirely to the general AI provider (legacy behaviour preserved).
+  if (!qpId) return getAIProviderForCtx(ctx);
+  if (qpId === 'mock') return new MockAIProvider();
+  const { resolveProviderKey } = await import('@/lib/services/secrets');
+  const qModel =
+    settings.qualificationModel?.trim() ||
+    settings.aiModel?.trim() ||
+    process.env.AI_MODEL;
+  if (qpId === 'openai') {
+    const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
+    if (!resolved) {
+      throw new Error(
+        'Qualification provider=openai but no key configured (workspace or platform).',
+      );
+    }
+    return new OpenAIAIProvider({
+      apiKey: resolved.key,
+      model: qModel,
+      baseUrl: process.env.OPENAI_BASE_URL,
+    });
+  }
+  if (qpId === 'anthropic') {
+    const resolved = await resolveProviderKey(
+      ctx,
+      'anthropic.apiKey',
+      'ANTHROPIC_API_KEY',
+    );
+    if (!resolved) {
+      throw new Error(
+        'Qualification provider=anthropic but no key configured (workspace or platform).',
+      );
+    }
+    return new AnthropicAIProvider({
+      apiKey: resolved.key,
+      model: qModel,
+      baseUrl: process.env.ANTHROPIC_BASE_URL,
+    });
+  }
+  if (qpId === 'gemini') {
+    const resolved = await resolveProviderKey(
+      ctx,
+      'gemini.apiKey',
+      'GEMINI_API_KEY',
+    );
+    if (!resolved) {
+      throw new Error(
+        'Qualification provider=gemini but no key configured (workspace or platform).',
+      );
+    }
+    return new GeminiAIProvider({
+      apiKey: resolved.key,
+      model: qModel,
+      baseUrl: process.env.GEMINI_BASE_URL,
+    });
+  }
+  throw new Error(`Unknown qualification provider id: ${qpId}`);
+}
+
 /** For tests — inject a stub provider and reset between cases. */
 export function _setAIProviderForTests(provider: IAIProvider | null): void {
   cached = provider;

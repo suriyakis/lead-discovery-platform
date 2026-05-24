@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import type { LearningLesson } from '@/lib/db/schema/learning';
-import { getAIProviderForCtx } from '@/lib/ai';
+import { getQualificationProviderForCtx } from '@/lib/ai';
 import type { WorkspaceContext } from './context';
 import type { ClassifiableRecord, ClassificationVerdict } from './qualification-engine';
 
@@ -149,7 +149,7 @@ export async function classifyRecordWithAI(
   options: AIClassifyOptions = {},
 ): Promise<ClassificationVerdict> {
   const provider =
-    options.providerOverride ?? (await getAIProviderForCtx(ctx));
+    options.providerOverride ?? (await getQualificationProviderForCtx(ctx));
   const verdict = await provider.generateJson(
     {
       system: buildSystemPrompt(),

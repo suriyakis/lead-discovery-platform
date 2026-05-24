@@ -128,6 +128,8 @@ export async function getProviderSettings(
   researchModel: string | null;
   searchProvider: string | null;
   vectorStorageProvider: string | null;
+  qualificationProvider: string | null;
+  qualificationModel: string | null;
 }> {
   const [row] = await db
     .select()
@@ -144,6 +146,8 @@ export async function getProviderSettings(
       researchModel: row.researchModel,
       searchProvider: row.searchProvider,
       vectorStorageProvider: row.vectorStorageProvider,
+      qualificationProvider: row.qualificationProvider,
+      qualificationModel: row.qualificationModel,
     };
   }
   return {
@@ -155,6 +159,8 @@ export async function getProviderSettings(
     researchModel: null,
     searchProvider: null,
     vectorStorageProvider: null,
+    qualificationProvider: null,
+    qualificationModel: null,
   };
 }
 
@@ -202,6 +208,8 @@ export interface UpdateProviderSettingsInput {
   researchModel?: string | null;
   searchProvider?: SearchProviderId | null;
   vectorStorageProvider?: VectorStorageProviderId | null;
+  qualificationProvider?: AiProviderId | null;
+  qualificationModel?: string | null;
 }
 
 /**
@@ -281,6 +289,38 @@ export async function updateProviderSettings(
       throw invalid(`unknown ${effectiveResearch} model: ${input.researchModel}`);
     }
   }
+  // P62-11: qualification provider is its own AI vendor selection.
+  if (
+    input.qualificationProvider !== undefined &&
+    input.qualificationProvider !== null
+  ) {
+    if (
+      !(ALLOWED_AI_PROVIDERS as readonly string[]).includes(
+        input.qualificationProvider,
+      )
+    ) {
+      throw invalid(
+        `unknown qualification provider: ${input.qualificationProvider}`,
+      );
+    }
+  }
+  if (
+    input.qualificationModel !== undefined &&
+    input.qualificationModel !== null
+  ) {
+    const effectiveQual =
+      input.qualificationProvider !== undefined &&
+      input.qualificationProvider !== null
+        ? input.qualificationProvider
+        : (await getProviderSettings(ctx)).qualificationProvider ??
+          (await getProviderSettings(ctx)).aiProvider ??
+          'openai';
+    if (!isValidAiModel(effectiveQual, input.qualificationModel)) {
+      throw invalid(
+        `unknown ${effectiveQual} model: ${input.qualificationModel}`,
+      );
+    }
+  }
 
   // Upsert. Build update set from the keys actually present.
   const set: Partial<WorkspaceProviderSettings> = { updatedAt: new Date(), updatedBy: ctx.userId };
@@ -292,6 +332,10 @@ export async function updateProviderSettings(
   if (input.searchProvider !== undefined) set.searchProvider = input.searchProvider;
   if (input.vectorStorageProvider !== undefined)
     set.vectorStorageProvider = input.vectorStorageProvider;
+  if (input.qualificationProvider !== undefined)
+    set.qualificationProvider = input.qualificationProvider;
+  if (input.qualificationModel !== undefined)
+    set.qualificationModel = input.qualificationModel;
 
   const [row] = await db
     .insert(workspaceProviderSettings)
@@ -304,6 +348,8 @@ export async function updateProviderSettings(
       researchModel: input.researchModel ?? null,
       searchProvider: input.searchProvider ?? null,
       vectorStorageProvider: input.vectorStorageProvider ?? null,
+      qualificationProvider: input.qualificationProvider ?? null,
+      qualificationModel: input.qualificationModel ?? null,
       updatedBy: ctx.userId,
     })
     .onConflictDoUpdate({

@@ -225,6 +225,16 @@ export const workspaceProviderSettings = pgTable('workspace_provider_settings', 
    *  (local pgvector chunks vs. per-product OpenAI Vector Store) and
    *  which backend serves RAG retrieval. */
   vectorStorageProvider: text('vector_storage_provider'),
+  /** P62-11: dedicated provider for the Wandizz-style record→product
+   *  qualification classifier. NULL → inherits the workspace's
+   *  `aiProvider` (same as before). Set to e.g. 'gemini' to run
+   *  cheap-and-fast Flash classifier while keeping the general AI
+   *  provider on a stronger model for outreach drafts. */
+  qualificationProvider: text('qualification_provider'),
+  /** Specific model for the qualification provider — e.g.
+   *  'gemini-2.5-flash'. NULL → uses the qualification provider's
+   *  default model. Validated against per-vendor catalog. */
+  qualificationModel: text('qualification_model'),
   updatedBy: text('updated_by'),
   updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
     .notNull()
