@@ -26,7 +26,11 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace } from '@/lib/services/context';
-import { listConnectors } from '@/lib/services/connector-run';
+import {
+  consolidateConnectorsByTemplate,
+  listConnectors,
+} from '@/lib/services/connector-run';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 // User-facing label + blurb per template type. Anything not listed
 // here falls through to the admin-only "Other" section.
@@ -70,9 +74,45 @@ const TEMPLATE_META: Record<
   },
 };
 
-export default async function ConnectorsPage() {
+export default async function ConnectorsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string; error?: string }>;
+}) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
+  const sp = await searchParams;
+
+  async function consolidate(formData: FormData): Promise<void> {
+    'use server';
+    const c = await getWorkspaceContext();
+    const templateType = String(formData.get('templateType') ?? '');
+    if (!templateType) redirect('/connectors?error=missing+template');
+    try {
+      const r = await consolidateConnectorsByTemplate(c, templateType);
+      const parts: string[] = [];
+      if (r.recipesAdopted > 0)
+        parts.push(`${r.recipesAdopted} recipe${r.recipesAdopted === 1 ? '' : 's'} adopted`);
+      if (r.recipesCreatedFromInstance > 0)
+        parts.push(
+          `${r.recipesCreatedFromInstance} empty connector${r.recipesCreatedFromInstance === 1 ? '' : 's'} → recipe`,
+        );
+      if (r.connectorsDeleted > 0)
+        parts.push(`${r.connectorsDeleted} connector${r.connectorsDeleted === 1 ? '' : 's'} removed`);
+      redirect(
+        `/connectors?message=${encodeURIComponent(
+          `Consolidated into "${r.canonicalName}". ${parts.join(', ')}.`,
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(
+        `/connectors?error=${encodeURIComponent(
+          err instanceof Error ? err.message : 'consolidate failed',
+        )}`,
+      );
+    }
+  }
 
   let ctx;
   let connectors;
@@ -179,6 +219,9 @@ export default async function ConnectorsPage() {
         </div>
       </div>
 
+      {sp.message ? <p className="mail-flash info">{sp.message}</p> : null}
+      {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
+
       <section className="connector-template-grid">
         {userFacingTemplates.map((tt) => {
           const meta = TEMPLATE_META[tt];
@@ -208,8 +251,19 @@ export default async function ConnectorsPage() {
                   {isAdmin ? (
                     <>
                       Not configured yet —{' '}
-                      <Link href="/connectors/new">create a connector</Link>{' '}
-                      to use this source.
+                      <form
+                        action={consolidate}
+                        style={{ display: 'inline' }}
+                      >
+                        <input
+                          type="hidden"
+                          name="templateType"
+                          value={tt}
+                        />
+                        <button type="submit" className="ghost-btn small">
+                          Set up {meta.label}
+                        </button>
+                      </form>
                     </>
                   ) : (
                     <>
@@ -217,8 +271,26 @@ export default async function ConnectorsPage() {
                     </>
                   )}
                 </p>
-              ) : (
-                instances.map((connector) => {
+              ) : null}
+
+              {instances.length > 1 && isAdmin ? (
+                <div className="connector-template-tidy">
+                  <p className="muted small" style={{ margin: 0 }}>
+                    <strong>{instances.length} connector instances</strong> of
+                    this type. Consolidate into one — the others become
+                    recipes under it.
+                  </p>
+                  <form action={consolidate}>
+                    <input type="hidden" name="templateType" value={tt} />
+                    <button type="submit" className="primary-btn small">
+                      Consolidate into one {meta.label}
+                    </button>
+                  </form>
+                </div>
+              ) : null}
+
+              {instances.length > 0
+                ? instances.map((connector) => {
                   const cid = connector.id.toString();
                   const recipes = recipesByConnector.get(cid) ?? [];
                   const lastRun = lastRunByConnector.get(cid);
@@ -293,7 +365,7 @@ export default async function ConnectorsPage() {
                     </div>
                   );
                 })
-              )}
+                : null}
             </article>
           );
         })}

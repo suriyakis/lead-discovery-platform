@@ -1,7 +1,7 @@
 // Connector / Run service. Workspace-scoped CRUD on connectors + recipes,
 // plus run lifecycle (start, status, list).
 
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   connectorRecipes,
@@ -131,6 +131,173 @@ export async function getRecipe(
   const r = rows[0];
   if (!r) throw notFound('connector_recipe');
   return r;
+}
+
+// ---- consolidation (P62-21) ----------------------------------------
+
+/** Friendly label per template type. Mirrors TEMPLATE_META in
+ *  src/app/connectors/page.tsx — when we collapse a workspace's
+ *  multiple instances into one, this is the name we use. */
+const TEMPLATE_FRIENDLY_NAME: Record<string, string> = {
+  internet_search: 'Internet Search',
+  directory_harvester: 'Directory Harvester',
+  tender_api: 'Tender API',
+  csv_import: 'CSV Import',
+  mock: 'Mock',
+};
+
+export interface ConsolidateResult {
+  canonicalId: bigint;
+  canonicalName: string;
+  recipesAdopted: number;
+  recipesCreatedFromInstance: number;
+  connectorsDeleted: number;
+}
+
+/** Admin-only. Collapses every connector of `templateType` in the
+ *  workspace into a single canonical connector named after the
+ *  TEMPLATE_FRIENDLY_NAME. Recipes are preserved:
+ *    - recipes belonging to the canonical → stay
+ *    - recipes belonging to other connectors → re-pointed at the
+ *      canonical
+ *    - other connectors with zero recipes → become a NEW recipe under
+ *      the canonical, preserving their name + config as selectors
+ *      (so the operator's intent — "Waterproofing" as a separate
+ *      search — survives)
+ *    - non-canonical connectors are then hard-deleted */
+export async function consolidateConnectorsByTemplate(
+  ctx: WorkspaceContext,
+  templateType: string,
+): Promise<ConsolidateResult> {
+  if (!canWrite(ctx)) throw permissionDenied('consolidate connectors');
+  const friendlyName = TEMPLATE_FRIENDLY_NAME[templateType] ?? templateType;
+
+  // 1. Load all connectors of this template type in the workspace.
+  const allInstances = await db
+    .select()
+    .from(connectors)
+    .where(
+      and(
+        eq(connectors.workspaceId, ctx.workspaceId),
+        eq(connectors.templateType, templateType as 'internet_search'),
+      ),
+    );
+
+  // 2. Pick canonical = the connector with the most recipes (tie-break
+  //    by lowest id so it's deterministic). If none exist, create one.
+  if (allInstances.length === 0) {
+    const [created] = await db
+      .insert(connectors)
+      .values({
+        workspaceId: ctx.workspaceId,
+        templateType: templateType as 'internet_search',
+        name: friendlyName,
+        active: true,
+      })
+      .returning();
+    if (!created) throw invariant('connector insert returned no row');
+    return {
+      canonicalId: created.id,
+      canonicalName: created.name,
+      recipesAdopted: 0,
+      recipesCreatedFromInstance: 0,
+      connectorsDeleted: 0,
+    };
+  }
+
+  const recipeCounts = await db
+    .select({
+      connectorId: connectorRecipes.connectorId,
+      n: sql<number>`COUNT(*)::int`,
+    })
+    .from(connectorRecipes)
+    .where(eq(connectorRecipes.workspaceId, ctx.workspaceId))
+    .groupBy(connectorRecipes.connectorId);
+  const countByConnector = new Map<string, number>();
+  for (const r of recipeCounts) {
+    countByConnector.set(r.connectorId.toString(), r.n);
+  }
+  const sorted = [...allInstances].sort((a, b) => {
+    const ca = countByConnector.get(a.id.toString()) ?? 0;
+    const cb = countByConnector.get(b.id.toString()) ?? 0;
+    if (ca !== cb) return cb - ca;
+    return Number(a.id - b.id);
+  });
+  const canonicalId = sorted[0]!.id;
+
+  // 3. Rename canonical to friendly label (if different) and ensure active.
+  if (sorted[0]!.name !== friendlyName || !sorted[0]!.active) {
+    await db
+      .update(connectors)
+      .set({ name: friendlyName, active: true, updatedAt: new Date() })
+      .where(eq(connectors.id, canonicalId));
+  }
+
+  // 4. For each non-canonical instance: move recipes, or create recipe
+  //    from the instance itself.
+  let recipesAdopted = 0;
+  let recipesCreatedFromInstance = 0;
+  let connectorsDeleted = 0;
+  for (const inst of sorted.slice(1)) {
+    const recipes = await db
+      .select()
+      .from(connectorRecipes)
+      .where(
+        and(
+          eq(connectorRecipes.workspaceId, ctx.workspaceId),
+          eq(connectorRecipes.connectorId, inst.id),
+        ),
+      );
+    if (recipes.length > 0) {
+      await db
+        .update(connectorRecipes)
+        .set({ connectorId: canonicalId, updatedAt: new Date() })
+        .where(
+          and(
+            eq(connectorRecipes.workspaceId, ctx.workspaceId),
+            eq(connectorRecipes.connectorId, inst.id),
+          ),
+        );
+      recipesAdopted += recipes.length;
+    } else {
+      // Empty connector → create a recipe under canonical that
+      // preserves the original instance's name + config so the
+      // operator's intent isn't lost.
+      const row: NewConnectorRecipe = {
+        workspaceId: ctx.workspaceId,
+        connectorId: canonicalId,
+        templateType: templateType as 'internet_search',
+        name: inst.name,
+        active: inst.active,
+        selectors: inst.config as Record<string, unknown>,
+      };
+      await db.insert(connectorRecipes).values(row);
+      recipesCreatedFromInstance++;
+    }
+    await db.delete(connectors).where(eq(connectors.id, inst.id));
+    connectorsDeleted++;
+  }
+
+  await recordAuditEvent(ctx, {
+    kind: 'connector.consolidate',
+    entityType: 'connector',
+    entityId: canonicalId,
+    payload: {
+      templateType,
+      friendlyName,
+      recipesAdopted,
+      recipesCreatedFromInstance,
+      connectorsDeleted,
+    },
+  });
+
+  return {
+    canonicalId,
+    canonicalName: friendlyName,
+    recipesAdopted,
+    recipesCreatedFromInstance,
+    connectorsDeleted,
+  };
 }
 
 // ---- recipe edit / archive / delete (P62-01) -----------------------
