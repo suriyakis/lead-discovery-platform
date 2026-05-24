@@ -6530,3 +6530,149 @@ button.primary-btn {
   color: oklch(0.82 0.16 25);
   border-color: color-mix(in oklab, oklch(0.55 0.18 25) 30%, var(--brand-border));
 }
+
+/* P62-20 - connector template grid (user-facing /connectors page) */
+.connector-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 0.95rem;
+  margin-top: 1rem;
+}
+.connector-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.7rem;
+}
+.connector-template-head {
+  display: grid;
+  grid-template-columns: 2.6rem 1fr auto;
+  align-items: center;
+  gap: 0.85rem;
+}
+.connector-template-icon {
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 0.55rem;
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--brand-primary) 22%, var(--brand-card)) 0%,
+    var(--brand-card-elevated) 100%
+  );
+  border: 1px solid color-mix(in oklab, var(--brand-primary) 40%, var(--brand-border));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-primary);
+}
+.connector-template-icon .lucide {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+.connector-template-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+}
+.connector-template-blurb {
+  margin: 0.15rem 0 0;
+  font-size: 0.82rem;
+  color: var(--brand-muted);
+}
+.connector-template-count {
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-muted);
+  white-space: nowrap;
+}
+.connector-template-empty {
+  margin: 0;
+}
+.connector-template-instance {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.5rem;
+}
+.connector-template-instance.is-disabled {
+  opacity: 0.75;
+}
+.connector-template-instance-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.connector-template-instance-name {
+  font-weight: 600;
+  color: var(--brand-fg);
+}
+.connector-recipe-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.connector-recipe-list a {
+  display: grid;
+  grid-template-columns: 1rem 1fr auto 0.85rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.4rem;
+  text-decoration: none;
+  color: var(--brand-fg);
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.connector-recipe-list a:hover {
+  border-color: color-mix(in oklab, var(--brand-primary) 45%, var(--brand-border));
+  background: var(--brand-card-elevated);
+}
+.connector-recipe-list a.is-archived {
+  opacity: 0.6;
+}
+.connector-recipe-list .lucide {
+  width: 0.95rem;
+  height: 0.95rem;
+  color: var(--brand-muted);
+}
+.connector-recipe-list .chevron {
+  color: var(--brand-muted);
+}
+.connector-template-instance-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.2rem;
+}
+.connector-template-instance-actions .small {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.connector-admin-section {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--brand-border);
+}
+.connector-admin-section h2 {
+  font-size: 0.92rem;
+  color: var(--brand-muted);
+}
