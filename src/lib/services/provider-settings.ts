@@ -70,8 +70,14 @@ export type VectorStorageProviderId =
 // checks membership before writing. Keep the most capable model first
 // so the UI dropdown shows it as a sensible default.
 
+// Catalogs are suggestions — the Model dropdowns on /settings/integrations
+// are now comboboxes (typeable input + datalist), so the operator can
+// enter any model id the vendor ships without a code change. Keep these
+// lists current with what's worth pre-suggesting.
 export const AI_MODELS: Record<string, readonly string[]> = {
   openai: [
+    'gpt-5.5',
+    'gpt-5.5-mini',
     'gpt-5',
     'gpt-5-mini',
     'gpt-5-nano',
@@ -87,7 +93,14 @@ export const AI_MODELS: Record<string, readonly string[]> = {
     'claude-sonnet-4',
     'claude-haiku-4-5',
   ],
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+  gemini: [
+    'gemini-3.1-flash',
+    'gemini-3.0-pro',
+    'gemini-3.0-flash',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
+  ],
   mock: ['mock-1'],
 };
 
@@ -97,18 +110,22 @@ export const RESEARCH_MODELS: Record<string, readonly string[]> = {
   mock: ['mock-1'],
 };
 
-/** True when `model` is in the catalog for the given provider. NULL
- *  always passes — null means "let the provider use its default". */
+/** Loose model-id shape check. NULL always passes — null means "let
+ *  the provider use its default". The catalogs are suggestions only;
+ *  the combobox lets operators enter freshly-released models without
+ *  a deploy. Real validation happens at the API call site (vendor
+ *  rejects with a clear error if the id is wrong). */
+const MODEL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,118}$/i;
 export function isValidAiModel(provider: string, model: string | null): boolean {
   if (model === null) return true;
-  const catalog = AI_MODELS[provider];
-  return catalog ? catalog.includes(model) : true;
+  void provider;
+  return MODEL_ID_RE.test(model);
 }
 
 export function isValidResearchModel(provider: string, model: string | null): boolean {
   if (model === null) return true;
-  const catalog = RESEARCH_MODELS[provider];
-  return catalog ? catalog.includes(model) : true;
+  void provider;
+  return MODEL_ID_RE.test(model);
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────

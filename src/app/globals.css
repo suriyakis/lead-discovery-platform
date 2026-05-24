@@ -6408,3 +6408,18 @@ button.primary-btn {
   font: inherit;
   font-size: 0.88rem;
 }
+
+/* P62-17 — combobox styling for ProviderModelPair Model input */
+.provider-select-nested input[type='text'] {
+  padding: 0.5rem 0.7rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  color: var(--brand-fg);
+  font: inherit;
+  font-size: 0.88rem;
+}
+.provider-select-nested input[type='text']:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

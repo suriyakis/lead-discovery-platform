@@ -94,23 +94,38 @@ export function ProviderModelPair({
 
       <label className="provider-select-nested">
         <span>Model</span>
-        {models.length === 0 ? (
-          <select name={modelName} disabled defaultValue={DEFAULT_TOKEN}>
-            <option value={DEFAULT_TOKEN}>— not applicable —</option>
-          </select>
-        ) : (
-          <select
+        {models.length === 0 && providerValue === ENV_TOKEN ? (
+          <input
+            type="text"
             name={modelName}
-            value={modelValue}
-            onChange={(e) => setModelValue(e.target.value)}
-          >
-            <option value={DEFAULT_TOKEN}>— provider default —</option>
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+            disabled
+            placeholder="— not applicable —"
+          />
+        ) : (
+          <>
+            {/* Combobox: typeable input + datalist of catalog suggestions.
+                Lets the operator pick a known model OR enter any new id
+                the vendor ships (no deploy required). Empty value =
+                provider default. */}
+            <input
+              type="text"
+              name={modelName}
+              list={`model-options-${modelName}`}
+              value={modelValue === DEFAULT_TOKEN ? '' : modelValue}
+              onChange={(e) => {
+                const next = e.target.value.trim();
+                setModelValue(next === '' ? DEFAULT_TOKEN : next);
+              }}
+              placeholder="— provider default — (or type a model id)"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <datalist id={`model-options-${modelName}`}>
+              {models.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          </>
         )}
       </label>
     </>
