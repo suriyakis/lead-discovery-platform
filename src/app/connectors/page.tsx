@@ -25,11 +25,15 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { canAdminWorkspace } from '@/lib/services/context';
+import { canAdminWorkspace, canWrite } from '@/lib/services/context';
 import {
+  ConnectorServiceError,
   consolidateConnectorsByTemplate,
+  deleteRecipe,
   listConnectors,
+  updateRecipe,
 } from '@/lib/services/connector-run';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 // User-facing label + blurb per template type. Anything not listed
@@ -82,6 +86,55 @@ export default async function ConnectorsPage({
   const session = await auth();
   if (!session?.user?.id) redirect('/');
   const sp = await searchParams;
+
+  async function toggleRecipeActive(formData: FormData): Promise<void> {
+    'use server';
+    const c = await getWorkspaceContext();
+    const idStr = String(formData.get('id') ?? '');
+    const nextActive = formData.get('nextActive') === '1';
+    if (!/^\d+$/.test(idStr)) redirect('/connectors?error=bad+id');
+    try {
+      await updateRecipe(c, BigInt(idStr), { active: nextActive });
+      redirect(
+        `/connectors?message=${encodeURIComponent(
+          nextActive ? 'Recipe activated' : 'Recipe set inactive',
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(
+        `/connectors?error=${encodeURIComponent(
+          err instanceof ConnectorServiceError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'toggle failed',
+        )}`,
+      );
+    }
+  }
+
+  async function deleteRecipeAction(formData: FormData): Promise<void> {
+    'use server';
+    const c = await getWorkspaceContext();
+    const idStr = String(formData.get('id') ?? '');
+    if (!/^\d+$/.test(idStr)) redirect('/connectors?error=bad+id');
+    try {
+      await deleteRecipe(c, BigInt(idStr));
+      redirect(`/connectors?message=${encodeURIComponent('Recipe deleted')}`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(
+        `/connectors?error=${encodeURIComponent(
+          err instanceof ConnectorServiceError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'delete failed',
+        )}`,
+      );
+    }
+  }
 
   async function consolidate(formData: FormData): Promise<void> {
     'use server';
@@ -290,81 +343,120 @@ export default async function ConnectorsPage({
               ) : null}
 
               {instances.length > 0
-                ? instances.map((connector) => {
-                  const cid = connector.id.toString();
-                  const recipes = recipesByConnector.get(cid) ?? [];
-                  const lastRun = lastRunByConnector.get(cid);
-                  return (
-                    <div
-                      key={cid}
-                      className={`connector-template-instance${
-                        connector.active ? '' : ' is-disabled'
-                      }`}
-                    >
-                      <div className="connector-template-instance-head">
-                        <span className="connector-template-instance-name">
-                          {connector.name}
-                        </span>
-                        {instances.length > 1 ||
-                        connector.name !== meta.label ? (
-                          <span className="muted small">
-                            {connector.active ? '● active' : '○ inactive'}
-                          </span>
-                        ) : null}
-                        {lastRun ? (
-                          <span className="muted small">
-                            · last run {lastRun.status} ·{' '}
-                            {lastRun.createdAt.toLocaleString()}
-                          </span>
-                        ) : null}
-                      </div>
-
-                      {recipes.length === 0 ? (
-                        <p className="muted small">No recipes yet.</p>
-                      ) : (
-                        <ul className="connector-recipe-list">
-                          {recipes.map((r) => (
-                            <li key={r.id.toString()}>
-                              <Link
-                                href={`/connectors/${cid}/recipes/${r.id}`}
-                                className={r.active ? '' : 'is-archived'}
-                              >
-                                <Search
-                                  className="lucide"
-                                  aria-hidden="true"
-                                />
-                                <span>{r.name}</span>
-                                {!r.active ? (
-                                  <span className="badge badge-bad">
-                                    archived
+                ? (() => {
+                    // Canonical = the instance carrying the friendly
+                    // name. After P62-21 consolidation this is the only
+                    // instance per card; older workspaces may still have
+                    // dupes (handled by the tidy strip above). Flatten
+                    // every recipe across all instances into a single
+                    // list — operators don't think in terms of multiple
+                    // Internet Search "containers".
+                    const canonical =
+                      instances.find((c) => c.name === meta.label) ??
+                      instances[0]!;
+                    const allRecipes = instances.flatMap((inst) =>
+                      (recipesByConnector.get(inst.id.toString()) ?? []).map(
+                        (r) => ({ ...r, parentConnectorId: inst.id }),
+                      ),
+                    );
+                    return (
+                      <>
+                        {allRecipes.length === 0 ? (
+                          <p className="muted small">
+                            No recipes yet. Add one to start harvesting.
+                          </p>
+                        ) : (
+                          <ul className="connector-recipe-list">
+                            {allRecipes.map((r) => {
+                              const rid = r.id.toString();
+                              const pcid = r.parentConnectorId.toString();
+                              return (
+                                <li
+                                  key={rid}
+                                  className={`connector-recipe-row${r.active ? '' : ' is-archived'}`}
+                                >
+                                  <Link
+                                    href={`/connectors/${pcid}/recipes/${rid}`}
+                                    className="connector-recipe-link"
+                                  >
+                                    <Search
+                                      className="lucide"
+                                      aria-hidden="true"
+                                    />
+                                    <span>{r.name}</span>
+                                  </Link>
+                                  <span
+                                    className={`connector-recipe-status${
+                                      r.active ? ' is-active' : ' is-inactive'
+                                    }`}
+                                  >
+                                    {r.active ? '● Active' : '○ Inactive'}
                                   </span>
-                                ) : null}
-                                <ChevronRight className="lucide chevron" />
-                              </Link>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
+                                  {canWrite(ctx) ? (
+                                    <div className="connector-recipe-actions">
+                                      <form action={toggleRecipeActive}>
+                                        <input
+                                          type="hidden"
+                                          name="id"
+                                          value={rid}
+                                        />
+                                        <input
+                                          type="hidden"
+                                          name="nextActive"
+                                          value={r.active ? '0' : '1'}
+                                        />
+                                        <button
+                                          type="submit"
+                                          className="ghost-btn small"
+                                          title={
+                                            r.active
+                                              ? 'Set inactive — stops participating in crawl runs'
+                                              : 'Activate — recipe will run again'
+                                          }
+                                        >
+                                          {r.active ? 'Deactivate' : 'Activate'}
+                                        </button>
+                                      </form>
+                                      <form action={deleteRecipeAction}>
+                                        <input
+                                          type="hidden"
+                                          name="id"
+                                          value={rid}
+                                        />
+                                        <ConfirmFormButton
+                                          message={`Delete recipe "${r.name}"? Past runs keep their snapshot but lose the live link. This cannot be undone.`}
+                                          className="ghost-btn small danger"
+                                        >
+                                          Delete
+                                        </ConfirmFormButton>
+                                      </form>
+                                    </div>
+                                  ) : null}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
 
-                      <div className="connector-template-instance-actions">
-                        <Link
-                          href={`/connectors/${cid}/recipes/new`}
-                          className="primary-btn small"
-                        >
-                          <Plus className="lucide" /> New recipe
-                        </Link>
-                        {isAdmin ? (
+                        <div className="connector-template-foot">
                           <Link
-                            href={`/connectors/${cid}`}
-                            className="ghost-btn small"
+                            href={`/connectors/${canonical.id.toString()}/recipes/new`}
+                            className="primary-btn small"
                           >
-                            Connector settings
+                            <Plus className="lucide" /> New recipe
                           </Link>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })
+                          {isAdmin ? (
+                            <Link
+                              href={`/connectors/${canonical.id.toString()}`}
+                              className="ghost-btn small"
+                            >
+                              Connector settings
+                            </Link>
+                          ) : null}
+                        </div>
+                      </>
+                    );
+                  })()
                 : null}
             </article>
           );

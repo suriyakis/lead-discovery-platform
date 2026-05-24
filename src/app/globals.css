@@ -6693,3 +6693,86 @@ button.primary-btn {
   font-size: 0.78rem;
   padding: 0.32rem 0.65rem;
 }
+
+/* P62-22 — flat recipe row with status pill + inline actions */
+.connector-recipe-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.4rem;
+  background: var(--brand-card-elevated);
+  border: 1px solid var(--brand-border);
+  transition: border-color 0.1s ease;
+}
+.connector-recipe-row:hover {
+  border-color: color-mix(in oklab, var(--brand-primary) 40%, var(--brand-border));
+}
+.connector-recipe-row.is-archived {
+  opacity: 0.62;
+}
+.connector-recipe-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-decoration: none;
+  color: var(--brand-fg);
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connector-recipe-link:hover {
+  text-decoration: underline;
+}
+.connector-recipe-link .lucide {
+  width: 0.95rem;
+  height: 0.95rem;
+  color: var(--brand-muted);
+  flex-shrink: 0;
+}
+.connector-recipe-status {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.connector-recipe-status.is-active {
+  color: oklch(0.85 0.15 150);
+  background: color-mix(in oklab, oklch(0.55 0.18 150) 18%, var(--brand-card));
+  border: 1px solid color-mix(in oklab, oklch(0.55 0.18 150) 35%, var(--brand-border));
+}
+.connector-recipe-status.is-inactive {
+  color: var(--brand-muted);
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+}
+.connector-recipe-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.connector-recipe-actions .small {
+  font-size: 0.74rem;
+  padding: 0.28rem 0.55rem;
+}
+.connector-recipe-actions .danger {
+  color: oklch(0.82 0.16 25);
+  border-color: color-mix(in oklab, oklch(0.55 0.18 25) 30%, var(--brand-border));
+}
+.connector-template-foot {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+  flex-wrap: wrap;
+}
+.connector-template-foot .small {
+  font-size: 0.78rem;
+  padding: 0.32rem 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
