@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { SettingsNav } from '@/components/SettingsNav';
+import { ProviderModelPair } from '@/components/ProviderModelPair';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -593,22 +594,15 @@ export default async function IntegrationsPage({
               />
               <div className="provider-select provider-select-group">
                 <span>Internet Data Extraction</span>
-                <ProviderSelect
-                  label="Provider"
-                  name="qualificationProvider"
-                  workspaceValue={providerSettings.qualificationProvider}
-                  envFallback={`(inherits AI: ${aiActive.id})`}
-                  resolved={qualificationActive}
-                  options={ALLOWED_AI_PROVIDERS}
-                  nested
-                />
-                <ModelSelect
-                  label="Model"
-                  name="qualificationModel"
-                  workspaceValue={providerSettings.qualificationModel}
-                  activeProviderId={qualificationActive.id}
+                <ProviderModelPair
+                  providers={ALLOWED_AI_PROVIDERS}
                   catalog={AI_MODELS}
-                  nested
+                  providerName="qualificationProvider"
+                  modelName="qualificationModel"
+                  initialProvider={providerSettings.qualificationProvider}
+                  initialModel={providerSettings.qualificationModel}
+                  envFallbackLabel={`inherits AI: ${aiActive.id}`}
+                  resolved={qualificationActive}
                 />
               </div>
               <ProviderSelect
