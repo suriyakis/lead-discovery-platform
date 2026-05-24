@@ -593,11 +593,6 @@ export default async function IntegrationsPage({
               />
               <div className="provider-select provider-select-group">
                 <span>Internet Data Extraction</span>
-                <p className="muted small" style={{ margin: '0 0 0.4rem' }}>
-                  Wandizz-style classifier — reads each scraped record
-                  and scores it against every active product profile.
-                  Pick a fast, cheap model (e.g. <code>gemini-2.5-flash</code>).
-                </p>
                 <ProviderSelect
                   label="Provider"
                   name="qualificationProvider"
