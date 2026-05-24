@@ -93,12 +93,7 @@ export function ProviderModelPair({
       </label>
 
       <label className="provider-select-nested">
-        <span>
-          Model{' '}
-          <span className="muted small">
-            (for <code>{effectiveProvider}</code>)
-          </span>
-        </span>
+        <span>Model</span>
         {models.length === 0 ? (
           <select name={modelName} disabled defaultValue={DEFAULT_TOKEN}>
             <option value={DEFAULT_TOKEN}>— not applicable —</option>
