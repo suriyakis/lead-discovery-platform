@@ -591,21 +591,31 @@ export default async function IntegrationsPage({
                 activeProviderId={aiActive.id}
                 catalog={AI_MODELS}
               />
-              <ProviderSelect
-                label="Qualification provider"
-                name="qualificationProvider"
-                workspaceValue={providerSettings.qualificationProvider}
-                envFallback={`(inherits AI: ${aiActive.id})`}
-                resolved={qualificationActive}
-                options={ALLOWED_AI_PROVIDERS}
-              />
-              <ModelSelect
-                label="Qualification model"
-                name="qualificationModel"
-                workspaceValue={providerSettings.qualificationModel}
-                activeProviderId={qualificationActive.id}
-                catalog={AI_MODELS}
-              />
+              <div className="provider-select provider-select-group">
+                <span>Internet Data Extraction</span>
+                <p className="muted small" style={{ margin: '0 0 0.4rem' }}>
+                  Wandizz-style classifier — reads each scraped record
+                  and scores it against every active product profile.
+                  Pick a fast, cheap model (e.g. <code>gemini-2.5-flash</code>).
+                </p>
+                <ProviderSelect
+                  label="Provider"
+                  name="qualificationProvider"
+                  workspaceValue={providerSettings.qualificationProvider}
+                  envFallback={`(inherits AI: ${aiActive.id})`}
+                  resolved={qualificationActive}
+                  options={ALLOWED_AI_PROVIDERS}
+                  nested
+                />
+                <ModelSelect
+                  label="Model"
+                  name="qualificationModel"
+                  workspaceValue={providerSettings.qualificationModel}
+                  activeProviderId={qualificationActive.id}
+                  catalog={AI_MODELS}
+                  nested
+                />
+              </div>
               <ProviderSelect
                 label="Embedding provider"
                 name="embeddingProvider"
@@ -1195,6 +1205,7 @@ function ProviderSelect({
   envFallback,
   resolved,
   options,
+  nested,
 }: {
   label: string;
   name: string;
@@ -1202,10 +1213,13 @@ function ProviderSelect({
   envFallback: string;
   resolved: { id: string; source: 'workspace' | 'env' | 'default' };
   options: ReadonlyArray<string>;
+  /** When true, render without the outer card chrome — used when this
+   *  select lives inside another grouping card. */
+  nested?: boolean;
 }) {
   const value = workspaceValue ?? '__env__';
   return (
-    <label className="provider-select">
+    <label className={nested ? 'provider-select-nested' : 'provider-select'}>
       <span>
         {label}{' '}
         <span className="muted small">
@@ -1230,18 +1244,23 @@ function ModelSelect({
   workspaceValue,
   activeProviderId,
   catalog,
+  nested,
 }: {
   label: string;
   name: string;
   workspaceValue: string | null;
   activeProviderId: string;
   catalog: Record<string, readonly string[]>;
+  /** When true, render without the outer card chrome — used when this
+   *  select lives inside another grouping card. */
+  nested?: boolean;
 }) {
   const models = catalog[activeProviderId] ?? [];
   const value = workspaceValue ?? '__default__';
+  const wrapClass = nested ? 'provider-select-nested' : 'provider-select';
   if (models.length === 0) {
     return (
-      <label className="provider-select">
+      <label className={wrapClass}>
         <span>
           {label}{' '}
           <span className="muted small">
@@ -1255,7 +1274,7 @@ function ModelSelect({
     );
   }
   return (
-    <label className="provider-select">
+    <label className={wrapClass}>
       <span>
         {label}{' '}
         <span className="muted small">

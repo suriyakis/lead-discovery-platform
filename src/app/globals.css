@@ -6376,3 +6376,35 @@ button.primary-btn {
   -webkit-appearance: none;
   margin: 0;
 }
+
+/* P62-12 — grouped provider card (provider + model nested) */
+.provider-select-group {
+  gap: 0.55rem;
+}
+.provider-select-group > span:first-child {
+  font-size: 0.98rem;
+  font-weight: 600;
+}
+.provider-select-nested {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.provider-select-nested > span:first-child {
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--brand-muted);
+}
+.provider-select-nested select {
+  padding: 0.5rem 0.7rem;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--brand-radius);
+  color: var(--brand-fg);
+  font: inherit;
+  font-size: 0.88rem;
+}
