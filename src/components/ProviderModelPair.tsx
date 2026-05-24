@@ -7,7 +7,7 @@
 // page reload. Used by the Internet Data Extraction card on
 // /settings/integrations.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 interface Props {
   providers: ReadonlyArray<string>;
@@ -30,6 +30,103 @@ interface Props {
 
 const ENV_TOKEN = '__env__';
 const DEFAULT_TOKEN = '__default__';
+const CUSTOM_TOKEN = '__custom__';
+
+/** Hybrid combobox. Native <select> for the catalog plus a "Custom
+ *  model..." entry that flips to a free-text input — so the operator
+ *  can pick a known model OR type any vendor id without a deploy. */
+function ModelPicker({
+  name,
+  value,
+  onChange,
+  models,
+}: {
+  name: string;
+  value: string;
+  onChange: (v: string) => void;
+  models: ReadonlyArray<string>;
+}) {
+  // Whether the operator is currently in custom-text mode. We treat
+  // any saved value not in `models` (and not DEFAULT_TOKEN) as custom.
+  const valueIsCustom =
+    value !== DEFAULT_TOKEN && !models.includes(value);
+  const [customMode, setCustomMode] = useState(valueIsCustom);
+
+  // Keep custom-mode in sync if the model list changes underneath
+  // (e.g. provider switched). When the new catalog includes the
+  // current value, drop out of custom mode.
+  useEffect(() => {
+    if (value === DEFAULT_TOKEN) {
+      setCustomMode(false);
+      return;
+    }
+    setCustomMode(!models.includes(value));
+  }, [value, models]);
+
+  if (models.length === 0) {
+    return (
+      <input
+        type="text"
+        name={name}
+        disabled
+        placeholder="— not applicable —"
+      />
+    );
+  }
+
+  if (customMode) {
+    return (
+      <div className="provider-select-nested-row">
+        <input
+          type="text"
+          name={name}
+          value={value === DEFAULT_TOKEN ? '' : value}
+          onChange={(e) => {
+            const next = e.target.value.trim();
+            onChange(next === '' ? DEFAULT_TOKEN : next);
+          }}
+          placeholder="e.g. gemini-3.5-flash-preview"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <button
+          type="button"
+          className="ghost-btn small"
+          onClick={() => {
+            onChange(DEFAULT_TOKEN);
+            setCustomMode(false);
+          }}
+          title="Use a model from the suggestion list instead"
+        >
+          Pick
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <select
+      name={name}
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === CUSTOM_TOKEN) {
+          setCustomMode(true);
+          onChange(DEFAULT_TOKEN);
+        } else {
+          onChange(e.target.value);
+        }
+      }}
+    >
+      <option value={DEFAULT_TOKEN}>— provider default —</option>
+      {models.map((m) => (
+        <option key={m} value={m}>
+          {m}
+        </option>
+      ))}
+      <option value={CUSTOM_TOKEN}>Custom model… (type any id)</option>
+    </select>
+  );
+}
 
 export function ProviderModelPair({
   providers,
@@ -94,39 +191,12 @@ export function ProviderModelPair({
 
       <label className="provider-select-nested">
         <span>Model</span>
-        {models.length === 0 && providerValue === ENV_TOKEN ? (
-          <input
-            type="text"
-            name={modelName}
-            disabled
-            placeholder="— not applicable —"
-          />
-        ) : (
-          <>
-            {/* Combobox: typeable input + datalist of catalog suggestions.
-                Lets the operator pick a known model OR enter any new id
-                the vendor ships (no deploy required). Empty value =
-                provider default. */}
-            <input
-              type="text"
-              name={modelName}
-              list={`model-options-${modelName}`}
-              value={modelValue === DEFAULT_TOKEN ? '' : modelValue}
-              onChange={(e) => {
-                const next = e.target.value.trim();
-                setModelValue(next === '' ? DEFAULT_TOKEN : next);
-              }}
-              placeholder="— provider default — (or type a model id)"
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <datalist id={`model-options-${modelName}`}>
-              {models.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          </>
-        )}
+        <ModelPicker
+          name={modelName}
+          value={modelValue}
+          onChange={setModelValue}
+          models={models}
+        />
       </label>
     </>
   );

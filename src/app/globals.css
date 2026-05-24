@@ -6423,3 +6423,18 @@ button.primary-btn {
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* P62-18 - custom model row (input + Pick button) */
+.provider-select-nested-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+.provider-select-nested-row input[type='text'] {
+  flex: 1;
+}
+.provider-select-nested-row .small {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  flex-shrink: 0;
+}
