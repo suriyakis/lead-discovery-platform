@@ -6776,3 +6776,144 @@ button.primary-btn {
   align-items: center;
   gap: 0.3rem;
 }
+
+/* P62-24 — collapsible Recent runs + bulk-select toolbar */
+.runs-section {
+  margin-top: 1.5rem;
+  padding: 0.85rem 1rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.65rem;
+}
+.runs-section > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  list-style: none;
+  padding: 0.2rem 0;
+}
+.runs-section > summary::marker { content: ''; }
+.runs-section > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 0.5rem;
+  color: var(--brand-muted);
+  transition: transform 0.1s ease;
+}
+.runs-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+.runs-summary-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--brand-fg);
+  flex: 1;
+}
+.runs-summary-hint {
+  font-style: italic;
+}
+.runs-section[open] .runs-summary-hint {
+  visibility: hidden;
+}
+
+.runs-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  margin: 0.7rem 0 0.4rem;
+  border-radius: 0.45rem 0.45rem 0 0;
+  background: var(--brand-card-elevated);
+  border: 1px solid var(--brand-border);
+  border-bottom: none;
+}
+.runs-toolbar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--brand-fg);
+  cursor: pointer;
+}
+.runs-toolbar-check input[type='checkbox'] {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+.runs-toolbar .danger {
+  color: oklch(0.82 0.16 25);
+  border-color: color-mix(in oklab, oklch(0.55 0.18 25) 30%, var(--brand-border));
+}
+.runs-toolbar .danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.runs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--brand-border);
+  border-radius: 0 0 0.45rem 0.45rem;
+  background: var(--brand-card);
+  overflow: hidden;
+}
+.runs-row {
+  display: grid;
+  grid-template-columns: 1.4rem auto 90px 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--brand-border);
+}
+.runs-row:last-child { border-bottom: none; }
+.runs-row:hover {
+  background: var(--brand-card-elevated);
+}
+.runs-row.is-checked {
+  background: color-mix(in oklab, var(--brand-primary) 12%, var(--brand-card));
+}
+.runs-row input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+}
+.runs-row-link {
+  font-weight: 500;
+  color: var(--brand-fg);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.runs-row-link:hover { text-decoration: underline; }
+.runs-status {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-align: center;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-muted);
+}
+.runs-status-succeeded {
+  color: oklch(0.85 0.15 150);
+  background: color-mix(in oklab, oklch(0.55 0.18 150) 18%, var(--brand-card));
+  border-color: color-mix(in oklab, oklch(0.55 0.18 150) 35%, var(--brand-border));
+}
+.runs-status-failed,
+.runs-status-cancelled {
+  color: oklch(0.85 0.16 25);
+  background: color-mix(in oklab, oklch(0.55 0.18 25) 18%, var(--brand-card));
+  border-color: color-mix(in oklab, oklch(0.55 0.18 25) 35%, var(--brand-border));
+}
+.runs-status-running,
+.runs-status-pending {
+  color: oklch(0.85 0.15 230);
+  background: color-mix(in oklab, oklch(0.55 0.18 230) 18%, var(--brand-card));
+  border-color: color-mix(in oklab, oklch(0.55 0.18 230) 35%, var(--brand-border));
+}
+.runs-when {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

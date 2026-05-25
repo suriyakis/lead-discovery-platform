@@ -1,7 +1,7 @@
 // Connector / Run service. Workspace-scoped CRUD on connectors + recipes,
 // plus run lifecycle (start, status, list).
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   connectorRecipes,
@@ -131,6 +131,38 @@ export async function getRecipe(
   const r = rows[0];
   if (!r) throw notFound('connector_recipe');
   return r;
+}
+
+// ---- bulk run delete (P62-24) --------------------------------------
+
+/** Hard-delete connector_runs rows by id. Workspace-scoped via the
+ *  WHERE clause — never crosses workspaces even if an attacker passes
+ *  someone else's id. Returns the count actually deleted (≤ ids.length
+ *  if some ids belonged elsewhere). Cascade on connector_run_logs +
+ *  source_records is handled by their existing FK constraints. */
+export async function deleteConnectorRuns(
+  ctx: WorkspaceContext,
+  ids: ReadonlyArray<bigint>,
+): Promise<{ affected: number; ids: bigint[] }> {
+  if (!canWrite(ctx)) throw permissionDenied('delete connector runs');
+  if (ids.length === 0) return { affected: 0, ids: [] };
+  const deleted = await db
+    .delete(connectorRuns)
+    .where(
+      and(
+        eq(connectorRuns.workspaceId, ctx.workspaceId),
+        inArray(connectorRuns.id, [...ids]),
+      ),
+    )
+    .returning({ id: connectorRuns.id });
+  if (deleted.length > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'connector_run.bulk_delete',
+      entityType: 'connector_run',
+      payload: { count: deleted.length, ids: deleted.map((r) => r.id.toString()) },
+    });
+  }
+  return { affected: deleted.length, ids: deleted.map((r) => r.id) };
 }
 
 // ---- consolidation (P62-21) ----------------------------------------
