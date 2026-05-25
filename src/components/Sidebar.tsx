@@ -1,10 +1,11 @@
 'use client';
 
-// Persistent left sidebar. Sections (per Phase 23 spec):
-//   Discovery       — connectors, review queue, leads, knowledge, documents, learning
+// Persistent left sidebar. Sections:
+//   Discovery       — crawl engine, connectors, review queue, leads
+//   Library         — products, knowledge, documents, learning memory
 //   Pipeline        — pipeline, contacts
 //   Outreach        — drafts, mailbox, send queue, signatures, suppression
-//   Administration  — workspace settings (members, products, integrations, CRM, usage)
+//   Administration  — workspace settings (members, integrations, CRM, usage)
 //   Emergency       — autopilot (with emergency-pause toggle there)
 //   Platform        — super-admin only: god mode, workspaces, users
 //
@@ -79,10 +80,16 @@ const SECTIONS: ReadonlyArray<NavSection> = [
         icon: Zap,
         match: ['/connectors/engine'],
       },
-      { href: '/products', label: 'Products', icon: ShoppingBag },
       { href: '/connectors', label: 'Connectors', icon: Network },
       { href: '/review', label: 'Review queue', icon: ListChecks, countKey: 'reviewPending' },
       { href: '/leads', label: 'Leads', icon: Sparkles },
+    ],
+  },
+  {
+    title: 'Library',
+    defaultOpen: true,
+    items: [
+      { href: '/products', label: 'Products', icon: ShoppingBag },
       { href: '/knowledge', label: 'Knowledge', icon: BookOpen },
       { href: '/documents', label: 'Documents', icon: FileText },
       { href: '/learning', label: 'Learning memory', icon: Lightbulb },

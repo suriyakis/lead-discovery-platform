@@ -22,13 +22,15 @@ export const NAV_ROUTES: ReadonlyArray<NavRoute> = [
 
   // Discovery
   { href: '/connectors/engine', label: 'Crawl Engine', group: 'Discovery', icon: 'Zap' },
-  { href: '/products', label: 'Products', group: 'Discovery', icon: 'ShoppingBag' },
   { href: '/connectors', label: 'Connectors', group: 'Discovery', icon: 'Network' },
   { href: '/review', label: 'Review queue', group: 'Discovery', icon: 'ListChecks' },
   { href: '/leads', label: 'Leads', group: 'Discovery', icon: 'Sparkles' },
-  { href: '/knowledge', label: 'Knowledge', group: 'Discovery', icon: 'BookOpen' },
-  { href: '/documents', label: 'Documents', group: 'Discovery', icon: 'FileText' },
-  { href: '/learning', label: 'Learning memory', group: 'Discovery', icon: 'Lightbulb' },
+
+  // Library
+  { href: '/products', label: 'Products', group: 'Library', icon: 'ShoppingBag' },
+  { href: '/knowledge', label: 'Knowledge', group: 'Library', icon: 'BookOpen' },
+  { href: '/documents', label: 'Documents', group: 'Library', icon: 'FileText' },
+  { href: '/learning', label: 'Learning memory', group: 'Library', icon: 'Lightbulb' },
 
   // Pipeline
   { href: '/pipeline', label: 'Pipeline', group: 'Pipeline', icon: 'KanbanSquare' },
