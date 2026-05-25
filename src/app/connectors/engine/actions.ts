@@ -31,12 +31,21 @@ function intOrNull(raw: FormDataEntryValue | null): number | null {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
+function intervalMinutesFromForm(formData: FormData): number {
+  // The UI submits intervalHours (fractional allowed). Convert to whole
+  // minutes for the storage/service layer, which speaks minutes.
+  const raw = String(formData.get('intervalHours') ?? '').trim();
+  if (raw === '') return 60;
+  const hours = Number(raw);
+  if (!Number.isFinite(hours) || hours <= 0) return 60;
+  return Math.round(hours * 60);
+}
+
 function buildInput(formData: FormData) {
   return {
     name: String(formData.get('name') ?? '').trim(),
     enabled: formData.get('enabled') === 'on',
-    intervalMinutes:
-      intOrNull(formData.get('intervalMinutes')) ?? 60,
+    intervalMinutes: intervalMinutesFromForm(formData),
     quietStartHour: intOrNull(formData.get('quietStartHour')),
     quietEndHour: intOrNull(formData.get('quietEndHour')),
     timezone:

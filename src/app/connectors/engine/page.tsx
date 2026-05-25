@@ -30,6 +30,14 @@ import {
   MAX_INTERVAL_MINUTES,
   MIN_INTERVAL_MINUTES,
 } from '@/lib/services/crawl-engine';
+
+const MIN_INTERVAL_HOURS = Math.max(0.25, MIN_INTERVAL_MINUTES / 60);
+const MAX_INTERVAL_HOURS = MAX_INTERVAL_MINUTES / 60;
+
+function minutesToHoursDisplay(min: number): number {
+  // Round to 2 decimals so 65 min → 1.08 (not 1.0833333…).
+  return Math.round((min / 60) * 100) / 100;
+}
 import { listProductProfiles } from '@/lib/services/product-profile';
 import { getAutopilotSettings } from '@/lib/services/autopilot';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -357,14 +365,15 @@ export default async function CrawlEnginePage({
                     <div className="crawl-plan-grid">
                       <label>
                         <span>
-                          <Clock className="lucide" /> Interval (minutes)
+                          <Clock className="lucide" /> Interval (hours)
                         </span>
                         <input
                           type="number"
-                          name="intervalMinutes"
-                          defaultValue={p.intervalMinutes}
-                          min={MIN_INTERVAL_MINUTES}
-                          max={MAX_INTERVAL_MINUTES}
+                          name="intervalHours"
+                          defaultValue={minutesToHoursDisplay(p.intervalMinutes)}
+                          min={MIN_INTERVAL_HOURS}
+                          max={MAX_INTERVAL_HOURS}
+                          step={0.5}
                           required
                         />
                       </label>
@@ -516,14 +525,15 @@ export default async function CrawlEnginePage({
             <div className="crawl-plan-grid">
               <label>
                 <span>
-                  <Clock className="lucide" /> Interval (minutes)
+                  <Clock className="lucide" /> Interval (hours)
                 </span>
                 <input
                   type="number"
-                  name="intervalMinutes"
-                  defaultValue={60}
-                  min={MIN_INTERVAL_MINUTES}
-                  max={MAX_INTERVAL_MINUTES}
+                  name="intervalHours"
+                  defaultValue={1}
+                  min={MIN_INTERVAL_HOURS}
+                  max={MAX_INTERVAL_HOURS}
+                  step={0.5}
                   required
                 />
               </label>
