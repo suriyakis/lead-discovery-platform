@@ -52,6 +52,17 @@ const GEMINI_ENV = 'GEMINI_API_KEY';
 const PERPLEXITY_SECRET_KEY = 'perplexity.apiKey';
 const PERPLEXITY_ENV = 'PERPLEXITY_API_KEY';
 
+// P62-25: unified Web Search options + per-vendor models. SerpAPI has
+// no model dropdown (the only knob is the engine, which we don't
+// expose). Gemini + Perplexity use their research-model catalog.
+const WEB_SEARCH_PROVIDERS = ['serpapi', 'gemini', 'perplexity'] as const;
+const WEB_SEARCH_MODELS: Record<string, readonly string[]> = {
+  serpapi: [],
+  mock: [],
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+  perplexity: ['sonar-pro', 'sonar', 'sonar-reasoning'],
+};
+
 export default async function IntegrationsPage({
   searchParams,
 }: {
@@ -138,6 +149,7 @@ export default async function IntegrationsPage({
         : 'none';
   const aiProviderEnv = process.env.AI_PROVIDER ?? 'mock';
   const researchProviderEnv = process.env.RESEARCH_PROVIDER ?? 'mock';
+  const searchProviderEnvLabel = process.env.SEARCH_PROVIDER ?? 'mock';
 
   // Phase 45: per-workspace provider selection. Read the row + resolve
   // each capability so the UI shows both "what you've configured" and
@@ -151,6 +163,7 @@ export default async function IntegrationsPage({
   const qualificationActive = providerSettings.qualificationProvider?.trim()
     ? { id: providerSettings.qualificationProvider.trim(), source: 'workspace' as const }
     : { id: aiActive.id, source: aiActive.source };
+
   const embeddingActive = await resolveActiveProvider(
     ctx,
     'embedding',
@@ -171,6 +184,33 @@ export default async function IntegrationsPage({
     'vector_storage',
     process.env.VECTOR_STORAGE_PROVIDER,
   );
+
+  // P62-25: unified Web Search choice. researchProvider wins (the
+  // grounded-search adapter overrides the plain SERP provider when
+  // both are set), else the search provider is the active backend.
+  const webSearchActive: {
+    id: string;
+    source: 'workspace' | 'env' | 'default';
+  } = providerSettings.researchProvider?.trim() &&
+  providerSettings.researchProvider !== 'mock'
+    ? { id: providerSettings.researchProvider.trim(), source: 'workspace' }
+    : providerSettings.searchProvider?.trim()
+      ? { id: providerSettings.searchProvider.trim(), source: 'workspace' }
+      : researchActive.id !== 'mock'
+        ? { id: researchActive.id, source: researchActive.source }
+        : { id: searchActive.id, source: searchActive.source };
+  const webSearchInitialProvider =
+    (providerSettings.researchProvider?.trim() &&
+      providerSettings.researchProvider !== 'mock' &&
+      providerSettings.researchProvider) ||
+    (providerSettings.searchProvider?.trim() && providerSettings.searchProvider) ||
+    null;
+  // Use research model when we're in research mode, else null.
+  const webSearchInitialModel =
+    providerSettings.researchProvider?.trim() &&
+    providerSettings.researchProvider !== 'mock'
+      ? providerSettings.researchModel
+      : null;
 
   // Phase 50: workspace-level per-product byte cap for vector storage.
   const { getWorkspace } = await import('@/lib/services/workspace');
@@ -329,21 +369,35 @@ export default async function IntegrationsPage({
     const ai = String(formData.get('aiProvider') ?? '');
     const aiModelRaw = String(formData.get('aiModel') ?? '').trim();
     const embedding = String(formData.get('embeddingProvider') ?? '');
-    const research = String(formData.get('researchProvider') ?? '');
-    const researchModelRaw = String(formData.get('researchModel') ?? '').trim();
-    const search = String(formData.get('searchProvider') ?? '');
+    // P62-25: unified Web Search card. The dropdown writes its choice
+    // to webSearchProvider; we dispatch to searchProvider (serpapi /
+    // mock) or researchProvider (gemini / perplexity).
+    const webSearch = String(formData.get('webSearchProvider') ?? '');
+    const webSearchModelRaw = String(formData.get('webSearchModel') ?? '').trim();
     const vectorStorage = String(formData.get('vectorStorageProvider') ?? '');
     const qual = String(formData.get('qualificationProvider') ?? '');
     const qualModelRaw = String(formData.get('qualificationModel') ?? '').trim();
     const aiPick = ai === '__env__' ? null : (ai as AiProviderId);
     const aiModelPick = aiModelRaw === '' || aiModelRaw === '__default__' ? null : aiModelRaw;
     const embeddingPick = embedding === '__env__' ? null : (embedding as EmbeddingProviderId);
-    const researchPick = research === '__env__' ? null : (research as ResearchProviderId);
-    const researchModelPick =
-      researchModelRaw === '' || researchModelRaw === '__default__'
+
+    // Dispatch the single webSearch choice into the right column.
+    let researchPick: ResearchProviderId | null = null;
+    let researchModelPick: string | null = null;
+    let searchPick: SearchProviderId | null = null;
+    const webSearchModelClean =
+      webSearchModelRaw === '' || webSearchModelRaw === '__default__'
         ? null
-        : researchModelRaw;
-    const searchPick = search === '__env__' ? null : (search as SearchProviderId);
+        : webSearchModelRaw;
+    if (webSearch === '__env__') {
+      // Clear both — inherit env.
+    } else if (webSearch === 'serpapi' || webSearch === 'mock') {
+      searchPick = webSearch as SearchProviderId;
+    } else if (webSearch === 'gemini' || webSearch === 'perplexity') {
+      researchPick = webSearch as ResearchProviderId;
+      researchModelPick = webSearchModelClean;
+    }
+
     const vectorStoragePick =
       vectorStorage === '__env__'
         ? null
@@ -569,11 +623,12 @@ export default async function IntegrationsPage({
             provider is set in the per-provider sections below.
           </p>
           <p className="muted">
-            <strong>Web search</strong> = Google-style SERP results
-            (SerpAPI). <strong>Research grounding</strong> = LLM-with-
-            citations (Gemini grounded search or Perplexity Sonar). They
-            are separate pipelines — the discovery connector uses Web
-            search; the per-lead research pre-pass uses Research grounding.
+            <strong>Web Search</strong> = how the Internet Search
+            connector finds candidate companies. Three backends to
+            choose from: SerpAPI (plain Google-style SERP), Gemini
+            grounded search (LLM-with-citations), or Perplexity Sonar.
+            Picking Gemini or Perplexity also enables LLM grounding for
+            the per-lead research pre-pass.
           </p>
           {isAdmin ? (
             <form action={saveActiveProviders} className="active-providers-grid">
@@ -612,26 +667,18 @@ export default async function IntegrationsPage({
                 options={ALLOWED_EMBEDDING_PROVIDERS}
               />
               <div className="provider-select provider-select-group">
-                <span>Research grounding</span>
+                <span>Web Search</span>
                 <ProviderModelPair
-                  providers={ALLOWED_RESEARCH_PROVIDERS}
-                  catalog={RESEARCH_MODELS}
-                  providerName="researchProvider"
-                  modelName="researchModel"
-                  initialProvider={providerSettings.researchProvider}
-                  initialModel={providerSettings.researchModel}
-                  envFallbackLabel={researchProviderEnv}
-                  resolved={researchActive}
+                  providers={WEB_SEARCH_PROVIDERS}
+                  catalog={WEB_SEARCH_MODELS}
+                  providerName="webSearchProvider"
+                  modelName="webSearchModel"
+                  initialProvider={webSearchInitialProvider}
+                  initialModel={webSearchInitialModel}
+                  envFallbackLabel={`${searchProviderEnvLabel} / ${researchProviderEnv}`}
+                  resolved={webSearchActive}
                 />
               </div>
-              <ProviderSelect
-                label="Web search provider"
-                name="searchProvider"
-                workspaceValue={providerSettings.searchProvider}
-                envFallback={process.env.SEARCH_PROVIDER ?? 'mock'}
-                resolved={searchActive}
-                options={ALLOWED_SEARCH_PROVIDERS}
-              />
               <ProviderSelect
                 label="Vector storage provider"
                 name="vectorStorageProvider"

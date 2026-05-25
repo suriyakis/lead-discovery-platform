@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { recordUsage } from '@/lib/services/usage';
-import { getSearchProviderForCtx } from '@/lib/search';
+import { getWebSearchProviderForCtx } from '@/lib/search/web-search';
 import type { WorkspaceContext } from '@/lib/services/context';
 import type {
   ConnectorRunRequest,
@@ -43,7 +43,7 @@ export class InternetSearchConnector implements ISourceConnector {
   readonly credentialsSchema = CredentialsSchema;
 
   async testConnection(ctx: WorkspaceContext) {
-    return (await getSearchProviderForCtx(ctx)).testConnection(ctx);
+    return (await getWebSearchProviderForCtx(ctx)).testConnection(ctx);
   }
 
   async *run(
@@ -67,7 +67,7 @@ export class InternetSearchConnector implements ISourceConnector {
     }
     const recipe = parsedRecipe.data;
 
-    const provider = await getSearchProviderForCtx(ctx);
+    const provider = await getWebSearchProviderForCtx(ctx);
     yield {
       kind: 'log',
       level: 'info',
