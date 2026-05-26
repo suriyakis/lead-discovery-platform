@@ -1,7 +1,7 @@
 // Qualification service. Persists rule-engine verdicts to the
 // `qualifications` table, scoped to the workspace.
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { sourceRecords, type SourceRecord } from '@/lib/db/schema/connectors';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
@@ -12,8 +12,10 @@ import {
 } from '@/lib/db/schema/qualifications';
 import { reviewItems, type ReviewItem } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
-import type { WorkspaceContext } from './context';
+import { canAdminWorkspace, type WorkspaceContext } from './context';
 import { getRelevantLessons, recordLessonsApplied } from './learning';
+
+const BULK_LIMIT = 500;
 import {
   classifyRecord,
   type ClassifiableRecord,
@@ -33,6 +35,8 @@ const notFound = (kind: string) =>
   new QualificationServiceError(`${kind} not found`, 'not_found');
 const invariant = (msg: string) =>
   new QualificationServiceError(msg, 'invariant_violation');
+const permissionDenied = (op: string) =>
+  new QualificationServiceError(`Permission denied: ${op}`, 'permission_denied');
 
 /**
  * Run the rule engine for a single source record against ALL active product
@@ -190,6 +194,8 @@ export interface LeadsFilter {
   productProfileId?: bigint;
   relevantOnly?: boolean;
   limit?: number;
+  createdAtFrom?: Date;
+  createdAtTo?: Date;
 }
 
 export interface LeadRow {
@@ -210,6 +216,13 @@ export async function listLeads(
   if (relevantOnly) conditions.push(eq(qualifications.isRelevant, true));
   if (filter.productProfileId !== undefined) {
     conditions.push(eq(qualifications.productProfileId, filter.productProfileId));
+  }
+
+  if (filter.createdAtFrom !== undefined) {
+    conditions.push(gte(qualifications.createdAt, filter.createdAtFrom));
+  }
+  if (filter.createdAtTo !== undefined) {
+    conditions.push(lte(qualifications.createdAt, filter.createdAtTo));
   }
 
   const rows = await db
@@ -235,9 +248,153 @@ export async function listLeads(
 
   // Bulk-archive on the Leads page sets the backing review_item.state to
   // 'archived' — drop those here so they disappear from the user-facing
-  // leads list. Leads whose review_item was hard-deleted are also dropped
-  // (no review_item → no actionable lead).
-  return rows.filter((r) => r.reviewItem !== null && r.reviewItem.state !== 'archived');
+  // leads list. Rows whose review_item is null (legacy data predating
+  // seedReviewItem, or whose review_item was hard-deleted) stay visible
+  // so the user can still see and bulk-delete them via qualification id.
+  return rows.filter((r) => r.reviewItem === null || r.reviewItem.state !== 'archived');
+}
+
+/**
+ * Bulk-archive leads (workspace-scoped) by qualification id. Resolves each
+ * qualification to its backing review_item and archives those that exist.
+ * Qualifications without a review_item are silently skipped. Admin-only,
+ * capped at 500 per call, single audit event per batch.
+ */
+export async function bulkArchiveLeads(
+  ctx: WorkspaceContext,
+  qualificationIds: readonly bigint[],
+): Promise<{ archived: number; requested: number }> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('archive leads');
+  const cappedIds = qualificationIds.slice(0, BULK_LIMIT);
+  if (cappedIds.length === 0) return { archived: 0, requested: qualificationIds.length };
+  return db.transaction(async (tx) => {
+    // Find review_items via source_records joined through the qualifications.
+    const rows = await tx
+      .select({
+        reviewItemId: reviewItems.id,
+      })
+      .from(qualifications)
+      .innerJoin(
+        reviewItems,
+        and(
+          eq(reviewItems.sourceRecordId, qualifications.sourceRecordId),
+          eq(reviewItems.workspaceId, qualifications.workspaceId),
+        ),
+      )
+      .where(
+        and(
+          eq(qualifications.workspaceId, ctx.workspaceId),
+          inArray(qualifications.id, cappedIds as bigint[]),
+        ),
+      );
+    const riIds = Array.from(new Set(rows.map((r) => r.reviewItemId)));
+    if (riIds.length === 0) {
+      return { archived: 0, requested: qualificationIds.length };
+    }
+    const updated = await tx
+      .update(reviewItems)
+      .set({ state: 'archived', updatedAt: new Date() })
+      .where(
+        and(
+          eq(reviewItems.workspaceId, ctx.workspaceId),
+          inArray(reviewItems.id, riIds),
+        ),
+      )
+      .returning({ id: reviewItems.id });
+    if (updated.length > 0) {
+      await recordAuditEvent(ctx, {
+        kind: 'lead.bulk_archive',
+        entityType: 'qualification',
+        entityId: null,
+        payload: {
+          qualificationIds: cappedIds.map((id) => id.toString()),
+          archivedReviewItems: updated.map((u) => u.id.toString()),
+        },
+      });
+    }
+    return { archived: updated.length, requested: qualificationIds.length };
+  });
+}
+
+/**
+ * Bulk-delete leads (workspace-scoped) by qualification id. Deletes the
+ * qualification row AND the matching review_item (when present), so the
+ * lead truly disappears from /leads. Source records remain. Admin-only,
+ * capped at 500 per call, single audit event per batch.
+ */
+export async function bulkDeleteLeads(
+  ctx: WorkspaceContext,
+  qualificationIds: readonly bigint[],
+): Promise<{ deleted: number; requested: number }> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('delete leads');
+  const cappedIds = qualificationIds.slice(0, BULK_LIMIT);
+  if (cappedIds.length === 0) return { deleted: 0, requested: qualificationIds.length };
+  return db.transaction(async (tx) => {
+    const qualRows = await tx
+      .select({ id: qualifications.id, sourceRecordId: qualifications.sourceRecordId })
+      .from(qualifications)
+      .where(
+        and(
+          eq(qualifications.workspaceId, ctx.workspaceId),
+          inArray(qualifications.id, cappedIds as bigint[]),
+        ),
+      );
+    if (qualRows.length === 0) {
+      return { deleted: 0, requested: qualificationIds.length };
+    }
+    const sourceRecordIds = Array.from(new Set(qualRows.map((q) => q.sourceRecordId)));
+    const qualIdsFound = qualRows.map((q) => q.id);
+    // Delete the qualifications first so the leftover review_item rows can
+    // be safely removed without orphan-FK juggling.
+    const deletedQuals = await tx
+      .delete(qualifications)
+      .where(
+        and(
+          eq(qualifications.workspaceId, ctx.workspaceId),
+          inArray(qualifications.id, qualIdsFound),
+        ),
+      )
+      .returning({ id: qualifications.id });
+    // Then the matching review_items — note that ONE review_item may back
+    // multiple qualifications across products; we only delete the
+    // review_item if every qualification for its source_record was just
+    // removed. Easiest check: re-query qualifications for these source
+    // records and drop review_items whose source_record has none left.
+    const remaining = await tx
+      .select({ sourceRecordId: qualifications.sourceRecordId })
+      .from(qualifications)
+      .where(
+        and(
+          eq(qualifications.workspaceId, ctx.workspaceId),
+          inArray(qualifications.sourceRecordId, sourceRecordIds),
+        ),
+      );
+    const stillReferenced = new Set(remaining.map((r) => r.sourceRecordId.toString()));
+    const orphanedSourceRecords = sourceRecordIds.filter(
+      (id) => !stillReferenced.has(id.toString()),
+    );
+    if (orphanedSourceRecords.length > 0) {
+      await tx
+        .delete(reviewItems)
+        .where(
+          and(
+            eq(reviewItems.workspaceId, ctx.workspaceId),
+            inArray(reviewItems.sourceRecordId, orphanedSourceRecords),
+          ),
+        );
+    }
+    await recordAuditEvent(ctx, {
+      kind: 'lead.bulk_delete',
+      entityType: 'qualification',
+      entityId: null,
+      payload: {
+        qualificationIds: deletedQuals.map((d) => d.id.toString()),
+        orphanedSourceRecords: orphanedSourceRecords.map((id) => id.toString()),
+        count: deletedQuals.length,
+      },
+    });
+    return { deleted: deletedQuals.length, requested: qualificationIds.length };
+  });
 }
 
 // ---- internals ------------------------------------------------------

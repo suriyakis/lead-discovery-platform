@@ -24,11 +24,24 @@ const STATE_FILTERS: ReadonlyArray<{ key: 'all' | ReviewItemState; label: string
 ];
 
 const BULK_FORM_ID = 'review-bulk-form';
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseDateParam(raw: string | undefined, endOfDay: boolean): Date | null {
+  if (!raw || !DATE_RE.test(raw)) return null;
+  const d = new Date(`${raw}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
 
 export default async function ReviewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ state?: string; message?: string; error?: string }>;
+  searchParams: Promise<{
+    state?: string;
+    from?: string;
+    to?: string;
+    message?: string;
+    error?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -37,16 +50,21 @@ export default async function ReviewPage({
   const requested = sp.state ?? 'new';
   const isValidState = STATE_FILTERS.some((f) => f.key === requested);
   const stateKey = isValidState ? (requested as 'all' | ReviewItemState) : 'new';
+  const fromRaw = DATE_RE.test(sp.from ?? '') ? sp.from! : '';
+  const toRaw = DATE_RE.test(sp.to ?? '') ? sp.to! : '';
+  const createdAtFrom = parseDateParam(fromRaw, false);
+  const createdAtTo = parseDateParam(toRaw, true);
 
   let counts;
   let items;
   try {
     const ctx = await getWorkspaceContext();
     counts = await getStateCounts(ctx);
-    items = await listReviewItems(
-      ctx,
-      stateKey === 'all' ? {} : { state: stateKey as ReviewItemState },
-    );
+    items = await listReviewItems(ctx, {
+      ...(stateKey === 'all' ? {} : { state: stateKey as ReviewItemState }),
+      ...(createdAtFrom ? { createdAtFrom } : {}),
+      ...(createdAtTo ? { createdAtTo } : {}),
+    });
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -62,8 +80,6 @@ export default async function ReviewPage({
     throw err;
   }
 
-  // On the "archived" tab the Archive action is a no-op — hide it to
-  // avoid a confusing "archived N of N items" toast.
   const showArchiveAction = stateKey !== 'archived';
 
   return (
@@ -86,10 +102,15 @@ export default async function ReviewPage({
           {STATE_FILTERS.map((f) => {
             const count = f.key === 'all' ? counts.total : counts[f.key as keyof typeof counts];
             const active = f.key === stateKey;
+            const params = new URLSearchParams();
+            if (f.key !== 'new') params.set('state', f.key);
+            if (fromRaw) params.set('from', fromRaw);
+            if (toRaw) params.set('to', toRaw);
+            const qs = params.toString();
             return (
               <Link
                 key={f.key}
-                href={f.key === 'new' ? '/review' : `/review?state=${f.key}`}
+                href={qs ? `/review?${qs}` : '/review'}
                 className={active ? 'tab active' : 'tab'}
               >
                 {f.label}
@@ -99,73 +120,93 @@ export default async function ReviewPage({
           })}
         </div>
 
+        <form className="leads-controls" method="get" style={{ marginTop: '0.85rem' }}>
+          {stateKey !== 'new' ? (
+            <input type="hidden" name="state" value={stateKey} />
+          ) : null}
+          <label>
+            From
+            <input type="date" name="from" defaultValue={fromRaw} />
+          </label>
+          <label>
+            To
+            <input type="date" name="to" defaultValue={toRaw} />
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+
+        <form
+          id={BULK_FORM_ID}
+          action={bulkArchiveAction}
+          className="bulk-toolbar"
+        >
+          <input type="hidden" name="state" value={stateKey} />
+          {fromRaw ? <input type="hidden" name="from" value={fromRaw} /> : null}
+          {toRaw ? <input type="hidden" name="to" value={toRaw} /> : null}
+          <div className="bulk-toolbar-info">
+            {items.length === 0
+              ? 'No items match the current filter.'
+              : `${items.length} item${items.length === 1 ? '' : 's'} shown. Tick rows to act on them (up to 500 at a time).`}
+          </div>
+          <div className="bulk-toolbar-actions">
+            {showArchiveAction ? (
+              <button
+                type="submit"
+                formAction={bulkArchiveAction}
+                className="ghost-btn"
+                disabled={items.length === 0}
+              >
+                <Archive className="lucide" /> Archive selected
+              </button>
+            ) : null}
+            <ConfirmFormButton
+              formAction={bulkDeleteAction}
+              message="Permanently delete the selected items? This cannot be undone."
+              className="ghost-btn danger"
+              disabled={items.length === 0}
+            >
+              <Trash2 className="lucide" /> Delete selected
+            </ConfirmFormButton>
+          </div>
+        </form>
+
         <section>
           {items.length === 0 ? (
             <p className="muted">
               {stateKey === 'new'
-                ? 'No new items. Run a connector from the Connectors module to populate the queue (Phase 6+ adds connector UI; for now the queue is seeded automatically when the runner produces source records).'
+                ? 'No new items. Run a connector from the Connectors module to populate the queue.'
                 : `No items in state "${stateKey}".`}
             </p>
           ) : (
-            <>
-              <form
-                id={BULK_FORM_ID}
-                action={bulkArchiveAction}
-                className="bulk-toolbar"
-              >
-                <input type="hidden" name="state" value={stateKey} />
-                <div className="bulk-toolbar-info">
-                  Tick rows to act on them. Up to 500 at a time.
-                </div>
-                <div className="bulk-toolbar-actions">
-                  {showArchiveAction ? (
-                    <button
-                      type="submit"
-                      formAction={bulkArchiveAction}
-                      className="ghost-btn"
-                    >
-                      <Archive className="lucide" /> Archive selected
-                    </button>
-                  ) : null}
-                  <ConfirmFormButton
-                    formAction={bulkDeleteAction}
-                    message="Permanently delete the selected items? This cannot be undone."
-                    className="ghost-btn danger"
-                  >
-                    <Trash2 className="lucide" /> Delete selected
-                  </ConfirmFormButton>
-                </div>
-              </form>
-              <ul className="profile-list bulk-selectable-list">
-                {items.map(({ item, sourceRecord }) => {
-                  const normalized = sourceRecord.normalizedData as Record<string, unknown>;
-                  const title = (normalized.title as string | undefined) ?? sourceRecord.sourceUrl ?? `Record ${sourceRecord.id}`;
-                  const snippet = normalized.snippet as string | undefined;
-                  const domain = normalized.domain as string | undefined;
-                  return (
-                    <li key={item.id.toString()}>
-                      <label className="row-select">
-                        <input
-                          type="checkbox"
-                          name="ids"
-                          value={item.id.toString()}
-                          form={BULK_FORM_ID}
-                          aria-label={`Select review item ${title}`}
-                        />
-                      </label>
-                      <Link href={`/review/${item.id}`}>{title}</Link>
-                      {snippet ? <p className="muted">{snippet}</p> : null}
-                      <div className="meta">
-                        {domain ? <span>{domain}</span> : null}
-                        <span>state: {item.state}</span>
-                        <span>system: {sourceRecord.sourceSystem}</span>
-                        <span>conf {sourceRecord.confidence}</span>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
+            <ul className="profile-list bulk-selectable-list">
+              {items.map(({ item, sourceRecord }) => {
+                const normalized = sourceRecord.normalizedData as Record<string, unknown>;
+                const title = (normalized.title as string | undefined) ?? sourceRecord.sourceUrl ?? `Record ${sourceRecord.id}`;
+                const snippet = normalized.snippet as string | undefined;
+                const domain = normalized.domain as string | undefined;
+                return (
+                  <li key={item.id.toString()}>
+                    <label className="row-select">
+                      <input
+                        type="checkbox"
+                        name="ids"
+                        value={item.id.toString()}
+                        form={BULK_FORM_ID}
+                        aria-label={`Select review item ${title}`}
+                      />
+                    </label>
+                    <Link href={`/review/${item.id}`}>{title}</Link>
+                    {snippet ? <p className="muted">{snippet}</p> : null}
+                    <div className="meta">
+                      {domain ? <span>{domain}</span> : null}
+                      <span>state: {item.state}</span>
+                      <span>system: {sourceRecord.sourceSystem}</span>
+                      <span>conf {sourceRecord.confidence}</span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </section>
       </AppShell>

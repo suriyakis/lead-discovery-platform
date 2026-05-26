@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users } from '@/lib/db/schema/auth';
 import { sourceRecords, type SourceRecord } from '@/lib/db/schema/connectors';
@@ -70,6 +70,8 @@ export interface ListReviewFilter {
   state?: ReviewItemState | readonly ReviewItemState[];
   assignedToUserId?: string;
   limit?: number;
+  createdAtFrom?: Date;
+  createdAtTo?: Date;
 }
 
 export async function listReviewItems(
@@ -89,6 +91,13 @@ export async function listReviewItems(
 
   if (filter.assignedToUserId !== undefined) {
     conds.push(eq(reviewItems.assignedToUserId, filter.assignedToUserId));
+  }
+
+  if (filter.createdAtFrom !== undefined) {
+    conds.push(gte(reviewItems.createdAt, filter.createdAtFrom));
+  }
+  if (filter.createdAtTo !== undefined) {
+    conds.push(lte(reviewItems.createdAt, filter.createdAtTo));
   }
 
   const limit = clamp(filter.limit, 100, 1000);

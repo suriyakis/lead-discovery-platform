@@ -22,6 +22,14 @@ const SORT_OPTIONS = [
 type SortKey = (typeof SORT_OPTIONS)[number]['key'];
 
 const BULK_FORM_ID = 'leads-bulk-form';
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseDateParam(raw: string | undefined, endOfDay: boolean): Date | null {
+  if (!raw || !DATE_RE.test(raw)) return null;
+  // Anchor in UTC to avoid TZ surprises; end-of-day for the "to" bound.
+  const d = new Date(`${raw}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
 
 export default async function LeadsPage({
   searchParams,
@@ -30,6 +38,8 @@ export default async function LeadsPage({
     product?: string;
     mode?: string;
     sort?: string;
+    from?: string;
+    to?: string;
     message?: string;
     error?: string;
   }>;
@@ -41,6 +51,10 @@ export default async function LeadsPage({
   const productFilter = sp.product && /^\d+$/.test(sp.product) ? BigInt(sp.product) : null;
   const includeAll = sp.mode === 'all';
   const sortKey: SortKey = sp.sort === 'recent' ? 'recent' : 'score';
+  const fromRaw = DATE_RE.test(sp.from ?? '') ? sp.from! : '';
+  const toRaw = DATE_RE.test(sp.to ?? '') ? sp.to! : '';
+  const createdAtFrom = parseDateParam(fromRaw, false);
+  const createdAtTo = parseDateParam(toRaw, true);
 
   let products: ProductProfile[] = [];
   let leads: LeadRow[] = [];
@@ -51,6 +65,8 @@ export default async function LeadsPage({
       productProfileId: productFilter ?? undefined,
       relevantOnly: !includeAll,
       limit: 200,
+      createdAtFrom: createdAtFrom ?? undefined,
+      createdAtTo: createdAtTo ?? undefined,
     });
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
@@ -96,6 +112,8 @@ export default async function LeadsPage({
       ) : null}
       <input type="hidden" name="mode" value={includeAll ? 'all' : 'relevant'} />
       <input type="hidden" name="sort" value={sortKey} />
+      {fromRaw ? <input type="hidden" name="from" value={fromRaw} /> : null}
+      {toRaw ? <input type="hidden" name="to" value={toRaw} /> : null}
     </>
   );
 
@@ -144,110 +162,119 @@ export default async function LeadsPage({
               ))}
             </select>
           </label>
+          <label>
+            From
+            <input type="date" name="from" defaultValue={fromRaw} />
+          </label>
+          <label>
+            To
+            <input type="date" name="to" defaultValue={toRaw} />
+          </label>
           <button type="submit">Apply</button>
+        </form>
+
+        <form
+          id={BULK_FORM_ID}
+          action={bulkArchiveAction}
+          className="bulk-toolbar"
+        >
+          {filterInputs}
+          <div className="bulk-toolbar-info">
+            {sortedLeads.length === 0
+              ? 'No leads match the current filter.'
+              : `${sortedLeads.length} lead${sortedLeads.length === 1 ? '' : 's'} shown. Tick rows to act on them (up to 500 at a time).`}
+          </div>
+          <div className="bulk-toolbar-actions">
+            <button
+              type="submit"
+              formAction={bulkArchiveAction}
+              className="ghost-btn"
+              disabled={sortedLeads.length === 0}
+            >
+              <Archive className="lucide" /> Archive selected
+            </button>
+            <ConfirmFormButton
+              formAction={bulkDeleteAction}
+              message="Permanently delete the selected leads? This cannot be undone."
+              className="ghost-btn danger"
+              disabled={sortedLeads.length === 0}
+            >
+              <Trash2 className="lucide" /> Delete selected
+            </ConfirmFormButton>
+          </div>
         </form>
 
         <section>
           {sortedLeads.length === 0 ? (
             <p className="muted">
               {includeAll
-                ? 'No classifications yet. Run a connector to harvest records.'
-                : 'No relevant leads yet. Try widening the filter or running more connectors.'}
+                ? 'No classifications match. Try widening date / product filters or run a connector to harvest records.'
+                : 'No relevant leads match. Try widening filters or switching Show to "All classifications".'}
             </p>
           ) : (
-            <>
-              <form
-                id={BULK_FORM_ID}
-                action={bulkArchiveAction}
-                className="bulk-toolbar"
-              >
-                {filterInputs}
-                <div className="bulk-toolbar-info">
-                  Tick rows to act on them. Up to 500 at a time.
-                </div>
-                <div className="bulk-toolbar-actions">
-                  <button
-                    type="submit"
-                    formAction={bulkArchiveAction}
-                    className="ghost-btn"
-                  >
-                    <Archive className="lucide" /> Archive selected
-                  </button>
-                  <ConfirmFormButton
-                    formAction={bulkDeleteAction}
-                    message="Permanently delete the selected leads? This cannot be undone."
-                    className="ghost-btn danger"
-                  >
-                    <Trash2 className="lucide" /> Delete selected
-                  </ConfirmFormButton>
-                </div>
-              </form>
-              <ul className="lead-list bulk-selectable-list">
-                {sortedLeads.map(({ qualification, product, sourceRecord, reviewItem }) => {
-                  const normalized = sourceRecord.normalizedData as Record<string, unknown>;
-                  const title =
-                    (normalized.title as string | undefined) ??
-                    sourceRecord.sourceUrl ??
-                    `Record ${sourceRecord.id}`;
-                  const snippet = normalized.snippet as string | undefined;
-                  const domain = normalized.domain as string | undefined;
-                  const linkHref = reviewItem
-                    ? `/review/${reviewItem.id}`
-                    : `/review?state=all`;
-                  return (
-                    <li key={qualification.id.toString()}>
-                      <div className="lead-row">
-                        {reviewItem ? (
-                          <label className="row-select">
-                            <input
-                              type="checkbox"
-                              name="ids"
-                              value={reviewItem.id.toString()}
-                              form={BULK_FORM_ID}
-                              aria-label={`Select lead ${title}`}
-                            />
-                          </label>
-                        ) : null}
-                        <Link href={linkHref}>{title}</Link>
-                        <span
-                          className={
-                            qualification.isRelevant ? 'badge badge-good' : 'badge badge-bad'
-                          }
-                        >
-                          score {qualification.relevanceScore}
-                        </span>
-                        <span className="muted">→ {product.name}</span>
-                      </div>
-                      {snippet ? <p className="muted">{snippet}</p> : null}
-                      {qualification.qualificationReason ? (
-                        <p className="qual-reason qual-reason-good">
-                          {qualification.qualificationReason}
-                        </p>
-                      ) : null}
-                      {qualification.rejectionReason ? (
-                        <p className="qual-reason qual-reason-bad">
-                          {qualification.rejectionReason}
-                        </p>
-                      ) : null}
-                      <div className="lead-meta">
-                        {domain ? <span>{domain}</span> : null}
-                        <span>conf {qualification.confidence}</span>
-                        <span>via {qualification.method}</span>
-                        {reviewItem ? <span>review: {reviewItem.state}</span> : null}
-                        <span>{qualification.createdAt.toLocaleString()}</span>
-                      </div>
-                      {reviewItem && qualification.isRelevant ? (
-                        <form action={promote} style={{ marginTop: '0.5rem' }}>
-                          <input type="hidden" name="reviewItemId" value={reviewItem.id.toString()} />
-                          <input type="hidden" name="productProfileId" value={product.id.toString()} />
-                          <button type="submit">Promote to pipeline →</button>
-                        </form>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
+            <ul className="lead-list bulk-selectable-list">
+              {sortedLeads.map(({ qualification, product, sourceRecord, reviewItem }) => {
+                const normalized = sourceRecord.normalizedData as Record<string, unknown>;
+                const title =
+                  (normalized.title as string | undefined) ??
+                  sourceRecord.sourceUrl ??
+                  `Record ${sourceRecord.id}`;
+                const snippet = normalized.snippet as string | undefined;
+                const domain = normalized.domain as string | undefined;
+                const linkHref = reviewItem
+                  ? `/review/${reviewItem.id}`
+                  : `/review?state=all`;
+                return (
+                  <li key={qualification.id.toString()}>
+                    <div className="lead-row">
+                      <label className="row-select">
+                        <input
+                          type="checkbox"
+                          name="ids"
+                          value={qualification.id.toString()}
+                          form={BULK_FORM_ID}
+                          aria-label={`Select lead ${title}`}
+                        />
+                      </label>
+                      <Link href={linkHref}>{title}</Link>
+                      <span
+                        className={
+                          qualification.isRelevant ? 'badge badge-good' : 'badge badge-bad'
+                        }
+                      >
+                        score {qualification.relevanceScore}
+                      </span>
+                      <span className="muted">→ {product.name}</span>
+                    </div>
+                    {snippet ? <p className="muted">{snippet}</p> : null}
+                    {qualification.qualificationReason ? (
+                      <p className="qual-reason qual-reason-good">
+                        {qualification.qualificationReason}
+                      </p>
+                    ) : null}
+                    {qualification.rejectionReason ? (
+                      <p className="qual-reason qual-reason-bad">
+                        {qualification.rejectionReason}
+                      </p>
+                    ) : null}
+                    <div className="lead-meta">
+                      {domain ? <span>{domain}</span> : null}
+                      <span>conf {qualification.confidence}</span>
+                      <span>via {qualification.method}</span>
+                      {reviewItem ? <span>review: {reviewItem.state}</span> : null}
+                      <span>{qualification.createdAt.toLocaleString()}</span>
+                    </div>
+                    {reviewItem && qualification.isRelevant ? (
+                      <form action={promote} style={{ marginTop: '0.5rem' }}>
+                        <input type="hidden" name="reviewItemId" value={reviewItem.id.toString()} />
+                        <input type="hidden" name="productProfileId" value={product.id.toString()} />
+                        <button type="submit">Promote to pipeline →</button>
+                      </form>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </section>
       </AppShell>

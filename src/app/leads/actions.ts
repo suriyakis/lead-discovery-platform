@@ -1,19 +1,19 @@
 'use server';
 
-// Bulk actions for the Leads page. Each lead row carries the backing
-// review_item id — bulk Archive sets that review_item to 'archived'
-// (listLeads filters those out so the lead disappears) and bulk Delete
-// hard-deletes the review_item (also filtered out). Query-string
-// filters (product/mode/sort) are round-tripped so the user stays on
-// the same view after the action.
+// Bulk actions for the Leads page. Each lead row's checkbox carries the
+// qualification id (NOT the review_item id) so leads without a backing
+// review_item can still be bulk-deleted. Archive resolves each
+// qualification to its review_item and archives that; Delete hard-deletes
+// the qualification (and the review_item, when no other qualification
+// references the same source_record).
 
 import { redirect } from 'next/navigation';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import {
-  ReviewServiceError,
-  bulkArchiveReviewItems,
-  bulkDeleteReviewItems,
-} from '@/lib/services/review';
+  QualificationServiceError,
+  bulkArchiveLeads,
+  bulkDeleteLeads,
+} from '@/lib/services/qualification';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 function parseIds(formData: FormData): bigint[] {
@@ -35,9 +35,13 @@ function returnTo(formData: FormData, flash: { message?: string; error?: string 
   const product = String(formData.get('product') ?? '').trim();
   const mode = String(formData.get('mode') ?? '').trim();
   const sort = String(formData.get('sort') ?? '').trim();
+  const from = String(formData.get('from') ?? '').trim();
+  const to = String(formData.get('to') ?? '').trim();
   if (/^\d+$/.test(product)) params.set('product', product);
   if (mode === 'all' || mode === 'relevant') params.set('mode', mode);
   if (sort === 'score' || sort === 'recent') params.set('sort', sort);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(from)) params.set('from', from);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(to)) params.set('to', to);
   if (flash.message) params.set('message', flash.message);
   if (flash.error) params.set('error', flash.error);
   const qs = params.toString();
@@ -51,10 +55,10 @@ export async function bulkArchiveAction(formData: FormData): Promise<void> {
     redirect(returnTo(formData, { error: 'Select at least one lead.' }));
   }
   try {
-    const r = await bulkArchiveReviewItems(ctx, ids);
+    const r = await bulkArchiveLeads(ctx, ids);
     redirect(
       returnTo(formData, {
-        message: `Archived ${r.archived} of ${r.requested} lead(s).`,
+        message: `Archived ${r.archived} lead(s) (requested ${r.requested}).`,
       }),
     );
   } catch (err) {
@@ -62,7 +66,7 @@ export async function bulkArchiveAction(formData: FormData): Promise<void> {
     redirect(
       returnTo(formData, {
         error:
-          err instanceof ReviewServiceError
+          err instanceof QualificationServiceError
             ? err.message
             : err instanceof Error
               ? err.message
@@ -79,10 +83,10 @@ export async function bulkDeleteAction(formData: FormData): Promise<void> {
     redirect(returnTo(formData, { error: 'Select at least one lead.' }));
   }
   try {
-    const r = await bulkDeleteReviewItems(ctx, ids);
+    const r = await bulkDeleteLeads(ctx, ids);
     redirect(
       returnTo(formData, {
-        message: `Deleted ${r.deleted} of ${r.requested} lead(s).`,
+        message: `Deleted ${r.deleted} lead(s) (requested ${r.requested}).`,
       }),
     );
   } catch (err) {
@@ -90,7 +94,7 @@ export async function bulkDeleteAction(formData: FormData): Promise<void> {
     redirect(
       returnTo(formData, {
         error:
-          err instanceof ReviewServiceError
+          err instanceof QualificationServiceError
             ? err.message
             : err instanceof Error
               ? err.message

@@ -7144,9 +7144,13 @@ button.primary-btn {
   color: oklch(0.85 0.16 25);
   border-color: color-mix(in oklab, oklch(0.55 0.18 25) 30%, var(--brand-border));
 }
-.bulk-toolbar-actions .danger:hover {
+.bulk-toolbar-actions .danger:hover:not(:disabled) {
   background: color-mix(in oklab, oklch(0.55 0.18 25) 18%, var(--brand-input));
   color: oklch(0.92 0.12 25);
+}
+.bulk-toolbar-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .bulk-selectable-list li {
