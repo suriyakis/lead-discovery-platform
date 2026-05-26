@@ -2,7 +2,7 @@
 
 // Persistent left sidebar. Sections:
 //   Discovery       — crawl engine, connectors, review queue, leads
-//   Library         — products, knowledge, documents, learning memory
+//   Knowledge base  — products, knowledge, documents, learning memory
 //   Pipeline        — pipeline, contacts
 //   Outreach        — drafts, mailbox, send queue, signatures, suppression
 //   Administration  — workspace settings (members, integrations, CRM, usage)
@@ -86,7 +86,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     ],
   },
   {
-    title: 'Library',
+    title: 'Knowledge base',
     defaultOpen: true,
     items: [
       { href: '/products', label: 'Products', icon: ShoppingBag },

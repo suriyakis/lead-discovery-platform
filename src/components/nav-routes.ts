@@ -26,11 +26,11 @@ export const NAV_ROUTES: ReadonlyArray<NavRoute> = [
   { href: '/review', label: 'Review queue', group: 'Discovery', icon: 'ListChecks' },
   { href: '/leads', label: 'Leads', group: 'Discovery', icon: 'Sparkles' },
 
-  // Library
-  { href: '/products', label: 'Products', group: 'Library', icon: 'ShoppingBag' },
-  { href: '/knowledge', label: 'Knowledge', group: 'Library', icon: 'BookOpen' },
-  { href: '/documents', label: 'Documents', group: 'Library', icon: 'FileText' },
-  { href: '/learning', label: 'Learning memory', group: 'Library', icon: 'Lightbulb' },
+  // Knowledge base
+  { href: '/products', label: 'Products', group: 'Knowledge base', icon: 'ShoppingBag' },
+  { href: '/knowledge', label: 'Knowledge', group: 'Knowledge base', icon: 'BookOpen' },
+  { href: '/documents', label: 'Documents', group: 'Knowledge base', icon: 'FileText' },
+  { href: '/learning', label: 'Learning memory', group: 'Knowledge base', icon: 'Lightbulb' },
 
   // Pipeline
   { href: '/pipeline', label: 'Pipeline', group: 'Pipeline', icon: 'KanbanSquare' },
