@@ -233,7 +233,11 @@ export async function listLeads(
     .orderBy(desc(qualifications.relevanceScore), desc(qualifications.createdAt))
     .limit(limit);
 
-  return rows;
+  // Bulk-archive on the Leads page sets the backing review_item.state to
+  // 'archived' — drop those here so they disappear from the user-facing
+  // leads list. Leads whose review_item was hard-deleted are also dropped
+  // (no review_item → no actionable lead).
+  return rows.filter((r) => r.reviewItem !== null && r.reviewItem.state !== 'archived');
 }
 
 // ---- internals ------------------------------------------------------

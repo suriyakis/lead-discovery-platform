@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { Archive, Trash2 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -9,6 +11,7 @@ import {
 } from '@/lib/services/auth-context';
 import { getStateCounts, listReviewItems } from '@/lib/services/review';
 import type { ReviewItemState } from '@/lib/db/schema/review';
+import { bulkArchiveAction, bulkDeleteAction } from './actions';
 
 const STATE_FILTERS: ReadonlyArray<{ key: 'all' | ReviewItemState; label: string }> = [
   { key: 'all', label: 'All' },
@@ -20,10 +23,12 @@ const STATE_FILTERS: ReadonlyArray<{ key: 'all' | ReviewItemState; label: string
   { key: 'archived', label: 'Archived' },
 ];
 
+const BULK_FORM_ID = 'review-bulk-form';
+
 export default async function ReviewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ state?: string }>;
+  searchParams: Promise<{ state?: string; message?: string; error?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -57,6 +62,10 @@ export default async function ReviewPage({
     throw err;
   }
 
+  // On the "archived" tab the Archive action is a no-op — hide it to
+  // avoid a confusing "archived N of N items" toast.
+  const showArchiveAction = stateKey !== 'archived';
+
   return (
     <AppShell>
         <header className="page-intro" style={{ marginBottom: '1.25rem' }}>
@@ -67,6 +76,11 @@ export default async function ReviewPage({
             comment to feed the learning layer.
           </p>
         </header>
+
+        {sp.message ? (
+          <p className="mail-flash info">{sp.message}</p>
+        ) : null}
+        {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
 
         <div className="state-tabs">
           {STATE_FILTERS.map((f) => {
@@ -93,26 +107,65 @@ export default async function ReviewPage({
                 : `No items in state "${stateKey}".`}
             </p>
           ) : (
-            <ul className="profile-list">
-              {items.map(({ item, sourceRecord }) => {
-                const normalized = sourceRecord.normalizedData as Record<string, unknown>;
-                const title = (normalized.title as string | undefined) ?? sourceRecord.sourceUrl ?? `Record ${sourceRecord.id}`;
-                const snippet = normalized.snippet as string | undefined;
-                const domain = normalized.domain as string | undefined;
-                return (
-                  <li key={item.id.toString()}>
-                    <Link href={`/review/${item.id}`}>{title}</Link>
-                    {snippet ? <p className="muted">{snippet}</p> : null}
-                    <div className="meta">
-                      {domain ? <span>{domain}</span> : null}
-                      <span>state: {item.state}</span>
-                      <span>system: {sourceRecord.sourceSystem}</span>
-                      <span>conf {sourceRecord.confidence}</span>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              <form
+                id={BULK_FORM_ID}
+                action={bulkArchiveAction}
+                className="bulk-toolbar"
+              >
+                <input type="hidden" name="state" value={stateKey} />
+                <div className="bulk-toolbar-info">
+                  Tick rows to act on them. Up to 500 at a time.
+                </div>
+                <div className="bulk-toolbar-actions">
+                  {showArchiveAction ? (
+                    <button
+                      type="submit"
+                      formAction={bulkArchiveAction}
+                      className="ghost-btn"
+                    >
+                      <Archive className="lucide" /> Archive selected
+                    </button>
+                  ) : null}
+                  <ConfirmFormButton
+                    formAction={bulkDeleteAction}
+                    message="Permanently delete the selected items? This cannot be undone."
+                    className="ghost-btn danger"
+                  >
+                    <Trash2 className="lucide" /> Delete selected
+                  </ConfirmFormButton>
+                </div>
+              </form>
+              <ul className="profile-list bulk-selectable-list">
+                {items.map(({ item, sourceRecord }) => {
+                  const normalized = sourceRecord.normalizedData as Record<string, unknown>;
+                  const title = (normalized.title as string | undefined) ?? sourceRecord.sourceUrl ?? `Record ${sourceRecord.id}`;
+                  const snippet = normalized.snippet as string | undefined;
+                  const domain = normalized.domain as string | undefined;
+                  return (
+                    <li key={item.id.toString()}>
+                      <label className="row-select">
+                        <input
+                          type="checkbox"
+                          name="ids"
+                          value={item.id.toString()}
+                          form={BULK_FORM_ID}
+                          aria-label={`Select review item ${title}`}
+                        />
+                      </label>
+                      <Link href={`/review/${item.id}`}>{title}</Link>
+                      {snippet ? <p className="muted">{snippet}</p> : null}
+                      <div className="meta">
+                        {domain ? <span>{domain}</span> : null}
+                        <span>state: {item.state}</span>
+                        <span>system: {sourceRecord.sourceSystem}</span>
+                        <span>conf {sourceRecord.confidence}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
           )}
         </section>
       </AppShell>

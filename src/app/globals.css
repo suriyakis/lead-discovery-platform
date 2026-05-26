@@ -7104,3 +7104,69 @@ button.primary-btn {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ============ P62-31 bulk-action toolbar (Review queue, Leads) ====== */
+
+.bulk-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  margin: 0 0 0.85rem;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--brand-accent-teal) 5%, var(--brand-card)) 0%,
+    var(--brand-card) 100%
+  );
+  border: 1px solid var(--brand-border);
+  border-radius: 0.6rem;
+}
+.bulk-toolbar-info {
+  font-size: 0.82rem;
+  color: var(--brand-muted);
+  letter-spacing: 0.01em;
+}
+.bulk-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+.bulk-toolbar-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.bulk-toolbar-actions .danger {
+  color: oklch(0.85 0.16 25);
+  border-color: color-mix(in oklab, oklch(0.55 0.18 25) 30%, var(--brand-border));
+}
+.bulk-toolbar-actions .danger:hover {
+  background: color-mix(in oklab, oklch(0.55 0.18 25) 18%, var(--brand-input));
+  color: oklch(0.92 0.12 25);
+}
+
+.bulk-selectable-list li {
+  position: relative;
+  transition: background 0.1s ease;
+}
+.bulk-selectable-list li:has(.row-select input[type='checkbox']:checked) {
+  background: color-mix(in oklab, var(--brand-accent-teal) 8%, transparent);
+}
+
+.row-select {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.55rem;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.row-select input[type='checkbox'] {
+  accent-color: var(--brand-accent-teal);
+  width: 1.05rem;
+  height: 1.05rem;
+  cursor: pointer;
+}

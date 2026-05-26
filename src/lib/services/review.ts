@@ -311,6 +311,77 @@ export async function archiveReviewItem(
   return applyStateChangeForceAdmin(ctx, id, 'archived');
 }
 
+const BULK_LIMIT = 500;
+
+/**
+ * Bulk-archive review items by id. Skips ids that don't belong to the
+ * workspace (matched by WHERE clause). Caps at BULK_LIMIT per call to
+ * avoid runaway audit payloads. Admin-only, like single-item archive.
+ */
+export async function bulkArchiveReviewItems(
+  ctx: WorkspaceContext,
+  ids: readonly bigint[],
+): Promise<{ archived: number; requested: number }> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('archive review items');
+  const cappedIds = ids.slice(0, BULK_LIMIT);
+  if (cappedIds.length === 0) return { archived: 0, requested: ids.length };
+  return db.transaction(async (tx) => {
+    const updated = await tx
+      .update(reviewItems)
+      .set({ state: 'archived', updatedAt: new Date() })
+      .where(
+        and(
+          eq(reviewItems.workspaceId, ctx.workspaceId),
+          inArray(reviewItems.id, cappedIds as bigint[]),
+        ),
+      )
+      .returning({ id: reviewItems.id });
+    if (updated.length > 0) {
+      await recordAuditEvent(ctx, {
+        kind: 'review.bulk_archive',
+        entityType: 'review_item',
+        entityId: null,
+        payload: { ids: updated.map((u) => u.id.toString()), count: updated.length },
+      });
+    }
+    return { archived: updated.length, requested: ids.length };
+  });
+}
+
+/**
+ * Bulk-delete review items by id (hard delete, no soft delete). Admin-only.
+ * Source records and qualifications remain — only the review_item row is
+ * removed. Audit-logged.
+ */
+export async function bulkDeleteReviewItems(
+  ctx: WorkspaceContext,
+  ids: readonly bigint[],
+): Promise<{ deleted: number; requested: number }> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('delete review items');
+  const cappedIds = ids.slice(0, BULK_LIMIT);
+  if (cappedIds.length === 0) return { deleted: 0, requested: ids.length };
+  return db.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(reviewItems)
+      .where(
+        and(
+          eq(reviewItems.workspaceId, ctx.workspaceId),
+          inArray(reviewItems.id, cappedIds as bigint[]),
+        ),
+      )
+      .returning({ id: reviewItems.id });
+    if (deleted.length > 0) {
+      await recordAuditEvent(ctx, {
+        kind: 'review.bulk_delete',
+        entityType: 'review_item',
+        entityId: null,
+        payload: { ids: deleted.map((d) => d.id.toString()), count: deleted.length },
+      });
+    }
+    return { deleted: deleted.length, requested: ids.length };
+  });
+}
+
 async function applyStateChangeForceAdmin(
   ctx: WorkspaceContext,
   id: bigint,
