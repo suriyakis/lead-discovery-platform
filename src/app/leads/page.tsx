@@ -230,16 +230,16 @@ export default async function LeadsPage({
                   : `/review?state=all`;
                 return (
                   <li key={qualification.id.toString()}>
+                    <label className="row-select">
+                      <input
+                        type="checkbox"
+                        name="ids"
+                        value={qualification.id.toString()}
+                        form={BULK_FORM_ID}
+                        aria-label={`Select lead ${title}`}
+                      />
+                    </label>
                     <div className="lead-row">
-                      <label className="row-select">
-                        <input
-                          type="checkbox"
-                          name="ids"
-                          value={qualification.id.toString()}
-                          form={BULK_FORM_ID}
-                          aria-label={`Select lead ${title}`}
-                        />
-                      </label>
                       <Link href={linkHref}>{title}</Link>
                       <span
                         className={
