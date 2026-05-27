@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { Archive, Trash2 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { SelectAllVisible } from '@/components/SelectAllVisible';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -144,9 +145,12 @@ export default async function ReviewPage({
           {fromRaw ? <input type="hidden" name="from" value={fromRaw} /> : null}
           {toRaw ? <input type="hidden" name="to" value={toRaw} /> : null}
           <div className="bulk-toolbar-info">
-            {items.length === 0
-              ? 'No items match the current filter.'
-              : `${items.length} item${items.length === 1 ? '' : 's'} shown. Tick rows to act on them (up to 500 at a time).`}
+            {items.length > 0 ? <SelectAllVisible formId={BULK_FORM_ID} /> : null}
+            <span className="bulk-toolbar-status">
+              {items.length === 0
+                ? 'No items match the current filter.'
+                : `${items.length} item${items.length === 1 ? '' : 's'} shown · up to 500 per action.`}
+            </span>
           </div>
           <div className="bulk-toolbar-actions">
             {showArchiveAction ? (

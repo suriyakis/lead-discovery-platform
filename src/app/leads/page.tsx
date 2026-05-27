@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { Archive, Trash2 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { SelectAllVisible } from '@/components/SelectAllVisible';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -180,9 +181,12 @@ export default async function LeadsPage({
         >
           {filterInputs}
           <div className="bulk-toolbar-info">
-            {sortedLeads.length === 0
-              ? 'No leads match the current filter.'
-              : `${sortedLeads.length} lead${sortedLeads.length === 1 ? '' : 's'} shown. Tick rows to act on them (up to 500 at a time).`}
+            {sortedLeads.length > 0 ? <SelectAllVisible formId={BULK_FORM_ID} /> : null}
+            <span className="bulk-toolbar-status">
+              {sortedLeads.length === 0
+                ? 'No leads match the current filter.'
+                : `${sortedLeads.length} lead${sortedLeads.length === 1 ? '' : 's'} shown · up to 500 per action.`}
+            </span>
           </div>
           <div className="bulk-toolbar-actions">
             <button

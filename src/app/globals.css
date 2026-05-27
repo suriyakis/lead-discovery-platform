@@ -7124,9 +7124,16 @@ button.primary-btn {
   border-radius: 0.6rem;
 }
 .bulk-toolbar-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
   font-size: 0.82rem;
   color: var(--brand-muted);
   letter-spacing: 0.01em;
+}
+.bulk-toolbar-status {
+  color: var(--brand-muted);
 }
 .bulk-toolbar-actions {
   display: inline-flex;
@@ -7153,24 +7160,162 @@ button.primary-btn {
   cursor: not-allowed;
 }
 
-.bulk-selectable-list li {
-  position: relative;
-  transition: background 0.1s ease;
-}
-.bulk-selectable-list li:has(.row-select input[type='checkbox']:checked) {
-  background: color-mix(in oklab, var(--brand-accent-teal) 8%, transparent);
-}
-
-.row-select {
+/* "Select all on this page" pill that lives inside .bulk-toolbar-info. */
+.bulk-select-all {
   display: inline-flex;
   align-items: center;
-  margin-right: 0.55rem;
-  vertical-align: middle;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--brand-fg);
   cursor: pointer;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--brand-accent-teal) 10%, var(--brand-input));
+  border: 1px solid color-mix(in oklab, var(--brand-accent-teal) 35%, var(--brand-border));
+  user-select: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.row-select input[type='checkbox'] {
+.bulk-select-all:hover {
+  background: color-mix(in oklab, var(--brand-accent-teal) 18%, var(--brand-input));
+  border-color: color-mix(in oklab, var(--brand-accent-teal) 55%, var(--brand-border));
+}
+.bulk-select-all input[type='checkbox'] {
   accent-color: var(--brand-accent-teal);
   width: 1.05rem;
   height: 1.05rem;
   cursor: pointer;
+  margin: 0;
+}
+
+/* Bulk-selectable rows — uniform grid layout shared by /review and
+   /leads so the two pages line up vertically: a fixed checkbox column
+   on the left, every other piece of content flowing in the right
+   column underneath the title. Both pages call out the same row
+   chrome (title link, badges, secondary meta) so visual rhythm matches. */
+.bulk-selectable-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.bulk-selectable-list li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  column-gap: 0.85rem;
+  row-gap: 0.3rem;
+  align-items: start;
+  padding: 0.75rem 0.9rem 0.8rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 0.55rem;
+  background: var(--brand-card);
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.bulk-selectable-list li > *:not(.row-select) {
+  grid-column: 2;
+  margin: 0;
+}
+.bulk-selectable-list li:hover {
+  border-color: color-mix(in oklab, var(--brand-accent-teal) 35%, var(--brand-border));
+  background: var(--brand-card-elevated);
+}
+.bulk-selectable-list li:has(.row-select input[type='checkbox']:checked) {
+  background: color-mix(in oklab, var(--brand-accent-teal) 10%, var(--brand-card));
+  border-color: color-mix(in oklab, var(--brand-accent-teal) 55%, var(--brand-border));
+  box-shadow: inset 3px 0 0 0 var(--brand-accent-teal);
+}
+
+.bulk-selectable-list .row-select {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: center;
+  margin: 0;
+  padding-top: 0.2rem;
+  cursor: pointer;
+}
+.bulk-selectable-list .row-select input[type='checkbox'] {
+  accent-color: var(--brand-accent-teal);
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+  margin: 0;
+}
+
+/* Inside a bulk row the primary title row should keep title + score +
+   product on a single horizontal line, with the title flex-growing and
+   truncating cleanly. */
+.bulk-selectable-list .lead-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0;
+  flex-wrap: nowrap;
+}
+.bulk-selectable-list .lead-row > a {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 0.96rem;
+  color: var(--brand-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bulk-selectable-list .lead-row > a:hover {
+  color: var(--brand-accent-teal);
+}
+.bulk-selectable-list .lead-row .badge {
+  flex-shrink: 0;
+}
+
+/* On the Review page the title is a bare Link (no .lead-row wrapper),
+   so style it directly. */
+.bulk-selectable-list > li > a {
+  font-weight: 600;
+  font-size: 0.96rem;
+  color: var(--brand-fg);
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bulk-selectable-list > li > a:hover {
+  color: var(--brand-accent-teal);
+}
+
+/* Snippet and qual-reason rows: single-line truncated, muted. */
+.bulk-selectable-list .muted,
+.bulk-selectable-list .qual-reason {
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Meta lines (review .meta, leads .lead-meta) get a consistent tight
+   row of mono-font key:value chunks. */
+.bulk-selectable-list .meta,
+.bulk-selectable-list .lead-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.9rem;
+  font-family: var(--brand-mono);
+  font-size: 0.75rem;
+  color: var(--brand-muted);
+  margin: 0;
+}
+
+/* Promote button row on leads — anchor right, keep compact. */
+.bulk-selectable-list li > form {
+  margin: 0;
+  justify-self: start;
+}
+.bulk-selectable-list li > form button {
+  font-size: 0.82rem;
+  padding: 0.35rem 0.75rem;
 }
