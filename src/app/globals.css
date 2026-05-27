@@ -7319,3 +7319,40 @@ button.primary-btn {
   font-size: 0.82rem;
   padding: 0.35rem 0.75rem;
 }
+
+/* Pagination bar (server-rendered prev/next + summary). */
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+  margin-top: 0.95rem;
+  padding: 0.65rem 0.85rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  color: var(--brand-muted);
+}
+.pagination-summary {
+  color: var(--brand-fg);
+  font-weight: 500;
+}
+.pagination-page-info {
+  color: var(--brand-muted);
+  font-weight: 400;
+}
+.pagination-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.pagination-actions .ghost-btn {
+  text-decoration: none;
+}
+.pagination-actions .ghost-btn.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+  cursor: not-allowed;
+}

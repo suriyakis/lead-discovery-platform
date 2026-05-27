@@ -32,10 +32,12 @@ function returnTo(formData: FormData, flash: { message?: string; error?: string 
   const safeState = /^[a-z_]+$/.test(stateRaw) ? stateRaw : '';
   const fromRaw = String(formData.get('from') ?? '').trim();
   const toRaw = String(formData.get('to') ?? '').trim();
+  const pageRaw = String(formData.get('page') ?? '').trim();
   const params = new URLSearchParams();
   if (safeState && safeState !== 'new') params.set('state', safeState);
   if (/^\d{4}-\d{2}-\d{2}$/.test(fromRaw)) params.set('from', fromRaw);
   if (/^\d{4}-\d{2}-\d{2}$/.test(toRaw)) params.set('to', toRaw);
+  if (/^\d+$/.test(pageRaw) && pageRaw !== '1') params.set('page', pageRaw);
   if (flash.message) params.set('message', flash.message);
   if (flash.error) params.set('error', flash.error);
   const qs = params.toString();

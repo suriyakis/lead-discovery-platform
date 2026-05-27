@@ -70,37 +70,50 @@ export interface ListReviewFilter {
   state?: ReviewItemState | readonly ReviewItemState[];
   assignedToUserId?: string;
   limit?: number;
+  offset?: number;
   createdAtFrom?: Date;
   createdAtTo?: Date;
 }
 
-export async function listReviewItems(
+/**
+ * Build the WHERE conditions shared by listReviewItems and
+ * countReviewItems. Returning null means "no rows can match this
+ * filter" (currently only when state is an empty array).
+ */
+function buildReviewConditions(
   ctx: WorkspaceContext,
-  filter: ListReviewFilter = {},
-): Promise<Array<{ item: ReviewItem; sourceRecord: SourceRecord }>> {
+  filter: ListReviewFilter,
+): SQL[] | null {
   const conds: SQL[] = [eq(reviewItems.workspaceId, ctx.workspaceId)];
-
   if (filter.state !== undefined) {
     if (Array.isArray(filter.state)) {
-      if (filter.state.length === 0) return [];
+      if (filter.state.length === 0) return null;
       conds.push(inArray(reviewItems.state, filter.state as ReviewItemState[]));
     } else {
       conds.push(eq(reviewItems.state, filter.state as ReviewItemState));
     }
   }
-
   if (filter.assignedToUserId !== undefined) {
     conds.push(eq(reviewItems.assignedToUserId, filter.assignedToUserId));
   }
-
   if (filter.createdAtFrom !== undefined) {
     conds.push(gte(reviewItems.createdAt, filter.createdAtFrom));
   }
   if (filter.createdAtTo !== undefined) {
     conds.push(lte(reviewItems.createdAt, filter.createdAtTo));
   }
+  return conds;
+}
+
+export async function listReviewItems(
+  ctx: WorkspaceContext,
+  filter: ListReviewFilter = {},
+): Promise<Array<{ item: ReviewItem; sourceRecord: SourceRecord }>> {
+  const conds = buildReviewConditions(ctx, filter);
+  if (conds === null) return [];
 
   const limit = clamp(filter.limit, 100, 1000);
+  const offset = Math.max(0, filter.offset ?? 0);
 
   const rows = await db
     .select({
@@ -111,9 +124,27 @@ export async function listReviewItems(
     .innerJoin(sourceRecords, eq(sourceRecords.id, reviewItems.sourceRecordId))
     .where(and(...conds))
     .orderBy(desc(reviewItems.createdAt))
-    .limit(limit);
+    .limit(limit)
+    .offset(offset);
 
   return rows;
+}
+
+/**
+ * Count review items matching the same filter as listReviewItems
+ * (excluding limit / offset). Powers the pagination UI on /review.
+ */
+export async function countReviewItems(
+  ctx: WorkspaceContext,
+  filter: Omit<ListReviewFilter, 'limit' | 'offset'> = {},
+): Promise<number> {
+  const conds = buildReviewConditions(ctx, filter);
+  if (conds === null) return 0;
+  const result = await db
+    .select({ value: sql<number>`count(*)::int` })
+    .from(reviewItems)
+    .where(and(...conds));
+  return result[0]?.value ?? 0;
 }
 
 export async function getReviewItem(

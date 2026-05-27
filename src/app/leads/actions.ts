@@ -37,11 +37,13 @@ function returnTo(formData: FormData, flash: { message?: string; error?: string 
   const sort = String(formData.get('sort') ?? '').trim();
   const from = String(formData.get('from') ?? '').trim();
   const to = String(formData.get('to') ?? '').trim();
+  const pageRaw = String(formData.get('page') ?? '').trim();
   if (/^\d+$/.test(product)) params.set('product', product);
   if (mode === 'all' || mode === 'relevant') params.set('mode', mode);
   if (sort === 'score' || sort === 'recent') params.set('sort', sort);
   if (/^\d{4}-\d{2}-\d{2}$/.test(from)) params.set('from', from);
   if (/^\d{4}-\d{2}-\d{2}$/.test(to)) params.set('to', to);
+  if (/^\d+$/.test(pageRaw) && pageRaw !== '1') params.set('page', pageRaw);
   if (flash.message) params.set('message', flash.message);
   if (flash.error) params.set('error', flash.error);
   const qs = params.toString();

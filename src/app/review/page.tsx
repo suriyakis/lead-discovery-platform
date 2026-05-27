@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { Archive, Trash2 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { Pagination } from '@/components/Pagination';
 import { SelectAllVisible } from '@/components/SelectAllVisible';
 import { auth } from '@/lib/auth';
 import {
@@ -10,7 +11,7 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { getStateCounts, listReviewItems } from '@/lib/services/review';
+import { countReviewItems, getStateCounts, listReviewItems } from '@/lib/services/review';
 import type { ReviewItemState } from '@/lib/db/schema/review';
 import { bulkArchiveAction, bulkDeleteAction } from './actions';
 
@@ -26,6 +27,7 @@ const STATE_FILTERS: ReadonlyArray<{ key: 'all' | ReviewItemState; label: string
 
 const BULK_FORM_ID = 'review-bulk-form';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const PAGE_SIZE = 25;
 
 function parseDateParam(raw: string | undefined, endOfDay: boolean): Date | null {
   if (!raw || !DATE_RE.test(raw)) return null;
@@ -40,6 +42,7 @@ export default async function ReviewPage({
     state?: string;
     from?: string;
     to?: string;
+    page?: string;
     message?: string;
     error?: string;
   }>;
@@ -55,16 +58,25 @@ export default async function ReviewPage({
   const toRaw = DATE_RE.test(sp.to ?? '') ? sp.to! : '';
   const createdAtFrom = parseDateParam(fromRaw, false);
   const createdAtTo = parseDateParam(toRaw, true);
+  const pageParam = Number(sp.page ?? 1);
+  const page = Number.isFinite(pageParam) && pageParam > 0 ? Math.floor(pageParam) : 1;
 
   let counts;
   let items;
+  let total = 0;
   try {
     const ctx = await getWorkspaceContext();
     counts = await getStateCounts(ctx);
-    items = await listReviewItems(ctx, {
+    const listFilter = {
       ...(stateKey === 'all' ? {} : { state: stateKey as ReviewItemState }),
       ...(createdAtFrom ? { createdAtFrom } : {}),
       ...(createdAtTo ? { createdAtTo } : {}),
+    };
+    total = await countReviewItems(ctx, listFilter);
+    items = await listReviewItems(ctx, {
+      ...listFilter,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
     });
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
@@ -144,12 +156,13 @@ export default async function ReviewPage({
           <input type="hidden" name="state" value={stateKey} />
           {fromRaw ? <input type="hidden" name="from" value={fromRaw} /> : null}
           {toRaw ? <input type="hidden" name="to" value={toRaw} /> : null}
+          {page > 1 ? <input type="hidden" name="page" value={String(page)} /> : null}
           <div className="bulk-toolbar-info">
             {items.length > 0 ? <SelectAllVisible formId={BULK_FORM_ID} /> : null}
             <span className="bulk-toolbar-status">
               {items.length === 0
                 ? 'No items match the current filter.'
-                : `${items.length} item${items.length === 1 ? '' : 's'} shown · up to 500 per action.`}
+                : `${items.length} on this page · ${total} total · up to 500 per action.`}
             </span>
           </div>
           <div className="bulk-toolbar-actions">
@@ -177,9 +190,11 @@ export default async function ReviewPage({
         <section>
           {items.length === 0 ? (
             <p className="muted">
-              {stateKey === 'new'
-                ? 'No new items. Run a connector from the Connectors module to populate the queue.'
-                : `No items in state "${stateKey}".`}
+              {total === 0
+                ? stateKey === 'new'
+                  ? 'No new items. Run a connector from the Connectors module to populate the queue.'
+                  : `No items in state "${stateKey}".`
+                : `Page ${page} is past the end of the result set (${total} total). Use Prev to go back.`}
             </p>
           ) : (
             <ul className="profile-list bulk-selectable-list">
@@ -212,6 +227,18 @@ export default async function ReviewPage({
               })}
             </ul>
           )}
+          <Pagination
+            basePath="/review"
+            query={{
+              state: stateKey === 'new' ? undefined : stateKey,
+              from: fromRaw || undefined,
+              to: toRaw || undefined,
+            }}
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={total}
+            unitLabel="items"
+          />
         </section>
       </AppShell>
   );

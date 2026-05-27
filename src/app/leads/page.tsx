@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { Archive, Trash2 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { Pagination } from '@/components/Pagination';
 import { SelectAllVisible } from '@/components/SelectAllVisible';
 import { auth } from '@/lib/auth';
 import {
@@ -10,7 +11,7 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { listLeads, type LeadRow } from '@/lib/services/qualification';
+import { countLeads, listLeads, type LeadRow } from '@/lib/services/qualification';
 import { listProductProfiles } from '@/lib/services/product-profile';
 import { ensureQualifiedLead } from '@/lib/services/pipeline';
 import type { ProductProfile } from '@/lib/db/schema/products';
@@ -24,6 +25,7 @@ type SortKey = (typeof SORT_OPTIONS)[number]['key'];
 
 const BULK_FORM_ID = 'leads-bulk-form';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const PAGE_SIZE = 25;
 
 function parseDateParam(raw: string | undefined, endOfDay: boolean): Date | null {
   if (!raw || !DATE_RE.test(raw)) return null;
@@ -41,6 +43,7 @@ export default async function LeadsPage({
     sort?: string;
     from?: string;
     to?: string;
+    page?: string;
     message?: string;
     error?: string;
   }>;
@@ -56,18 +59,27 @@ export default async function LeadsPage({
   const toRaw = DATE_RE.test(sp.to ?? '') ? sp.to! : '';
   const createdAtFrom = parseDateParam(fromRaw, false);
   const createdAtTo = parseDateParam(toRaw, true);
+  const pageParam = Number(sp.page ?? 1);
+  const page = Number.isFinite(pageParam) && pageParam > 0 ? Math.floor(pageParam) : 1;
 
   let products: ProductProfile[] = [];
   let leads: LeadRow[] = [];
+  let total = 0;
   try {
     const ctx = await getWorkspaceContext();
     products = await listProductProfiles(ctx, { includeArchived: false });
-    leads = await listLeads(ctx, {
+    const listFilter = {
       productProfileId: productFilter ?? undefined,
       relevantOnly: !includeAll,
-      limit: 200,
       createdAtFrom: createdAtFrom ?? undefined,
       createdAtTo: createdAtTo ?? undefined,
+    };
+    total = await countLeads(ctx, listFilter);
+    leads = await listLeads(ctx, {
+      ...listFilter,
+      sort: sortKey,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
     });
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
@@ -84,11 +96,9 @@ export default async function LeadsPage({
     throw err;
   }
 
-  const sortedLeads = sortKey === 'recent'
-    ? [...leads].sort((a, b) =>
-        b.qualification.createdAt.getTime() - a.qualification.createdAt.getTime(),
-      )
-    : leads;
+  // SQL handles the sort now — keep the const for the rest of the file's
+  // existing usage.
+  const sortedLeads = leads;
 
   async function promote(formData: FormData) {
     'use server';
@@ -115,6 +125,7 @@ export default async function LeadsPage({
       <input type="hidden" name="sort" value={sortKey} />
       {fromRaw ? <input type="hidden" name="from" value={fromRaw} /> : null}
       {toRaw ? <input type="hidden" name="to" value={toRaw} /> : null}
+      {page > 1 ? <input type="hidden" name="page" value={String(page)} /> : null}
     </>
   );
 
@@ -185,7 +196,7 @@ export default async function LeadsPage({
             <span className="bulk-toolbar-status">
               {sortedLeads.length === 0
                 ? 'No leads match the current filter.'
-                : `${sortedLeads.length} lead${sortedLeads.length === 1 ? '' : 's'} shown · up to 500 per action.`}
+                : `${sortedLeads.length} on this page · ${total} total · up to 500 per action.`}
             </span>
           </div>
           <div className="bulk-toolbar-actions">
@@ -211,9 +222,11 @@ export default async function LeadsPage({
         <section>
           {sortedLeads.length === 0 ? (
             <p className="muted">
-              {includeAll
-                ? 'No classifications match. Try widening date / product filters or run a connector to harvest records.'
-                : 'No relevant leads match. Try widening filters or switching Show to "All classifications".'}
+              {total === 0
+                ? includeAll
+                  ? 'No classifications match. Try widening date / product filters or run a connector to harvest records.'
+                  : 'No relevant leads match. Try widening filters or switching Show to "All classifications".'
+                : `Page ${page} is past the end of the result set (${total} total). Use Prev to go back.`}
             </p>
           ) : (
             <ul className="lead-list bulk-selectable-list">
@@ -280,6 +293,20 @@ export default async function LeadsPage({
               })}
             </ul>
           )}
+          <Pagination
+            basePath="/leads"
+            query={{
+              product: productFilter?.toString(),
+              mode: includeAll ? 'all' : undefined,
+              sort: sortKey === 'score' ? undefined : sortKey,
+              from: fromRaw || undefined,
+              to: toRaw || undefined,
+            }}
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={total}
+            unitLabel="leads"
+          />
         </section>
       </AppShell>
   );

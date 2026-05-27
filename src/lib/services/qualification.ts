@@ -1,7 +1,7 @@
 // Qualification service. Persists rule-engine verdicts to the
 // `qualifications` table, scoped to the workspace.
 
-import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { sourceRecords, type SourceRecord } from '@/lib/db/schema/connectors';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
@@ -194,8 +194,12 @@ export interface LeadsFilter {
   productProfileId?: bigint;
   relevantOnly?: boolean;
   limit?: number;
+  offset?: number;
   createdAtFrom?: Date;
   createdAtTo?: Date;
+  /** 'score' (default) sorts by relevance desc, then createdAt desc;
+   *  'recent' sorts by createdAt desc, then relevance desc. */
+  sort?: 'score' | 'recent';
 }
 
 export interface LeadRow {
@@ -205,25 +209,45 @@ export interface LeadRow {
   reviewItem: ReviewItem | null;
 }
 
-export async function listLeads(
+/**
+ * Build the WHERE conditions shared by listLeads and countLeads — kept
+ * in one place so the two queries always see the same data set. The
+ * `(reviewItems.state IS NULL OR != 'archived')` predicate is the SQL
+ * twin of the post-filter that used to live in JS; pushing it into the
+ * query lets the count match the actual rendered list exactly.
+ */
+function buildLeadsConditions(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  filter: LeadsFilter = {},
-): Promise<LeadRow[]> {
+  filter: LeadsFilter,
+) {
   const relevantOnly = filter.relevantOnly ?? true;
-  const limit = Math.min(filter.limit ?? 200, 1000);
-
   const conditions = [eq(qualifications.workspaceId, ctx.workspaceId)];
   if (relevantOnly) conditions.push(eq(qualifications.isRelevant, true));
   if (filter.productProfileId !== undefined) {
     conditions.push(eq(qualifications.productProfileId, filter.productProfileId));
   }
-
   if (filter.createdAtFrom !== undefined) {
     conditions.push(gte(qualifications.createdAt, filter.createdAtFrom));
   }
   if (filter.createdAtTo !== undefined) {
     conditions.push(lte(qualifications.createdAt, filter.createdAtTo));
   }
+  const archivedFilter = or(
+    isNull(reviewItems.state),
+    ne(reviewItems.state, 'archived'),
+  );
+  if (archivedFilter !== undefined) conditions.push(archivedFilter);
+  return conditions;
+}
+
+export async function listLeads(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  filter: LeadsFilter = {},
+): Promise<LeadRow[]> {
+  const limit = Math.min(filter.limit ?? 200, 1000);
+  const offset = Math.max(0, filter.offset ?? 0);
+
+  const conditions = buildLeadsConditions(ctx, filter);
 
   const rows = await db
     .select({
@@ -243,15 +267,40 @@ export async function listLeads(
       ),
     )
     .where(and(...conditions))
-    .orderBy(desc(qualifications.relevanceScore), desc(qualifications.createdAt))
-    .limit(limit);
+    .orderBy(
+      ...(filter.sort === 'recent'
+        ? [desc(qualifications.createdAt), desc(qualifications.relevanceScore)]
+        : [desc(qualifications.relevanceScore), desc(qualifications.createdAt)]),
+    )
+    .limit(limit)
+    .offset(offset);
 
-  // Bulk-archive on the Leads page sets the backing review_item.state to
-  // 'archived' — drop those here so they disappear from the user-facing
-  // leads list. Rows whose review_item is null (legacy data predating
-  // seedReviewItem, or whose review_item was hard-deleted) stay visible
-  // so the user can still see and bulk-delete them via qualification id.
-  return rows.filter((r) => r.reviewItem === null || r.reviewItem.state !== 'archived');
+  return rows;
+}
+
+/**
+ * Count leads matching the same filter as listLeads (excluding limit /
+ * offset). Powers the pagination UI on /leads.
+ */
+export async function countLeads(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  filter: Omit<LeadsFilter, 'limit' | 'offset'> = {},
+): Promise<number> {
+  const conditions = buildLeadsConditions(ctx, filter);
+  const result = await db
+    .select({ value: sql<number>`count(*)::int` })
+    .from(qualifications)
+    .innerJoin(productProfiles, eq(productProfiles.id, qualifications.productProfileId))
+    .innerJoin(sourceRecords, eq(sourceRecords.id, qualifications.sourceRecordId))
+    .leftJoin(
+      reviewItems,
+      and(
+        eq(reviewItems.sourceRecordId, qualifications.sourceRecordId),
+        eq(reviewItems.workspaceId, qualifications.workspaceId),
+      ),
+    )
+    .where(and(...conditions));
+  return result[0]?.value ?? 0;
 }
 
 /**
