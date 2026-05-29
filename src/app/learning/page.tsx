@@ -18,6 +18,13 @@ import {
   compactWorkspaceKnowledge,
   lastCompactionRun,
 } from '@/lib/services/knowledge-compaction';
+import { listProductProfiles } from '@/lib/services/product-profile';
+
+function confidenceBadgeClass(conf: number): string {
+  if (conf >= 75) return 'badge badge-good';
+  if (conf < 40) return 'badge badge-bad';
+  return 'badge';
+}
 
 const CATEGORY_FILTERS = [
   { key: 'all' as const, label: 'All' },
@@ -40,6 +47,7 @@ export default async function LearningPage({
 
   let lessons;
   let counts: LessonCategoryCounts | null = null;
+  let productNameById = new Map<string, string>();
   let isAdmin = false;
   let lastCompaction: Awaited<ReturnType<typeof lastCompactionRun>> = null;
   try {
@@ -54,6 +62,8 @@ export default async function LearningPage({
       ...enabledFilter,
       limit: 500,
     });
+    const products = await listProductProfiles(ctx, { includeArchived: true });
+    productNameById = new Map(products.map((p) => [p.id.toString(), p.name]));
     lastCompaction = await lastCompactionRun(ctx);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
@@ -172,21 +182,27 @@ export default async function LearningPage({
             </p>
           ) : (
             <ul className="profile-list">
-              {lessons.map((l) => (
-                <li key={l.id.toString()} className={l.enabled ? '' : 'archived'}>
-                  <Link href={`/learning/${l.id}`}>{l.rule}</Link>
-                  <div className="meta">
-                    <span>category: {l.category}</span>
-                    <span>conf {l.confidence}</span>
-                    {l.productProfileId ? (
-                      <span>product #{l.productProfileId.toString()}</span>
-                    ) : (
-                      <span>workspace-wide</span>
-                    )}
-                    {!l.enabled ? <span>disabled</span> : null}
-                  </div>
-                </li>
-              ))}
+              {lessons.map((l) => {
+                const productId = l.productProfileId?.toString();
+                const productName = productId
+                  ? productNameById.get(productId) ?? `product #${productId}`
+                  : null;
+                return (
+                  <li key={l.id.toString()} className={l.enabled ? '' : 'archived'}>
+                    <Link href={`/learning/${l.id}`}>{l.rule}</Link>
+                    <div className="meta">
+                      <span className={confidenceBadgeClass(l.confidence)}>
+                        conf {l.confidence}
+                      </span>
+                      <span>{l.category.replace(/_/g, ' ')}</span>
+                      <span>
+                        {productName ? `→ ${productName}` : 'workspace-wide'}
+                      </span>
+                      {!l.enabled ? <span>disabled</span> : null}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
