@@ -10,6 +10,7 @@ import {
   applyLessonsToPrompt,
   createLesson,
   disableLesson,
+  getLessonCategoryCounts,
   enableLesson,
   extractLessonHeuristic,
   getRelevantLessons,
@@ -208,6 +209,36 @@ describe('manual lesson creation', () => {
     });
     const lessons = await listLessons(ctx(s.workspaceA, s.ownerA, 'owner'));
     expect(lessons.map((l) => l.rule)).toEqual(['B', 'C', 'A']);
+  });
+});
+
+// ---- category counts (powers the /learning tab badges) ----------------
+
+describe('getLessonCategoryCounts', () => {
+  it('sums per category + total; honours enabled filter + workspace isolation', async () => {
+    const s = await setup();
+    const a = ctx(s.workspaceA, s.ownerA, 'owner');
+    const b = ctx(s.workspaceB, s.ownerB, 'owner');
+    await createLesson(a, { category: 'qualification_positive', rule: 'A1' });
+    await createLesson(a, { category: 'qualification_positive', rule: 'A2' });
+    await createLesson(a, { category: 'outreach_style', rule: 'A3' });
+    const toDisable = await createLesson(a, { category: 'outreach_style', rule: 'A4' });
+    await disableLesson(a, toDisable.id);
+    await createLesson(b, { category: 'qualification_positive', rule: 'B1' });
+
+    const enabledOnly = await getLessonCategoryCounts(a, { enabled: true });
+    expect(enabledOnly.qualification_positive).toBe(2);
+    expect(enabledOnly.outreach_style).toBe(1);
+    expect(enabledOnly.contact_role).toBe(0);
+    expect(enabledOnly.total).toBe(3);
+
+    const allOfA = await getLessonCategoryCounts(a);
+    expect(allOfA.outreach_style).toBe(2);
+    expect(allOfA.total).toBe(4);
+
+    const allOfB = await getLessonCategoryCounts(b);
+    expect(allOfB.qualification_positive).toBe(1);
+    expect(allOfB.total).toBe(1);
   });
 });
 

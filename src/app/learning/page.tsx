@@ -8,7 +8,12 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace } from '@/lib/services/context';
-import { LESSON_CATEGORIES, listLessons } from '@/lib/services/learning';
+import {
+  LESSON_CATEGORIES,
+  getLessonCategoryCounts,
+  listLessons,
+  type LessonCategoryCounts,
+} from '@/lib/services/learning';
 import {
   compactWorkspaceKnowledge,
   lastCompactionRun,
@@ -34,16 +39,19 @@ export default async function LearningPage({
   const showDisabled = sp.enabled === 'all';
 
   let lessons;
+  let counts: LessonCategoryCounts | null = null;
   let isAdmin = false;
   let lastCompaction: Awaited<ReturnType<typeof lastCompactionRun>> = null;
   try {
     const ctx = await getWorkspaceContext();
     isAdmin = canAdminWorkspace(ctx);
+    const enabledFilter = showDisabled ? {} : { enabled: true as const };
+    counts = await getLessonCategoryCounts(ctx, enabledFilter);
     lessons = await listLessons(ctx, {
       ...(categoryKey !== 'all'
         ? { category: categoryKey as (typeof LESSON_CATEGORIES)[number] }
         : {}),
-      ...(showDisabled ? {} : { enabled: true }),
+      ...enabledFilter,
       limit: 500,
     });
     lastCompaction = await lastCompactionRun(ctx);
@@ -72,19 +80,19 @@ export default async function LearningPage({
   return (
     <AppShell>
         <div className="page-header">
-          <div>
-            <p className="muted">
-              <Link href="/dashboard">Dashboard</Link> / Learning
-            </p>
-            <h1>Learning memory</h1>
-            <p className="muted">
-              Structured lessons distilled from review feedback. Qualification and outreach in
-              later phases will read these to refine their behavior.
+          <div className="page-intro">
+            <p className="page-eyebrow">Knowledge base</p>
+            <h1 className="page-title">Learning memory</h1>
+            <p className="page-lede">
+              Structured lessons distilled from review feedback. Qualification
+              and outreach prompts read these to refine their behavior.
             </p>
           </div>
-          <Link href="/learning/new" className="primary-btn">
-            + New lesson
-          </Link>
+          <div className="action-row">
+            <Link href="/learning/new" className="primary-btn">
+              + New lesson
+            </Link>
+          </div>
         </div>
 
         <section className="compaction-panel">
@@ -122,40 +130,38 @@ export default async function LearningPage({
         <div className="state-tabs">
           {CATEGORY_FILTERS.map((f) => {
             const active = f.key === categoryKey;
-            const href =
-              f.key === 'all'
-                ? showDisabled
-                  ? '/learning?enabled=all'
-                  : '/learning'
-                : showDisabled
-                  ? `/learning?category=${f.key}&enabled=all`
-                  : `/learning?category=${f.key}`;
+            const params = new URLSearchParams();
+            if (f.key !== 'all') params.set('category', f.key);
+            if (showDisabled) params.set('enabled', 'all');
+            const qs = params.toString();
+            const count = f.key === 'all' ? counts?.total ?? 0 : counts?.[f.key] ?? 0;
             return (
-              <Link key={f.key} href={href} className={active ? 'tab active' : 'tab'}>
+              <Link
+                key={f.key}
+                href={qs ? `/learning?${qs}` : '/learning'}
+                className={active ? 'tab active' : 'tab'}
+              >
                 {f.label}
+                <span className="tab-count">{count}</span>
               </Link>
             );
           })}
         </div>
-        <p className="muted">
-          {showDisabled ? (
-            <Link
-              href={categoryKey === 'all' ? '/learning' : `/learning?category=${categoryKey}`}
-            >
-              Hide disabled
-            </Link>
-          ) : (
-            <Link
-              href={
-                categoryKey === 'all'
-                  ? '/learning?enabled=all'
-                  : `/learning?category=${categoryKey}&enabled=all`
-              }
-            >
-              Show disabled
-            </Link>
-          )}
-        </p>
+        <form className="leads-controls" method="get" style={{ marginTop: '0.85rem' }}>
+          {categoryKey !== 'all' ? (
+            <input type="hidden" name="category" value={categoryKey} />
+          ) : null}
+          <label>
+            <input
+              type="checkbox"
+              name="enabled"
+              value="all"
+              defaultChecked={showDisabled}
+            />
+            Show disabled lessons
+          </label>
+          <button type="submit">Apply</button>
+        </form>
 
         <section>
           {lessons.length === 0 ? (

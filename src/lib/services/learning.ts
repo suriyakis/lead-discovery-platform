@@ -332,6 +332,43 @@ export async function listLessons(
     .limit(limit);
 }
 
+export type LessonCategoryCounts = Record<LessonCategory, number> & { total: number };
+
+/**
+ * Per-category lesson counts for the workspace, plus a `total`. Used to render
+ * count badges on the /learning category tabs. `enabled` filters the same way
+ * as listLessons — pass `true` to mirror the default "hide disabled" view.
+ */
+export async function getLessonCategoryCounts(
+  ctx: WorkspaceContext,
+  filter: { enabled?: boolean } = {},
+): Promise<LessonCategoryCounts> {
+  const conds: SQL[] = [eq(learningLessons.workspaceId, ctx.workspaceId)];
+  if (filter.enabled !== undefined) {
+    conds.push(eq(learningLessons.enabled, filter.enabled));
+  }
+  const rows = await db
+    .select({
+      category: learningLessons.category,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(learningLessons)
+    .where(and(...conds))
+    .groupBy(learningLessons.category);
+
+  const init = Object.fromEntries(
+    LESSON_CATEGORIES.map((c) => [c, 0]),
+  ) as Record<LessonCategory, number>;
+  const counts: LessonCategoryCounts = { ...init, total: 0 };
+  for (const row of rows) {
+    if (CATEGORY_SET.has(row.category)) {
+      counts[row.category as LessonCategory] = row.count;
+    }
+    counts.total += row.count;
+  }
+  return counts;
+}
+
 export async function getLesson(
   ctx: WorkspaceContext,
   id: bigint,
