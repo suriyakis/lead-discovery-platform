@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { CheckCircle2, MinusCircle } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { SelectAllVisible } from '@/components/SelectAllVisible';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -19,6 +21,9 @@ import {
   lastCompactionRun,
 } from '@/lib/services/knowledge-compaction';
 import { listProductProfiles } from '@/lib/services/product-profile';
+import { bulkDisableAction, bulkEnableAction } from './actions';
+
+const BULK_FORM_ID = 'learning-bulk-form';
 
 function confidenceBadgeClass(conf: number): string {
   if (conf >= 75) return 'badge badge-good';
@@ -34,7 +39,12 @@ const CATEGORY_FILTERS = [
 export default async function LearningPage({
   searchParams,
 }: {
-  searchParams: Promise<{ category?: string; enabled?: string }>;
+  searchParams: Promise<{
+    category?: string;
+    enabled?: string;
+    message?: string;
+    error?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -105,6 +115,9 @@ export default async function LearningPage({
           </div>
         </div>
 
+        {sp.message ? <p className="mail-flash info">{sp.message}</p> : null}
+        {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
+
         <section className="compaction-panel">
           <div>
             <strong>Knowledge compaction</strong>
@@ -173,6 +186,41 @@ export default async function LearningPage({
           <button type="submit">Apply</button>
         </form>
 
+        <form id={BULK_FORM_ID} action={bulkDisableAction} className="bulk-toolbar">
+          {categoryKey !== 'all' ? (
+            <input type="hidden" name="category" value={categoryKey} />
+          ) : null}
+          {showDisabled ? <input type="hidden" name="enabled" value="all" /> : null}
+          <div className="bulk-toolbar-info">
+            {lessons.length > 0 ? <SelectAllVisible formId={BULK_FORM_ID} /> : null}
+            <span className="bulk-toolbar-status">
+              {lessons.length === 0
+                ? 'No lessons match the current filter.'
+                : `${lessons.length} on this page · up to 500 per action.`}
+            </span>
+          </div>
+          <div className="bulk-toolbar-actions">
+            {showDisabled ? (
+              <button
+                type="submit"
+                formAction={bulkEnableAction}
+                className="ghost-btn"
+                disabled={lessons.length === 0}
+              >
+                <CheckCircle2 className="lucide" /> Enable selected
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              formAction={bulkDisableAction}
+              className="ghost-btn"
+              disabled={lessons.length === 0}
+            >
+              <MinusCircle className="lucide" /> Disable selected
+            </button>
+          </div>
+        </form>
+
         <section>
           {lessons.length === 0 ? (
             <p className="muted">
@@ -181,7 +229,7 @@ export default async function LearningPage({
               create one manually.
             </p>
           ) : (
-            <ul className="profile-list">
+            <ul className="profile-list bulk-selectable-list">
               {lessons.map((l) => {
                 const productId = l.productProfileId?.toString();
                 const productName = productId
@@ -189,6 +237,15 @@ export default async function LearningPage({
                   : null;
                 return (
                   <li key={l.id.toString()} className={l.enabled ? '' : 'archived'}>
+                    <label className="row-select">
+                      <input
+                        type="checkbox"
+                        name="ids"
+                        value={l.id.toString()}
+                        form={BULK_FORM_ID}
+                        aria-label={`Select lesson ${l.rule.slice(0, 60)}`}
+                      />
+                    </label>
                     <Link href={`/learning/${l.id}`}>{l.rule}</Link>
                     <div className="meta">
                       <span className={confidenceBadgeClass(l.confidence)}>

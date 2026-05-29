@@ -497,6 +497,47 @@ export const enableLesson = (ctx: WorkspaceContext, id: bigint) =>
 export const disableLesson = (ctx: WorkspaceContext, id: bigint) =>
   updateLesson(ctx, id, { enabled: false });
 
+const BULK_LESSON_LIMIT = 500;
+
+/**
+ * Flip `enabled` on a batch of lessons in one statement. Workspace-scoped via
+ * WHERE so foreign ids silently no-op. member+ gating mirrors the single-row
+ * enable/disable. Returns the rows that actually changed (already-enabled
+ * rows in an enable batch don't count) so the UI can flash an accurate
+ * "Disabled N of M" message.
+ */
+export async function bulkSetLessonsEnabled(
+  ctx: WorkspaceContext,
+  ids: readonly bigint[],
+  enabled: boolean,
+): Promise<{ updated: number; requested: number }> {
+  if (!canWrite(ctx)) throw permissionDenied('update lessons');
+  const cappedIds = ids.slice(0, BULK_LESSON_LIMIT);
+  if (cappedIds.length === 0) return { updated: 0, requested: ids.length };
+  return db.transaction(async (tx) => {
+    const updated = await tx
+      .update(learningLessons)
+      .set({ enabled, updatedAt: new Date(), updatedBy: ctx.userId })
+      .where(
+        and(
+          eq(learningLessons.workspaceId, ctx.workspaceId),
+          inArray(learningLessons.id, cappedIds as bigint[]),
+          eq(learningLessons.enabled, !enabled),
+        ),
+      )
+      .returning({ id: learningLessons.id });
+    if (updated.length > 0) {
+      await recordAuditEvent(ctx, {
+        kind: enabled ? 'learning.lesson.bulk_enable' : 'learning.lesson.bulk_disable',
+        entityType: 'learning_lesson',
+        entityId: null,
+        payload: { ids: updated.map((u) => u.id.toString()), count: updated.length },
+      });
+    }
+    return { updated: updated.length, requested: ids.length };
+  });
+}
+
 // ---- retrieval (for prompts/rules) ------------------------------------
 
 export interface LessonQuery {

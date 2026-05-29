@@ -8,6 +8,7 @@ import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/cont
 import {
   LearningServiceError,
   applyLessonsToPrompt,
+  bulkSetLessonsEnabled,
   createLesson,
   disableLesson,
   getLessonCategoryCounts,
@@ -213,6 +214,61 @@ describe('manual lesson creation', () => {
 });
 
 // ---- category counts (powers the /learning tab badges) ----------------
+
+describe('bulkSetLessonsEnabled', () => {
+  it('only counts rows that actually flipped; ignores foreign-workspace ids', async () => {
+    const s = await setup();
+    const a = ctx(s.workspaceA, s.ownerA, 'owner');
+    const b = ctx(s.workspaceB, s.ownerB, 'owner');
+
+    const enabledA = await createLesson(a, {
+      category: 'outreach_style',
+      rule: 'enabled in A',
+    });
+    const alreadyDisabledA = await createLesson(a, {
+      category: 'outreach_style',
+      rule: 'already disabled in A',
+    });
+    await disableLesson(a, alreadyDisabledA.id);
+    const inB = await createLesson(b, {
+      category: 'outreach_style',
+      rule: 'in B, should be untouched',
+    });
+
+    const result = await bulkSetLessonsEnabled(
+      a,
+      [enabledA.id, alreadyDisabledA.id, inB.id],
+      false,
+    );
+    expect(result.requested).toBe(3);
+    // enabledA flips, alreadyDisabledA is a no-op (already disabled),
+    // inB belongs to workspaceB → filtered out by WHERE.
+    expect(result.updated).toBe(1);
+
+    const lessonsA = await listLessons(a, { enabled: false });
+    expect(lessonsA.map((l) => l.rule).sort()).toEqual([
+      'already disabled in A',
+      'enabled in A',
+    ]);
+    const lessonsB = await listLessons(b);
+    expect(lessonsB[0]?.enabled).toBe(true);
+  });
+
+  it('viewer cannot bulk-disable', async () => {
+    const s = await setup();
+    const created = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'outreach_style',
+      rule: 'X',
+    });
+    await expect(
+      bulkSetLessonsEnabled(
+        ctx(s.workspaceA, s.viewerA, 'viewer'),
+        [created.id],
+        false,
+      ),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+});
 
 describe('getLessonCategoryCounts', () => {
   it('sums per category + total; honours enabled filter + workspace isolation', async () => {
