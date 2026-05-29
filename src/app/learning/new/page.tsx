@@ -62,14 +62,19 @@ export default async function NewLessonPage({
 
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
-          <Link href="/learning">Learning</Link> / New
-        </p>
-        <h1>New lesson</h1>
+        <header className="page-intro" style={{ marginBottom: '1.25rem' }}>
+          <p className="page-eyebrow">
+            <Link href="/learning">Learning memory</Link> / New
+          </p>
+          <h1 className="page-title">New lesson</h1>
+          <p className="page-lede">
+            One sentence imperative the qualification or outreach prompt can
+            apply to similar future cases.
+          </p>
+        </header>
         <form action={create} className="card-form">
           <div className="form-grid">
-            {sp.error ? <p className="form-error">Error: {sp.error}</p> : null}
+            {sp.error ? <p className="mail-flash error">Error: {sp.error}</p> : null}
 
             <label>
               <span>Rule *</span>

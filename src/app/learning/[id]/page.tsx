@@ -86,22 +86,45 @@ export default async function EditLessonPage({
     redirect(`/learning/${id}`);
   }
 
+  const confidenceBadgeCls =
+    lesson.confidence >= 75 ? 'badge badge-good' : lesson.confidence < 40 ? 'badge badge-bad' : 'badge';
+  const productName = lesson.productProfileId
+    ? products.find((p) => p.id === lesson.productProfileId)?.name ?? `product #${lesson.productProfileId.toString()}`
+    : null;
+
   return (
     <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
-          <Link href="/learning">Learning</Link> / Lesson {lesson.id.toString()}
-        </p>
-        <h1>{lesson.rule.length > 60 ? `${lesson.rule.slice(0, 60)}…` : lesson.rule}</h1>
-        <p>
-          <span className="badge">{lesson.category}</span>{' '}
-          <span className="badge">{lesson.enabled ? 'enabled' : 'disabled'}</span>
-        </p>
+        <header className="page-intro" style={{ marginBottom: '1.25rem' }}>
+          <p className="page-eyebrow">
+            <Link href="/learning">Learning memory</Link> / Lesson {lesson.id.toString()}
+          </p>
+          <h1 className="page-title">
+            {lesson.rule.length > 80 ? `${lesson.rule.slice(0, 80)}…` : lesson.rule}
+          </h1>
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: '0.5rem',
+              marginTop: '0.5rem',
+            }}
+          >
+            <span className={confidenceBadgeCls}>conf {lesson.confidence}</span>
+            <span className="badge">{lesson.category.replace(/_/g, ' ')}</span>
+            <span className={lesson.enabled ? 'badge badge-good' : 'badge badge-bad'}>
+              {lesson.enabled ? 'enabled' : 'disabled'}
+            </span>
+            <span className="muted" style={{ marginLeft: '0.25rem' }}>
+              {productName ? `→ ${productName}` : 'workspace-wide'}
+            </span>
+          </div>
+        </header>
 
         <form action={update} className="card-form">
           <div className="form-grid">
-            {sp.saved ? <p className="muted">Saved.</p> : null}
-            {sp.error ? <p className="form-error">Error: {sp.error}</p> : null}
+            {sp.saved ? <p className="mail-flash info">Saved.</p> : null}
+            {sp.error ? <p className="mail-flash error">Error: {sp.error}</p> : null}
 
             <label>
               <span>Rule</span>
