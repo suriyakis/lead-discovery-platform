@@ -297,16 +297,17 @@ export interface ListLessonsFilter {
   productProfileId?: bigint | null;
   enabled?: boolean;
   limit?: number;
+  offset?: number;
 }
 
-export async function listLessons(
+function buildLessonConditions(
   ctx: WorkspaceContext,
-  filter: ListLessonsFilter = {},
-): Promise<LearningLesson[]> {
+  filter: Omit<ListLessonsFilter, 'limit' | 'offset'>,
+): SQL[] | null {
   const conds: SQL[] = [eq(learningLessons.workspaceId, ctx.workspaceId)];
   if (filter.category !== undefined) {
     if (Array.isArray(filter.category)) {
-      if (filter.category.length === 0) return [];
+      if (filter.category.length === 0) return null;
       conds.push(inArray(learningLessons.category, filter.category as string[]));
     } else {
       conds.push(eq(learningLessons.category, filter.category as string));
@@ -322,14 +323,43 @@ export async function listLessons(
   if (filter.enabled !== undefined) {
     conds.push(eq(learningLessons.enabled, filter.enabled));
   }
+  return conds;
+}
 
+export async function listLessons(
+  ctx: WorkspaceContext,
+  filter: ListLessonsFilter = {},
+): Promise<LearningLesson[]> {
+  const conds = buildLessonConditions(ctx, filter);
+  if (conds === null) return [];
   const limit = clamp(filter.limit, 200, 1000);
+  const offset = filter.offset !== undefined && Number.isFinite(filter.offset) && filter.offset > 0
+    ? Math.floor(filter.offset)
+    : 0;
   return db
     .select()
     .from(learningLessons)
     .where(and(...conds))
     .orderBy(desc(learningLessons.confidence), desc(learningLessons.updatedAt))
-    .limit(limit);
+    .limit(limit)
+    .offset(offset);
+}
+
+/**
+ * Count lessons matching the same filter as listLessons (excluding limit /
+ * offset). Powers the pagination UI on /learning.
+ */
+export async function countLessons(
+  ctx: WorkspaceContext,
+  filter: Omit<ListLessonsFilter, 'limit' | 'offset'> = {},
+): Promise<number> {
+  const conds = buildLessonConditions(ctx, filter);
+  if (conds === null) return 0;
+  const result = await db
+    .select({ value: sql<number>`count(*)::int` })
+    .from(learningLessons)
+    .where(and(...conds));
+  return result[0]?.value ?? 0;
 }
 
 export type LessonCategoryCounts = Record<LessonCategory, number> & { total: number };

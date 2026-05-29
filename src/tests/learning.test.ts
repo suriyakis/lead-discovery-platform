@@ -9,6 +9,7 @@ import {
   LearningServiceError,
   applyLessonsToPrompt,
   bulkSetLessonsEnabled,
+  countLessons,
   createLesson,
   disableLesson,
   getLessonCategoryCounts,
@@ -210,6 +211,43 @@ describe('manual lesson creation', () => {
     });
     const lessons = await listLessons(ctx(s.workspaceA, s.ownerA, 'owner'));
     expect(lessons.map((l) => l.rule)).toEqual(['B', 'C', 'A']);
+  });
+
+  it('listLessons offset/limit + countLessons pair stays consistent', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA, 'owner');
+    for (let i = 0; i < 7; i += 1) {
+      await createLesson(c, {
+        category: 'outreach_style',
+        rule: `lesson-${i}`,
+        confidence: 50,
+      });
+    }
+    const total = await countLessons(c, { category: 'outreach_style' });
+    expect(total).toBe(7);
+    const firstPage = await listLessons(c, {
+      category: 'outreach_style',
+      limit: 3,
+      offset: 0,
+    });
+    const secondPage = await listLessons(c, {
+      category: 'outreach_style',
+      limit: 3,
+      offset: 3,
+    });
+    const thirdPage = await listLessons(c, {
+      category: 'outreach_style',
+      limit: 3,
+      offset: 6,
+    });
+    expect(firstPage).toHaveLength(3);
+    expect(secondPage).toHaveLength(3);
+    expect(thirdPage).toHaveLength(1);
+    // No overlap.
+    const ids = new Set(
+      [...firstPage, ...secondPage, ...thirdPage].map((l) => l.id.toString()),
+    );
+    expect(ids.size).toBe(7);
   });
 });
 

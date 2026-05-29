@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { CheckCircle2, MinusCircle } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { Pagination } from '@/components/Pagination';
 import { SelectAllVisible } from '@/components/SelectAllVisible';
 import { auth } from '@/lib/auth';
 import {
@@ -12,6 +13,7 @@ import {
 import { canAdminWorkspace } from '@/lib/services/context';
 import {
   LESSON_CATEGORIES,
+  countLessons,
   getLessonCategoryCounts,
   listLessons,
   type LessonCategoryCounts,
@@ -24,6 +26,7 @@ import { listProductProfiles } from '@/lib/services/product-profile';
 import { bulkDisableAction, bulkEnableAction } from './actions';
 
 const BULK_FORM_ID = 'learning-bulk-form';
+const PAGE_SIZE = 25;
 
 function confidenceBadgeClass(conf: number): string {
   if (conf >= 75) return 'badge badge-good';
@@ -42,6 +45,7 @@ export default async function LearningPage({
   searchParams: Promise<{
     category?: string;
     enabled?: string;
+    page?: string;
     message?: string;
     error?: string;
   }>;
@@ -54,23 +58,31 @@ export default async function LearningPage({
     ? sp.category
     : 'all';
   const showDisabled = sp.enabled === 'all';
+  const pageParam = Number(sp.page ?? 1);
+  const page = Number.isFinite(pageParam) && pageParam > 0 ? Math.floor(pageParam) : 1;
 
   let lessons;
   let counts: LessonCategoryCounts | null = null;
   let productNameById = new Map<string, string>();
   let isAdmin = false;
   let lastCompaction: Awaited<ReturnType<typeof lastCompactionRun>> = null;
+  let total = 0;
   try {
     const ctx = await getWorkspaceContext();
     isAdmin = canAdminWorkspace(ctx);
     const enabledFilter = showDisabled ? {} : { enabled: true as const };
     counts = await getLessonCategoryCounts(ctx, enabledFilter);
-    lessons = await listLessons(ctx, {
+    const listFilter = {
       ...(categoryKey !== 'all'
         ? { category: categoryKey as (typeof LESSON_CATEGORIES)[number] }
         : {}),
       ...enabledFilter,
-      limit: 500,
+    };
+    total = await countLessons(ctx, listFilter);
+    lessons = await listLessons(ctx, {
+      ...listFilter,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
     });
     const products = await listProductProfiles(ctx, { includeArchived: true });
     productNameById = new Map(products.map((p) => [p.id.toString(), p.name]));
@@ -191,12 +203,13 @@ export default async function LearningPage({
             <input type="hidden" name="category" value={categoryKey} />
           ) : null}
           {showDisabled ? <input type="hidden" name="enabled" value="all" /> : null}
+          {page > 1 ? <input type="hidden" name="page" value={String(page)} /> : null}
           <div className="bulk-toolbar-info">
             {lessons.length > 0 ? <SelectAllVisible formId={BULK_FORM_ID} /> : null}
             <span className="bulk-toolbar-status">
               {lessons.length === 0
                 ? 'No lessons match the current filter.'
-                : `${lessons.length} on this page · up to 500 per action.`}
+                : `${lessons.length} on this page · ${total} total · up to 500 per action.`}
             </span>
           </div>
           <div className="bulk-toolbar-actions">
@@ -224,9 +237,9 @@ export default async function LearningPage({
         <section>
           {lessons.length === 0 ? (
             <p className="muted">
-              No lessons yet. Comments on review items that mention things like &quot;don&apos;t
-              target X&quot; or &quot;tone too formal&quot; auto-extract into lessons. You can also
-              create one manually.
+              {total === 0
+                ? 'No lessons yet. Comments on review items that mention things like "don’t target X" or "tone too formal" auto-extract into lessons. You can also create one manually.'
+                : `Page ${page} is past the end of the result set (${total} total). Use Prev to go back.`}
             </p>
           ) : (
             <ul className="profile-list bulk-selectable-list">
@@ -262,6 +275,17 @@ export default async function LearningPage({
               })}
             </ul>
           )}
+          <Pagination
+            basePath="/learning"
+            query={{
+              category: categoryKey === 'all' ? undefined : categoryKey,
+              enabled: showDisabled ? 'all' : undefined,
+            }}
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={total}
+            unitLabel="lessons"
+          />
         </section>
       </AppShell>
   );

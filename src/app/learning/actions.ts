@@ -28,11 +28,13 @@ const CATEGORY_SET = new Set<string>(LESSON_CATEGORIES);
 function returnTo(formData: FormData, flash: { message?: string; error?: string }): string {
   const categoryRaw = String(formData.get('category') ?? '').trim();
   const enabledRaw = String(formData.get('enabled') ?? '').trim();
+  const pageRaw = String(formData.get('page') ?? '').trim();
   const params = new URLSearchParams();
   if (categoryRaw && categoryRaw !== 'all' && CATEGORY_SET.has(categoryRaw)) {
     params.set('category', categoryRaw);
   }
   if (enabledRaw === 'all') params.set('enabled', 'all');
+  if (/^\d+$/.test(pageRaw) && pageRaw !== '1') params.set('page', pageRaw);
   if (flash.message) params.set('message', flash.message);
   if (flash.error) params.set('error', flash.error);
   const qs = params.toString();
