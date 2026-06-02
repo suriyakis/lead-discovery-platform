@@ -61,6 +61,7 @@ function buildUserPrompt(
   record: ClassifiableRecord,
   product: ProductProfile,
   lessons: ReadonlyArray<LearningLesson>,
+  targetCountry: string | null,
 ): string {
   const sections: string[] = [];
 
@@ -105,6 +106,29 @@ function buildUserPrompt(
   }
   sections.push(`minRelevanceThreshold: ${product.relevanceThreshold}`);
 
+  // Geo gate. The recipe that discovered this record decides the target
+  // country (Connectors → recipes). Grounding search can only bias sourcing,
+  // not enforce it, so this is where out-of-country companies are actually
+  // rejected — working together with the product's disqualification criteria
+  // above. When the recipe sets no country, this section is omitted and
+  // qualification behaves exactly as before.
+  if (targetCountry) {
+    sections.push('');
+    sections.push('### TARGET GEOGRAPHY (hard requirement)');
+    sections.push(
+      `The recipe that discovered this record targets companies in: ${targetCountry}.`,
+    );
+    sections.push(
+      `Set isRelevant=false for any company that shows evidence of being based ` +
+        `OUTSIDE ${targetCountry} (e.g. a foreign address, phone code, or country ` +
+        `mention), even if it otherwise fits the product — a strong product fit ` +
+        `does NOT override a geography mismatch. If the company's location is ` +
+        `genuinely unclear, do not assume it is in ${targetCountry}: lower the ` +
+        `confidence and treat the missing geography as a negative signal, but do ` +
+        `not hard-reject on absence of evidence alone.`,
+    );
+  }
+
   if (lessons.length > 0) {
     sections.push('');
     sections.push('### PRIOR LESSONS (operator-validated; weigh accordingly)');
@@ -136,6 +160,12 @@ export interface AIClassifyOptions {
   model?: string;
   /** Test seam — bypass real AI provider lookup. */
   providerOverride?: import('@/lib/ai').IAIProvider;
+  /**
+   * Target country for this record, taken from the recipe that discovered it.
+   * When set, the qualifier disqualifies companies not located there. Null /
+   * omitted = no geo gate (recipe set no country).
+   */
+  targetCountry?: string | null;
 }
 
 /** Wandizz-style AI qualification. Returns the same verdict shape as the
@@ -153,7 +183,7 @@ export async function classifyRecordWithAI(
   const verdict = await provider.generateJson(
     {
       system: buildSystemPrompt(),
-      prompt: buildUserPrompt(record, product, lessons),
+      prompt: buildUserPrompt(record, product, lessons, options.targetCountry ?? null),
     },
     VerdictSchema,
     {

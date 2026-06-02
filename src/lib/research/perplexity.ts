@@ -210,7 +210,11 @@ function buildSystemPrompt(options: ResearchOptions): string {
     'If the evidence is contradictory or insufficient, say so explicitly.',
   ];
   if (options.language) lines.push(`Respond in ${options.language}.`);
-  if (options.country) lines.push(`Prefer ${options.country}-based sources where relevant.`);
+  if (options.country)
+    lines.push(
+      `IMPORTANT: Only return companies physically located in ${options.country}. ` +
+        `Exclude companies from other countries even if they appear in search results.`,
+    );
   if (options.systemPrompt) lines.push(options.systemPrompt);
   return lines.join('\n');
 }

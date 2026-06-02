@@ -3,7 +3,12 @@
 
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { sourceRecords, type SourceRecord } from '@/lib/db/schema/connectors';
+import {
+  connectorRecipes,
+  connectorRuns,
+  sourceRecords,
+  type SourceRecord,
+} from '@/lib/db/schema/connectors';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import {
   qualifications,
@@ -37,6 +42,45 @@ const invariant = (msg: string) =>
   new QualificationServiceError(msg, 'invariant_violation');
 const permissionDenied = (op: string) =>
   new QualificationServiceError(`Permission denied: ${op}`, 'permission_denied');
+
+/**
+ * Resolve the target country for a source record from the recipe that
+ * discovered it. Prefers the live recipe (the recipe is the source of truth
+ * for what qualifies — current operator intent), falling back to the frozen
+ * run snapshot. Country is stored in the recipe's `selectors` jsonb and
+ * flattened to the snapshot top level by freezeRecipe(). Returns null when no
+ * country is set, which disables the geo gate.
+ */
+async function resolveRecipeCountry(
+  record: Pick<SourceRecord, 'recipeId' | 'runId'>,
+): Promise<string | null> {
+  const pick = (v: unknown): string | null =>
+    typeof v === 'string' && v.trim() ? v.trim() : null;
+
+  if (record.recipeId != null) {
+    const rows = await db
+      .select({ selectors: connectorRecipes.selectors })
+      .from(connectorRecipes)
+      .where(eq(connectorRecipes.id, record.recipeId))
+      .limit(1);
+    const selectors = rows[0]?.selectors as Record<string, unknown> | undefined;
+    const c = pick(selectors?.country);
+    if (c) return c;
+  }
+
+  if (record.runId != null) {
+    const rows = await db
+      .select({ snapshot: connectorRuns.recipeSnapshot })
+      .from(connectorRuns)
+      .where(eq(connectorRuns.id, record.runId))
+      .limit(1);
+    const snapshot = rows[0]?.snapshot as Record<string, unknown> | null;
+    const c = pick(snapshot?.country);
+    if (c) return c;
+  }
+
+  return null;
+}
 
 /**
  * Run the rule engine for a single source record against ALL active product
@@ -74,6 +118,13 @@ export async function classifySourceRecord(
   if (products.length === 0) return [];
 
   const classifiable = extractClassifiable(sourceRecord.normalizedData as Record<string, unknown>);
+
+  // Resolve the target country set on the recipe that discovered this record.
+  // The recipe decides the geography; the AI qualifier enforces it (grounded
+  // search can only bias sourcing). Same value for every product, so resolve
+  // once before the per-product loop.
+  const targetCountry = await resolveRecipeCountry(sourceRecord);
+
   const inserted: Qualification[] = [];
 
   for (const product of products) {
@@ -100,6 +151,7 @@ export async function classifySourceRecord(
         classifiable,
         product,
         allLessons,
+        { targetCountry },
       );
     } catch (err) {
       console.error(

@@ -38,8 +38,14 @@ class ResearchAsSearchAdapter implements ISearchProvider {
     options: SearchOptions = {},
   ): Promise<SearchOutcome> {
     const maxCitations = Math.max(1, Math.min(options.maxResults ?? 10, 25));
+    // Forward the recipe's geo + language to the grounding provider. These
+    // were previously dropped here, so `options.country` never reached
+    // Gemini/Perplexity and grounded discovery skewed to US/English results
+    // regardless of the recipe's country setting.
     const outcome = await this.research.research(ctx, query, {
       maxCitations,
+      ...(options.country ? { country: options.country } : {}),
+      ...(options.language ? { language: options.language } : {}),
     });
     const results: SearchResult[] = outcome.citations.map((c) => ({
       rank: c.rank,

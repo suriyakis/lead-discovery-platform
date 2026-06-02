@@ -228,7 +228,14 @@ function buildSystemPrompt(options: ResearchOptions): string {
     lines.push(`Respond in ${options.language}.`);
   }
   if (options.country) {
-    lines.push(`Bias the search toward ${options.country}-based sources where relevant.`);
+    // The google_search grounding tool has no API-level geo restriction, so
+    // this prompt directive is the only lever. Keep it strong — a soft "bias
+    // toward" still returned mostly out-of-country companies. This reduces
+    // (but cannot fully enforce) leakage; the AI qualifier is the real gate.
+    lines.push(
+      `IMPORTANT: Only return companies physically located in ${options.country}. ` +
+        `Exclude companies from other countries even if they appear in search results.`,
+    );
   }
   if (options.freshness && options.freshness !== 'any') {
     lines.push(`Prefer information from the past ${options.freshness}.`);

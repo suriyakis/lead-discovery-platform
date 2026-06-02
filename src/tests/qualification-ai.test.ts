@@ -212,6 +212,67 @@ describe('classifyRecordWithAI', () => {
     expect(stub.lastPrompt!.system).toContain('"relevanceScore"');
   });
 
+  it('injects a hard geo gate into the prompt when targetCountry is set', async () => {
+    const s = await setup();
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
+      name: 'Ecobeton Coating',
+      includeKeywords: ['concrete coating'],
+      relevanceThreshold: 60,
+    });
+    const stub = new StubAIProvider(() => ({
+      isRelevant: false,
+      relevanceScore: 10,
+      confidence: 70,
+      matchedKeywords: [],
+      disqualifyingSignals: ['out of target country'],
+      reason: 'US-based company, recipe targets uk.',
+    }));
+
+    await classifyRecordWithAI(
+      ctx(s.workspaceA, s.ownerA),
+      {
+        title: 'Concrete coatings USA',
+        snippet: 'Texas-based contractor',
+        url: null,
+        domain: 'example.us',
+        body: null,
+      },
+      product,
+      [],
+      { providerOverride: stub, targetCountry: 'uk' },
+    );
+
+    const prompt = stub.lastPrompt!.prompt;
+    expect(prompt).toContain('TARGET GEOGRAPHY');
+    expect(prompt).toContain('targets companies in: uk');
+    expect(prompt).toMatch(/OUTSIDE uk/);
+  });
+
+  it('omits the geo gate when the recipe sets no targetCountry', async () => {
+    const s = await setup();
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
+      name: 'Ecobeton Coating',
+      relevanceThreshold: 60,
+    });
+    const stub = new StubAIProvider(() => ({
+      isRelevant: true,
+      relevanceScore: 70,
+      confidence: 70,
+      matchedKeywords: [],
+      reason: 'fits',
+    }));
+
+    await classifyRecordWithAI(
+      ctx(s.workspaceA, s.ownerA),
+      { title: 't', snippet: 's', url: null, domain: null, body: null },
+      product,
+      [],
+      { providerOverride: stub },
+    );
+
+    expect(stub.lastPrompt!.prompt).not.toContain('TARGET GEOGRAPHY');
+  });
+
   it('classifySourceRecord falls back to rules when the AI provider throws', async () => {
     const s = await setup();
     _setAIProviderForTests(new ThrowingAIProvider());
