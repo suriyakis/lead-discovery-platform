@@ -185,7 +185,10 @@ export class GeminiResearchProvider implements IResearchProvider {
         : undefined,
       tools: [{ google_search: {} }],
       generationConfig: {
-        temperature: 0.2,
+        // Gemini 3.x reasoning is tuned for the default sampling params;
+        // Google recommends NOT overriding temperature/top_p/top_k for 3.x.
+        // Older Flash/Pro generations keep the explicit low temperature.
+        ...(prefersDefaultSampling(this.model) ? {} : { temperature: 0.2 }),
         maxOutputTokens: 1024,
       },
     };
@@ -215,6 +218,14 @@ export class GeminiResearchProvider implements IResearchProvider {
     }
     return (await res.json()) as GeminiResponseShape;
   }
+}
+
+/** Gemini 3.x (and newer) are optimized for default sampling — Google
+ *  recommends not setting temperature/top_p/top_k. Returns true for major
+ *  version >= 3 (e.g. gemini-3.0-flash, gemini-3.5-flash), false for 2.x. */
+function prefersDefaultSampling(model: string): boolean {
+  const m = /gemini-(\d+)/i.exec(model);
+  return m ? Number(m[1]) >= 3 : false;
 }
 
 function buildSystemPrompt(options: ResearchOptions): string {

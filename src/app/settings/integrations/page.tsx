@@ -59,7 +59,7 @@ const WEB_SEARCH_PROVIDERS = ['serpapi', 'gemini', 'perplexity'] as const;
 const WEB_SEARCH_MODELS: Record<string, readonly string[]> = {
   serpapi: [],
   mock: [],
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+  gemini: ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
   perplexity: ['sonar-pro', 'sonar', 'sonar-reasoning'],
 };
 

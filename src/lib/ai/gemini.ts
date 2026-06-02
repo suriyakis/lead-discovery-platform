@@ -43,6 +43,14 @@ const DEFAULT_MODEL = 'gemini-2.5-flash';
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+/** Gemini 3.x (and newer) are optimized for default sampling — Google
+ *  recommends not setting temperature/top_p/top_k. Returns true for major
+ *  version >= 3 (e.g. gemini-3.0-flash, gemini-3.5-flash), false for 2.x. */
+function prefersDefaultSampling(model: string): boolean {
+  const m = /gemini-(\d+)/i.exec(model);
+  return m ? Number(m[1]) >= 3 : false;
+}
+
 export class GeminiAIProvider implements IAIProvider {
   public readonly id = 'gemini';
   public readonly model: string;
@@ -172,7 +180,12 @@ export class GeminiAIProvider implements IAIProvider {
     const body: Record<string, unknown> = {
       contents: [{ role: 'user', parts: [{ text: input.prompt }] }],
       generationConfig: {
-        temperature: options.temperature ?? 0.2,
+        // Gemini 3.x is optimized for default sampling — Google recommends
+        // not setting temperature/top_p/top_k. Pre-3.x keeps the explicit
+        // low temperature for deterministic JSON/classification output.
+        ...(prefersDefaultSampling(model)
+          ? {}
+          : { temperature: options.temperature ?? 0.2 }),
         maxOutputTokens: options.maxTokens ?? 1024,
         ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
       },

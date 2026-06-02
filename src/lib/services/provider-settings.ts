@@ -94,6 +94,7 @@ export const AI_MODELS: Record<string, readonly string[]> = {
     'claude-haiku-4-5',
   ],
   gemini: [
+    'gemini-3.5-flash',
     'gemini-3.1-flash',
     'gemini-3.0-pro',
     'gemini-3.0-flash',
@@ -105,7 +106,7 @@ export const AI_MODELS: Record<string, readonly string[]> = {
 };
 
 export const RESEARCH_MODELS: Record<string, readonly string[]> = {
-  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  gemini: ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
   perplexity: ['sonar-pro', 'sonar', 'sonar-reasoning'],
   mock: ['mock-1'],
 };
