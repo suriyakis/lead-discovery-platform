@@ -902,7 +902,7 @@ rows (via the action or the auto-purge cron).
 - [x] **P61-08.** Failed-send persistence + bounce-loop auto-spam. `sendMessage`'s catch block now persists a `mail_messages` row on send failure: `status='bounced'` when the underlying error carries a 5xx response code, `status='failed'` otherwise. `failureReason` is set (responseCode prefix when present). A synthesised `<failed-${uuid}@<domain>>` Message-ID keeps the workspace-unique constraint happy without colliding with the never-emitted real one. The failed row threads onto the same conversation via `ensureThread` so the thread view shows the attempt. Persistence is wrapped in its own try/catch — a persistence failure never masks the original send error. New `detectBounceLoop(ctx, mailboxId, recipient)` helper counts prior `failed`/`bounced` rows in (workspaceId, mailboxId, recipient in to_addresses, createdAt > now - 14d). When count ≥ `BOUNCE_LOOP_THRESHOLD - 1` (= 2 priors), the about-to-be-persisted failure gets `spam_at = now()`, `spam_reason = 'bounce_loop'` and an audit event `mail.bounce_loop_auto_spam` is recorded. Constants `BOUNCE_LOOP_THRESHOLD=3`, `BOUNCE_LOOP_WINDOW_MS=14d`. 12 new tests (8 `detectBounceLoop` cases: zero / below / at / mixed failed+bounced / 14-day window / per-recipient / per-mailbox / cross-workspace; 4 sendMessage failure-persistence cases: 5xx → bounced row, transport error → failed row, threshold-th attempt lands in Spam with reason=bounce_loop, mixed recipients don't cross-trigger). **855 → 867 total.**
 - [x] **P61-09.** Auto-empty trash policy + cron + admin UI. Migration `0043` adds `workspaces.trash_retention_days INT NOT NULL DEFAULT 30`. Three new helpers in `mail.ts`: `purgeOldTrashUnattended(workspaceId)` hard-deletes rows where `trashed_at < now - retention_days` (returns `{deleted, retentionDays}`, no-op when retention=0); `emptyTrashNow(ctx)` (admin-gated) hard-deletes every trashed row regardless of age with an audit event; `updateTrashRetentionDays(ctx, days)` (admin-gated) writes the workspace setting, clamps to `[0, 365]`, rejects non-integers. Cron tick `mail.trash.purge.tick` (24h) registered in `repeatables.ts` with `handleMailTrashPurgeTick` fan-out matching the P58/P60 pattern. UI: new "Mailbox retention" card on `/settings/outreach` — admin-gated number input + "Empty trash now" button (uses the existing `ConfirmFormButton` from P61-06). 12 new tests (5 `purgeOldTrashUnattended` — old-not-recent, leaves non-trashed alone, retention=0 disables, per-workspace setting, workspace isolation; 3 `emptyTrashNow` — deletes all ages, admin gate, workspace isolation; 4 `updateTrashRetentionDays` — round-trip, clamps low+high, rejects non-integer, admin gate). **867 → 879 total.**
 - [x] **P61-10.** Thread view (`/communication/[threadId]`, canonical location since the IA cleanup) — messages split into `visibleMessages` (not trashed AND not spammed) and `hiddenMessages` (either flag set). Visible ones render inline; hidden ones live inside a `<details>` expander labelled "Show N hidden message(s) (trashed / spam)" with 75% opacity so they read as audit material, not active conversation. Each bubble now carries a right-aligned action menu (Trash / Spam in normal state, Restore in trash, Not spam in spam) — implemented as tiny `<form action={fn.bind(null, idStr)}>` shims per button (server actions accept `.bind()` partial application). Existing badge styles surface `trashed` and `spam{:reason}` next to the from-address so the row visually identifies its hidden bucket. No new tests at this layer — the P61-04 service tests already pin the data path. Production build clean; 879 tests still green.
-- [ ] **P61-11.** Tests written alongside each task. Folder-derivation matrix (P61-02), service action tests with workspace isolation + batch semantics + admin gating (P61-04), bounce-loop detection and threshold edge cases (P61-08), cron purge respecting retention and idempotency (P61-09), retry preserving messageId + thread linkage (P61-07). Target +~20 tests. **799 → ~819 total.**
+- [x] **P61-11.** Tests written alongside each task — satisfied inline, not as a separate task. Folder-derivation matrix (P61-02, 13 tests), service action tests with workspace isolation + batch semantics + admin gating (P61-04, 20 tests), bounce-loop detection and threshold edge cases (P61-08, 12 tests), cron purge respecting retention and idempotency (P61-09, 12 tests), retry preserving messageId + thread linkage (P61-07, 12 tests). **799 → 879 total.**
 - [x] **P61-12.** Deployed 2026-05-20. SHA `5ed7941`. 10 commits pushed (P61-01 → P61-10). `~/deploy-discover.sh` rebuilt the agregat container; migrations 0042 + 0043 applied via `ssh root@agregat "cd /opt/lead-discovery-platform && pnpm db:migrate"` (host-side, post-deploy). Verified live: `mail_messages.trashed_at`, `spam_at`, `spam_reason` present; `workspaces.trash_retention_days INT NOT NULL DEFAULT 30` present. `/api/health` → `{"ok":true}`. App container `lead-discovery-platform-app-1` Up. Cron `mail.trash.purge.tick` registers on boot. Operator-driven smoke (open the six folders, exercise trash/spam/restore, Errors retry, Empty trash now, thread-view collapse) is a UI flow Claude cannot exercise without a session.
 
 **Phase 61 complete.**
@@ -910,6 +910,83 @@ rows (via the action or the auto-purge cron).
 **Open notes (resolved during impl):**
 - Phase 52's outreach-vs-inbox distinction: kept the Phase-52 `listThreads(kind)` API intact for code that uses it; the new `/mailbox/[id]` folder UI does NOT carry an outreach/inbox sub-filter for now. Add later if operators ask.
 - Bounce-loop threshold (3 / 14d) shipped as constants `BOUNCE_LOOP_THRESHOLD` + `BOUNCE_LOOP_WINDOW_MS` in `mail.ts`. Promote to workspace setting only if it misfires.
+
+## Phase 61 (continued) — `/communication` mail client + contacts
+
+The folder model from P61-01→10 was a `/mailbox/[id]` surface. P61-13→27 promoted
+it into the real, full-featured mail client at `/communication`, then added full
+contacts management. (Back-filled 2026-06-08 from commit history — these shipped
+2026-05-20→22 but were never written into TODO.md.)
+
+- [x] **P61-13.** Bring the six-folder UI to `/communication` (the real mail client, not `/mailbox/[id]`). Commit `49e1d1c`.
+- [x] **P61-14.** Redesign `/communication` as a professional mail client. Commit `48e1849`.
+- [x] **P61-15.** Tighten `/communication` chrome — strip page header, go full-width. Commit `2e1f8e0`.
+- [x] **P61-16.** Outlook-style 2-pane layout (folder rail + message list). Commit `d19ebcf`.
+- [x] **P61-17.** Dashboard, filters, and pagination on `/communication`. Commit `2147da4`.
+- [x] **P61-18.** Per-page selector (10 / 50 / 100) on `/communication`. Commit `666f165`.
+- [x] **P61-19.** Fix date filter — Drizzle `gte`/`lte`, not raw `sql` Date binding (see [[feedback_drizzle_date_sql_template_trap]]). Commit `5a8aee5`.
+- [x] **P61-20.** Filters auto-submit on change. Commit `7a47146`.
+- [x] **P61-21.** Prominent Compose button at top of folder rail. Commit `beb7378`.
+- [x] **P61-22.** Sync mailbox button on `/communication`. Commit `450210f`.
+- [x] **P61-23.** Per-workspace toggle for IMAP auto-sync. Commit `0c64832`.
+- [x] **P61-24.** Fix — move `/communication` server actions to a dedicated `use-server` file. Commit `b169983`.
+- [x] **P61-25.** Safe manual sync + partial-success reporting. Commit `f899bc5`.
+- [x] **P61-26.** Full contacts management — dashboard, bulk actions, vibrant UI. Commit `7ee207f`.
+- [x] **P61-27.** Fix contacts-dashboard Date-binding bug (4th occurrence of the trap) + regression coverage for dashboard, bulk, and tags. Commits `fd7930c` + `81643bf`.
+
+**Phase 61 (continued) complete.**
+
+## Phase 62 — Crawl Engine + Wandizz-style discovery overhaul
+
+The largest arc yet: a scheduled Crawl Engine, the Wandizz model shift (qualification
+picks the best-fit product rather than the operator pre-selecting it), the Gemini
+provider, a connectors/recipes rebuild, model comboboxes, the Discovery/Knowledge-base
+sidebar split, and bulk + pagination across Review / Leads / Learning. (Back-filled
+2026-06-08 from commit history — shipped 2026-05-22→06-02, never written into TODO.md.)
+
+- [x] **P62-01.** Recipe edit + archive + delete on `/connectors/{id}/recipes/{recipeId}`. Commit `9c1cdd2`.
+- [x] **P62-02..04.** Crawl Engine — scheduled recipe bundles, quiet hours, cron + UI. Commit `ec52577`.
+- [x] **P62-05.** Wandizz model — drop products from the Crawl Plan; qualification picks the fit. Commit `8dc8e9b`.
+- [x] **P62-06.** Pipeline status panel on the Crawl Engine page. Commit `110b688`.
+- [x] **P62-07.** Close the Wandizz loop — crawl-finish hook + inline autopilot toggles. Commit `c8920aa`.
+- [x] **P62-08.** Wandizz-style AI qualification (LLM picks best fit, rules as fallback). Commit `3741df0`.
+- [x] **P62-09.** Gemini AI provider + Re-classify-all button. Commit `49411e5`.
+- [x] **P62-10.** Crawl Engine pinned to sidebar + dashboard. Commit `062596d`.
+- [x] **P62-11.** Separate Qualification provider/model from general AI. Commit `0e7175b`.
+- [x] **P62-12.** Group Qualification provider + model into one "Internet Data Extraction" card. Commit `4a3e325`.
+- [x] **P62-13.** Drop description blurb from the Internet Data Extraction card. Commit `4789f18`.
+- [x] **P62-14.** Reactive Provider→Model coupling on Internet Data Extraction. Commit `cda23f1`.
+- [x] **P62-15.** Reactive Provider→Model coupling on the AI + Research cards too. Commit `077f3ab`.
+- [x] **P62-16.** Drop the redundant "(for X)" caption from the Model label. Commit `80ab5b3`.
+- [x] **P62-17.** Model field becomes a combobox — type or pick any model. Commit `26a686b`.
+- [x] **P62-18.** Hybrid Model picker — dropdown plus Custom-model entry. Commit `fba3f30`.
+- [x] **P62-19.** Active toggle on each Product card. Commit `8a68bee`.
+- [x] **P62-20.** `/connectors` simplified — group by template, recipes inline. Commit `4bbef36`.
+- [x] **P62-21.** Consolidate-into-one button for duplicate connector instances. Commit `a86d1ce`.
+- [x] **P62-22.** Flat recipe rows under each connector card. Commit `c700031`.
+- [x] **P62-23.** Template-specific recipe edit form. Commit `fd8abb0`.
+- [x] **P62-24.** Collapsible Recent runs + bulk select + delete. Commit `1bfba47`.
+- [x] **P62-25.** Unify Web Search and Research grounding into one card. Commit `d5ebb50`.
+- [x] **P62-26.** Crawl Plan recipe rows + toggle-switch visual upgrade. Commit `c9974b7`.
+- [x] **P62-27.** Crawl Engine breathing space + vibrancy. Commit `226d967`.
+- [x] **P62-28.** Crawl Plan interval shown in hours. Commit `364e27e`.
+- [x] **P62-29.** Sidebar split — Discovery vs Library. Commit `f4a3742`.
+- [x] **P62-30.** Rename sidebar Library section to "Knowledge base". Commit `266a4ba`.
+- [x] **P62-31.** Bulk archive / delete on the Review queue and Leads. Commit `cc4549c`.
+- [x] **P62-32.** Leads/Review — date filter, always-visible bulk toolbar, qualification-id bulk. Commit `348e127`.
+- [x] **P62-33.** Bulk select-all + tighter aligned rows on Review and Leads. Commit `3c00260`.
+- [x] **P62-34.** Hoist Leads row checkbox out of `.lead-row`. Commit `11b3f94`.
+- [x] **P62-35.** Pagination on `/review` and `/leads`. Commit `59bf825`.
+- [x] **P62-36.** Learning page chrome — page-intro + tab-count badges. Commit `83e1c66`.
+- [x] **P62-37.** Learning row polish — product name + confidence chip. Commit `388acec`.
+- [x] **P62-38.** Bulk enable / disable on `/learning`. Commit `909ee42`.
+- [x] **P62-39.** Pagination on `/learning`. Commit `110ff24`.
+- [x] **P62-40.** Learning detail + new — page-intro chrome. Commit `08d25e8`.
+- [x] **P62-fix1.** Enforce recipe country across grounded search + qualification. Commit `8c91f16`.
+- [x] **P62-fix2.** Add `gemini-3.5-flash` + apply Gemini 3.x sampling guidance. Commit `7f303fc`.
+- [x] **P62-deploy.** Deployed 2026-06-08. SHA `7f303fc`. Prod (agregat `195.201.16.169:/opt/lead-discovery-platform`) fast-forwarded `8c91f16..7f303fc`, image rebuilt, `lead-discovery-platform-app-1` recreated. `https://discover.nulife.pl/api/health` → `{"ok":true}`. `gemini-3.5-flash` present in `src/lib/ai/gemini.ts` on prod. All of Phase 61 + 61-continued + Phase 62 now live.
+
+**Phase 62 complete.**
 
 ## Discovered along the way
 
