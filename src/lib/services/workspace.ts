@@ -11,6 +11,7 @@ import {
   type WorkspaceMemberRole,
   type WorkspaceStatus,
 } from '@/lib/db/schema/workspaces';
+import { isEnabledLanguage } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canOwnWorkspace, type WorkspaceContext } from './context';
 
@@ -133,6 +134,90 @@ export async function updateOutreachDefaults(
     },
   });
   return updated;
+}
+
+// ---- Phase 63: multi-language / translation -------------------------
+
+/**
+ * Typed view of the `workspace_settings.settings` jsonb blob. This blob is
+ * the home for free-form, migration-free workspace preferences; today it
+ * holds the operator's native language, with room to grow.
+ */
+export interface WorkspaceSettingsData {
+  /** Operator's native language (ISO 639-1). Inbound foreign replies are
+   *  translated INTO this language, and every outbound email shows its
+   *  native-language reference in it. Absent ⇒ 'en'. */
+  nativeLanguage?: string;
+}
+
+/** Read the workspace settings blob. Returns `{}` when the row or blob is
+ *  absent (older workspaces predating a given setting). Not gated — every
+ *  member may read workspace preferences. */
+export async function getWorkspaceSettings(
+  ctx: WorkspaceContext,
+): Promise<WorkspaceSettingsData> {
+  const rows = await db
+    .select()
+    .from(workspaceSettings)
+    .where(eq(workspaceSettings.workspaceId, ctx.workspaceId))
+    .limit(1);
+  return (rows[0]?.settings as WorkspaceSettingsData | undefined) ?? {};
+}
+
+/** Normalise an ISO tag to its base, lowercased code ('en-GB' → 'en'). */
+function baseLang(iso: string): string {
+  return iso.toLowerCase().split('-')[0] ?? iso.toLowerCase();
+}
+
+/**
+ * The workspace's native language — the language inbound replies are
+ * translated into and that the reference side of every email is rendered
+ * in. Falls back to 'en' when unset or set to something no longer enabled.
+ */
+export async function getWorkspaceNativeLanguage(
+  ctx: WorkspaceContext,
+): Promise<string> {
+  const settings = await getWorkspaceSettings(ctx);
+  const lang = settings.nativeLanguage;
+  return lang && isEnabledLanguage(lang) ? baseLang(lang) : 'en';
+}
+
+/**
+ * Set the workspace native language. Admin-gated, validated against the
+ * curated ENABLED_LANGUAGES set, merged into the settings jsonb (upsert so
+ * it works even for a workspace whose settings row was never provisioned),
+ * and audit-logged. Returns the normalised code that was stored.
+ */
+export async function updateWorkspaceNativeLanguage(
+  ctx: WorkspaceContext,
+  language: string,
+): Promise<string> {
+  if (!canAdminWorkspace(ctx)) {
+    throw permissionDenied('workspace.update_native_language');
+  }
+  const normalized = baseLang(language ?? '');
+  if (!isEnabledLanguage(normalized)) {
+    throw new WorkspaceServiceError(
+      `unsupported native language: ${language}`,
+      'invalid_input',
+    );
+  }
+  const current = await getWorkspaceSettings(ctx);
+  const next: WorkspaceSettingsData = { ...current, nativeLanguage: normalized };
+  await db
+    .insert(workspaceSettings)
+    .values({ workspaceId: ctx.workspaceId, settings: next, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: workspaceSettings.workspaceId,
+      set: { settings: next, updatedAt: new Date() },
+    });
+  await recordAuditEvent(ctx, {
+    kind: 'workspace.update_native_language',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: { nativeLanguage: normalized },
+  });
+  return normalized;
 }
 
 /** Phase 50: workspace-level cap on bytes uploaded per product to the
