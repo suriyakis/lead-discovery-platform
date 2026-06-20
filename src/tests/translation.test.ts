@@ -8,6 +8,7 @@ import {
   mailboxes,
 } from '@/lib/db/schema/mailing';
 import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
+import { detectLanguageFromText } from '@/lib/i18n/language';
 import {
   type WorkspaceContext,
   makeWorkspaceContext,
@@ -17,8 +18,11 @@ import {
   maybeAutoTranslateInbound,
   translateFromEnglish,
   translateInboundToEnglish,
+  translateInboundToNative,
+  translateText,
   translateToEnglish,
 } from '@/lib/services/translation';
+import { updateWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 interface Setup {
@@ -113,10 +117,25 @@ const stubAi: IAIProvider = {
     throw new Error('generateText not used by translation');
   },
   async generateJson(input) {
-    const isFromEnglish = input.system?.includes('Translate the user-supplied English text');
-    if (isFromEnglish) {
+    const sys = input.system ?? '';
+    // Legacy translateFromEnglish path.
+    if (sys.includes('Translate the user-supplied English text')) {
       return { translatedText: `[FR] ${input.prompt}` } as never;
     }
+    // Generic translateText path carries a "(xx)" target code in the
+    // system prompt. Tag the output with the target and detect the source
+    // realistically so native-pivot assertions are meaningful.
+    const m = sys.match(/natural .+ \(([a-z]{2})\)/);
+    if (m) {
+      const tgt = m[1]!;
+      const detected = detectLanguageFromText(input.prompt) ?? 'pl';
+      return {
+        translatedText: `[${tgt.toUpperCase()}] ${input.prompt}`,
+        detectedLanguage: detected,
+        isSameLanguage: detected === tgt,
+      } as never;
+    }
+    // Legacy translateToEnglish path.
     return {
       translatedText: `[EN] ${input.prompt}`,
       detectedLanguage: 'pl',
@@ -301,22 +320,25 @@ describe('maybeAutoTranslateInbound', () => {
       .select()
       .from(mailMessages)
       .where(eq(mailMessages.id, mid));
-    expect(row!.bodyTextEn).toContain('[EN]');
+    // Default workspace native is English, so the cache lands in
+    // body_text_native tagged [EN].
+    expect(row!.bodyTextNative).toContain('[EN]');
+    expect(row!.nativeLanguage).toBe('en');
   });
 
-  it('skips an English inbound without billing the AI', async () => {
+  it('skips an inbound already in the native language without billing the AI', async () => {
     const s = await setup();
     const mid = await seedInbound(
       s,
       'Hello, we are interested in your offer for the construction project at our headquarters site.',
     );
     const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
-    expect(outcome).toBe('skipped:already_english');
+    expect(outcome).toBe('skipped:already_native');
     const [row] = await db
       .select()
       .from(mailMessages)
       .where(eq(mailMessages.id, mid));
-    expect(row!.bodyTextEn).toBeNull();
+    expect(row!.bodyTextNative).toBeNull();
     // No translation audit row.
     const audits = await db
       .select()
@@ -339,15 +361,45 @@ describe('maybeAutoTranslateInbound', () => {
     expect(outcome).toBe('skipped:not_inbound');
   });
 
-  it('skips when body_text_en is already populated', async () => {
+  it('skips when body_text_native is already populated', async () => {
     const s = await setup();
     const mid = await seedInbound(s, 'cześć, mam pytanie odnośnie projektu budowlanego');
     await db
       .update(mailMessages)
-      .set({ bodyTextEn: 'pre-existing' })
+      .set({ bodyTextNative: 'pre-existing' })
       .where(eq(mailMessages.id, mid));
     const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
     expect(outcome).toBe('skipped:already_translated');
+  });
+
+  it('pivots on the workspace native language (pl), not English', async () => {
+    const s = await setup();
+    await updateWorkspaceNativeLanguage(ctx(s.workspaceA, s.ownerA), 'pl');
+    // German inbound, native Polish → should translate into Polish.
+    const mid = await seedInbound(
+      s,
+      'Vetrofluid ist ein innovatives Betonabdichtungssystem, das dauerhaften Schutz gegen Wasser und Feuchtigkeit bietet und im gewerblichen Bau eingesetzt wird.',
+    );
+    const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+    expect(outcome).toBe('translated');
+    const [row] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.id, mid));
+    expect(row!.bodyTextNative).toContain('[PL]');
+    expect(row!.nativeLanguage).toBe('pl');
+    expect(row!.translatedFromLanguage).toBe('de');
+  });
+
+  it('skips an inbound that is already in a non-English native language', async () => {
+    const s = await setup();
+    await updateWorkspaceNativeLanguage(ctx(s.workspaceA, s.ownerA), 'pl');
+    const mid = await seedInbound(
+      s,
+      'Dzień dobry, jesteśmy bardzo zainteresowani waszą ofertą dla naszego projektu budowlanego i prosimy o więcej informacji.',
+    );
+    const outcome = await maybeAutoTranslateInbound(ctx(s.workspaceA, s.ownerA), mid);
+    expect(outcome).toBe('skipped:already_native');
   });
 
   it('honours the AUTO_TRANSLATE_INBOUND=0 env kill switch', async () => {
@@ -365,5 +417,107 @@ describe('maybeAutoTranslateInbound', () => {
       if (prior === undefined) delete process.env.AUTO_TRANSLATE_INBOUND;
       else process.env.AUTO_TRANSLATE_INBOUND = prior;
     }
+  });
+});
+
+// ─── translateText (generic native-pivot) ─────────────────────────────
+
+describe('translateText', () => {
+  it('translates into an arbitrary target language and audits', async () => {
+    const s = await setup();
+    const result = await translateText(ctx(s.workspaceA, s.ownerA), {
+      text: 'Vetrofluid ist ein innovatives Betonabdichtungssystem, das einen dauerhaften Schutz gegen Wasser und Feuchtigkeit bietet und im gewerblichen Bau eingesetzt wird.',
+      targetLanguage: 'pl',
+    });
+    expect(result.translatedText).toContain('[PL]');
+    expect(result.targetLanguage).toBe('pl');
+    expect(result.detectedLanguage).toBe('de');
+
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.workspaceId, s.workspaceA));
+    const row = audits.find((a) => a.kind === 'translation.text');
+    expect(row).toBeTruthy();
+    expect((row!.payload as Record<string, unknown>).targetLanguage).toBe('pl');
+  });
+
+  it('is a no-op when the source hint already equals the target', async () => {
+    const s = await setup();
+    const result = await translateText(ctx(s.workspaceA, s.ownerA), {
+      text: 'Already Polish text here',
+      targetLanguage: 'pl',
+      sourceLanguageHint: 'pl-PL',
+    });
+    expect(result.isSameLanguage).toBe(true);
+    expect(result.translatedText).toBe('Already Polish text here');
+    // No AI call ⇒ no audit row.
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.workspaceId, s.workspaceA));
+    expect(audits.some((a) => a.kind === 'translation.text')).toBe(false);
+  });
+
+  it('normalises the target language code', async () => {
+    const s = await setup();
+    const result = await translateText(ctx(s.workspaceA, s.ownerA), {
+      text: 'Bonjour, nous sommes intéressés.',
+      targetLanguage: 'DE',
+    });
+    expect(result.targetLanguage).toBe('de');
+    expect(result.translatedText).toContain('[DE]');
+  });
+
+  it('rejects empty and oversized text', async () => {
+    const s = await setup();
+    await expect(
+      translateText(ctx(s.workspaceA, s.ownerA), { text: '   ', targetLanguage: 'pl' }),
+    ).rejects.toThrow(TranslationError);
+    await expect(
+      translateText(ctx(s.workspaceA, s.ownerA), {
+        text: 'a'.repeat(50_001),
+        targetLanguage: 'pl',
+      }),
+    ).rejects.toThrow(/exceeds/);
+  });
+});
+
+// ─── translateInboundToNative ─────────────────────────────────────────
+
+describe('translateInboundToNative', () => {
+  it('translates an inbound message into the native language and caches it', async () => {
+    const s = await setup();
+    const mid = await seedInbound(
+      s,
+      'Vetrofluid ist ein innovatives Betonabdichtungssystem für gewerbliche Bauprojekte.',
+    );
+    const r1 = await translateInboundToNative(ctx(s.workspaceA, s.ownerA), mid, 'pl');
+    expect(r1.freshlyTranslated).toBe(true);
+    expect(r1.message.bodyTextNative).toContain('[PL]');
+    expect(r1.message.nativeLanguage).toBe('pl');
+    expect(r1.message.translatedFromLanguage).toBe('de');
+    expect(r1.message.translatedAt).toBeInstanceOf(Date);
+  });
+
+  it('returns the cache without re-billing on the second call', async () => {
+    const s = await setup();
+    const mid = await seedInbound(s, 'Guten Tag, wir haben eine Frage zum Projekt.');
+    await translateInboundToNative(ctx(s.workspaceA, s.ownerA), mid, 'pl');
+    const r2 = await translateInboundToNative(ctx(s.workspaceA, s.ownerA), mid, 'pl');
+    expect(r2.freshlyTranslated).toBe(false);
+    const audits = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.workspaceId, s.workspaceA));
+    expect(audits.filter((a) => a.kind === 'translation.text')).toHaveLength(1);
+  });
+
+  it('refuses outbound messages', async () => {
+    const s = await setup();
+    const mid = await seedOutbound(s, 'we sent this');
+    await expect(
+      translateInboundToNative(ctx(s.workspaceA, s.ownerA), mid, 'pl'),
+    ).rejects.toThrow(/inbound/);
   });
 });

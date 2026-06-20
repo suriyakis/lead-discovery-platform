@@ -154,7 +154,7 @@ export interface WorkspaceSettingsData {
  *  absent (older workspaces predating a given setting). Not gated — every
  *  member may read workspace preferences. */
 export async function getWorkspaceSettings(
-  ctx: WorkspaceContext,
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<WorkspaceSettingsData> {
   const rows = await db
     .select()
@@ -175,7 +175,7 @@ function baseLang(iso: string): string {
  * in. Falls back to 'en' when unset or set to something no longer enabled.
  */
 export async function getWorkspaceNativeLanguage(
-  ctx: WorkspaceContext,
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<string> {
   const settings = await getWorkspaceSettings(ctx);
   const lang = settings.nativeLanguage;
