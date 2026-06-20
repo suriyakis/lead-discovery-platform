@@ -28,6 +28,7 @@ import { productProfiles } from '@/lib/db/schema/products';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { reviewItems } from '@/lib/db/schema/review';
 import { isKnownLanguage, resolveProfileLanguage } from '@/lib/i18n/language';
+import { translateText } from './translation';
 import { getWorkspaceNativeLanguage } from './workspace';
 import type { WorkspaceContext } from './context';
 
@@ -121,4 +122,63 @@ export async function resolveOutboundLanguage(
 
   // 5. Ultimate fallback.
   return { language: 'en', source: 'default' };
+}
+
+/**
+ * Result of preparing an outbound message for dispatch under Flow A.
+ * `sendText` is what actually goes on the wire (target language);
+ * `bodyTextNative` is the operator-approved native reference to persist
+ * alongside it.
+ */
+export interface OutboundDualBody {
+  sendText: string;
+  bodyTextNative: string;
+  nativeLanguage: string;
+  targetLanguage: string;
+  /** False when target === native (no translation happened). */
+  translated: boolean;
+}
+
+/**
+ * Flow A send-time preparation: given a lead's (reviewItem, product) pair
+ * and an approved native-language body, resolve the recipient's target
+ * language and translate the body into it. When target equals native, this
+ * is a no-op (no AI call) and both sides hold the same text.
+ *
+ * Every lead-aware sender (outreach queue, follow-ups, thread replies)
+ * routes through this so the dual-language pair is consistent and the
+ * translate-at-send step can never be bypassed.
+ */
+export async function prepareOutboundDualBody(
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  input: { reviewItemId: bigint; productProfileId: bigint; nativeBody: string },
+): Promise<OutboundDualBody> {
+  const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
+  const { language: targetLanguage } = await resolveOutboundLanguage(ctx, {
+    reviewItemId: input.reviewItemId,
+    productProfileId: input.productProfileId,
+  });
+
+  if (targetLanguage === nativeLanguage) {
+    return {
+      sendText: input.nativeBody,
+      bodyTextNative: input.nativeBody,
+      nativeLanguage,
+      targetLanguage,
+      translated: false,
+    };
+  }
+
+  const { translatedText } = await translateText(ctx, {
+    text: input.nativeBody,
+    targetLanguage,
+    sourceLanguageHint: nativeLanguage,
+  });
+  return {
+    sendText: translatedText,
+    bodyTextNative: input.nativeBody,
+    nativeLanguage,
+    targetLanguage,
+    translated: true,
+  };
 }

@@ -50,10 +50,15 @@ afterAll(async () => {
   await (db.$client as unknown as { end: () => Promise<void> }).end();
 });
 
-async function seedDraftableLead(s: Setup, recipientEmail = 'anna@target.com') {
+async function seedDraftableLead(
+  s: Setup,
+  recipientEmail = 'anna@target.com',
+  opts: { productLanguage?: string } = {},
+) {
   const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
     name: 'P',
     shortDescription: 'thing',
+    language: opts.productLanguage,
   });
   const c = await createConnector(ctx(s.workspaceA, s.ownerA), {
     templateType: 'mock',
@@ -299,6 +304,58 @@ describe('drainQueue', () => {
     expect(r.picked).toBe(0);
     const all = await listQueueEntries(ctx(s.workspaceA, s.ownerA));
     expect(all[0]!.status).toBe('queued'); // still queued — will fire tomorrow
+  });
+});
+
+// ============ dual-language send (Flow A) =============================
+
+describe('drainQueue — dual-language (Flow A)', () => {
+  it('translates the native draft to the target language and stores both sides', async () => {
+    const s = await setup();
+    // Product targets German; workspace native stays English, so the
+    // draft is composed in English and translated to German at send.
+    const { draft, mailbox } = await seedDraftableLead(s, 'anna@target.com', {
+      productLanguage: 'de',
+    });
+    await enqueueDraft(ctx(s.workspaceA, s.ownerA), {
+      draftId: draft.id,
+      mailboxId: mailbox.id,
+      delayMode: 'immediate',
+    });
+    const r = await drainQueue(ctx(s.workspaceA, s.ownerA), {
+      providerOverride: new MockMailProvider(),
+    });
+    expect(r.sent).toBe(1);
+
+    const [msg] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.workspaceId, s.workspaceA));
+    expect(msg!.direction).toBe('outbound');
+    expect(msg!.targetLanguage).toBe('de');
+    expect(msg!.nativeLanguage).toBe('en');
+    // The native reference is the operator-approved (English) draft body.
+    expect(msg!.bodyTextNative).toBe(draft.body);
+  });
+
+  it('records native === target when no translation is needed', async () => {
+    const s = await setup();
+    const { draft, mailbox } = await seedDraftableLead(s);
+    await enqueueDraft(ctx(s.workspaceA, s.ownerA), {
+      draftId: draft.id,
+      mailboxId: mailbox.id,
+      delayMode: 'immediate',
+    });
+    await drainQueue(ctx(s.workspaceA, s.ownerA), {
+      providerOverride: new MockMailProvider(),
+    });
+    const [msg] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.workspaceId, s.workspaceA));
+    expect(msg!.targetLanguage).toBe('en');
+    expect(msg!.nativeLanguage).toBe('en');
+    expect(msg!.bodyTextNative).toBe(draft.body);
   });
 });
 

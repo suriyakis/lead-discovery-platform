@@ -89,6 +89,13 @@ export interface SendMailInput {
   references?: ReadonlyArray<string>;
   /** Optional link to outreach_drafts.id when this came from a draft. */
   sourceDraftId?: bigint;
+  /** Phase 63 (Flow A) dual-language. `text`/`html` are the target-language
+   *  text actually sent; these record the operator-approved native-language
+   *  reference and the ISO codes of each side so the thread view can show
+   *  both. All optional — single-language sends leave them undefined. */
+  bodyTextNative?: string | null;
+  nativeLanguage?: string | null;
+  targetLanguage?: string | null;
   /** Phase 57 — one-shot signature override.
    *    undefined → use the mailbox default (current behaviour)
    *    null      → no signature
@@ -273,6 +280,9 @@ export async function sendMessage(
         subject,
         bodyText: input.text ?? null,
         bodyHtml: input.html ?? null,
+        bodyTextNative: input.bodyTextNative ?? null,
+        nativeLanguage: input.nativeLanguage ?? null,
+        targetLanguage: input.targetLanguage ?? null,
         headers: headers as unknown as Record<string, unknown>,
         attachments: [],
         failureReason:
@@ -349,6 +359,9 @@ export async function sendMessage(
     subject,
     bodyText: input.text ?? null,
     bodyHtml: input.html ?? null,
+    bodyTextNative: input.bodyTextNative ?? null,
+    nativeLanguage: input.nativeLanguage ?? null,
+    targetLanguage: input.targetLanguage ?? null,
     headers: headers as unknown as Record<string, unknown>,
     attachments: [],
     sentAt: new Date(),
