@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { and, desc, eq } from 'drizzle-orm';
@@ -17,6 +18,7 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { db } from '@/lib/db/client';
+import { getLanguageName } from '@/lib/i18n/language';
 import { mailThreads, mailMessages, type MailMessage } from '@/lib/db/schema/mailing';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
 import { outreachQueue } from '@/lib/db/schema/outreach';
@@ -671,19 +673,83 @@ function renderMessageBubble(
           ) : null}
         </span>
       </div>
-      <pre
-        style={{
-          margin: '0.4rem 0 0',
-          fontFamily: 'inherit',
-          fontSize: '0.85em',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          maxHeight: 200,
-          overflow: 'auto',
-        }}
-      >
-        {(m.bodyText ?? '(no plain text body)').slice(0, 4000)}
-      </pre>
+      {renderMessageBody(m)}
     </li>
+  );
+}
+
+const BODY_PRE_STYLE: CSSProperties = {
+  margin: '0.4rem 0 0',
+  fontFamily: 'inherit',
+  fontSize: '0.85em',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  maxHeight: 200,
+  overflow: 'auto',
+};
+
+/**
+ * Render a message body. Phase 63: when a native/target pair exists, show
+ * both side by side —
+ *   outbound → [Sent · target] | [Your copy · native]
+ *   inbound  → [Original · source] | [Translation · native]
+ * Otherwise fall back to a single pane (legacy rows, or same-language).
+ */
+function renderMessageBody(m: MailMessage) {
+  const primary = m.bodyText ?? '';
+  let primaryLabel: string | null = null;
+  let refLabel: string | null = null;
+  let refText: string | null = null;
+
+  if (
+    m.direction === 'outbound' &&
+    m.bodyTextNative &&
+    m.targetLanguage &&
+    m.nativeLanguage &&
+    m.targetLanguage !== m.nativeLanguage
+  ) {
+    primaryLabel = `Sent · ${getLanguageName(m.targetLanguage)}`;
+    refLabel = `Your copy · ${getLanguageName(m.nativeLanguage)}`;
+    refText = m.bodyTextNative;
+  } else if (m.direction === 'inbound' && m.bodyTextNative) {
+    primaryLabel = `Original · ${getLanguageName(m.translatedFromLanguage)}`;
+    refLabel = `Translation · ${getLanguageName(m.nativeLanguage ?? 'en')}`;
+    refText = m.bodyTextNative;
+  }
+
+  if (refText === null) {
+    return (
+      <pre style={BODY_PRE_STYLE}>
+        {(primary || '(no plain text body)').slice(0, 4000)}
+      </pre>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 1fr',
+        gap: '0.6rem',
+        marginTop: '0.4rem',
+      }}
+    >
+      <div>
+        <div className="muted" style={{ fontSize: '0.72em', marginBottom: '0.1rem' }}>
+          {primaryLabel}
+        </div>
+        <pre style={{ ...BODY_PRE_STYLE, margin: 0 }}>
+          {(primary || '(empty)').slice(0, 4000)}
+        </pre>
+      </div>
+      <div>
+        <div className="muted" style={{ fontSize: '0.72em', marginBottom: '0.1rem' }}>
+          {refLabel}
+        </div>
+        <pre style={{ ...BODY_PRE_STYLE, margin: 0 }}>
+          {refText.slice(0, 4000)}
+        </pre>
+      </div>
+    </div>
   );
 }
