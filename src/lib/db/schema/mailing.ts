@@ -265,6 +265,18 @@ export const mailMessages = pgTable(
     translatedFromLanguage: text('translated_from_language'),
     translatedAt: timestamp('translated_at', { mode: 'date', withTimezone: true }),
 
+    /** Phase 63: dual-language body, generalised beyond English.
+        - OUTBOUND (Flow A): `bodyText` is the target-language text actually
+          sent; `bodyTextNative` is the operator-approved native reference.
+        - INBOUND: `bodyText` is the original foreign text; `bodyTextNative`
+          is its translation into the workspace native language.
+        `nativeLanguage` / `targetLanguage` record the ISO code of each side.
+        Supersedes the English-only `bodyTextEn` cache (kept for back-compat
+        and still populated by the legacy translateInboundToEnglish path). */
+    bodyTextNative: text('body_text_native'),
+    nativeLanguage: text('native_language'),
+    targetLanguage: text('target_language'),
+
     /** P61: per-message folder state (derived folders, not a column).
      *  trashed_at + spam_at are soft-delete style — the message stays in
      *  the row store so threads keep their context, but the message
