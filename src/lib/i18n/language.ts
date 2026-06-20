@@ -52,6 +52,29 @@ export const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
 
 export type SupportedLanguage = keyof typeof LANGUAGE_NAMES;
 
+/**
+ * Curated set of languages exposed in the UI pickers (workspace native
+ * language, recipe scraping language, product profile language). Kept
+ * deliberately short — the operator only ever works in a handful of
+ * markets — but trivially extensible: add an ISO code here (and, if it's
+ * a non-Latin script, a range in SCRIPT_RANGES below) to surface it
+ * everywhere. Every code MUST exist in LANGUAGE_NAMES.
+ */
+export const ENABLED_LANGUAGES = ['en', 'pl', 'de', 'it', 'ja', 'he'] as const;
+
+export type EnabledLanguage = (typeof ENABLED_LANGUAGES)[number];
+
+/** `{ code, name }` rows for `<select>` options, in ENABLED_LANGUAGES order. */
+export const ENABLED_LANGUAGE_OPTIONS: ReadonlyArray<{ code: string; name: string }> =
+  ENABLED_LANGUAGES.map((code) => ({ code, name: getLanguageName(code) }));
+
+/** Returns true if the ISO code is one of the curated, UI-exposed languages. */
+export function isEnabledLanguage(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const normalized = iso.toLowerCase().split('-')[0] ?? iso;
+  return (ENABLED_LANGUAGES as readonly string[]).includes(normalized);
+}
+
 /** ISO 639-1 → display name, defaulting to the bare code if unknown so
  *  unfamiliar tags still produce something usable in a prompt. */
 export function getLanguageName(iso: string | null | undefined): string {
@@ -147,6 +170,34 @@ export function detectLanguageFromText(
   text: string | null | undefined,
 ): string | null {
   if (!text || text.trim().length < DETECTION_MIN_LENGTH) return null;
+
+  // ── Non-Latin script pre-check ──────────────────────────────────────
+  // The word-marker scorer below only knows Latin-script European
+  // languages; Japanese, Hebrew, etc. score 0 and would return null,
+  // which makes the inbound auto-translate gate skip them. A script is a
+  // decisive signal on its own — detect it by Unicode-block density
+  // (script chars / non-whitespace chars) before the scorer runs.
+  const compact = text.replace(/\s+/g, '');
+  if (compact.length > 0) {
+    const total = compact.length;
+    const count = (re: RegExp) => (text.match(re) ?? []).length;
+    const kana = count(/[぀-ヿ]/g); // Hiragana + Katakana — unique to Japanese
+    const han = count(/[一-鿿]/g); // CJK ideographs — shared by ja/zh
+    const hebrew = count(/[֐-׿]/g);
+    const hangul = count(/[가-힯]/g);
+    const arabic = count(/[؀-ۿ]/g);
+    const greek = count(/[Ͱ-Ͽ]/g);
+
+    // Kana is exclusive to Japanese — even a small amount is decisive.
+    if (kana > 0 && (kana + han) / total > 0.2) return 'ja';
+    if (hebrew / total > 0.3) return 'he';
+    if (hangul / total > 0.3) return 'ko';
+    if (arabic / total > 0.3) return 'ar';
+    if (greek / total > 0.3) return 'el';
+    // Han with no kana ⇒ Chinese. (Cyrillic is intentionally omitted —
+    // it's ambiguous across uk/bg/ru and none are in the curated set.)
+    if (han > 0 && kana === 0 && han / total > 0.3) return 'zh';
+  }
 
   const sample = text.substring(0, 2000);
   const scores: Record<string, number> = {};

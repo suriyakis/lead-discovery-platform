@@ -1,0 +1,1 @@
+ALTER TABLE "qualified_leads" ADD COLUMN "outreach_language" text;

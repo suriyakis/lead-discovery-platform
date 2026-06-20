@@ -28,6 +28,7 @@ import {
   type WorkspaceContext,
 } from './context';
 import { sendMessage } from './mail';
+import { prepareOutboundDualBody } from './language-resolution';
 import { isSuppressed } from './suppression';
 import {
   canSendNow,
@@ -539,6 +540,29 @@ async function processEntry(
       }
     }
 
+    // Phase 63 (Flow A): the queued body is the operator-approved NATIVE
+    // text. Translate it into the recipient's resolved target language at
+    // dispatch and persist both sides. Applies to draft-backed text sends;
+    // one-off / html-only sends pass through unchanged.
+    let sendText = entry.bodyText ?? undefined;
+    let bodyTextNative: string | undefined;
+    let nativeLanguage: string | undefined;
+    let targetLanguage: string | undefined;
+    if (entry.draftId && entry.bodyText && entry.bodyText.trim()) {
+      const pair = await loadDraftPair(ctx, entry.draftId);
+      if (pair) {
+        const dual = await prepareOutboundDualBody(ctx, {
+          reviewItemId: pair.reviewItemId,
+          productProfileId: pair.productProfileId,
+          nativeBody: entry.bodyText,
+        });
+        sendText = dual.sendText;
+        bodyTextNative = dual.bodyTextNative;
+        nativeLanguage = dual.nativeLanguage;
+        targetLanguage = dual.targetLanguage;
+      }
+    }
+
     // Send.
     const sendInput: Parameters<typeof sendMessage>[1] = {
       mailboxId: entry.mailboxId,
@@ -550,9 +574,12 @@ async function processEntry(
         ? entry.bccAddresses.map((address) => ({ address }))
         : undefined,
       subject: entry.subject,
-      text: entry.bodyText ?? undefined,
+      text: sendText,
       html: entry.bodyHtml ?? undefined,
       sourceDraftId: entry.draftId ?? undefined,
+      bodyTextNative,
+      nativeLanguage,
+      targetLanguage,
       providerOverride,
     };
     if (entry.inReplyTo) sendInput.inReplyTo = entry.inReplyTo;
@@ -593,6 +620,27 @@ async function processEntry(
 }
 
 // ---- internals ----------------------------------------------------
+
+/** Fetch a draft's (review_item, product) pair for language resolution. */
+async function loadDraftPair(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  draftId: bigint,
+): Promise<{ reviewItemId: bigint; productProfileId: bigint } | null> {
+  const rows = await db
+    .select({
+      reviewItemId: outreachDrafts.reviewItemId,
+      productProfileId: outreachDrafts.productProfileId,
+    })
+    .from(outreachDrafts)
+    .where(
+      and(
+        eq(outreachDrafts.workspaceId, ctx.workspaceId),
+        eq(outreachDrafts.id, draftId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
 
 async function loadEntry(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,

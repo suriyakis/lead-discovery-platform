@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import {
   AlertTriangle,
   Info,
+  Languages,
   Mail,
   MessageSquareReply,
   Pencil,
@@ -23,8 +24,11 @@ import { canAdminWorkspace } from '@/lib/services/context';
 import {
   WorkspaceServiceError,
   getWorkspace,
+  getWorkspaceNativeLanguage,
   updateOutreachDefaults,
+  updateWorkspaceNativeLanguage,
 } from '@/lib/services/workspace';
+import { ENABLED_LANGUAGE_OPTIONS } from '@/lib/i18n/language';
 import {
   FollowUpServiceError,
   loadSettings as loadFollowUpSettings,
@@ -85,6 +89,24 @@ export default async function OutreachSettingsPage({
   }
 
   const followUpSettings = await loadFollowUpSettings(ctx.workspaceId);
+  const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
+
+  async function saveNativeLanguage(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const lang = String(formData.get('nativeLanguage') ?? '');
+    try {
+      const stored = await updateWorkspaceNativeLanguage(c, lang);
+      redirect(
+        '/settings/outreach?message=' +
+          encodeURIComponent(`Native language set — replies and references now use it (${stored}).`),
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof WorkspaceServiceError ? err.message : 'failed';
+      redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
+    }
+  }
 
   async function saveReply(formData: FormData) {
     'use server';
@@ -218,6 +240,44 @@ export default async function OutreachSettingsPage({
 
       {sp.message ? <p className="form-info">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
+
+      {/* ---------- Native language card (Phase 63) ---------- */}
+      <form action={saveNativeLanguage} className="config-card">
+        <header className="config-card-header">
+          <Languages className="config-card-icon" aria-hidden="true" />
+          <div>
+            <h2 className="config-card-title">Native language</h2>
+            <p className="config-card-desc">
+              The language your team reads in. Outreach is drafted in this
+              language for you to review; on send it is translated to each
+              recipient&rsquo;s language and both versions are kept. Inbound
+              replies are translated into this language too.
+            </p>
+          </div>
+        </header>
+
+        <label className="config-card-row">
+          <span>Workspace native language</span>
+          <select
+            name="nativeLanguage"
+            defaultValue={nativeLanguage}
+            className="select-input"
+            style={{ minWidth: '12rem' }}
+          >
+            {ENABLED_LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.code} value={o.code}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="config-card-actions">
+          <button type="submit" className="primary-btn">
+            Save native language
+          </button>
+        </div>
+      </form>
 
       {/* ---------- Reply automation card ---------- */}
       <form action={saveReply} className="config-card">

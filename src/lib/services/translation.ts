@@ -22,7 +22,13 @@ import { mailMessages, type MailMessage } from '@/lib/db/schema/mailing';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { detectLanguageFromText, getLanguageName } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
+import { getWorkspaceNativeLanguage } from './workspace';
 import type { WorkspaceContext } from './context';
+
+/** Normalise an ISO tag to its base, lowercased code ('en-GB' → 'en'). */
+function baseLang(iso: string): string {
+  return iso.toLowerCase().split('-')[0] ?? iso.toLowerCase();
+}
 
 export class TranslationError extends Error {
   public readonly code: string;
@@ -214,6 +220,120 @@ export async function translateFromEnglish(
   };
 }
 
+// ─── Generic bidirectional translation (native-pivot) ─────────────────
+
+const translateTextSchema = z.object({
+  translatedText: z.string(),
+  detectedLanguage: z.string().min(2).max(10).optional(),
+  isSameLanguage: z.boolean().optional(),
+});
+type TranslateTextParsed = z.infer<typeof translateTextSchema>;
+
+export interface TranslateTextInput {
+  text: string;
+  /** ISO code to translate INTO. */
+  targetLanguage: string;
+  /** Optional ISO hint for the source language. When it equals the target
+   *  the call short-circuits to a no-op (no AI, no audit). */
+  sourceLanguageHint?: string | null;
+}
+
+export interface TranslateTextResult {
+  translatedText: string;
+  /** Best-effort source language (the hint, the model's detection, or
+   *  'unknown'). */
+  detectedLanguage: string;
+  /** Normalised base code that was translated into. */
+  targetLanguage: string;
+  /** True when the source already equalled the target (no translation
+   *  was needed). */
+  isSameLanguage: boolean;
+}
+
+/**
+ * Translate arbitrary text into an arbitrary target language. Stateless —
+ * does NOT persist. Generalises translateToEnglish/translateFromEnglish so
+ * the app can pivot on the workspace's native language rather than always
+ * English (inbound foreign → native; outbound native → recipient target).
+ */
+export async function translateText(
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  input: TranslateTextInput,
+): Promise<TranslateTextResult> {
+  const text = input.text?.trim() ?? '';
+  if (!text) throw invalid('text is required');
+  if (text.length > MAX_TEXT_LEN)
+    throw invalid(`text exceeds ${MAX_TEXT_LEN} characters`);
+
+  const targetLang = baseLang(input.targetLanguage ?? 'en');
+  const hint = input.sourceLanguageHint ? baseLang(input.sourceLanguageHint) : null;
+
+  // Known no-op: source hint already equals the target.
+  if (hint && hint === targetLang) {
+    return {
+      translatedText: input.text,
+      detectedLanguage: hint,
+      targetLanguage: targetLang,
+      isSameLanguage: true,
+    };
+  }
+
+  const provider = await getAIProviderForCtx(ctx);
+  const targetName = getLanguageName(targetLang);
+  const hintLine = hint
+    ? `The source language is ${getLanguageName(hint)} (${hint}).`
+    : 'Auto-detect the source language.';
+
+  const system = [
+    `You are a professional translator. Translate the user-supplied text into fluent, natural ${targetName} (${targetLang}).`,
+    hintLine,
+    'Rules:',
+    `- Produce text that reads as if originally written in ${targetName}.`,
+    '- Preserve the original formatting (paragraphs, line breaks, bullet points).',
+    '- Preserve proper nouns, company names, product names, and technical brand names verbatim.',
+    '- Preserve email greeting and closing conventions, rendered naturally in the target language.',
+    '- Use a formal/professional register appropriate for business communication.',
+    '- Do NOT add any commentary, notes, or explanations.',
+    `- If the text is already in ${targetName}, return it unchanged and set isSameLanguage=true.`,
+    'Respond as JSON: { "translatedText": string, "detectedLanguage": ISO 639-1 code, "isSameLanguage": boolean }.',
+  ].join('\n');
+
+  let parsed: TranslateTextParsed;
+  try {
+    parsed = await provider.generateJson({ system, prompt: text }, translateTextSchema);
+  } catch (err) {
+    if (provider.id === 'mock') {
+      parsed = { translatedText: input.text };
+    } else {
+      throw new TranslationError(
+        `translation failed: ${err instanceof Error ? err.message : String(err)}`,
+        'provider_error',
+      );
+    }
+  }
+
+  const detectedLanguage = parsed.detectedLanguage ?? hint ?? 'unknown';
+  const isSameLanguage = parsed.isSameLanguage ?? detectedLanguage === targetLang;
+
+  await recordAuditEvent(ctx, {
+    kind: 'translation.text',
+    payload: {
+      bytesIn: text.length,
+      bytesOut: parsed.translatedText.length,
+      targetLanguage: targetLang,
+      detectedLanguage,
+      provider: provider.id,
+    },
+  });
+
+  return {
+    translatedText: parsed.translatedText,
+    detectedLanguage,
+    targetLanguage: targetLang,
+    isSameLanguage,
+  };
+}
+
 /**
  * Auto-translation outcomes. Returned by maybeAutoTranslateInbound so
  * callers (and tests) can assert which branch fired.
@@ -221,7 +341,7 @@ export async function translateFromEnglish(
 export type AutoTranslateOutcome =
   | 'translated'
   | 'skipped:already_translated'
-  | 'skipped:already_english'
+  | 'skipped:already_native'
   | 'skipped:undetermined'
   | 'skipped:no_body'
   | 'skipped:not_inbound'
@@ -266,17 +386,22 @@ export async function maybeAutoTranslateInbound(
   if (!row) return 'skipped:not_found';
   if (row.direction !== 'inbound') return 'skipped:not_inbound';
   if (!row.bodyText || !row.bodyText.trim()) return 'skipped:no_body';
-  if (row.bodyTextEn && row.bodyTextEn.trim()) return 'skipped:already_translated';
+  if (row.bodyTextNative && row.bodyTextNative.trim())
+    return 'skipped:already_translated';
 
-  // Heuristic gate: skip the AI call entirely if the body reads as
-  // English or the detector is uncertain. This is a 0-cost short-circuit
-  // for the common case (most B2B inbound mail).
+  // Pivot on the workspace's native language, not a hardcoded English.
+  const native = await getWorkspaceNativeLanguage(ctx);
+
+  // Heuristic gate: skip the AI call entirely if the body already reads as
+  // the native language or the detector is uncertain. A 0-cost short-
+  // circuit for the common case (inbound mail already in the operator's
+  // language).
   const detected = detectLanguageFromText(row.bodyText);
   if (detected === null) return 'skipped:undetermined';
-  if (detected === 'en') return 'skipped:already_english';
+  if (detected === native) return 'skipped:already_native';
 
   try {
-    await translateInboundToEnglish(ctx, messageId);
+    await translateInboundToNative(ctx, messageId, native);
     return 'translated';
   } catch (err) {
     console.error('[translation.maybeAutoTranslateInbound] failed:', err);
@@ -322,6 +447,65 @@ export async function translateInboundToEnglish(
     .update(mailMessages)
     .set({
       bodyTextEn: result.translatedText,
+      translatedFromLanguage: result.detectedLanguage,
+      translatedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(mailMessages.id, messageId))
+    .returning();
+  if (!updated) throw notFound('mail_message');
+
+  return { message: updated, freshlyTranslated: true };
+}
+
+/**
+ * Translate an inbound mail message into the workspace's native language
+ * and cache the result on the row (body_text_native + native_language +
+ * translated_from_language + translated_at). Idempotent — if
+ * body_text_native is already set, returns it without re-billing. This is
+ * the native-pivot successor to translateInboundToEnglish and is what
+ * maybeAutoTranslateInbound calls.
+ */
+export async function translateInboundToNative(
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  messageId: bigint,
+  nativeLanguage: string,
+): Promise<{ message: MailMessage; freshlyTranslated: boolean }> {
+  const native = baseLang(nativeLanguage || 'en');
+
+  const [row] = await db
+    .select()
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.id, messageId),
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+      ),
+    )
+    .limit(1);
+  if (!row) throw notFound('mail_message');
+  if (row.direction !== 'inbound') {
+    throw invalid('only inbound messages can be translated');
+  }
+  if (!row.bodyText || !row.bodyText.trim()) {
+    throw invalid('message has no plain-text body to translate');
+  }
+
+  // Cache hit: skip the AI call.
+  if (row.bodyTextNative && row.bodyTextNative.trim()) {
+    return { message: row, freshlyTranslated: false };
+  }
+
+  const result = await translateText(ctx, {
+    text: row.bodyText,
+    targetLanguage: native,
+  });
+
+  const [updated] = await db
+    .update(mailMessages)
+    .set({
+      bodyTextNative: result.translatedText,
+      nativeLanguage: native,
       translatedFromLanguage: result.detectedLanguage,
       translatedAt: new Date(),
       updatedAt: new Date(),

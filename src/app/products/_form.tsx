@@ -4,7 +4,7 @@
 
 import type { ProductProfile } from '@/lib/db/schema/products';
 import {
-  LANGUAGE_NAMES,
+  ENABLED_LANGUAGE_OPTIONS,
   detectLanguageFromText,
   getLanguageName,
 } from '@/lib/i18n/language';
@@ -253,13 +253,19 @@ export function ProductFields({
         <label>
           <span>Language</span>
           <select name="language" defaultValue={v?.language ?? 'en'}>
-            {Object.entries(LANGUAGE_NAMES)
-              .sort((a, b) => a[1].localeCompare(b[1]))
-              .map(([code, name]) => (
-                <option key={code} value={code}>
-                  {name} ({code})
+            {(() => {
+              // Curated set; preserve a pre-existing out-of-set value so an
+              // older product never silently loses its language on save.
+              const cur = v?.language ?? 'en';
+              const opts = ENABLED_LANGUAGE_OPTIONS.some((o) => o.code === cur)
+                ? ENABLED_LANGUAGE_OPTIONS
+                : [{ code: cur, name: getLanguageName(cur) }, ...ENABLED_LANGUAGE_OPTIONS];
+              return opts.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.name} ({o.code})
                 </option>
-              ))}
+              ));
+            })()}
           </select>
           <LanguageHint profile={v} />
         </label>

@@ -35,7 +35,7 @@ import {
 } from './outreach-engine';
 import type { OutreachStage } from '@/lib/db/schema/outreach';
 import { getAIProviderForCtx } from '@/lib/ai';
-import { resolveProfileLanguage } from '@/lib/i18n/language';
+import { getWorkspaceNativeLanguage } from './workspace';
 
 export class OutreachServiceError extends Error {
   public readonly code: string;
@@ -104,9 +104,12 @@ export async function generateOutreachDraft(
   }
 
   const channel = input.channel?.trim() || 'email';
-  // Detector cascade: input override → product description / instructions →
-  // explicit product.language → 'en'. See src/lib/i18n/language.ts.
-  const language = input.language?.trim() || resolveProfileLanguage(product);
+  // Phase 63 (Flow A): drafts are composed in the workspace NATIVE language
+  // so the operator reviews/approves in the language they read. The send
+  // path (outreach-queue / follow-up) translates native → the recipient's
+  // resolved target language at dispatch time. An explicit input.language
+  // still wins for callers that want a specific draft language.
+  const language = input.language?.trim() || (await getWorkspaceNativeLanguage(ctx));
   // Default to 'hybrid': use AI when a real provider is configured,
   // fall back to deterministic rules when only the mock provider is
   // available. The earlier 'rules' default was an artifact of Phase 8

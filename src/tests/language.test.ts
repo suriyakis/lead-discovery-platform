@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ENABLED_LANGUAGES,
+  ENABLED_LANGUAGE_OPTIONS,
   LANGUAGE_NAMES,
   detectLanguageFromText,
   getLanguageName,
+  isEnabledLanguage,
   isKnownLanguage,
   resolveProfileLanguage,
 } from '@/lib/i18n/language';
@@ -95,6 +98,30 @@ describe('detectLanguageFromText', () => {
   });
 });
 
+// ─── detectLanguageFromText: non-Latin scripts ────────────────────────
+
+describe('detectLanguageFromText (non-Latin scripts)', () => {
+  it('detects Japanese from kana + kanji', () => {
+    const text =
+      'ご連絡ありがとうございます。御社の製品にとても興味があります。詳細な情報と価格表をお送りいただけますでしょうか。';
+    expect(detectLanguageFromText(text)).toBe('ja');
+  });
+
+  it('detects Hebrew', () => {
+    const text =
+      'שלום, אנחנו מאוד מעוניינים בהצעה שלכם עבור פרויקט הבנייה. אנא שלחו לנו מידע נוסף ומחירון מפורט.';
+    expect(detectLanguageFromText(text)).toBe('he');
+  });
+
+  it('does not misfire on Latin text carrying a stray non-Latin glyph', () => {
+    // A mostly-English sentence with one kanji must NOT read as Japanese —
+    // the density gate keeps it under threshold and the scorer wins.
+    const text =
+      'Hello, we are very interested in your offer for the construction project 案 at our headquarters site this year.';
+    expect(detectLanguageFromText(text)).toBe('en');
+  });
+});
+
 // ─── resolveProfileLanguage ───────────────────────────────────────────
 
 describe('resolveProfileLanguage', () => {
@@ -175,5 +202,39 @@ describe('LANGUAGE_NAMES', () => {
       expect(name.length).toBeGreaterThan(0);
       expect(code).toMatch(/^[a-z]{2}$/);
     }
+  });
+});
+
+// ─── ENABLED_LANGUAGES (curated UI set) ───────────────────────────────
+
+describe('ENABLED_LANGUAGES', () => {
+  it('contains the six operator markets', () => {
+    expect([...ENABLED_LANGUAGES]).toEqual(['en', 'pl', 'de', 'it', 'ja', 'he']);
+  });
+
+  it('every enabled code resolves to a real name', () => {
+    for (const code of ENABLED_LANGUAGES) {
+      expect(LANGUAGE_NAMES[code]).toBeTruthy();
+    }
+  });
+
+  it('ENABLED_LANGUAGE_OPTIONS pairs code with display name in order', () => {
+    expect(ENABLED_LANGUAGE_OPTIONS).toEqual([
+      { code: 'en', name: 'English' },
+      { code: 'pl', name: 'Polish' },
+      { code: 'de', name: 'German' },
+      { code: 'it', name: 'Italian' },
+      { code: 'ja', name: 'Japanese' },
+      { code: 'he', name: 'Hebrew' },
+    ]);
+  });
+
+  it('isEnabledLanguage gates on the curated set, region-tolerant', () => {
+    expect(isEnabledLanguage('ja')).toBe(true);
+    expect(isEnabledLanguage('he')).toBe(true);
+    expect(isEnabledLanguage('en-GB')).toBe(true);
+    expect(isEnabledLanguage('fr')).toBe(false); // known, but not enabled
+    expect(isEnabledLanguage(null)).toBe(false);
+    expect(isEnabledLanguage('')).toBe(false);
   });
 });

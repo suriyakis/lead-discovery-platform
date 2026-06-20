@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
+import { ENABLED_LANGUAGE_OPTIONS } from '@/lib/i18n/language';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -129,7 +130,14 @@ function RecipeFieldsForTemplate({ templateType }: { templateType: string }) {
         </label>
         <label>
           <span>Language (optional)</span>
-          <input name="language" type="text" maxLength={6} placeholder="e.g. en, pl" />
+          <select name="language" defaultValue="">
+            <option value="">Default (inherit)</option>
+            {ENABLED_LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.code} value={o.code}>
+                {o.name} ({o.code})
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           <span>Max results per query</span>

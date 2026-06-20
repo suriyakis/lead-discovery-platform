@@ -6,13 +6,17 @@
 // same mail_thread the operator is looking at.
 
 import { NextResponse } from 'next/server';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
+import { db } from '@/lib/db/client';
+import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import {
   AuthRequiredError,
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
+import { prepareOutboundDualBody } from '@/lib/services/language-resolution';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
 
 const InputSchema = z.object({
@@ -69,12 +73,45 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
+  // Flow A: if this thread belongs to a lead, translate the operator's
+  // native-language reply into the recipient's resolved target language and
+  // persist both sides. Threads with no lead (or any failure) send
+  // single-language — never block the reply on translation.
+  let dual: Awaited<ReturnType<typeof prepareOutboundDualBody>> | null = null;
+  try {
+    const [lead] = await db
+      .select({
+        reviewItemId: qualifiedLeads.reviewItemId,
+        productProfileId: qualifiedLeads.productProfileId,
+      })
+      .from(qualifiedLeads)
+      .where(
+        and(
+          eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+          eq(qualifiedLeads.currentThreadId, parsed.threadId),
+        ),
+      )
+      .limit(1);
+    if (lead) {
+      dual = await prepareOutboundDualBody(ctx, {
+        reviewItemId: lead.reviewItemId,
+        productProfileId: lead.productProfileId,
+        nativeBody: parsed.body,
+      });
+    }
+  } catch (err) {
+    console.error('[reply] dual-language prep failed; sending single-language:', err);
+  }
+
   try {
     const sent = await sendMessage(ctx, {
       mailboxId: parsed.mailboxId,
       to: [{ address: parsed.to }],
       subject: parsed.subject,
-      text: parsed.body,
+      text: dual?.sendText ?? parsed.body,
+      bodyTextNative: dual?.bodyTextNative,
+      nativeLanguage: dual?.nativeLanguage,
+      targetLanguage: dual?.targetLanguage,
       inReplyTo: parsed.inReplyTo ?? undefined,
       references: parsed.references,
       signatureId,
