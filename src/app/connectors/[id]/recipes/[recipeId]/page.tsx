@@ -11,6 +11,7 @@ import {
 import { AppShell } from '@/components/AppShell';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { auth } from '@/lib/auth';
+import { ENABLED_LANGUAGE_OPTIONS, getLanguageName } from '@/lib/i18n/language';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -394,13 +395,20 @@ function InternetSearchFields({
         </label>
         <label>
           <span>Language</span>
-          <input
-            type="text"
-            name="language"
-            defaultValue={language}
-            placeholder="e.g. en, pl"
-            maxLength={4}
-          />
+          <select name="language" defaultValue={language}>
+            <option value="">Default (inherit)</option>
+            {(() => {
+              const opts =
+                language && !ENABLED_LANGUAGE_OPTIONS.some((o) => o.code === language)
+                  ? [{ code: language, name: getLanguageName(language) }, ...ENABLED_LANGUAGE_OPTIONS]
+                  : ENABLED_LANGUAGE_OPTIONS;
+              return opts.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.name} ({o.code})
+                </option>
+              ));
+            })()}
+          </select>
         </label>
         <label>
           <span>Max results per query</span>
