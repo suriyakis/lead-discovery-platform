@@ -988,6 +988,30 @@ sidebar split, and bulk + pagination across Review / Leads / Learning. (Back-fil
 
 **Phase 62 complete.**
 
+## Phase 63 — Multi-language / Translation
+
+**Goal.** The app is authored in English but operated in many markets. The
+operator picks a workspace **native** language (what the team reads in) and
+a per-recipe/per-product/per-lead **communication** language (what we write
+TO leads). Every sent email is stored + shown as a native↔target pair
+(Flow A: draft native → approve → translate on send). Inbound replies are
+auto-translated into the native language. Languages: en, pl, de, it, ja, he
+(curated `ENABLED_LANGUAGES`, extensible). Branch `feat/multi-language-translation`.
+
+- [x] **P63-01.** i18n: curated `ENABLED_LANGUAGES` / `ENABLED_LANGUAGE_OPTIONS` / `isEnabledLanguage` + Unicode-script pre-check in `detectLanguageFromText` so non-Latin scripts (ja/he/ko/ar/el/zh) are detected. Commit `1f6a0e9`.
+- [x] **P63-02.** Workspace-wide native language: `getWorkspaceSettings` / `getWorkspaceNativeLanguage` / `updateWorkspaceNativeLanguage` in `workspace_settings.settings` jsonb (no migration). Commit `49ad3d3`.
+- [x] **P63-03.** `mail_messages` dual-language columns `body_text_native` / `native_language` / `target_language`. Migration `0047_moaning_puff_adder.sql`. Commit `3fd4a73`.
+- [x] **P63-04.** Native-pivot translation: `translateText` (generic) + `translateInboundToNative`; `maybeAutoTranslateInbound` now translates into the workspace native language. Legacy English shims kept. Commit `a12c942`.
+- [x] **P63-05.** Per-lead override `qualified_leads.outreach_language`. Migration `0048_massive_wildside.sql`. Commit `db1cbb2`.
+- [x] **P63-06.** `resolveOutboundLanguage` cascade (lead → recipe → product → workspace native → en) in `language-resolution.ts`. Recipe beats product to avoid the detection-beats-explicit gotcha. Commit `ed5d45c`.
+- [x] **P63-07.** `generateOutreachDraft` composes in the workspace native language (Flow A). Commit `11e8967`.
+- [x] **P63-08.** Translate-at-send + dual persistence: `sendMessage` gains `bodyTextNative`/`nativeLanguage`/`targetLanguage`; `prepareOutboundDualBody` helper; outreach queue wired. Commit `f29d2bb`.
+- [x] **P63-09.** Follow-ups (direct `sendMessage`, R2 bypass) compose native + translate at both send sites. Commit `88ba91b`.
+- [x] **P63-10.** Operator thread replies (`POST /api/communication/reply`) resolve the lead via `currentThreadId` and go dual-language. Commit `a63c544`.
+- [x] **P63-11.** Thread view shows native↔target side by side (outbound: Sent·target | Your copy·native; inbound: Original·source | Translation·native). Commit `55d5d69`.
+- [x] **P63-12.** Curated language pickers (product form, recipe editor, new-recipe) + workspace Native-language card on Settings → Outreach. Commit `db28714`.
+- [ ] **P63-deploy.** Apply migrations `0047`/`0048` on prod, rebuild, smoke-test. **Not yet deployed** — branch not merged to `main`.
+
 ## Discovered along the way
 
 (empty — add discoveries with `> 2026-MM-DD …` prefix when found)
