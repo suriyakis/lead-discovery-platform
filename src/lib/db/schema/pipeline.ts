@@ -114,6 +114,11 @@ export const qualifiedLeads = pgTable(
     /** Active mail_threads.id for this lead. Null until first send. */
     currentThreadId: bigint('current_thread_id', { mode: 'bigint' }),
 
+    /** Phase 63: per-lead outbound language override (ISO code). When set,
+     *  it wins over the recipe → product → workspace-native cascade that
+     *  resolveOutboundLanguage applies. NULL ⇒ use the cascade. */
+    outreachLanguage: text('outreach_language'),
+
     // ---- CRM linkage (populated in Phase 13) ----
     crmExternalId: text('crm_external_id'),
     crmSystem: text('crm_system'),
