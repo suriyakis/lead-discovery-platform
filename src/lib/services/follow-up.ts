@@ -33,7 +33,8 @@ import {
   type ThreadMessage,
 } from './outreach-engine';
 import { sendMessage } from './mail';
-import { resolveProfileLanguage } from '@/lib/i18n/language';
+import { prepareOutboundDualBody } from './language-resolution';
+import { getWorkspaceNativeLanguage } from './workspace';
 import type { IMailProvider } from '@/lib/mail';
 
 export class FollowUpServiceError extends Error {
@@ -480,12 +481,15 @@ async function processOne(
   // operator-direction block — see composeFollowUpDraft + buildFollowUpPrompt.
   const stepConfig = settings.steps[row.stepNumber - 1];
   const customInstructions = stepConfig?.customInstructions?.trim() ?? '';
+  // Flow A: compose the follow-up in the workspace native language; the
+  // send step below translates it to the recipient's target language.
+  const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
   const verdict = await composeFollowUpDraft(
     threadHistory,
     product,
     row.stepNumber,
     row.totalSteps,
-    { channel: 'email', language: resolveProfileLanguage(product) },
+    { channel: 'email', language: nativeLanguage },
     provider,
     undefined,
     customInstructions || undefined,
@@ -528,6 +532,13 @@ async function processOne(
 
   // Send. mail.sendMessage handles threading via inReplyTo/references,
   // mailbox lookup, suppression, signature append, and tracking pixel.
+  // Flow A: translate the native body to the recipient's target language
+  // and persist both sides.
+  const dual = await prepareOutboundDualBody(ctx, {
+    reviewItemId: lead.reviewItemId,
+    productProfileId: lead.productProfileId,
+    nativeBody: verdict.body,
+  });
   const sent = await sendMessage(ctx, {
     mailboxId: thread.mailboxId,
     to: [
@@ -537,7 +548,10 @@ async function processOne(
       },
     ],
     subject,
-    text: verdict.body,
+    text: dual.sendText,
+    bodyTextNative: dual.bodyTextNative,
+    nativeLanguage: dual.nativeLanguage,
+    targetLanguage: dual.targetLanguage,
     inReplyTo: lastMessage.messageId ?? undefined,
     references: lastMessage.references ?? [],
     providerOverride: deps.mailProviderOverride,
@@ -643,6 +657,13 @@ export async function approveFollowUp(
     .orderBy(asc(mailMessages.createdAt));
   const lastMessage = messages[messages.length - 1] ?? null;
 
+  // Flow A: the staged/edited body is native; translate to the recipient's
+  // target language at send and persist both sides.
+  const dual = await prepareOutboundDualBody(ctx, {
+    reviewItemId: lead.reviewItemId,
+    productProfileId: lead.productProfileId,
+    nativeBody: body,
+  });
   const sent = await sendMessage(ctx, {
     mailboxId: thread.mailboxId,
     to: [
@@ -652,7 +673,10 @@ export async function approveFollowUp(
       },
     ],
     subject,
-    text: body,
+    text: dual.sendText,
+    bodyTextNative: dual.bodyTextNative,
+    nativeLanguage: dual.nativeLanguage,
+    targetLanguage: dual.targetLanguage,
     inReplyTo: lastMessage?.messageId ?? undefined,
     references: lastMessage?.references ?? [],
     providerOverride: deps.mailProviderOverride,
