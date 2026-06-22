@@ -36,6 +36,16 @@ export async function truncateAll(): Promise<void> {
   if (!process.env.DATABASE_URL?.includes('lead_test')) {
     throw new Error('truncateAll() refused: DATABASE_URL is not the test DB');
   }
+  // Drain any fire-and-forget in-process jobs left running by the previous
+  // test (e.g. connector runs a crawl plan enqueued). Letting them settle
+  // first stops their writes from racing — and deadlocking against — the
+  // TRUNCATE below. Best-effort; only the in-memory dev queue buffers work.
+  try {
+    const { getJobQueue } = await import('@/lib/jobs');
+    await getJobQueue().drain?.();
+  } catch {
+    // ignore — drain is a stability nicety, not a correctness requirement
+  }
   // RESTART IDENTITY resets sequences. CASCADE handles FKs.
   const ident = TENANT_TABLES.map((t) => `"${t}"`).join(', ');
   await db.execute(sql.raw(`TRUNCATE TABLE ${ident} RESTART IDENTITY CASCADE;`));
