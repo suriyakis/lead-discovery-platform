@@ -60,7 +60,7 @@ export type SupportedLanguage = keyof typeof LANGUAGE_NAMES;
  * a non-Latin script, a range in SCRIPT_RANGES below) to surface it
  * everywhere. Every code MUST exist in LANGUAGE_NAMES.
  */
-export const ENABLED_LANGUAGES = ['en', 'pl', 'de', 'it', 'ja', 'he'] as const;
+export const ENABLED_LANGUAGES = ['en', 'pl', 'de', 'it', 'ja', 'he', 'ro'] as const;
 
 export type EnabledLanguage = (typeof ENABLED_LANGUAGES)[number];
 
