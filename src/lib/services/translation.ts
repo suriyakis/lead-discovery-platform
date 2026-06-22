@@ -236,6 +236,10 @@ export interface TranslateTextInput {
   /** Optional ISO hint for the source language. When it equals the target
    *  the call short-circuits to a no-op (no AI, no audit). */
   sourceLanguageHint?: string | null;
+  /** Emit a `translation.text` audit event (default true). High-volume,
+   *  low-value callers (e.g. per search-query translation inside a connector
+   *  run) pass false to avoid audit-row write contention. */
+  recordAudit?: boolean;
 }
 
 export interface TranslateTextResult {
@@ -315,16 +319,18 @@ export async function translateText(
   const detectedLanguage = parsed.detectedLanguage ?? hint ?? 'unknown';
   const isSameLanguage = parsed.isSameLanguage ?? detectedLanguage === targetLang;
 
-  await recordAuditEvent(ctx, {
-    kind: 'translation.text',
-    payload: {
-      bytesIn: text.length,
-      bytesOut: parsed.translatedText.length,
-      targetLanguage: targetLang,
-      detectedLanguage,
-      provider: provider.id,
-    },
-  });
+  if (input.recordAudit !== false) {
+    await recordAuditEvent(ctx, {
+      kind: 'translation.text',
+      payload: {
+        bytesIn: text.length,
+        bytesOut: parsed.translatedText.length,
+        targetLanguage: targetLang,
+        detectedLanguage,
+        provider: provider.id,
+      },
+    });
+  }
 
   return {
     translatedText: parsed.translatedText,

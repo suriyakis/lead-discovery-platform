@@ -21,6 +21,8 @@ import { getJobQueue } from '@/lib/jobs';
 import { registerJobHandlers, type ConnectorRunJobPayload } from '@/lib/jobs/bootstrap';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
+import { translateText } from './translation';
+import { getWorkspaceNativeLanguage } from './workspace';
 
 export class ConnectorServiceError extends Error {
   public readonly code: string;
@@ -81,6 +83,61 @@ export async function getConnectorRow(
 
 // ---- recipes ----------------------------------------------------------
 
+/** Coerce a jsonb value into a shallow-cloned plain object (or {}). */
+function asSelectorsObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+/**
+ * Phase 63: pre-translate a recipe's search queries into its search
+ * language at SAVE time and store them as `selectors.searchQueriesIssued`
+ * (parallel to the operator's native-language queries). The internet-search
+ * connector issues these, so the concurrent run path does NO per-query
+ * translation. No-op — and clears any stale issued queries — when there's no
+ * search language, no queries, or the search language equals the workspace
+ * native language. `effectiveQueries` is what the connector will actually
+ * run (selectors.searchQueries when present, else the searchQueries column).
+ */
+async function applyIssuedQueries(
+  ctx: WorkspaceContext,
+  selectors: Record<string, unknown>,
+  effectiveQueries: readonly string[],
+): Promise<Record<string, unknown>> {
+  const stripIssued = () => {
+    if ('searchQueriesIssued' in selectors) {
+      const clone = { ...selectors };
+      delete clone.searchQueriesIssued;
+      return clone;
+    }
+    return selectors;
+  };
+
+  const language = typeof selectors.language === 'string' ? selectors.language : null;
+  const base = language ? (language.toLowerCase().split('-')[0] ?? null) : null;
+  if (!base || effectiveQueries.length === 0) return stripIssued();
+
+  const native = await getWorkspaceNativeLanguage(ctx);
+  if (base === native) return stripIssued();
+
+  const issued: string[] = [];
+  for (const q of effectiveQueries) {
+    try {
+      const t = await translateText(ctx, {
+        text: q,
+        targetLanguage: base,
+        sourceLanguageHint: native,
+        recordAudit: false,
+      });
+      issued.push(t.translatedText);
+    } catch {
+      issued.push(q); // best-effort: fall back to the native query
+    }
+  }
+  return { ...selectors, searchQueriesIssued: issued };
+}
+
 export async function createRecipe(
   ctx: WorkspaceContext,
   input: Omit<NewConnectorRecipe, 'workspaceId' | 'templateType'>,
@@ -88,8 +145,20 @@ export async function createRecipe(
   if (!canWrite(ctx)) throw permissionDenied('create recipe');
   // Resolve templateType from parent connector (which lives in this workspace).
   const parent = await getConnectorRow(ctx, input.connectorId);
+  // Only touch selectors (and pay the async translation cost) when the
+  // recipe actually declares a search language; otherwise keep the exact
+  // baseline behaviour so the common path is byte-for-byte unchanged.
+  const selectorsObj = asSelectorsObject(input.selectors);
+  let finalSelectors: unknown = input.selectors;
+  if (typeof selectorsObj.language === 'string' && selectorsObj.language.length > 0) {
+    const effectiveQueries = Array.isArray(selectorsObj.searchQueries)
+      ? selectorsObj.searchQueries.filter((q): q is string => typeof q === 'string')
+      : (input.searchQueries ?? []).map(String);
+    finalSelectors = await applyIssuedQueries(ctx, selectorsObj, effectiveQueries);
+  }
   const row: NewConnectorRecipe = {
     ...input,
+    selectors: finalSelectors as NewConnectorRecipe['selectors'],
     workspaceId: ctx.workspaceId,
     templateType: parent.templateType,
   };
@@ -362,7 +431,7 @@ export async function updateRecipe(
   input: UpdateRecipeInput,
 ): Promise<ConnectorRecipe> {
   if (!canWrite(ctx)) throw permissionDenied('update recipe');
-  await getRecipe(ctx, id);
+  const existing = await getRecipe(ctx, id);
   const updates: Partial<NewConnectorRecipe> & { updatedAt: Date } = {
     updatedAt: new Date(),
   };
@@ -386,6 +455,25 @@ export async function updateRecipe(
   }
   if (input.selectors !== undefined) {
     updates.selectors = sanitiseJsonObject(input.selectors, 'selectors');
+  }
+  // Recompute issued (translated) search queries only when a search language
+  // is in play (after applying this update). Recipes without a search
+  // language keep the exact baseline behaviour above — no async translation.
+  if (input.selectors !== undefined || input.searchQueries !== undefined) {
+    const baseSelectors =
+      input.selectors !== undefined
+        ? asSelectorsObject(sanitiseJsonObject(input.selectors, 'selectors'))
+        : asSelectorsObject(existing.selectors);
+    if (typeof baseSelectors.language === 'string' && baseSelectors.language.length > 0) {
+      const columnQueries =
+        input.searchQueries !== undefined
+          ? [...input.searchQueries].map((s) => s.trim()).filter((s) => s.length > 0)
+          : existing.searchQueries;
+      const effectiveQueries = Array.isArray(baseSelectors.searchQueries)
+        ? baseSelectors.searchQueries.filter((q): q is string => typeof q === 'string')
+        : columnQueries;
+      updates.selectors = await applyIssuedQueries(ctx, baseSelectors, effectiveQueries);
+    }
   }
   if (input.paginationRules !== undefined) {
     updates.paginationRules = sanitiseJsonObject(
