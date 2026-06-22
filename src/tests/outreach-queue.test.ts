@@ -12,7 +12,11 @@ import {
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { ensureQualifiedLead, updateContact } from '@/lib/services/pipeline';
-import { generateOutreachDraft } from '@/lib/services/outreach';
+import {
+  generateDraftTranslation,
+  generateOutreachDraft,
+  saveDraftTranslation,
+} from '@/lib/services/outreach';
 import { createMailbox } from '@/lib/services/mailbox';
 import {
   cancelQueueEntry,
@@ -413,6 +417,43 @@ describe('drainQueue — dual-language (Flow A)', () => {
       .where(eq(mailMessages.workspaceId, s.workspaceA));
     expect(msg!.targetLanguage).toBe('en');
     expect(msg!.nativeLanguage).toBe('en');
+    expect(msg!.bodyTextNative).toBe(draft.body);
+  });
+});
+
+// ============ stored draft translation ================================
+
+describe('drainQueue — operator-edited draft translation', () => {
+  it('sends the stored/edited translation instead of auto-translating', async () => {
+    const s = await setup();
+    const { draft, mailbox } = await seedDraftableLead(s, 'anna@target.com', {
+      productLanguage: 'de',
+    });
+    _setAIProviderForTests(taggingAi);
+    // Operator generates a translation, then hand-edits it.
+    await generateDraftTranslation(ctx(s.workspaceA, s.ownerA), draft.id);
+    await saveDraftTranslation(ctx(s.workspaceA, s.ownerA), draft.id, {
+      subject: 'Betreff (edited)',
+      body: 'HAND-EDITED GERMAN BODY',
+    });
+    await enqueueDraft(ctx(s.workspaceA, s.ownerA), {
+      draftId: draft.id,
+      mailboxId: mailbox.id,
+      delayMode: 'immediate',
+    });
+    await drainQueue(ctx(s.workspaceA, s.ownerA), {
+      providerOverride: new MockMailProvider(),
+    });
+
+    const [msg] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.workspaceId, s.workspaceA));
+    // The exact edited text goes out — NOT a fresh auto-translation.
+    expect(msg!.bodyText).toBe('HAND-EDITED GERMAN BODY');
+    expect(msg!.subject).toBe('Betreff (edited)');
+    expect(msg!.targetLanguage).toBe('de');
+    // The native (English) draft body is kept as the reference.
     expect(msg!.bodyTextNative).toBe(draft.body);
   });
 });

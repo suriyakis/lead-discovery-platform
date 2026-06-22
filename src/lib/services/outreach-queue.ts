@@ -550,15 +550,23 @@ async function processEntry(
     let nativeLanguage: string | undefined;
     let targetLanguage: string | undefined;
     if (entry.draftId && entry.bodyText && entry.bodyText.trim()) {
-      const pair = await loadDraftPair(ctx, entry.draftId);
-      if (pair) {
+      const draft = await loadDraftForSend(ctx, entry.draftId);
+      if (draft && draft.bodyTranslated && draft.targetLanguage) {
+        // The operator generated + (possibly) edited a translation on the
+        // draft. Send that exact text rather than auto-translating.
+        sendText = draft.bodyTranslated;
+        sendSubject = draft.subjectTranslated ?? entry.subject;
+        bodyTextNative = draft.body;
+        nativeLanguage = (draft.language ?? 'en').toLowerCase().split('-')[0] ?? 'en';
+        targetLanguage = draft.targetLanguage;
+      } else if (draft) {
+        // No stored translation — auto-translate at dispatch (Flow A). The
+        // draft subject is composed in the native language too, so translate
+        // it alongside the body.
         const dual = await prepareOutboundDualBody(ctx, {
-          reviewItemId: pair.reviewItemId,
-          productProfileId: pair.productProfileId,
+          reviewItemId: draft.reviewItemId,
+          productProfileId: draft.productProfileId,
           nativeBody: entry.bodyText,
-          // The draft subject is composed in the native language too;
-          // translate it alongside the body so the sent email isn't a
-          // native subject over a target body.
           nativeSubject: entry.subject,
         });
         sendText = dual.sendText;
@@ -628,14 +636,27 @@ async function processEntry(
 // ---- internals ----------------------------------------------------
 
 /** Fetch a draft's (review_item, product) pair for language resolution. */
-async function loadDraftPair(
+async function loadDraftForSend(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   draftId: bigint,
-): Promise<{ reviewItemId: bigint; productProfileId: bigint } | null> {
+): Promise<{
+  reviewItemId: bigint;
+  productProfileId: bigint;
+  body: string;
+  language: string | null;
+  subjectTranslated: string | null;
+  bodyTranslated: string | null;
+  targetLanguage: string | null;
+} | null> {
   const rows = await db
     .select({
       reviewItemId: outreachDrafts.reviewItemId,
       productProfileId: outreachDrafts.productProfileId,
+      body: outreachDrafts.body,
+      language: outreachDrafts.language,
+      subjectTranslated: outreachDrafts.subjectTranslated,
+      bodyTranslated: outreachDrafts.bodyTranslated,
+      targetLanguage: outreachDrafts.targetLanguage,
     })
     .from(outreachDrafts)
     .where(

@@ -14,22 +14,15 @@ import {
   approveOutreachDraft,
   archiveOutreachDraft,
   editOutreachDraft,
+  generateDraftTranslation,
   generateOutreachDraft,
   getOutreachDraft,
   rejectOutreachDraft,
+  saveDraftTranslation,
 } from '@/lib/services/outreach';
 import { enqueueDraft } from '@/lib/services/outreach-queue';
 import { listMailboxes } from '@/lib/services/mailbox';
-import {
-  TranslationError,
-  translateFromEnglish,
-  translateText,
-} from '@/lib/services/translation';
-import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
-import {
-  getLanguageName,
-  resolveProfileLanguage,
-} from '@/lib/i18n/language';
+import { getLanguageName } from '@/lib/i18n/language';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
@@ -90,37 +83,6 @@ export default async function DraftDetail({
     await editOutreachDraft(c, id, { subject, body });
     redirect(`/drafts/${id}`);
   }
-  async function translateAndSave(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const body = String(formData.get('body') ?? '');
-    if (!body.trim()) redirect(`/drafts/${id}`);
-    const targetLang = resolveProfileLanguage(product);
-    if (targetLang === 'en' || targetLang.startsWith('en-')) {
-      // Already English — no-op, but persist any pending edits.
-      const subject = String(formData.get('subject') ?? '').trim() || null;
-      await editOutreachDraft(c, id, { subject, body });
-      redirect(`/drafts/${id}?msg=already-english`);
-    }
-    try {
-      const result = await translateFromEnglish(c, {
-        text: body,
-        targetLanguage: targetLang,
-      });
-      const subject = String(formData.get('subject') ?? '').trim() || null;
-      await editOutreachDraft(c, id, { subject, body: result.translatedText });
-      redirect(`/drafts/${id}?msg=translated-to-${targetLang}`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m =
-        err instanceof TranslationError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : 'translate failed';
-      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
-    }
-  }
   async function enqueueForSend(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -175,41 +137,43 @@ export default async function DraftDetail({
     redirect('/drafts');
   }
 
-  // Phase 63: preview the exact target-language version that will actually be
-  // sent (the draft is composed in your native language and translated on
-  // send). Best-effort, read-only; doesn't touch the stored draft.
+  // Phase 63: the operator-reviewed translation (what actually gets sent).
+  // Generated/edited on demand via the actions below; null until then.
   const nativeLang = (draft.language ?? 'en').toLowerCase().split('-')[0] ?? 'en';
-  let sendPreview:
-    | { language: string; subject: string | null; body: string }
-    | null = null;
-  try {
-    const { language: target } = await resolveOutboundLanguage(ctx, {
-      reviewItemId: reviewItem.id,
-      productProfileId: product.id,
-    });
-    if (target && target !== nativeLang) {
-      const bodyT = await translateText(ctx, {
-        text: draft.body,
-        targetLanguage: target,
-        sourceLanguageHint: nativeLang,
-        recordAudit: false,
-      });
-      const subjT = draft.subject
-        ? await translateText(ctx, {
-            text: draft.subject,
-            targetLanguage: target,
-            sourceLanguageHint: nativeLang,
-            recordAudit: false,
-          })
-        : null;
-      sendPreview = {
-        language: target,
-        subject: subjT?.translatedText ?? null,
-        body: bodyT.translatedText,
-      };
+
+  async function genTranslation() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      const d = await generateDraftTranslation(c, id);
+      redirect(
+        `/drafts/${id}?message=${encodeURIComponent(
+          d.targetLanguage
+            ? `Translation generated (${getLanguageName(d.targetLanguage)}) — review/edit below.`
+            : 'Recipient language matches your draft — nothing to translate.',
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof OutreachServiceError ? err.message : 'translate failed';
+      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
     }
-  } catch {
-    // best-effort — no preview on failure
+  }
+
+  async function saveTranslation(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await saveDraftTranslation(c, id, {
+        subject: String(formData.get('subjectTranslated') ?? '').trim() || null,
+        body: String(formData.get('bodyTranslated') ?? ''),
+      });
+      redirect(`/drafts/${id}?message=Translation+saved`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof OutreachServiceError ? err.message : 'save failed';
+      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
+    }
   }
 
   const banner = sp.error
@@ -357,50 +321,94 @@ export default async function DraftDetail({
                 <button type="submit" className="primary-btn">
                   Save edits
                 </button>
-                {(() => {
-                  const target = resolveProfileLanguage(product);
-                  if (target === 'en' || target.startsWith('en-')) return null;
-                  return (
-                    <button
-                      type="submit"
-                      formAction={translateAndSave}
-                      className="ghost-btn translate-draft-btn"
-                    >
-                      <Languages className="primary-btn-icon" aria-hidden="true" />
-                      <span>Translate to {getLanguageName(target)} &amp; save</span>
-                    </button>
-                  );
-                })()}
               </div>
             </form>
           )}
         </section>
 
-        {sendPreview ? (
-          <section>
-            <h2>
-              <Languages className="primary-btn-icon" aria-hidden="true" />{' '}
-              What we&rsquo;ll send ({getLanguageName(sendPreview.language)})
-            </h2>
-            <p className="muted">
-              Auto-translated from your {getLanguageName(nativeLang)} draft at
-              send time. Both versions are kept on the conversation thread —
-              you approve the draft above; this is the exact email the
-              recipient receives.
-            </p>
-            {sendPreview.subject ? (
-              <p>
-                <strong>Subject:</strong> {sendPreview.subject}
+        <section>
+          <h2>
+            <Languages className="primary-btn-icon" aria-hidden="true" />{' '}
+            Translation
+            {draft.targetLanguage ? ` (${getLanguageName(draft.targetLanguage)})` : ''}
+          </h2>
+          {draft.targetLanguage && draft.bodyTranslated ? (
+            <>
+              <p className="muted">
+                This is the exact email the recipient receives. Your{' '}
+                {getLanguageName(nativeLang)} draft above is kept as the
+                reference; edit the translation here if you want.
               </p>
-            ) : null}
-            <pre
-              className="draft-body"
-              dir={sendPreview.language === 'he' || sendPreview.language === 'ar' ? 'rtl' : 'ltr'}
-            >
-              {sendPreview.body}
-            </pre>
-          </section>
-        ) : null}
+              {!isTerminal ? (
+                <form action={saveTranslation} className="edit-draft-form">
+                  <label>
+                    <span>Subject ({getLanguageName(draft.targetLanguage)})</span>
+                    <input
+                      name="subjectTranslated"
+                      type="text"
+                      maxLength={200}
+                      defaultValue={draft.subjectTranslated ?? ''}
+                      dir={draft.targetLanguage === 'he' || draft.targetLanguage === 'ar' ? 'rtl' : 'ltr'}
+                    />
+                  </label>
+                  <label>
+                    <span>Body ({getLanguageName(draft.targetLanguage)})</span>
+                    <textarea
+                      name="bodyTranslated"
+                      rows={14}
+                      defaultValue={draft.bodyTranslated}
+                      maxLength={20000}
+                      dir={draft.targetLanguage === 'he' || draft.targetLanguage === 'ar' ? 'rtl' : 'ltr'}
+                    />
+                  </label>
+                  <div className="action-row">
+                    <button type="submit" className="primary-btn">
+                      Save translation
+                    </button>
+                    <button
+                      type="submit"
+                      formAction={genTranslation}
+                      className="ghost-btn"
+                    >
+                      <Languages className="primary-btn-icon" aria-hidden="true" />{' '}
+                      Re-translate from draft
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  {draft.subjectTranslated ? (
+                    <p>
+                      <strong>Subject:</strong> {draft.subjectTranslated}
+                    </p>
+                  ) : null}
+                  <pre
+                    className="draft-body"
+                    dir={draft.targetLanguage === 'he' || draft.targetLanguage === 'ar' ? 'rtl' : 'ltr'}
+                  >
+                    {draft.bodyTranslated}
+                  </pre>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="muted">
+                The draft is composed in your {getLanguageName(nativeLang)}{' '}
+                language and sent in the recipient&rsquo;s language. Generate the
+                translation to see — and edit — the exact outgoing email.
+              </p>
+              {!isTerminal ? (
+                <form action={genTranslation}>
+                  <button type="submit" className="primary-btn">
+                    <Languages className="primary-btn-icon" aria-hidden="true" />{' '}
+                    Show translation
+                  </button>
+                </form>
+              ) : null}
+            </>
+          )}
+        </section>
 
         {!isTerminal ? (
           <section>
