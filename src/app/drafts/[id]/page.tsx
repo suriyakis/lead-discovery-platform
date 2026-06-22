@@ -23,7 +23,9 @@ import { listMailboxes } from '@/lib/services/mailbox';
 import {
   TranslationError,
   translateFromEnglish,
+  translateText,
 } from '@/lib/services/translation';
+import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
 import {
   getLanguageName,
   resolveProfileLanguage,
@@ -171,6 +173,43 @@ export default async function DraftDetail({
     const c = await getWorkspaceContext();
     await archiveOutreachDraft(c, id);
     redirect('/drafts');
+  }
+
+  // Phase 63: preview the exact target-language version that will actually be
+  // sent (the draft is composed in your native language and translated on
+  // send). Best-effort, read-only; doesn't touch the stored draft.
+  const nativeLang = (draft.language ?? 'en').toLowerCase().split('-')[0] ?? 'en';
+  let sendPreview:
+    | { language: string; subject: string | null; body: string }
+    | null = null;
+  try {
+    const { language: target } = await resolveOutboundLanguage(ctx, {
+      reviewItemId: reviewItem.id,
+      productProfileId: product.id,
+    });
+    if (target && target !== nativeLang) {
+      const bodyT = await translateText(ctx, {
+        text: draft.body,
+        targetLanguage: target,
+        sourceLanguageHint: nativeLang,
+        recordAudit: false,
+      });
+      const subjT = draft.subject
+        ? await translateText(ctx, {
+            text: draft.subject,
+            targetLanguage: target,
+            sourceLanguageHint: nativeLang,
+            recordAudit: false,
+          })
+        : null;
+      sendPreview = {
+        language: target,
+        subject: subjT?.translatedText ?? null,
+        body: bodyT.translatedText,
+      };
+    }
+  } catch {
+    // best-effort — no preview on failure
   }
 
   const banner = sp.error
@@ -336,6 +375,32 @@ export default async function DraftDetail({
             </form>
           )}
         </section>
+
+        {sendPreview ? (
+          <section>
+            <h2>
+              <Languages className="primary-btn-icon" aria-hidden="true" />{' '}
+              What we&rsquo;ll send ({getLanguageName(sendPreview.language)})
+            </h2>
+            <p className="muted">
+              Auto-translated from your {getLanguageName(nativeLang)} draft at
+              send time. Both versions are kept on the conversation thread —
+              you approve the draft above; this is the exact email the
+              recipient receives.
+            </p>
+            {sendPreview.subject ? (
+              <p>
+                <strong>Subject:</strong> {sendPreview.subject}
+              </p>
+            ) : null}
+            <pre
+              className="draft-body"
+              dir={sendPreview.language === 'he' || sendPreview.language === 'ar' ? 'rtl' : 'ltr'}
+            >
+              {sendPreview.body}
+            </pre>
+          </section>
+        ) : null}
 
         {!isTerminal ? (
           <section>
