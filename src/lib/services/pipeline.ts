@@ -23,6 +23,7 @@ import {
   type WorkspaceContext,
 } from './context';
 import { attachContact, upsertContact } from './contacts';
+import { isEnabledLanguage } from '@/lib/i18n/language';
 
 export class PipelineServiceError extends Error {
   public readonly code: string;
@@ -347,6 +348,46 @@ export async function setNotes(
     .returning();
   if (!updated) throw invariant('notes update returned no row');
   await logEvent(ctx, leadId, current.state, current.state, 'note', {});
+  return updated;
+}
+
+/**
+ * Set (or clear, with '') a per-lead outbound-language override. When set it
+ * wins over the recipe → workspace-default → product cascade for this lead's
+ * outreach. Validated against the curated ENABLED_LANGUAGES set.
+ */
+export async function setOutreachLanguage(
+  ctx: WorkspaceContext,
+  leadId: bigint,
+  language: string,
+): Promise<QualifiedLead> {
+  if (!canWrite(ctx)) throw permissionDenied('pipeline.outreach_language');
+  const current = await loadLead(ctx, leadId);
+  const trimmed = (language ?? '').trim().toLowerCase();
+  let value: string | null;
+  if (trimmed === '' || trimmed === 'auto') {
+    value = null;
+  } else {
+    const base = trimmed.split('-')[0] ?? trimmed;
+    if (!isEnabledLanguage(base)) {
+      throw invalid(`unsupported outreach language: ${language}`);
+    }
+    value = base;
+  }
+  const [updated] = await db
+    .update(qualifiedLeads)
+    .set({ outreachLanguage: value, updatedAt: new Date() })
+    .where(
+      and(
+        eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+        eq(qualifiedLeads.id, leadId),
+      ),
+    )
+    .returning();
+  if (!updated) throw invariant('outreach_language update returned no row');
+  await logEvent(ctx, leadId, current.state, current.state, 'note', {
+    outreachLanguage: value,
+  });
   return updated;
 }
 

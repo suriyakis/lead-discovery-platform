@@ -17,6 +17,7 @@ import {
   getStateCounts,
   listLeads,
   setNotes,
+  setOutreachLanguage,
   transition,
   updateContact,
 } from '@/lib/services/pipeline';
@@ -282,6 +283,22 @@ describe('updateContact / assign / setNotes', () => {
     const lead = await seedLead(s);
     const updated = await setNotes(ctx(s.workspaceA, s.ownerA), lead.id, '   needs follow-up\n');
     expect(updated.notes).toBe('needs follow-up');
+  });
+
+  it('setOutreachLanguage sets, normalises, clears, and validates', async () => {
+    const s = await setup();
+    const lead = await seedLead(s);
+    const c = ctx(s.workspaceA, s.ownerA);
+
+    const set = await setOutreachLanguage(c, lead.id, 'HE');
+    expect(set.outreachLanguage).toBe('he');
+
+    const cleared = await setOutreachLanguage(c, lead.id, '');
+    expect(cleared.outreachLanguage).toBeNull();
+
+    await expect(setOutreachLanguage(c, lead.id, 'fr')).rejects.toMatchObject({
+      code: 'invalid_input',
+    });
   });
 });
 
