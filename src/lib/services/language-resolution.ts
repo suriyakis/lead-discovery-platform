@@ -29,12 +29,16 @@ import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { reviewItems } from '@/lib/db/schema/review';
 import { isKnownLanguage, resolveProfileLanguage } from '@/lib/i18n/language';
 import { translateText } from './translation';
-import { getWorkspaceNativeLanguage } from './workspace';
+import {
+  getWorkspaceNativeLanguage,
+  getWorkspaceOutreachLanguage,
+} from './workspace';
 import type { WorkspaceContext } from './context';
 
 export type OutboundLanguageSource =
   | 'lead'
   | 'recipe'
+  | 'workspace_default'
   | 'product'
   | 'workspace'
   | 'default';
@@ -99,6 +103,10 @@ export async function resolveOutboundLanguage(
     const recipeLang = normKnown(sel.language) ?? normKnown(snap.language);
     if (recipeLang) return { language: recipeLang, source: 'recipe' };
   }
+
+  // 2.5 Workspace default outbound language (set in Settings → Outreach).
+  const wsDefault = normKnown(await getWorkspaceOutreachLanguage(ctx));
+  if (wsDefault) return { language: wsDefault, source: 'workspace_default' };
 
   // 3. Product profile language (its own detection cascade).
   const [product] = await db
