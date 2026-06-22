@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import '@/lib/connectors/mock';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
 import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { mailMessages } from '@/lib/db/schema/mailing';
 import {
@@ -46,9 +47,37 @@ beforeEach(async () => {
   await truncateAll();
 });
 
+afterEach(() => {
+  _setAIProviderForTests(null);
+});
+
 afterAll(async () => {
   await (db.$client as unknown as { end: () => Promise<void> }).end();
 });
+
+/**
+ * Stub AI provider that tags translateText output with the target code
+ * parsed from the system prompt (e.g. "[DE] ...") so a translation is
+ * observable in tests. Used to verify subject + body translation at send.
+ */
+const taggingAi: IAIProvider = {
+  id: 'stub',
+  model: 'stub-model',
+  async generateText() {
+    throw new Error('generateText not used here');
+  },
+  async generateJson(input) {
+    const m = (input.system ?? '').match(/natural .+ \(([a-z]{2})\)/);
+    const tgt = m?.[1] ?? 'en';
+    return { translatedText: `[${tgt.toUpperCase()}] ${input.prompt}` } as never;
+  },
+  estimateCost() {
+    return 0;
+  },
+  async healthCheck() {
+    return { ok: true };
+  },
+};
 
 async function seedDraftableLead(
   s: Setup,
@@ -335,6 +364,35 @@ describe('drainQueue — dual-language (Flow A)', () => {
     expect(msg!.targetLanguage).toBe('de');
     expect(msg!.nativeLanguage).toBe('en');
     // The native reference is the operator-approved (English) draft body.
+    expect(msg!.bodyTextNative).toBe(draft.body);
+  });
+
+  it('translates the subject as well as the body at send', async () => {
+    const s = await setup();
+    const { draft, mailbox } = await seedDraftableLead(s, 'anna@target.com', {
+      productLanguage: 'de',
+    });
+    await enqueueDraft(ctx(s.workspaceA, s.ownerA), {
+      draftId: draft.id,
+      mailboxId: mailbox.id,
+      delayMode: 'immediate',
+    });
+    // Swap in the tagging AI only for the send-time translation (after the
+    // draft was generated with the default mock).
+    _setAIProviderForTests(taggingAi);
+    await drainQueue(ctx(s.workspaceA, s.ownerA), {
+      providerOverride: new MockMailProvider(),
+    });
+
+    const [msg] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.workspaceId, s.workspaceA));
+    // Both the sent subject and body are in the target language…
+    expect(msg!.subject).toContain('[DE]');
+    expect(msg!.bodyText).toContain('[DE]');
+    expect(msg!.targetLanguage).toBe('de');
+    // …while the native reference body is untouched.
     expect(msg!.bodyTextNative).toBe(draft.body);
   });
 

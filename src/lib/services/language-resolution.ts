@@ -133,6 +133,10 @@ export async function resolveOutboundLanguage(
 export interface OutboundDualBody {
   sendText: string;
   bodyTextNative: string;
+  /** Subject to send. When a `nativeSubject` is supplied it is translated
+   *  to the target language (so the subject isn't left in the native
+   *  language under a translated body); undefined when none was passed. */
+  sendSubject?: string;
   nativeLanguage: string;
   targetLanguage: string;
   /** False when target === native (no translation happened). */
@@ -151,7 +155,14 @@ export interface OutboundDualBody {
  */
 export async function prepareOutboundDualBody(
   ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
-  input: { reviewItemId: bigint; productProfileId: bigint; nativeBody: string },
+  input: {
+    reviewItemId: bigint;
+    productProfileId: bigint;
+    nativeBody: string;
+    /** Optional native-language subject. When set and a translation
+     *  happens, it is translated to the target language too. */
+    nativeSubject?: string | null;
+  },
 ): Promise<OutboundDualBody> {
   const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
   const { language: targetLanguage } = await resolveOutboundLanguage(ctx, {
@@ -163,6 +174,7 @@ export async function prepareOutboundDualBody(
     return {
       sendText: input.nativeBody,
       bodyTextNative: input.nativeBody,
+      sendSubject: input.nativeSubject ?? undefined,
       nativeLanguage,
       targetLanguage,
       translated: false,
@@ -174,9 +186,21 @@ export async function prepareOutboundDualBody(
     targetLanguage,
     sourceLanguageHint: nativeLanguage,
   });
+
+  let sendSubject = input.nativeSubject ?? undefined;
+  if (input.nativeSubject && input.nativeSubject.trim()) {
+    const subj = await translateText(ctx, {
+      text: input.nativeSubject,
+      targetLanguage,
+      sourceLanguageHint: nativeLanguage,
+    });
+    sendSubject = subj.translatedText;
+  }
+
   return {
     sendText: translatedText,
     bodyTextNative: input.nativeBody,
+    sendSubject,
     nativeLanguage,
     targetLanguage,
     translated: true,
