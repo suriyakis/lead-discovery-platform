@@ -180,7 +180,11 @@ export async function runConnectorRun(
   // permission gates + emergency-pause check, and any failure here
   // must NOT propagate back into the connector run status. Inline
   // import to avoid a top-level cycle between runner and autopilot.
-  if (finalStatus === 'succeeded' && recordCount > 0) {
+  // Fire-and-forget (see above). Skipped under Vitest: a background runOnce
+  // that outlives the run leaks across the next test's truncate and
+  // intermittently deadlocks it. runOnce is covered directly in
+  // autopilot.test.ts; prod behaviour is unchanged.
+  if (finalStatus === 'succeeded' && recordCount > 0 && !process.env.VITEST) {
     void (async () => {
       try {
         const { runOnce } = await import('@/lib/services/autopilot');

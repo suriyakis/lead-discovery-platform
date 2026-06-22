@@ -26,6 +26,11 @@ const ConfigSchema = z
 const RecipeShape = z
   .object({
     searchQueries: z.array(z.string().min(1).max(500)).min(1).max(50),
+    /** Phase 63: queries pre-translated into `language` at recipe-save time.
+     *  When present, these are issued to the search provider while
+     *  searchQueries (the operator's native wording) is kept for dedup +
+     *  display. Parallel to searchQueries by index. */
+    searchQueriesIssued: z.array(z.string().min(1).max(500)).optional(),
     country: z.string().min(2).max(8).optional(),
     language: z.string().min(2).max(8).optional(),
     maxResults: z.number().int().min(1).max(100).optional(),
@@ -67,6 +72,13 @@ export class InternetSearchConnector implements ISourceConnector {
     }
     const recipe = parsedRecipe.data;
 
+    // Flow A for discovery: the operator writes queries in the workspace
+    // native language; createRecipe/updateRecipe translate them into the
+    // recipe's search language at SAVE time and persist them as
+    // searchQueriesIssued. The run path stays pure (no per-query AI/DB
+    // calls) — it just issues the pre-translated queries.
+    const issuedQueries = recipe.searchQueriesIssued ?? recipe.searchQueries;
+
     const provider = await getWebSearchProviderForCtx(ctx);
     yield {
       kind: 'log',
@@ -84,10 +96,17 @@ export class InternetSearchConnector implements ISourceConnector {
         return;
       }
 
+      // Issue the pre-translated query (falls back to the native query when
+      // no translation was stored, e.g. search language == native).
+      const issuedQuery = issuedQueries[qIdx] ?? query;
+
       yield {
         kind: 'log',
         level: 'info',
-        message: `internet_search: q${qIdx + 1}/${totalQueries}: ${query}`,
+        message:
+          issuedQuery === query
+            ? `internet_search: q${qIdx + 1}/${totalQueries}: ${query}`
+            : `internet_search: q${qIdx + 1}/${totalQueries}: ${query} → ${issuedQuery}`,
       };
 
       const options = {
@@ -99,7 +118,7 @@ export class InternetSearchConnector implements ISourceConnector {
 
       let outcome;
       try {
-        outcome = await provider.search(ctx, query, options);
+        outcome = await provider.search(ctx, issuedQuery, options);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const errorCode =

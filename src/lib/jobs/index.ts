@@ -45,6 +45,12 @@ export interface IJobQueue {
    * per period until the queue is shut down. Re-registering with the same
    * `jobId` replaces the existing schedule.
    */
+  /**
+   * Wait for all currently in-flight in-process jobs to settle. No-op on
+   * queues that run jobs in separate workers (BullMQ). Used by the test
+   * harness to stop fire-and-forget jobs leaking across test boundaries.
+   */
+  drain?(): Promise<void>;
   enqueueRepeatable<P extends JobPayload>(
     type: string,
     payload: P,
@@ -67,6 +73,14 @@ export class InMemoryJobQueue implements IJobQueue {
   private jobs = new Map<JobId, InternalJob>();
   private handlers = new Map<string, JobHandler>();
   private timers = new Map<string, NodeJS.Timeout>();
+  /**
+   * Serializes handler execution. In-memory jobs run one at a time, so
+   * fire-and-forget enqueues (e.g. a crawl plan firing several connector
+   * runs) can't execute concurrently and deadlock each other — or the
+   * caller's foreground DB writes — on shared rows. Production runs
+   * JOB_QUEUE_PROVIDER=bullmq with real workers; this is dev/test only.
+   */
+  private tail: Promise<void> = Promise.resolve();
 
   async enqueue<P extends JobPayload>(
     type: string,
@@ -84,7 +98,10 @@ export class InMemoryJobQueue implements IJobQueue {
       return id;
     }
 
-    queueMicrotask(async () => {
+    // Chain onto the tail so handlers run sequentially. The body never
+    // rejects (errors are captured into job.status), so the chain stays
+    // intact for subsequent jobs.
+    this.tail = this.tail.then(async () => {
       if (job.cancelled) {
         job.status = { state: 'cancelled' };
         return;
@@ -108,6 +125,16 @@ export class InMemoryJobQueue implements IJobQueue {
     const job = this.jobs.get(id);
     if (!job) return { state: 'unknown' };
     return job.status;
+  }
+
+  /** Await all chained jobs. Loops until the tail stops growing so jobs
+   *  that enqueue follow-up jobs are fully drained. */
+  async drain(): Promise<void> {
+    let current: Promise<void>;
+    do {
+      current = this.tail;
+      await current;
+    } while (current !== this.tail);
   }
 
   async cancel(id: JobId): Promise<void> {
