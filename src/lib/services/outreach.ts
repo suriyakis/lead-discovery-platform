@@ -36,6 +36,8 @@ import {
 import type { OutreachStage } from '@/lib/db/schema/outreach';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { getWorkspaceNativeLanguage } from './workspace';
+import { translateText } from './translation';
+import { resolveOutboundLanguage } from './language-resolution';
 
 export class OutreachServiceError extends Error {
   public readonly code: string;
@@ -423,6 +425,92 @@ export async function editOutreachDraft(
     },
   });
 
+  return updated;
+}
+
+/**
+ * Generate (or refresh) the operator-editable translation of a draft into
+ * the recipient's resolved outbound language, storing it on the draft
+ * (subject_translated / body_translated / target_language). When the target
+ * equals the draft's native language there's nothing to translate, so any
+ * stale translation is cleared. The send path prefers this stored version
+ * over auto-translating, so an operator can tweak the exact outgoing text.
+ */
+export async function generateDraftTranslation(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<OutreachDraft> {
+  if (!canWrite(ctx)) throw permissionDenied('outreach.translate');
+  const draft = await loadDraft(ctx, id);
+  const native = (draft.language ?? 'en').toLowerCase().split('-')[0] ?? 'en';
+  const { language: target } = await resolveOutboundLanguage(ctx, {
+    reviewItemId: draft.reviewItemId,
+    productProfileId: draft.productProfileId,
+  });
+
+  const set: Partial<OutreachDraft> & { updatedAt: Date } = { updatedAt: new Date() };
+  if (!target || target === native) {
+    set.subjectTranslated = null;
+    set.bodyTranslated = null;
+    set.targetLanguage = null;
+  } else {
+    const bodyT = await translateText(ctx, {
+      text: draft.body,
+      targetLanguage: target,
+      sourceLanguageHint: native,
+    });
+    const subjT = draft.subject
+      ? await translateText(ctx, {
+          text: draft.subject,
+          targetLanguage: target,
+          sourceLanguageHint: native,
+        })
+      : null;
+    set.bodyTranslated = bodyT.translatedText;
+    set.subjectTranslated = subjT?.translatedText ?? null;
+    set.targetLanguage = target;
+  }
+
+  const [updated] = await db
+    .update(outreachDrafts)
+    .set(set)
+    .where(and(eq(outreachDrafts.workspaceId, ctx.workspaceId), eq(outreachDrafts.id, id)))
+    .returning();
+  if (!updated) throw invariant('outreach_draft translation update returned no row');
+  await recordAuditEvent(ctx, {
+    kind: 'outreach.translate',
+    entityType: 'outreach_draft',
+    entityId: id,
+    payload: { targetLanguage: updated.targetLanguage },
+  });
+  return updated;
+}
+
+/**
+ * Persist operator edits to a draft's translated text. Requires a
+ * translation to already exist (so target_language is known). Pass the
+ * edited subject/body in the target language.
+ */
+export async function saveDraftTranslation(
+  ctx: WorkspaceContext,
+  id: bigint,
+  input: { subject?: string | null; body: string },
+): Promise<OutreachDraft> {
+  if (!canWrite(ctx)) throw permissionDenied('outreach.translate.save');
+  const draft = await loadDraft(ctx, id);
+  if (!draft.targetLanguage) {
+    throw conflict('generate a translation before editing it');
+  }
+  const [updated] = await db
+    .update(outreachDrafts)
+    .set({
+      subjectTranslated: (input.subject ?? '').trim() || null,
+      bodyTranslated: input.body,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(outreachDrafts.workspaceId, ctx.workspaceId), eq(outreachDrafts.id, id)))
+    .returning();
+  if (!updated) throw invariant('outreach_draft translation save returned no row');
   return updated;
 }
 

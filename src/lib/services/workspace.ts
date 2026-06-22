@@ -148,6 +148,11 @@ export interface WorkspaceSettingsData {
    *  translated INTO this language, and every outbound email shows its
    *  native-language reference in it. Absent ⇒ 'en'. */
   nativeLanguage?: string;
+  /** Workspace default OUTBOUND (communication) language. When set, outreach
+   *  is written/sent in this language unless a discovery recipe or a per-lead
+   *  override says otherwise. Absent ⇒ fall through the recipe/product
+   *  cascade. */
+  outreachLanguage?: string;
 }
 
 /** Read the workspace settings blob. Returns `{}` when the row or blob is
@@ -218,6 +223,67 @@ export async function updateWorkspaceNativeLanguage(
     payload: { nativeLanguage: normalized },
   });
   return normalized;
+}
+
+/**
+ * The workspace default OUTBOUND language, or null when unset (the
+ * recipe → product → native cascade decides). Drives the outbound-language
+ * cascade just below per-lead and recipe overrides.
+ */
+export async function getWorkspaceOutreachLanguage(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<string | null> {
+  const settings = await getWorkspaceSettings(ctx);
+  const lang = settings.outreachLanguage;
+  return lang && isEnabledLanguage(lang) ? baseLang(lang) : null;
+}
+
+/**
+ * Set the workspace default outbound language. Pass '' (or 'auto') to clear
+ * it and fall back to the cascade. Admin-gated, validated, audit-logged.
+ * Returns the stored code, or null when cleared.
+ */
+export async function updateWorkspaceOutreachLanguage(
+  ctx: WorkspaceContext,
+  language: string,
+): Promise<string | null> {
+  if (!canAdminWorkspace(ctx)) {
+    throw permissionDenied('workspace.update_outreach_language');
+  }
+  const current = await getWorkspaceSettings(ctx);
+  const trimmed = (language ?? '').trim().toLowerCase();
+  let next: WorkspaceSettingsData;
+  let stored: string | null;
+  if (trimmed === '' || trimmed === 'auto') {
+    const rest = { ...current };
+    delete rest.outreachLanguage;
+    next = rest;
+    stored = null;
+  } else {
+    const normalized = baseLang(trimmed);
+    if (!isEnabledLanguage(normalized)) {
+      throw new WorkspaceServiceError(
+        `unsupported outreach language: ${language}`,
+        'invalid_input',
+      );
+    }
+    next = { ...current, outreachLanguage: normalized };
+    stored = normalized;
+  }
+  await db
+    .insert(workspaceSettings)
+    .values({ workspaceId: ctx.workspaceId, settings: next, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: workspaceSettings.workspaceId,
+      set: { settings: next, updatedAt: new Date() },
+    });
+  await recordAuditEvent(ctx, {
+    kind: 'workspace.update_outreach_language',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: { outreachLanguage: stored },
+  });
+  return stored;
 }
 
 /** Phase 50: workspace-level cap on bytes uploaded per product to the

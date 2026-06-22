@@ -25,8 +25,10 @@ import {
   WorkspaceServiceError,
   getWorkspace,
   getWorkspaceNativeLanguage,
+  getWorkspaceOutreachLanguage,
   updateOutreachDefaults,
   updateWorkspaceNativeLanguage,
+  updateWorkspaceOutreachLanguage,
 } from '@/lib/services/workspace';
 import { ENABLED_LANGUAGE_OPTIONS } from '@/lib/i18n/language';
 import {
@@ -90,6 +92,7 @@ export default async function OutreachSettingsPage({
 
   const followUpSettings = await loadFollowUpSettings(ctx.workspaceId);
   const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
+  const outreachLanguage = await getWorkspaceOutreachLanguage(ctx);
 
   async function saveNativeLanguage(formData: FormData) {
     'use server';
@@ -100,6 +103,27 @@ export default async function OutreachSettingsPage({
       redirect(
         '/settings/outreach?message=' +
           encodeURIComponent(`Native language set — replies and references now use it (${stored}).`),
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof WorkspaceServiceError ? err.message : 'failed';
+      redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function saveOutreachLanguage(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const lang = String(formData.get('outreachLanguage') ?? '');
+    try {
+      const stored = await updateWorkspaceOutreachLanguage(c, lang);
+      redirect(
+        '/settings/outreach?message=' +
+          encodeURIComponent(
+            stored
+              ? `Default outreach language set to ${stored} — leads are emailed in it unless a recipe or lead overrides.`
+              : 'Default outreach language cleared — language now follows the recipe / product of each lead.',
+          ),
       );
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -275,6 +299,47 @@ export default async function OutreachSettingsPage({
         <div className="config-card-actions">
           <button type="submit" className="primary-btn">
             Save native language
+          </button>
+        </div>
+      </form>
+
+      {/* ---------- Outreach (communication) language card ---------- */}
+      <form action={saveOutreachLanguage} className="config-card">
+        <header className="config-card-header">
+          <Languages className="config-card-icon" aria-hidden="true" />
+          <div>
+            <h2 className="config-card-title">Default outreach language</h2>
+            <p className="config-card-desc">
+              The language leads are emailed in by default. Leave on{' '}
+              <strong>Auto</strong> to let each lead&rsquo;s discovery recipe (or
+              product) decide. A discovery recipe&rsquo;s own{' '}
+              <strong>Language</strong> field (Connectors → recipe) — which also
+              sets the language we <em>search</em> in — overrides this, as does a
+              per-lead language on the lead page.
+            </p>
+          </div>
+        </header>
+
+        <label className="config-card-row">
+          <span>Default outreach language</span>
+          <select
+            name="outreachLanguage"
+            defaultValue={outreachLanguage ?? ''}
+            className="select-input"
+            style={{ minWidth: '12rem' }}
+          >
+            <option value="">Auto (follow recipe / product)</option>
+            {ENABLED_LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.code} value={o.code}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="config-card-actions">
+          <button type="submit" className="primary-btn">
+            Save outreach language
           </button>
         </div>
       </form>

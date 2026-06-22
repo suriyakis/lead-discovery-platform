@@ -208,8 +208,8 @@ describe('LANGUAGE_NAMES', () => {
 // ─── ENABLED_LANGUAGES (curated UI set) ───────────────────────────────
 
 describe('ENABLED_LANGUAGES', () => {
-  it('contains the six operator markets', () => {
-    expect([...ENABLED_LANGUAGES]).toEqual(['en', 'pl', 'de', 'it', 'ja', 'he']);
+  it('contains the operator markets', () => {
+    expect([...ENABLED_LANGUAGES]).toEqual(['en', 'pl', 'de', 'it', 'ja', 'he', 'ro']);
   });
 
   it('every enabled code resolves to a real name', () => {
@@ -226,6 +226,7 @@ describe('ENABLED_LANGUAGES', () => {
       { code: 'it', name: 'Italian' },
       { code: 'ja', name: 'Japanese' },
       { code: 'he', name: 'Hebrew' },
+      { code: 'ro', name: 'Romanian' },
     ]);
   });
 

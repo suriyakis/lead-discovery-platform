@@ -115,6 +115,13 @@ export const outreachDrafts = pgTable(
     language: text('language').notNull().default('en'),
     subject: text('subject'),
     body: text('body').notNull(),
+    /** Phase 63: operator-reviewed translation of the draft into the
+        recipient's language. The send path uses these (when present) instead
+        of auto-translating, so the operator can see + tweak the exact
+        outgoing text. target_language records which language they're in. */
+    subjectTranslated: text('subject_translated'),
+    bodyTranslated: text('body_translated'),
+    targetLanguage: text('target_language'),
     /** 0..100. Engine self-confidence in the draft. */
     confidence: smallint('confidence').notNull().default(50),
 

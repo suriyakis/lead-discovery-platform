@@ -7,8 +7,10 @@ import { makeWorkspaceContext } from '@/lib/services/context';
 import {
   WorkspaceServiceError,
   getWorkspaceNativeLanguage,
+  getWorkspaceOutreachLanguage,
   getWorkspaceSettings,
   updateWorkspaceNativeLanguage,
+  updateWorkspaceOutreachLanguage,
 } from '@/lib/services/workspace';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -110,5 +112,43 @@ describe('updateWorkspaceNativeLanguage', () => {
     const row = audits.find((a) => a.kind === 'workspace.update_native_language');
     expect(row).toBeTruthy();
     expect((row!.payload as Record<string, unknown>).nativeLanguage).toBe('it');
+  });
+});
+
+describe('workspace default outreach language', () => {
+  it('defaults to null (unset)', async () => {
+    const s = await setup();
+    expect(await getWorkspaceOutreachLanguage(ctx(s, 'owner'))).toBeNull();
+  });
+
+  it('owner can set + clear, round-trips, normalises', async () => {
+    const s = await setup();
+    expect(await updateWorkspaceOutreachLanguage(ctx(s, 'owner'), 'DE')).toBe('de');
+    expect(await getWorkspaceOutreachLanguage(ctx(s, 'owner'))).toBe('de');
+    // Clearing with '' resets to the cascade.
+    expect(await updateWorkspaceOutreachLanguage(ctx(s, 'owner'), '')).toBeNull();
+    expect(await getWorkspaceOutreachLanguage(ctx(s, 'owner'))).toBeNull();
+  });
+
+  it('rejects a known-but-not-enabled language', async () => {
+    const s = await setup();
+    await expect(
+      updateWorkspaceOutreachLanguage(ctx(s, 'owner'), 'fr'),
+    ).rejects.toThrow(WorkspaceServiceError);
+  });
+
+  it('denies non-admins', async () => {
+    const s = await setup();
+    await expect(
+      updateWorkspaceOutreachLanguage(ctx(s, 'viewer'), 'pl'),
+    ).rejects.toThrow(/Permission denied/);
+  });
+
+  it('does not disturb the native language', async () => {
+    const s = await setup();
+    await updateWorkspaceNativeLanguage(ctx(s, 'owner'), 'pl');
+    await updateWorkspaceOutreachLanguage(ctx(s, 'owner'), 'de');
+    expect(await getWorkspaceNativeLanguage(ctx(s, 'owner'))).toBe('pl');
+    expect(await getWorkspaceOutreachLanguage(ctx(s, 'owner'))).toBe('de');
   });
 });

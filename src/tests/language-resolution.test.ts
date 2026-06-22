@@ -11,7 +11,10 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { makeWorkspaceContext, type WorkspaceContext } from '@/lib/services/context';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
-import { updateWorkspaceNativeLanguage } from '@/lib/services/workspace';
+import {
+  updateWorkspaceNativeLanguage,
+  updateWorkspaceOutreachLanguage,
+} from '@/lib/services/workspace';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 interface Setup {
@@ -169,6 +172,36 @@ describe('resolveOutboundLanguage', () => {
     });
     const r = await resolveOutboundLanguage(ctx(s), pair);
     expect(r).toEqual({ language: 'pl', source: 'product' });
+  });
+
+  it('workspace default outreach language beats product but loses to recipe/lead', async () => {
+    const s = await setup();
+    await updateWorkspaceOutreachLanguage(ctx(s), 'it');
+
+    // No recipe/lead language; product is German → workspace default wins.
+    const pair = await seedChain(s, { recipeLanguage: null, productLanguage: 'de' });
+    expect(await resolveOutboundLanguage(ctx(s), pair)).toEqual({
+      language: 'it',
+      source: 'workspace_default',
+    });
+
+    // A recipe language still overrides the workspace default.
+    const pair2 = await seedChain(s, { recipeLanguage: 'ja', productLanguage: 'de' });
+    expect(await resolveOutboundLanguage(ctx(s), pair2)).toEqual({
+      language: 'ja',
+      source: 'recipe',
+    });
+  });
+
+  it('clearing the workspace default falls back to the product language', async () => {
+    const s = await setup();
+    await updateWorkspaceOutreachLanguage(ctx(s), 'it');
+    await updateWorkspaceOutreachLanguage(ctx(s), ''); // clear → cascade
+    const pair = await seedChain(s, { recipeLanguage: null, productLanguage: 'de' });
+    expect(await resolveOutboundLanguage(ctx(s), pair)).toEqual({
+      language: 'de',
+      source: 'product',
+    });
   });
 
   it('falls back to the workspace native language when the pair resolves nothing', async () => {

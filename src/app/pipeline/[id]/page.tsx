@@ -14,9 +14,11 @@ import {
   assign,
   getLead,
   setNotes,
+  setOutreachLanguage,
   transition,
   updateContact,
 } from '@/lib/services/pipeline';
+import { ENABLED_LANGUAGE_OPTIONS } from '@/lib/i18n/language';
 import {
   CrmServiceError,
   listCrmConnections,
@@ -271,6 +273,21 @@ export default async function PipelineLeadDetail({
     const c = await getWorkspaceContext();
     await setNotes(c, id, String(formData.get('notes') ?? ''));
     redirect(`/pipeline/${id}?message=Notes+saved`);
+  }
+
+  async function saveOutreachLanguage(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await setOutreachLanguage(c, id, String(formData.get('outreachLanguage') ?? ''));
+      redirect(`/pipeline/${id}?message=Outreach+language+updated`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      if (err instanceof PipelineServiceError) {
+        redirect(`/pipeline/${id}?error=${encodeURIComponent(err.message)}`);
+      }
+      throw err;
+    }
   }
 
   async function saveAssignment(formData: FormData) {
@@ -538,6 +555,33 @@ export default async function PipelineLeadDetail({
             <div className="action-row">
               <button type="submit" className="primary-btn">
                 Save notes
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section>
+          <h2>Outreach language</h2>
+          <p className="muted">
+            Language this lead is emailed in. <strong>Auto</strong> follows the
+            discovery recipe → workspace default → product. Set a specific
+            language to override just this lead.
+          </p>
+          <form action={saveOutreachLanguage} className="edit-draft-form">
+            <label>
+              <span>Language</span>
+              <select name="outreachLanguage" defaultValue={lead.outreachLanguage ?? ''}>
+                <option value="">Auto (recipe / workspace default)</option>
+                {ENABLED_LANGUAGE_OPTIONS.map((o) => (
+                  <option key={o.code} value={o.code}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="action-row">
+              <button type="submit" className="primary-btn">
+                Save language
               </button>
             </div>
           </form>
