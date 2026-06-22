@@ -48,6 +48,7 @@ import {
 } from './signatures';
 import { analyseReply } from './reply-classifier';
 import { maybeAutoTranslateInbound } from './translation';
+import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
 import {
   type IMailProvider,
@@ -197,8 +198,11 @@ export async function sendMessage(
   // Render a visible unsubscribe footer in the body. CAN-SPAM requires
   // the link be conspicuous; modern bulk senders also do this for
   // engagement reasons.
-  const footerText = `\n\n---\nDon't want these messages? Unsubscribe: ${unsubUrl}`;
-  const footerHtml = `<div style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#888;font-family:Arial,sans-serif"><a href="${unsubUrl}" style="color:#888;text-decoration:underline">Unsubscribe</a></div>`;
+  // Phase 63: localize the unsubscribe footer to the email's target
+  // language so a foreign-language body doesn't carry an English footer.
+  const footer = getUnsubscribeFooter(input.targetLanguage);
+  const footerText = `\n\n---\n${footer.prompt} ${unsubUrl}`;
+  const footerHtml = `<div dir="${footer.dir}" style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#888;font-family:Arial,sans-serif"><a href="${unsubUrl}" style="color:#888;text-decoration:underline">${footer.unsubscribe}</a></div>`;
   outboundText = (outboundText ?? '') + footerText;
   if (outboundHtml) {
     outboundHtml = outboundHtml + footerHtml;

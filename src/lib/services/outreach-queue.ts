@@ -545,6 +545,7 @@ async function processEntry(
     // dispatch and persist both sides. Applies to draft-backed text sends;
     // one-off / html-only sends pass through unchanged.
     let sendText = entry.bodyText ?? undefined;
+    let sendSubject = entry.subject;
     let bodyTextNative: string | undefined;
     let nativeLanguage: string | undefined;
     let targetLanguage: string | undefined;
@@ -555,8 +556,13 @@ async function processEntry(
           reviewItemId: pair.reviewItemId,
           productProfileId: pair.productProfileId,
           nativeBody: entry.bodyText,
+          // The draft subject is composed in the native language too;
+          // translate it alongside the body so the sent email isn't a
+          // native subject over a target body.
+          nativeSubject: entry.subject,
         });
         sendText = dual.sendText;
+        sendSubject = dual.sendSubject ?? entry.subject;
         bodyTextNative = dual.bodyTextNative;
         nativeLanguage = dual.nativeLanguage;
         targetLanguage = dual.targetLanguage;
@@ -573,7 +579,7 @@ async function processEntry(
       bcc: entry.bccAddresses.length > 0
         ? entry.bccAddresses.map((address) => ({ address }))
         : undefined,
-      subject: entry.subject,
+      subject: sendSubject,
       text: sendText,
       html: entry.bodyHtml ?? undefined,
       sourceDraftId: entry.draftId ?? undefined,
