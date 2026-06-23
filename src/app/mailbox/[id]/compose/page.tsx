@@ -8,8 +8,10 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { MailboxServiceError, getMailbox } from '@/lib/services/mailbox';
-import { MailServiceError, sendMessage } from '@/lib/services/mail';
 import { defaultSignature, listSignatures } from '@/lib/services/signatures';
+import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
+import { ENABLED_LANGUAGE_OPTIONS } from '@/lib/i18n/language';
+import { ComposeForm } from './ComposeForm';
 
 export default async function ComposeMessagePage({
   params,
@@ -54,48 +56,7 @@ export default async function ComposeMessagePage({
   const def = await defaultSignature(ctx, id);
   const initialBody =
     sp.body ?? (def ? `\n\n${def.bodyText}` : '');
-
-  async function send(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const toRaw = String(formData.get('to') ?? '').trim();
-    const ccRaw = String(formData.get('cc') ?? '').trim();
-    const bccRaw = String(formData.get('bcc') ?? '').trim();
-    const subject = String(formData.get('subject') ?? '').trim();
-    const text = String(formData.get('body') ?? '');
-    const draftIdRaw = String(formData.get('draftId') ?? '');
-
-    const parseList = (s: string) =>
-      s
-        .split(/[,\n]+/)
-        .map((p) => p.trim())
-        .filter(Boolean)
-        .map((address) => ({ address }));
-
-    try {
-      const created = await sendMessage(c, {
-        mailboxId: id,
-        to: parseList(toRaw),
-        cc: ccRaw ? parseList(ccRaw) : undefined,
-        bcc: bccRaw ? parseList(bccRaw) : undefined,
-        subject,
-        text,
-        sourceDraftId: /^\d+$/.test(draftIdRaw) ? BigInt(draftIdRaw) : undefined,
-      });
-      redirect(`/communication/${created.threadId}`);
-    } catch (err) {
-      if (err instanceof MailServiceError || err instanceof MailboxServiceError) {
-        const params = new URLSearchParams({
-          to: toRaw,
-          subject,
-          body: text,
-          error: err.message,
-        });
-        redirect(`/mailbox/${id}/compose?${params.toString()}`);
-      }
-      throw err;
-    }
-  }
+  const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
 
   return (
     <AppShell>
@@ -116,37 +77,16 @@ export default async function ComposeMessagePage({
           </p>
         ) : null}
 
-        <form action={send} className="edit-draft-form">
-          {sp.draftId ? <input type="hidden" name="draftId" value={sp.draftId} /> : null}
-          <label>
-            <span>To (comma or newline separated)</span>
-            <input type="text" name="to" defaultValue={sp.to ?? ''} required />
-          </label>
-          <label>
-            <span>Cc (optional)</span>
-            <input type="text" name="cc" />
-          </label>
-          <label>
-            <span>Bcc (optional)</span>
-            <input type="text" name="bcc" />
-          </label>
-          <label>
-            <span>Subject</span>
-            <input type="text" name="subject" defaultValue={sp.subject ?? ''} required maxLength={300} />
-          </label>
-          <label>
-            <span>Message</span>
-            <textarea name="body" defaultValue={initialBody} rows={16} required maxLength={50000} />
-          </label>
-          <div className="action-row">
-            <button type="submit" className="primary-btn">
-              Send
-            </button>
-            <Link href={`/mailbox/${id}`} className="ghost-btn">
-              Cancel
-            </Link>
-          </div>
-        </form>
+        <ComposeForm
+          mailboxId={id.toString()}
+          initialTo={sp.to ?? ''}
+          initialSubject={sp.subject ?? ''}
+          initialBody={initialBody}
+          languageOptions={ENABLED_LANGUAGE_OPTIONS}
+          nativeLanguage={nativeLanguage}
+          cancelHref={`/mailbox/${id}`}
+          draftId={sp.draftId}
+        />
       </AppShell>
   );
 }
