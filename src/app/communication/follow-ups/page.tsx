@@ -18,6 +18,12 @@ import {
   rejectFollowUp,
 } from '@/lib/services/follow-up';
 import { countCommunicationByStatus } from '@/lib/services/communication';
+import { and, eq } from 'drizzle-orm';
+import { db } from '@/lib/db/client';
+import { qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
+import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
+import { FollowUpApprovalRow } from '@/components/FollowUpApprovalRow';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 type FollowUpFilter = 'all' | 'pending' | 'awaiting_approval' | 'sent' | 'skipped' | 'failed';
@@ -85,6 +91,40 @@ export default async function FollowUpsPage({
     countCommunicationByStatus(ctx),
   ]);
 
+  // Resolve the recipient language for awaiting-approval follow-ups so the
+  // operator can preview/edit the translation before approving.
+  const followUpNative = await getWorkspaceNativeLanguage(ctx);
+  const followUpTargets = new Map<string, string>();
+  for (const r of rows) {
+    if (r.status !== 'awaiting_approval') continue;
+    try {
+      const [lead] = await db
+        .select({
+          reviewItemId: qualifiedLeads.reviewItemId,
+          productProfileId: qualifiedLeads.productProfileId,
+        })
+        .from(qualifiedLeads)
+        .where(
+          and(
+            eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+            eq(qualifiedLeads.id, r.qualifiedLeadId),
+          ),
+        )
+        .limit(1);
+      if (lead) {
+        const { language } = await resolveOutboundLanguage(ctx, {
+          reviewItemId: lead.reviewItemId,
+          productProfileId: lead.productProfileId,
+        });
+        if (language && language !== followUpNative) {
+          followUpTargets.set(r.id.toString(), language);
+        }
+      }
+    } catch {
+      // best-effort — no preview when resolution fails
+    }
+  }
+
   async function cancel(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -119,10 +159,16 @@ export default async function FollowUpsPage({
     const id = BigInt(idRaw);
     const subject = String(formData.get('subject') ?? '').trim();
     const body = String(formData.get('body') ?? '').trim();
+    const translatedSubject = String(formData.get('translatedSubject') ?? '').trim();
+    const translatedBody = String(formData.get('translatedBody') ?? '').trim();
+    const targetLanguage = String(formData.get('targetLanguage') ?? '').trim();
     try {
       const updated = await approveFollowUp(c, id, {
         subject: subject || undefined,
         body: body || undefined,
+        translatedSubject: translatedSubject || undefined,
+        translatedBody: translatedBody || undefined,
+        targetLanguage: targetLanguage || undefined,
       });
       redirect(
         `/communication/follow-ups?status=${activeStatus}&message=${encodeURIComponent(
@@ -378,77 +424,13 @@ export default async function FollowUpsPage({
                     >
                       Review proposed follow-up
                     </summary>
-                    <form
-                      action={approve}
-                      style={{
-                        marginTop: '0.5rem',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '0.4rem',
-                      }}
-                    >
-                      <input type="hidden" name="id" value={r.id.toString()} />
-                      <label
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0.2rem',
-                        }}
-                      >
-                        <span
-                          style={{ fontSize: '0.72em' }}
-                          className="muted"
-                        >
-                          Subject
-                        </span>
-                        <input
-                          type="text"
-                          name="subject"
-                          defaultValue={r.stagedSubject ?? ''}
-                          required
-                        />
-                      </label>
-                      <label
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0.2rem',
-                        }}
-                      >
-                        <span
-                          style={{ fontSize: '0.72em' }}
-                          className="muted"
-                        >
-                          Body (edit freely — what you save here is what
-                          gets sent; the signature is auto-appended)
-                        </span>
-                        <textarea
-                          name="body"
-                          rows={10}
-                          defaultValue={r.stagedBody ?? ''}
-                          required
-                          style={{
-                            width: '100%',
-                            fontSize: '0.88rem',
-                            lineHeight: 1.55,
-                            padding: '0.5rem',
-                            resize: 'vertical',
-                          }}
-                        />
-                      </label>
-                      <div
-                        className="action-row"
-                        style={{ display: 'flex', gap: '0.4rem' }}
-                      >
-                        <button
-                          type="submit"
-                          className="primary-btn"
-                          style={{ fontSize: '0.85em' }}
-                        >
-                          Approve &amp; send
-                        </button>
-                      </div>
-                    </form>
+                    <FollowUpApprovalRow
+                      id={r.id.toString()}
+                      stagedSubject={r.stagedSubject ?? ''}
+                      stagedBody={r.stagedBody ?? ''}
+                      targetLanguage={followUpTargets.get(r.id.toString()) ?? null}
+                      approveAction={approve}
+                    />
                     <form
                       action={reject}
                       style={{ marginTop: '0.4rem', display: 'inline' }}

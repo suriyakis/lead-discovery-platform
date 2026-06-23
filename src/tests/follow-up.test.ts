@@ -686,6 +686,94 @@ describe('processDueFollowUps (P58)', () => {
     expect(provider.sent[1]!.message.text).toContain('Operator edited body.');
   });
 
+  it('approveFollowUp sends the operator-provided translation verbatim', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s);
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA), {
+      name: 'P1',
+    });
+    const ri = await makeReviewItem(s.workspaceA);
+    const provider = new MockMailProvider();
+    const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead@target.com' }],
+      subject: 'Hi',
+      text: 'x',
+      providerOverride: provider,
+    });
+    const [lead] = await db
+      .insert(qualifiedLeads)
+      .values({
+        workspaceId: s.workspaceA,
+        reviewItemId: ri,
+        productProfileId: product.id,
+        state: 'relevant',
+        contactEmail: 'lead@target.com',
+      })
+      .returning();
+    await db.insert(outreachThreadState).values({
+      workspaceId: s.workspaceA,
+      qualifiedLeadId: lead!.id,
+      threadId: sent.threadId!,
+      stage: 'discovery',
+    });
+    await updateFollowUpConfig(ctx(s.workspaceA, s.ownerA), {
+      requireApproval: true,
+    });
+    await scheduleFollowUps(ctx(s.workspaceA, s.ownerA), {
+      threadId: sent.threadId!,
+      qualifiedLeadId: lead!.id,
+    });
+    await db
+      .update(outreachFollowUps)
+      .set({ scheduledFor: new Date(Date.now() - 60_000) })
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    _setAIProviderForTests(makeStubAi());
+    await processDueFollowUps(ctx(s.workspaceA, s.ownerA), {
+      mailProviderOverride: provider,
+    });
+    const [staged] = await db
+      .select()
+      .from(outreachFollowUps)
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    const approved = await approveFollowUp(
+      ctx(s.workspaceA, s.ownerA),
+      staged!.id,
+      {
+        body: 'English native body.',
+        translatedSubject: 'Subiect RO',
+        translatedBody: 'Corp tradus RO',
+        targetLanguage: 'ro',
+      },
+      { mailProviderOverride: provider },
+    );
+    expect(approved.status).toBe('sent');
+    // The exact provided translation is what was sent…
+    expect(provider.sent[1]!.message.text).toContain('Corp tradus RO');
+    // …and it is persisted with the native reference + target language.
+    const [msg] = await db
+      .select()
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, s.workspaceA),
+          eq(mailMessages.id, approved.sentMessageId!),
+        ),
+      );
+    expect(msg!.targetLanguage).toBe('ro');
+    expect(msg!.bodyTextNative).toBe('English native body.');
+  });
+
   it('rejectFollowUp skips an awaiting_approval row', async () => {
     const s = await setup();
     const mb = await makeMailbox(s);
