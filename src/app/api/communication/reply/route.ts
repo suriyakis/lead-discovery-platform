@@ -4,19 +4,22 @@
 // Wraps mail.sendMessage with the inline signature override + thread
 // header threading (in-reply-to + references) so the reply lands on the
 // same mail_thread the operator is looking at.
+//
+// Phase 63: the reply composer translates on demand and shows the result
+// for review before sending. When the operator generated a translation we
+// send that exact (possibly edited) text and keep the native reply as the
+// thread reference; otherwise the reply is sent as written. No silent
+// auto-translation.
 
 import { NextResponse } from 'next/server';
-import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db/client';
-import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import {
   AuthRequiredError,
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { prepareOutboundDualBody } from '@/lib/services/language-resolution';
+import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
 
 const InputSchema = z.object({
@@ -30,6 +33,10 @@ const InputSchema = z.object({
   /** '__default__' = mailbox default, '__none__' = no signature, else
    *  the signature id (numeric string). */
   signatureId: z.string().optional(),
+  /** Operator-reviewed translation (sent verbatim when present). */
+  targetLanguage: z.string().min(2).max(10).optional(),
+  translatedSubject: z.string().max(998).optional(),
+  translatedBody: z.string().max(50_000).optional(),
 });
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -73,45 +80,23 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
-  // Flow A: if this thread belongs to a lead, translate the operator's
-  // native-language reply into the recipient's resolved target language and
-  // persist both sides. Threads with no lead (or any failure) send
-  // single-language — never block the reply on translation.
-  let dual: Awaited<ReturnType<typeof prepareOutboundDualBody>> | null = null;
-  try {
-    const [lead] = await db
-      .select({
-        reviewItemId: qualifiedLeads.reviewItemId,
-        productProfileId: qualifiedLeads.productProfileId,
-      })
-      .from(qualifiedLeads)
-      .where(
-        and(
-          eq(qualifiedLeads.workspaceId, ctx.workspaceId),
-          eq(qualifiedLeads.currentThreadId, parsed.threadId),
-        ),
-      )
-      .limit(1);
-    if (lead) {
-      dual = await prepareOutboundDualBody(ctx, {
-        reviewItemId: lead.reviewItemId,
-        productProfileId: lead.productProfileId,
-        nativeBody: parsed.body,
-      });
-    }
-  } catch (err) {
-    console.error('[reply] dual-language prep failed; sending single-language:', err);
-  }
+  const useTranslation = Boolean(
+    parsed.targetLanguage && parsed.translatedBody && parsed.translatedBody.trim(),
+  );
+  const nativeLanguage = useTranslation ? await getWorkspaceNativeLanguage(ctx) : undefined;
 
   try {
     const sent = await sendMessage(ctx, {
       mailboxId: parsed.mailboxId,
       to: [{ address: parsed.to }],
-      subject: parsed.subject,
-      text: dual?.sendText ?? parsed.body,
-      bodyTextNative: dual?.bodyTextNative,
-      nativeLanguage: dual?.nativeLanguage,
-      targetLanguage: dual?.targetLanguage,
+      subject: useTranslation
+        ? parsed.translatedSubject?.trim() || parsed.subject
+        : parsed.subject,
+      text: useTranslation ? parsed.translatedBody! : parsed.body,
+      // Keep the native reply as the thread reference.
+      bodyTextNative: useTranslation ? parsed.body : undefined,
+      nativeLanguage: useTranslation ? nativeLanguage : undefined,
+      targetLanguage: useTranslation ? parsed.targetLanguage : undefined,
       inReplyTo: parsed.inReplyTo ?? undefined,
       references: parsed.references,
       signatureId,

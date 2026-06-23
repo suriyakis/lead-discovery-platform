@@ -26,6 +26,8 @@ import { qualifiedLeads, pipelineEvents } from '@/lib/db/schema/pipeline';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import { listSignatures, defaultSignature } from '@/lib/services/signatures';
 import { getMailbox } from '@/lib/services/mailbox';
+import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
+import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
 import {
   markAsSpam,
   moveToTrash,
@@ -241,6 +243,23 @@ export default async function CommunicationDetail({
     name: s.name,
     isDefault: s.isDefault,
   }));
+
+  // Reply translation: resolve the recipient's outbound language for this
+  // thread's lead so the operator can preview/edit the translation before
+  // sending. Best-effort; null when there's no lead or it matches native.
+  const replyNativeLanguage = await getWorkspaceNativeLanguage(ctx);
+  let replyTargetLanguage: string | null = null;
+  if (lead) {
+    try {
+      const { language } = await resolveOutboundLanguage(ctx, {
+        reviewItemId: lead.reviewItemId,
+        productProfileId: lead.productProfileId,
+      });
+      if (language && language !== replyNativeLanguage) replyTargetLanguage = language;
+    } catch {
+      // best-effort — no preview when resolution fails
+    }
+  }
 
   return (
     <AppShell>
@@ -544,6 +563,8 @@ export default async function CommunicationDetail({
             references={replyReferences}
             signatures={sigOptions}
             defaultSignatureId={def?.id.toString() ?? null}
+            nativeLanguage={replyNativeLanguage}
+            targetLanguage={replyTargetLanguage}
           />
         </section>
       </div>
