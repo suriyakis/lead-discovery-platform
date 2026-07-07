@@ -51,6 +51,26 @@ function prefersDefaultSampling(model: string): boolean {
   return m ? Number(m[1]) >= 3 : false;
 }
 
+/** Gemini 2.5+ models "think" before answering, and the thought tokens
+ *  count against maxOutputTokens. A tight caller budget (600 tokens for a
+ *  JSON verdict) gets consumed by thinking and the visible JSON arrives
+ *  truncated mid-string — every parse fails. */
+function isThinkingModel(model: string): boolean {
+  const m = /gemini-(\d+)\.(\d+)/i.exec(model);
+  if (!m) return false;
+  return Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 5);
+}
+
+/** 2.5 flash variants accept thinkingBudget: 0 (thinking fully off);
+ *  2.5 pro rejects 0 (minimum 128), so it only gets the headroom. */
+function canDisableThinking(model: string): boolean {
+  return /gemini-2\.5[\w-]*flash/i.test(model);
+}
+
+/** Extra output allowance so thoughts can't starve the answer on thinking
+ *  models where thinking can't be turned off. */
+const THINKING_HEADROOM_TOKENS = 2048;
+
 export class GeminiAIProvider implements IAIProvider {
   public readonly id = 'gemini';
   public readonly model: string;
@@ -186,8 +206,17 @@ export class GeminiAIProvider implements IAIProvider {
         ...(prefersDefaultSampling(model)
           ? {}
           : { temperature: options.temperature ?? 0.2 }),
-        maxOutputTokens: options.maxTokens ?? 1024,
+        // Thinking models spend output tokens on internal reasoning first;
+        // pad the caller's budget so the visible answer can't be starved,
+        // and in JSON mode turn thinking off entirely where the model
+        // allows it — structured verdicts need output, not deliberation.
+        maxOutputTokens:
+          (options.maxTokens ?? 1024) +
+          (isThinkingModel(model) ? THINKING_HEADROOM_TOKENS : 0),
         ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+        ...(jsonMode && canDisableThinking(model)
+          ? { thinkingConfig: { thinkingBudget: 0 } }
+          : {}),
       },
     };
     if (input.system) {
