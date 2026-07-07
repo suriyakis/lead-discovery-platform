@@ -15,6 +15,7 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { ReplyAssistantError, suggestReply } from '@/lib/services/reply-assistant';
+import { TokenError, assertTokens } from '@/lib/services/token-ledger';
 
 const InputSchema = z.object({
   threadId: z.coerce.bigint(),
@@ -46,6 +47,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
+    await assertTokens(ctx);
     const suggestion = await suggestReply(ctx, { threadId: parsed.threadId });
     return NextResponse.json({
       ok: true,
@@ -57,6 +59,12 @@ export async function POST(req: Request): Promise<NextResponse> {
       },
     });
   } catch (err) {
+    if (err instanceof TokenError) {
+      return NextResponse.json(
+        { error: err.code, detail: err.message },
+        { status: 402 },
+      );
+    }
     if (err instanceof ReplyAssistantError) {
       const status =
         err.code === 'not_found' ? 404 : err.code === 'permission_denied' ? 403 : 400;

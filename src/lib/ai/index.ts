@@ -391,6 +391,112 @@ export class AnthropicAIProvider implements IAIProvider {
   }
 }
 
+// ---- usage metering -----------------------------------------------------
+
+/**
+ * Decorator that meters every generateText/generateJson call into
+ * usage_log — which is also where prepaid-token debits happen (see
+ * services/usage.ts). Wrapping at the factory means qualification,
+ * drafting, translation, reply suggestions etc. are ALL metered without
+ * each call site knowing about billing.
+ *
+ * generateJson doesn't surface token usage through the interface, so its
+ * cost is approximated from prompt/output text length (chars / 4). That
+ * is deliberately good enough: billing is cost-ESTIMATE based and the
+ * markup absorbs estimator noise.
+ *
+ * Metering is best-effort — a usage-log failure never breaks the AI call
+ * that already succeeded.
+ */
+class MeteredAIProvider implements IAIProvider {
+  constructor(
+    /** Exposed for unwrapAIProvider (test seam) — treat as private. */
+    public readonly inner: IAIProvider,
+    private readonly workspaceId: bigint,
+    private readonly kind: string,
+    private readonly keySource: 'workspace' | 'platform',
+  ) {}
+
+  get id(): string {
+    return this.inner.id;
+  }
+  get model(): string {
+    return this.inner.model;
+  }
+
+  async generateText(input: AIGenInput, options?: AIGenOptions): Promise<AIGenResult> {
+    const result = await this.inner.generateText(input, options);
+    await this.record(result.model, result.usage.inputTokens, result.usage.outputTokens);
+    return result;
+  }
+
+  async generateJson<T>(
+    input: AIGenInput,
+    schema: ZodSchema<T>,
+    options?: AIGenOptions,
+  ): Promise<T> {
+    const result = await this.inner.generateJson(input, schema, options);
+    const inputTokens = estimateTokens(`${input.system ?? ''}\n${input.prompt}`);
+    let outputTokens = 0;
+    try {
+      outputTokens = estimateTokens(JSON.stringify(result));
+    } catch {
+      outputTokens = 200; // circular/unstringifiable — charge a nominal floor
+    }
+    await this.record(options?.model ?? this.inner.model, inputTokens, outputTokens);
+    return result;
+  }
+
+  estimateCost(usage: AIUsage): number {
+    return this.inner.estimateCost(usage);
+  }
+
+  healthCheck(): Promise<{ ok: boolean; detail?: string }> {
+    return this.inner.healthCheck();
+  }
+
+  private async record(
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+  ): Promise<void> {
+    try {
+      const { recordUsage } = await import('@/lib/services/usage');
+      const costDollars = this.inner.estimateCost({ model, inputTokens, outputTokens });
+      await recordUsage(
+        { workspaceId: this.workspaceId },
+        {
+          kind: this.kind,
+          provider: this.inner.id,
+          units: BigInt(inputTokens + outputTokens),
+          costEstimateCents: Math.ceil(costDollars * 100),
+          payload: { model, inputTokens, outputTokens, keySource: this.keySource },
+        },
+      );
+    } catch (err) {
+      console.error(
+        `[ai-metering] usage record failed (kind=${this.kind}):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}
+
+function metered(
+  provider: IAIProvider,
+  ctx: { workspaceId: bigint },
+  kind: string,
+  keySource: 'workspace' | 'platform',
+): IAIProvider {
+  return new MeteredAIProvider(provider, ctx.workspaceId, kind, keySource);
+}
+
+/** Test seam: peel the metering decorator off a provider so tests can
+ *  assert on the concrete vendor adapter underneath. */
+export function unwrapAIProvider(provider: IAIProvider): IAIProvider {
+  return provider instanceof MeteredAIProvider ? provider.inner : provider;
+}
+
 // ---- factory -----------------------------------------------------------
 
 let cached: IAIProvider | null = null;
@@ -456,11 +562,16 @@ export async function getAIProviderForCtx(
         'AI provider=openai but no key configured (workspace or platform).',
       );
     }
-    return new OpenAIAIProvider({
-      apiKey: resolved.key,
-      model: wsModel ?? process.env.AI_MODEL,
-      baseUrl: process.env.OPENAI_BASE_URL,
-    });
+    return metered(
+      new OpenAIAIProvider({
+        apiKey: resolved.key,
+        model: wsModel ?? process.env.AI_MODEL,
+        baseUrl: process.env.OPENAI_BASE_URL,
+      }),
+      ctx,
+      'ai.generate',
+      resolved.source,
+    );
   }
   if (id === 'anthropic') {
     const resolved = await resolveProviderKey(
@@ -473,11 +584,16 @@ export async function getAIProviderForCtx(
         'AI provider=anthropic but no key configured (workspace or platform).',
       );
     }
-    return new AnthropicAIProvider({
-      apiKey: resolved.key,
-      model: wsModel ?? process.env.AI_MODEL,
-      baseUrl: process.env.ANTHROPIC_BASE_URL,
-    });
+    return metered(
+      new AnthropicAIProvider({
+        apiKey: resolved.key,
+        model: wsModel ?? process.env.AI_MODEL,
+        baseUrl: process.env.ANTHROPIC_BASE_URL,
+      }),
+      ctx,
+      'ai.generate',
+      resolved.source,
+    );
   }
   if (id === 'gemini') {
     const resolved = await resolveProviderKey(
@@ -490,11 +606,16 @@ export async function getAIProviderForCtx(
         'AI provider=gemini but no key configured (workspace or platform).',
       );
     }
-    return new GeminiAIProvider({
-      apiKey: resolved.key,
-      model: wsModel ?? process.env.AI_MODEL,
-      baseUrl: process.env.GEMINI_BASE_URL,
-    });
+    return metered(
+      new GeminiAIProvider({
+        apiKey: resolved.key,
+        model: wsModel ?? process.env.AI_MODEL,
+        baseUrl: process.env.GEMINI_BASE_URL,
+      }),
+      ctx,
+      'ai.generate',
+      resolved.source,
+    );
   }
   throw new Error(`Unknown AI provider id from cascade: ${id}`);
 }
@@ -534,11 +655,16 @@ export async function getQualificationProviderForCtx(
         'Qualification provider=openai but no key configured (workspace or platform).',
       );
     }
-    return new OpenAIAIProvider({
-      apiKey: resolved.key,
-      model: qModel,
-      baseUrl: process.env.OPENAI_BASE_URL,
-    });
+    return metered(
+      new OpenAIAIProvider({
+        apiKey: resolved.key,
+        model: qModel,
+        baseUrl: process.env.OPENAI_BASE_URL,
+      }),
+      ctx,
+      'ai.qualification',
+      resolved.source,
+    );
   }
   if (qpId === 'anthropic') {
     const resolved = await resolveProviderKey(
@@ -551,11 +677,16 @@ export async function getQualificationProviderForCtx(
         'Qualification provider=anthropic but no key configured (workspace or platform).',
       );
     }
-    return new AnthropicAIProvider({
-      apiKey: resolved.key,
-      model: qModel,
-      baseUrl: process.env.ANTHROPIC_BASE_URL,
-    });
+    return metered(
+      new AnthropicAIProvider({
+        apiKey: resolved.key,
+        model: qModel,
+        baseUrl: process.env.ANTHROPIC_BASE_URL,
+      }),
+      ctx,
+      'ai.qualification',
+      resolved.source,
+    );
   }
   if (qpId === 'gemini') {
     const resolved = await resolveProviderKey(
@@ -568,11 +699,16 @@ export async function getQualificationProviderForCtx(
         'Qualification provider=gemini but no key configured (workspace or platform).',
       );
     }
-    return new GeminiAIProvider({
-      apiKey: resolved.key,
-      model: qModel,
-      baseUrl: process.env.GEMINI_BASE_URL,
-    });
+    return metered(
+      new GeminiAIProvider({
+        apiKey: resolved.key,
+        model: qModel,
+        baseUrl: process.env.GEMINI_BASE_URL,
+      }),
+      ctx,
+      'ai.qualification',
+      resolved.source,
+    );
   }
   throw new Error(`Unknown qualification provider id: ${qpId}`);
 }
@@ -605,11 +741,16 @@ export async function getAIProviderById(
   if (providerId === 'openai') {
     const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
     if (!resolved) return null;
-    return new OpenAIAIProvider({
-      apiKey: resolved.key,
-      model: process.env.AI_MODEL,
-      baseUrl: process.env.OPENAI_BASE_URL,
-    });
+    return metered(
+      new OpenAIAIProvider({
+        apiKey: resolved.key,
+        model: process.env.AI_MODEL,
+        baseUrl: process.env.OPENAI_BASE_URL,
+      }),
+      ctx,
+      'ai.generate',
+      resolved.source,
+    );
   }
   if (providerId === 'anthropic') {
     const resolved = await resolveProviderKey(
@@ -618,11 +759,16 @@ export async function getAIProviderById(
       'ANTHROPIC_API_KEY',
     );
     if (!resolved) return null;
-    return new AnthropicAIProvider({
-      apiKey: resolved.key,
-      model: process.env.AI_MODEL,
-      baseUrl: process.env.ANTHROPIC_BASE_URL,
-    });
+    return metered(
+      new AnthropicAIProvider({
+        apiKey: resolved.key,
+        model: process.env.AI_MODEL,
+        baseUrl: process.env.ANTHROPIC_BASE_URL,
+      }),
+      ctx,
+      'ai.generate',
+      resolved.source,
+    );
   }
   return null;
 }

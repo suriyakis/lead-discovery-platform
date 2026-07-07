@@ -87,6 +87,20 @@ export const workspaces = pgTable('workspaces', {
   stripeCustomerId: text('stripe_customer_id'),
   stripeSubscriptionId: text('stripe_subscription_id'),
 
+  /** Prepaid token balance (workspace wallet). 1 token = 1 eurocent of
+   *  retail value; usage debits ceil(providerCost × markup). Materialized
+   *  here for cheap gate checks; the authoritative history lives in
+   *  token_transactions and the two are only ever written together. May
+   *  dip slightly negative from in-flight work — gates stop NEW work.
+   *  New workspaces start with a 500-token welcome allowance (≈ €5 of
+   *  usage) so the trial experience works before the first purchase. */
+  tokenBalance: bigint('token_balance', { mode: 'bigint' })
+    .notNull()
+    .default(sql`500`),
+  /** Platform-internal workspaces (the operator's own) skip token debits
+   *  and gates entirely. Toggled by super-admin only. */
+  billingExempt: boolean('billing_exempt').notNull().default(false),
+
   // ---- Phase A: staged outreach defaults ----
   /** When an inbound reply lands on an outreach thread, automatically
    *  generate the next draft via AI. Operator can flip this OFF if they

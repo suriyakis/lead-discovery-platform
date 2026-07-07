@@ -323,6 +323,14 @@ export async function processDueFollowUps(
   const settings = await loadSettings(ctx.workspaceId);
   if (!settings.enabled) return { checked: 0, sent: 0, skipped: 0, failed: 0 };
 
+  // Prepaid gate: follow-up composition is AI-metered. Empty wallet →
+  // leave the rows pending (they fire on a later tick once topped up)
+  // rather than erroring them out.
+  const { hasTokens } = await import('./token-ledger');
+  if (!(await hasTokens(ctx))) {
+    return { checked: 0, sent: 0, skipped: 0, failed: 0 };
+  }
+
   const due = await db
     .select()
     .from(outreachFollowUps)

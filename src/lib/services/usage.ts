@@ -1,6 +1,9 @@
 import { and, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { usageLog, type NewUsageLogEntry, type UsageLogEntry } from '@/lib/db/schema/audit';
+import { workspaces } from '@/lib/db/schema/workspaces';
+import { costCentsToTokens } from '@/lib/billing/tokens';
+import { debitTokens } from './token-ledger';
 import type { WorkspaceContext } from './context';
 
 export interface UsageEventInput {
@@ -18,6 +21,18 @@ export interface UsageEventInput {
 
 /**
  * Record a usage event for cost tracking and dashboards. Append-only.
+ *
+ * Billing hook: this is the single choke point every metered action
+ * already flows through, so the prepaid-token debit lives here. A usage
+ * event debits `ceil(costEstimateCents × markup)` tokens from the
+ * workspace wallet unless:
+ *   - the provider is `mock` (no real cost),
+ *   - the call ran on the workspace's own BYOK key
+ *     (`payload.keySource === 'workspace'` — they pay the vendor),
+ *   - the workspace is billing-exempt (platform-internal),
+ *   - the cost rounds to zero tokens.
+ * The debit is best-effort: a ledger hiccup must never fail the action
+ * that already happened — the usage row itself is the recovery source.
  */
 export async function recordUsage(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -35,7 +50,47 @@ export async function recordUsage(
   if (!inserted[0]) {
     throw new Error('usage_log insert returned no row');
   }
+
+  try {
+    await maybeDebitForUsage(ctx.workspaceId, inserted[0]);
+  } catch (err) {
+    console.error(
+      `[usage] token debit failed for usage_log ${inserted[0].id}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   return inserted[0];
+}
+
+async function maybeDebitForUsage(
+  workspaceId: bigint,
+  entry: UsageLogEntry,
+): Promise<void> {
+  if (entry.provider === 'mock') return;
+  const keySource = (entry.payload as Record<string, unknown> | null)?.keySource;
+  if (keySource === 'workspace' || keySource === 'mock') return;
+
+  const tokens = costCentsToTokens(entry.costEstimateCents);
+  if (tokens <= 0) return;
+
+  const ws = await db
+    .select({ billingExempt: workspaces.billingExempt })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!ws[0] || ws[0].billingExempt) return;
+
+  await debitTokens(workspaceId, {
+    tokens,
+    reason: entry.kind,
+    payload: {
+      usageLogId: entry.id.toString(),
+      provider: entry.provider,
+      costEstimateCents: entry.costEstimateCents,
+      units: entry.units.toString(),
+    },
+  });
 }
 
 export interface UsageSummaryRange {

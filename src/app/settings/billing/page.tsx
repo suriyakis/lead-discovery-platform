@@ -1,10 +1,13 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { CreditCard } from 'lucide-react';
+import { Coins, CreditCard } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { BuyTokensButtons } from '@/components/BuyTokensButtons';
 import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import { getAvailablePlans, getPlanById } from '@/lib/billing/plans';
+import { tokenPacks } from '@/lib/billing/tokens';
+import { listTokenTransactions } from '@/lib/services/token-ledger';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
@@ -50,6 +53,14 @@ export default async function BillingPage({
   const plan = getPlanById(ws.plan);
   const allPlans = getAvailablePlans();
   const stripeConfigured = Boolean(process.env.STRIPE_SECRET_KEY?.trim());
+  const packs = tokenPacks().map((p) => ({
+    id: p.id,
+    name: p.name,
+    tokens: p.tokens,
+    display: p.display,
+    purchasable: Boolean(p.priceId) && stripeConfigured && isAdmin,
+  }));
+  const recentTokenTx = await listTokenTransactions(ctx, { limit: 15 });
 
   async function openPortal() {
     'use server';
@@ -93,6 +104,72 @@ export default async function BillingPage({
 
         {sp.msg ? <p className="form-info">{sp.msg}</p> : null}
         {sp.err ? <p className="form-error">{sp.err}</p> : null}
+
+        <section>
+          <h2>
+            <Coins className="lucide" aria-hidden="true" /> Tokens
+          </h2>
+          <div className="billing-summary">
+            <dl>
+              <dt>Balance</dt>
+              <dd>
+                <strong style={{ fontSize: '1.4rem' }}>
+                  {ws.tokenBalance.toLocaleString()}
+                </strong>{' '}
+                <span className="muted">tokens</span>
+                {ws.billingExempt ? (
+                  <span className="badge" style={{ marginLeft: '0.5rem' }}>
+                    billing exempt
+                  </span>
+                ) : null}
+                {!ws.billingExempt && ws.tokenBalance <= 0n ? (
+                  <span className="badge badge-bad" style={{ marginLeft: '0.5rem' }}>
+                    empty — discovery, drafting and translation are paused
+                  </span>
+                ) : null}
+              </dd>
+            </dl>
+          </div>
+          <p className="muted small">
+            Tokens are the prepaid currency for metered work: discovery search,
+            AI qualification, outreach drafting, reply suggestions and
+            translation. 1 token ≈ €0.01 of usage; every debit is itemised
+            below. Actions running on your own API keys (BYOK) are free.
+          </p>
+
+          <BuyTokensButtons packs={packs} />
+
+          {recentTokenTx.length > 0 ? (
+            <details style={{ marginTop: '1rem' }}>
+              <summary>Recent token activity ({recentTokenTx.length})</summary>
+              <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Change</th>
+                    <th>Balance after</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentTokenTx.map((t) => (
+                    <tr key={t.id.toString()}>
+                      <td>{t.createdAt.toLocaleString()}</td>
+                      <td className={t.delta > 0n ? 'delta-good' : 'delta-bad'}>
+                        {t.delta > 0n ? '+' : ''}
+                        {t.delta.toLocaleString()}
+                      </td>
+                      <td>{t.balanceAfter.toLocaleString()}</td>
+                      <td>
+                        <code>{t.kind}</code> · {t.reason}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          ) : null}
+        </section>
 
         <section>
           <h2>Current plan</h2>

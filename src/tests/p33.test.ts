@@ -13,6 +13,7 @@ import {
   _setAIProviderForTests,
   getAIProvider,
   getAIProviderForCtx,
+  unwrapAIProvider,
 } from '@/lib/ai';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -108,8 +109,8 @@ describe('getAIProviderForCtx', () => {
     process.env.OPENAI_API_KEY = 'sk-platform';
     await setSecret(ctx(s.workspaceA, s.ownerA), 'openai.apiKey', 'sk-workspace');
     const provider = await getAIProviderForCtx({ workspaceId: s.workspaceA });
-    expect(provider).toBeInstanceOf(OpenAIAIProvider);
-    expect((provider as unknown as { apiKey: string }).apiKey).toBe('sk-workspace');
+    expect(unwrapAIProvider(provider)).toBeInstanceOf(OpenAIAIProvider);
+    expect((unwrapAIProvider(provider) as unknown as { apiKey: string }).apiKey).toBe('sk-workspace');
   });
 
   it('uses workspace Anthropic key when AI_PROVIDER=anthropic', async () => {
@@ -118,8 +119,8 @@ describe('getAIProviderForCtx', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-platform';
     await setSecret(ctx(s.workspaceA, s.ownerA), 'anthropic.apiKey', 'sk-ant-workspace');
     const provider = await getAIProviderForCtx({ workspaceId: s.workspaceA });
-    expect(provider).toBeInstanceOf(AnthropicAIProvider);
-    expect((provider as unknown as { apiKey: string }).apiKey).toBe('sk-ant-workspace');
+    expect(unwrapAIProvider(provider)).toBeInstanceOf(AnthropicAIProvider);
+    expect((unwrapAIProvider(provider) as unknown as { apiKey: string }).apiKey).toBe('sk-ant-workspace');
   });
 
   it('falls back to platform key when no workspace key (P45: now builds fresh provider per call)', async () => {
@@ -127,8 +128,8 @@ describe('getAIProviderForCtx', () => {
     process.env.AI_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'sk-platform';
     const provider = await getAIProviderForCtx({ workspaceId: s.workspaceA });
-    expect(provider).toBeInstanceOf(OpenAIAIProvider);
-    expect((provider as unknown as { apiKey: string }).apiKey).toBe('sk-platform');
+    expect(unwrapAIProvider(provider)).toBeInstanceOf(OpenAIAIProvider);
+    expect((unwrapAIProvider(provider) as unknown as { apiKey: string }).apiKey).toBe('sk-platform');
   });
 });
 

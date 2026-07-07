@@ -83,6 +83,9 @@ export async function generateOutreachDraft(
   input: GenerateOutreachDraftInput,
 ): Promise<OutreachDraft> {
   if (!canWrite(ctx)) throw permissionDenied('outreach.generate');
+  // Prepaid gate: AI drafting is metered — no new drafts on an empty wallet.
+  const { assertTokens } = await import('./token-ledger');
+  await assertTokens(ctx);
 
   const { reviewItem, sourceRecord, product, qualificationId } =
     await resolvePair(ctx, input.reviewItemId, input.productProfileId);
