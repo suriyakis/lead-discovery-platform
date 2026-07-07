@@ -489,7 +489,11 @@ async function processOne(
     product,
     row.stepNumber,
     row.totalSteps,
-    { channel: 'email', language: nativeLanguage },
+    {
+      channel: 'email',
+      language: nativeLanguage,
+      lead: { contactName: lead.contactName, contactEmail: lead.contactEmail },
+    },
     provider,
     undefined,
     customInstructions || undefined,

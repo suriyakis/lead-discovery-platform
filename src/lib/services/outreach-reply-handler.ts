@@ -286,6 +286,12 @@ export async function handleClassifiedReply(
     const language = resolveProfileLanguage(product);
     const channel = 'email';
     const thread = await loadThreadHistory(ctx, msg.threadId);
+    // Who we're replying to — lets the composer greet by name and stay
+    // anchored to the recipient instead of writing to an anonymous inbox.
+    const leadIdentity = {
+      contactName: lead.contactName ?? msg.fromName ?? null,
+      contactEmail: lead.contactEmail ?? msg.fromAddress ?? null,
+    };
 
     // Engagement and pitch both run on Opus-tier — these are the
     // moments where the conversation either survives or dies, so the
@@ -311,7 +317,7 @@ export async function handleClassifiedReply(
       verdict = await composePitchDraft(
         thread,
         product,
-        { channel, language },
+        { channel, language, lead: leadIdentity },
         tier.provider,
         null, // research enrichment can be wired in later
         tier.model,
@@ -323,7 +329,7 @@ export async function handleClassifiedReply(
         thread,
         'qualified',
         product,
-        { channel, language },
+        { channel, language, lead: leadIdentity },
         tier.provider,
         null,
         tier.model,
@@ -333,7 +339,7 @@ export async function handleClassifiedReply(
       verdict = await composeEngagementDraft(
         thread,
         product,
-        { channel, language },
+        { channel, language, lead: leadIdentity },
         tier.provider,
         tier.model,
         knowledge.formatted || null,
