@@ -30,7 +30,7 @@ import {
 } from '@/lib/services/connector-run';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { ensureQualifiedLead, updateContact } from '@/lib/services/pipeline';
-import { generateOutreachDraft } from '@/lib/services/outreach';
+import { approveOutreachDraft, generateOutreachDraft } from '@/lib/services/outreach';
 import { createMailbox } from '@/lib/services/mailbox';
 import { drainQueue, enqueueDraft } from '@/lib/services/outreach-queue';
 import { MockMailProvider } from '@/lib/mail';
@@ -500,6 +500,7 @@ async function seedQueuedDraft(s: Setup) {
     reviewItemId: review.id,
     productProfileId: product.id,
   });
+  await approveOutreachDraft(ctx(s.workspaceA, s.ownerA), draft.id);
   const mailbox = await createMailbox(ctx(s.workspaceA, s.ownerA), {
     name: 'sales',
     fromAddress: 'sales@nulife.pl',

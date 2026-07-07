@@ -84,7 +84,9 @@ export async function loadSettings(
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
   const enabled = row?.enabled ?? true;
-  const requireApproval = row?.requireApproval ?? false;
+  // Default matches the schema: approval required unless the workspace
+  // explicitly opted out. Missing row must never mean "auto-send".
+  const requireApproval = row?.requireApproval ?? true;
   // Prefer per-step JSONB config when set; fall back to the legacy
   // simple interval × maxSteps so existing workspaces keep working
   // without a backfill migration.

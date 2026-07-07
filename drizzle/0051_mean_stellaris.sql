@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ALTER COLUMN "follow_up_require_approval" SET DEFAULT true;

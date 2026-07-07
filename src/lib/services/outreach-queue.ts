@@ -191,8 +191,15 @@ export async function enqueueDraft(
     .limit(1);
   if (!draftRows[0]) throw notFound();
   const draft = draftRows[0];
-  if (draft.status === 'rejected' || draft.status === 'superseded') {
-    throw conflict(`draft is ${draft.status}; cannot enqueue`);
+  // Only human-approved drafts may enter the send queue. This is the
+  // approval gate for cold outreach: 'draft' / 'needs_edit' content that
+  // nobody reviewed can never reach a recipient. Autopilot approves
+  // explicitly (attributed to the workspace owner who enabled it) before
+  // enqueueing, so the invariant holds on that path too.
+  if (draft.status !== 'approved') {
+    throw conflict(
+      `draft is ${draft.status}; only approved drafts can be enqueued — approve it first`,
+    );
   }
 
   const settings = await getSendSettings(ctx);

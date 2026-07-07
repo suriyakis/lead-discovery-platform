@@ -873,6 +873,11 @@ describe('processDueFollowUps (P58)', () => {
       threadId: sent.threadId!,
       stage: 'discovery',
     });
+    // Auto-send is the subject under test — opt out of the (default-on)
+    // approval gate explicitly, as a workspace would in Settings.
+    await updateFollowUpConfig(ctx(s.workspaceA, s.ownerA), {
+      requireApproval: false,
+    });
     await scheduleFollowUps(ctx(s.workspaceA, s.ownerA), {
       threadId: sent.threadId!,
       qualifiedLeadId: lead!.id,

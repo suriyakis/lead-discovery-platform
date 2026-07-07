@@ -32,7 +32,7 @@ import {
   type WorkspaceContext,
 } from './context';
 import { approveReviewItem } from './review';
-import { generateOutreachDraft } from './outreach';
+import { approveOutreachDraft, generateOutreachDraft } from './outreach';
 import {
   drainQueue,
   enqueueDraft,
@@ -603,6 +603,10 @@ async function stepAutoEnqueueOutreach(
         productProfileId: row.q.productProfileId,
         method: 'rules',
       });
+      // The queue only accepts approved drafts. Auto-enqueue is an explicit
+      // per-product opt-in, so approval here is attributed to the workspace
+      // owner who enabled it — recorded on the draft AND in the run log.
+      await approveOutreachDraft(ctx, draft.id);
       await enqueueDraft(ctx, {
         draftId: draft.id,
         mailboxId: productMailboxId,

@@ -358,6 +358,13 @@
       "when": 1783407749880,
       "tag": "0050_tense_rattler",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1783408603511,
+      "tag": "0051_mean_stellaris",
+      "breakpoints": true
     }
   ]
 }

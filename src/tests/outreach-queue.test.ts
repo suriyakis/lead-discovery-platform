@@ -13,6 +13,7 @@ import { createConnector, createRecipe, startRun } from '@/lib/services/connecto
 import { createProductProfile } from '@/lib/services/product-profile';
 import { ensureQualifiedLead, updateContact } from '@/lib/services/pipeline';
 import {
+  approveOutreachDraft,
   generateDraftTranslation,
   generateOutreachDraft,
   saveDraftTranslation,
@@ -125,6 +126,8 @@ async function seedDraftableLead(
     reviewItemId: reviews[0]!.id,
     productProfileId: product.id,
   });
+  // The queue only accepts approved drafts — approve as the operator would.
+  await approveOutreachDraft(ctx(s.workspaceA, s.ownerA), draft.id);
   const mb = await createMailbox(ctx(s.workspaceA, s.ownerA), {
     name: 'sales',
     fromAddress: 'sales@nulife.pl',
@@ -190,6 +193,22 @@ describe('enqueueDraft', () => {
     expect(entry.subject).toBe(draft.subject);
     expect(entry.bodyText).toBe(draft.body);
     expect(entry.scheduledSendAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+
+  it('refuses to enqueue an unapproved draft (approval gate)', async () => {
+    const s = await setup();
+    const { draft, mailbox } = await seedDraftableLead(s);
+    // Regress the draft to unreviewed state — enqueue must refuse it.
+    await db
+      .update(outreachDrafts)
+      .set({ status: 'draft' })
+      .where(eq(outreachDrafts.id, draft.id));
+    await expect(
+      enqueueDraft(ctx(s.workspaceA, s.ownerA), {
+        draftId: draft.id,
+        mailboxId: mailbox.id,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
   });
 
   it('refuses to enqueue a rejected draft', async () => {
