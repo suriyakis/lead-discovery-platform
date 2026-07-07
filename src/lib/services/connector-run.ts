@@ -755,6 +755,25 @@ export async function listRuns(ctx: WorkspaceContext): Promise<ConnectorRun[]> {
     .orderBy(desc(connectorRuns.createdAt));
 }
 
+/** Batch-load runs by id (workspace-scoped; unknown / foreign ids are
+ *  silently absent). Powers the crawl-engine plan cards, which resolve
+ *  lastRunSummary.startedRuns into visible outcomes. */
+export async function getRunsByIds(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  ids: ReadonlyArray<bigint>,
+): Promise<ConnectorRun[]> {
+  if (ids.length === 0) return [];
+  return db
+    .select()
+    .from(connectorRuns)
+    .where(
+      and(
+        eq(connectorRuns.workspaceId, ctx.workspaceId),
+        inArray(connectorRuns.id, [...ids]),
+      ),
+    );
+}
+
 export async function listRunLogs(ctx: WorkspaceContext, runId: bigint) {
   // Workspace-scope check via the run row.
   await getRun(ctx, runId);

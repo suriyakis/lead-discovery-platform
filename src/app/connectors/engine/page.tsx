@@ -24,7 +24,7 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { listConnectors, listRecipes } from '@/lib/services/connector-run';
+import { getRunsByIds, listConnectors, listRecipes } from '@/lib/services/connector-run';
 import {
   listCrawlPlans,
   MAX_INTERVAL_MINUTES,
@@ -96,6 +96,16 @@ export default async function CrawlEnginePage({
     label: `${connectorNameById.get(r.connectorId.toString()) ?? '?'} · ${r.name}`,
     active: r.active,
   }));
+
+  // Resolve each plan's last-run connector runs so the card shows OUTCOMES
+  // (status + records found), not just "N started". One batched query for
+  // every run id referenced by any plan's lastRunSummary.
+  const lastRunIds = plans.flatMap((p) => {
+    const s = p.lastRunSummary as { startedRuns?: string[] } | null;
+    return (s?.startedRuns ?? []).filter((id) => /^\d+$/.test(id)).map(BigInt);
+  });
+  const lastRuns = await getRunsByIds(ctx, lastRunIds);
+  const runById = new Map(lastRuns.map((r) => [r.id.toString(), r]));
 
   return (
     <AppShell>
@@ -336,6 +346,11 @@ export default async function CrawlEnginePage({
               const started = Number(summary?.started ?? 0);
               const failed = Number(summary?.failed ?? 0);
               const skipped = Number(summary?.skipped ?? 0);
+              const startedRunRows = (
+                (summary?.startedRuns as string[] | undefined) ?? []
+              )
+                .map((id) => runById.get(id))
+                .filter((r): r is NonNullable<typeof r> => Boolean(r));
               return (
                 <article
                   key={p.id.toString()}
@@ -373,7 +388,7 @@ export default async function CrawlEnginePage({
                           defaultValue={minutesToHoursDisplay(p.intervalMinutes)}
                           min={MIN_INTERVAL_HOURS}
                           max={MAX_INTERVAL_HOURS}
-                          step={0.5}
+                          step={0.25}
                           required
                         />
                       </label>
@@ -463,6 +478,28 @@ export default async function CrawlEnginePage({
                             <strong>{started}</strong> started ·{' '}
                             <strong>{skipped}</strong> skipped ·{' '}
                             <strong>{failed}</strong> failed
+                            {startedRunRows.length > 0 ? (
+                              <>
+                                {' · '}
+                                {startedRunRows.map((r, i) => (
+                                  <span key={r.id.toString()}>
+                                    {i > 0 ? ', ' : ''}
+                                    <Link
+                                      href={`/connectors/${r.connectorId}/runs/${r.id}`}
+                                    >
+                                      run #{r.id.toString()}
+                                    </Link>{' '}
+                                    {r.status === 'succeeded' ? (
+                                      <strong>
+                                        {r.status} · {r.recordCount} records
+                                      </strong>
+                                    ) : (
+                                      <strong>{r.status}</strong>
+                                    )}
+                                  </span>
+                                ))}
+                              </>
+                            ) : null}
                           </span>
                         ) : (
                           <span className="muted">Never run</span>
@@ -533,7 +570,7 @@ export default async function CrawlEnginePage({
                   defaultValue={1}
                   min={MIN_INTERVAL_HOURS}
                   max={MAX_INTERVAL_HOURS}
-                  step={0.5}
+                  step={0.25}
                   required
                 />
               </label>
