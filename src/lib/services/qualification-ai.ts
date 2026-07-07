@@ -231,6 +231,6 @@ export async function classifyRecordWithAI(
       matchedLessonIds: [] as bigint[],
     },
     method: 'ai',
-    detectedCountry: verdict.detectedCountry,
+    detectedCountry: verdict.detectedCountry ?? null,
   };
 }
