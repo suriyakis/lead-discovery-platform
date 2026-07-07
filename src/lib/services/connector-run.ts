@@ -21,6 +21,7 @@ import { getJobQueue } from '@/lib/jobs';
 import { registerJobHandlers, type ConnectorRunJobPayload } from '@/lib/jobs/bootstrap';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
+import { normalizeCountry } from './geo';
 import { translateText } from './translation';
 import { getWorkspaceNativeLanguage } from './workspace';
 
@@ -91,6 +92,31 @@ function asSelectorsObject(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * Canonicalise `selectors.country` to ISO 3166-1 alpha-2 at save time, so
+ * every downstream comparison (geo gate, send-time guard) works on one
+ * spelling. Rejects unrecognisable values outright — a typo like "Atlantis"
+ * must fail the save, not silently weaken the locality gate later.
+ */
+function withNormalizedCountry(
+  selectors: Record<string, unknown>,
+): Record<string, unknown> {
+  const raw = selectors.country;
+  if (raw === undefined || raw === null || raw === '') return selectors;
+  if (typeof raw !== 'string') {
+    throw new ConnectorServiceError('selectors.country must be a string', 'invalid_input');
+  }
+  const code = normalizeCountry(raw);
+  if (!code) {
+    throw new ConnectorServiceError(
+      `selectors.country "${raw}" is not a recognised country — ` +
+        'use an ISO 3166-1 alpha-2 code (PL, DE, GB, …) or a country name',
+      'invalid_input',
+    );
+  }
+  return code === raw ? selectors : { ...selectors, country: code };
+}
+
+/**
  * Phase 63: pre-translate a recipe's search queries into its search
  * language at SAVE time and store them as `selectors.searchQueriesIssued`
  * (parallel to the operator's native-language queries). The internet-search
@@ -148,8 +174,13 @@ export async function createRecipe(
   // Only touch selectors (and pay the async translation cost) when the
   // recipe actually declares a search language; otherwise keep the exact
   // baseline behaviour so the common path is byte-for-byte unchanged.
-  const selectorsObj = asSelectorsObject(input.selectors);
-  let finalSelectors: unknown = input.selectors;
+  // Country (when present) is validated + canonicalised to ISO alpha-2
+  // here so the geo gate always compares canonical codes.
+  const selectorsObj = withNormalizedCountry(asSelectorsObject(input.selectors));
+  let finalSelectors: unknown =
+    input.selectors === undefined || input.selectors === null
+      ? input.selectors
+      : selectorsObj;
   if (typeof selectorsObj.language === 'string' && selectorsObj.language.length > 0) {
     const effectiveQueries = Array.isArray(selectorsObj.searchQueries)
       ? selectorsObj.searchQueries.filter((q): q is string => typeof q === 'string')
@@ -454,7 +485,9 @@ export async function updateRecipe(
       .filter((s) => s.length > 0);
   }
   if (input.selectors !== undefined) {
-    updates.selectors = sanitiseJsonObject(input.selectors, 'selectors');
+    updates.selectors = withNormalizedCountry(
+      asSelectorsObject(sanitiseJsonObject(input.selectors, 'selectors')),
+    );
   }
   // Recompute issued (translated) search queries only when a search language
   // is in play (after applying this update). Recipes without a search
@@ -462,7 +495,9 @@ export async function updateRecipe(
   if (input.selectors !== undefined || input.searchQueries !== undefined) {
     const baseSelectors =
       input.selectors !== undefined
-        ? asSelectorsObject(sanitiseJsonObject(input.selectors, 'selectors'))
+        ? withNormalizedCountry(
+            asSelectorsObject(sanitiseJsonObject(input.selectors, 'selectors')),
+          )
         : asSelectorsObject(existing.selectors);
     if (typeof baseSelectors.language === 'string' && baseSelectors.language.length > 0) {
       const columnQueries =

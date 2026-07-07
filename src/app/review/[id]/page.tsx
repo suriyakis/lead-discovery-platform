@@ -202,7 +202,31 @@ export default async function ReviewDetail({
                       </span>
                       <span className="muted">conf {qualification.confidence}</span>
                       <span className="muted">via {qualification.method}</span>
+                      {qualification.geoStatus === 'match' ? (
+                        <span className="badge badge-good">
+                          geo ✓ {qualification.inferredCountry}
+                        </span>
+                      ) : null}
+                      {qualification.geoStatus === 'mismatch' ? (
+                        <span className="badge badge-bad">
+                          geo ✗ {qualification.inferredCountry} (target {qualification.targetCountry})
+                        </span>
+                      ) : null}
+                      {qualification.geoStatus === 'unverified' ? (
+                        <span className="badge badge-warn">
+                          geo? location unverified — target {qualification.targetCountry}
+                        </span>
+                      ) : null}
                     </div>
+                    {qualification.geoStatus === 'unverified' && qualification.isRelevant ? (
+                      <p className="qual-reason qual-reason-bad">
+                        <strong>Verify location before approving:</strong> the company&apos;s
+                        country could not be confirmed. Approving this item confirms the
+                        company is inside the target country ({qualification.targetCountry})
+                        — otherwise reject it. Unapproved geo-unverified leads are never
+                        sent outreach.
+                      </p>
+                    ) : null}
                     {qualification.qualificationReason ? (
                       <p className="qual-reason qual-reason-good">
                         <strong>Why qualified:</strong> {qualification.qualificationReason}

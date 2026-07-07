@@ -67,6 +67,15 @@ export const qualifications = pgTable(
     /** Provider/model id when method != 'rules'. */
     model: text('model'),
 
+    /** Geo gate audit trail (locality compliance). `targetCountry` is the
+     *  normalized ISO alpha-2 the discovering recipe demanded (null = no
+     *  gate), `inferredCountry` is where the company appears to be based,
+     *  and `geoStatus` is the gate outcome the outreach queue re-checks
+     *  before dispatch: no_gate | match | mismatch | unverified. */
+    targetCountry: text('target_country'),
+    inferredCountry: text('inferred_country'),
+    geoStatus: text('geo_status').notNull().default('no_gate'),
+
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .notNull()
       .defaultNow(),

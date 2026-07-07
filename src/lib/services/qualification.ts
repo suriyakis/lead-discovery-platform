@@ -18,6 +18,7 @@ import {
 import { reviewItems, type ReviewItem } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
+import { applyGeoGate, normalizeCountry, type GeoStatus } from './geo';
 import { getRelevantLessons, recordLessonsApplied } from './learning';
 
 const BULK_LIMIT = 500;
@@ -120,10 +121,15 @@ export async function classifySourceRecord(
   const classifiable = extractClassifiable(sourceRecord.normalizedData as Record<string, unknown>);
 
   // Resolve the target country set on the recipe that discovered this record.
-  // The recipe decides the geography; the AI qualifier enforces it (grounded
-  // search can only bias sourcing). Same value for every product, so resolve
-  // once before the per-product loop.
-  const targetCountry = await resolveRecipeCountry(sourceRecord);
+  // The recipe decides the geography; the geo gate below enforces it on every
+  // verdict — AI and rules alike (grounded search can only bias sourcing).
+  // Same value for every product, so resolve once before the per-product loop.
+  const rawTargetCountry = await resolveRecipeCountry(sourceRecord);
+  const targetCountry = normalizeCountry(rawTargetCountry);
+  // A target that exists but can't be normalized (legacy typo, pre-validation
+  // data) must NOT silently disable the gate — treat every record under it as
+  // geographically unverified so nothing ships without a human look.
+  const invalidTarget = rawTargetCountry !== null && targetCountry === null;
 
   const inserted: Qualification[] = [];
 
@@ -144,15 +150,18 @@ export async function classifySourceRecord(
     // schema validation error, etc.) — never block lead creation on a
     // missing AI key or a transient outage.
     let verdict: ClassificationVerdict;
+    let aiDetectedCountry: string | null = null;
     try {
       const { classifyRecordWithAI } = await import('./qualification-ai');
-      verdict = await classifyRecordWithAI(
+      const aiVerdict = await classifyRecordWithAI(
         ctx,
         classifiable,
         product,
         allLessons,
         { targetCountry },
       );
+      aiDetectedCountry = aiVerdict.detectedCountry;
+      verdict = aiVerdict;
     } catch (err) {
       console.error(
         `[qualification] AI classify failed (product=${product.id}), falling back to rules:`,
@@ -161,7 +170,30 @@ export async function classifySourceRecord(
       const rulesVerdict = classifyRecord(classifiable, product, allLessons);
       verdict = { ...rulesVerdict, method: 'rules_fallback' };
     }
-    const row = await upsertQualification(ctx.workspaceId, sourceRecord.id, product, verdict);
+
+    // Locality gate — deterministic, applied to EVERY verdict regardless of
+    // method, so an AI outage can never bypass the geography requirement.
+    let geo: { status: GeoStatus; inferredCountry: string | null; targetCountry: string | null };
+    if (invalidTarget) {
+      verdict = {
+        ...verdict,
+        disqualifyingSignals: [
+          ...new Set([...verdict.disqualifyingSignals, `geo:invalid_target(${rawTargetCountry})`]),
+        ].slice(0, 10),
+        confidence: Math.min(verdict.confidence, 60),
+      };
+      geo = { status: 'unverified', inferredCountry: null, targetCountry: null };
+    } else {
+      const gated = applyGeoGate(verdict, classifiable, targetCountry, aiDetectedCountry);
+      verdict = gated.verdict;
+      geo = {
+        status: gated.geoStatus,
+        inferredCountry: gated.inferredCountry,
+        targetCountry: gated.targetCountry,
+      };
+    }
+
+    const row = await upsertQualification(ctx.workspaceId, sourceRecord.id, product, verdict, geo);
     inserted.push(row);
 
     // P60-06: mark the lessons we just consumed for scoring. Drives
@@ -172,6 +204,26 @@ export async function classifySourceRecord(
         allLessons.map((l) => l.id),
       );
     }
+  }
+
+  // A relevant lead whose location couldn't be verified must get explicit
+  // human attention: escalate the backing review item from 'new' to
+  // 'needs_review' so the queue surfaces the geo warning instead of letting
+  // the item sail through as an ordinary approval.
+  const needsGeoReview = inserted.some(
+    (q) => q.isRelevant && q.geoStatus === 'unverified',
+  );
+  if (needsGeoReview) {
+    await db
+      .update(reviewItems)
+      .set({ state: 'needs_review', updatedAt: new Date() })
+      .where(
+        and(
+          eq(reviewItems.workspaceId, ctx.workspaceId),
+          eq(reviewItems.sourceRecordId, sourceRecord.id),
+          eq(reviewItems.state, 'new'),
+        ),
+      );
   }
 
   return inserted;
@@ -515,6 +567,7 @@ async function upsertQualification(
   sourceRecordId: bigint,
   product: ProductProfile,
   verdict: ClassificationVerdict,
+  geo: { status: GeoStatus; inferredCountry: string | null; targetCountry: string | null },
 ): Promise<Qualification> {
   const row: NewQualification = {
     workspaceId,
@@ -529,6 +582,9 @@ async function upsertQualification(
     disqualifyingSignals: verdict.disqualifyingSignals,
     evidence: serializeEvidence(verdict.evidence),
     method: verdict.method,
+    targetCountry: geo.targetCountry,
+    inferredCountry: geo.inferredCountry,
+    geoStatus: geo.status,
   };
 
   await db
@@ -550,6 +606,9 @@ async function upsertQualification(
         disqualifyingSignals: row.disqualifyingSignals,
         evidence: row.evidence,
         method: row.method,
+        targetCountry: row.targetCountry,
+        inferredCountry: row.inferredCountry,
+        geoStatus: row.geoStatus,
         updatedAt: new Date(),
       },
     });

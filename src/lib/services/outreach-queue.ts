@@ -21,6 +21,8 @@ import {
   type SendDelayMode,
 } from '@/lib/db/schema/outreach';
 import { mailMessages } from '@/lib/db/schema/mailing';
+import { qualifications } from '@/lib/db/schema/qualifications';
+import { reviewItems } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
 import {
   canAdminWorkspace,
@@ -472,6 +474,37 @@ async function processEntry(
       }
     }
 
+    // Locality guard (hard requirement): the qualification's geo gate is
+    // re-checked at dispatch, so an out-of-country lead can never be mailed
+    // even if it somehow survived qualification + review. 'mismatch' blocks
+    // outright; 'unverified' blocks unless a human approved the review item
+    // (the review UI shows the geo warning, so approval = explicit human
+    // confirmation the company is inside the target country).
+    if (entry.draftId) {
+      const geoVerdict = await checkGeoAtSendTime(ctx, entry.draftId);
+      if (!geoVerdict.allowed) {
+        await db
+          .update(outreachQueue)
+          .set({
+            status: 'skipped',
+            lastError: geoVerdict.reason,
+            updatedAt: new Date(),
+          })
+          .where(eq(outreachQueue.id, entry.id));
+        await recordAuditEvent(ctx, {
+          kind: 'outreach.geo_blocked',
+          entityType: 'outreach_queue',
+          entityId: entry.id,
+          payload: {
+            draftId: entry.draftId.toString(),
+            reason: geoVerdict.reason,
+            to: entry.toAddresses,
+          },
+        });
+        return 'skipped';
+      }
+    }
+
     // Phase 43: per-mailbox sending policy. Checks business window
     // (timezone-aware), daily/hourly counters, and per-domain 24h cap.
     // On a denial we re-queue with scheduledSendAt=retryAfter and set
@@ -636,6 +669,68 @@ async function processEntry(
 // ---- internals ----------------------------------------------------
 
 /** Fetch a draft's (review_item, product) pair for language resolution. */
+/**
+ * Send-time locality re-check. Resolves the qualification behind a draft
+ * (draft → review item → source record + product) and refuses dispatch when
+ * its geo gate wasn't satisfied:
+ *
+ *   mismatch              → always blocked
+ *   unverified            → blocked unless the review item is human-approved
+ *   match / no_gate       → allowed
+ *   chain unresolvable    → allowed (one-off sends have no qualification;
+ *                            blocking them would break manual mail)
+ */
+async function checkGeoAtSendTime(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  draftId: bigint,
+): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  const rows = await db
+    .select({
+      geoStatus: qualifications.geoStatus,
+      targetCountry: qualifications.targetCountry,
+      inferredCountry: qualifications.inferredCountry,
+      reviewState: reviewItems.state,
+    })
+    .from(outreachDrafts)
+    .innerJoin(reviewItems, eq(reviewItems.id, outreachDrafts.reviewItemId))
+    .innerJoin(
+      qualifications,
+      and(
+        eq(qualifications.workspaceId, outreachDrafts.workspaceId),
+        eq(qualifications.sourceRecordId, reviewItems.sourceRecordId),
+        eq(qualifications.productProfileId, outreachDrafts.productProfileId),
+      ),
+    )
+    .where(
+      and(
+        eq(outreachDrafts.workspaceId, ctx.workspaceId),
+        eq(outreachDrafts.id, draftId),
+      ),
+    )
+    .limit(1);
+
+  const q = rows[0];
+  if (!q) return { allowed: true };
+
+  if (q.geoStatus === 'mismatch') {
+    return {
+      allowed: false,
+      reason:
+        `geo blocked: company located in ${q.inferredCountry ?? 'unknown'} but ` +
+        `recipe targets ${q.targetCountry ?? 'unknown'}`,
+    };
+  }
+  if (q.geoStatus === 'unverified' && q.reviewState !== 'approved') {
+    return {
+      allowed: false,
+      reason:
+        `geo blocked: company location unverified for target ${q.targetCountry ?? 'unknown'} ` +
+        `and review item not human-approved (state=${q.reviewState})`,
+    };
+  }
+  return { allowed: true };
+}
+
 async function loadDraftForSend(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   draftId: bigint,

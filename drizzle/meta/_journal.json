@@ -351,6 +351,13 @@
       "when": 1782137677417,
       "tag": "0049_large_thunderbolt_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1783407749880,
+      "tag": "0050_tense_rattler",
+      "breakpoints": true
     }
   ]
 }
