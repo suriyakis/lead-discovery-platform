@@ -94,11 +94,23 @@ export class GeminiResearchProvider implements IResearchProvider {
       .map((c, i): ResearchCitation | null => {
         const url = c.web?.uri;
         if (!url) return null;
+        const redirectDomain = extractDomain(url);
+        const title = c.web?.title ?? redirectDomain;
+        // Gemini grounding cites via vertexaisearch redirect URIs; the TRUE
+        // source site arrives as the citation title (a bare domain like
+        // "cemplas.co.uk"). Prefer it as the record domain — downstream geo
+        // inference (ccTLD) and company dedupe key on it, and the redirect
+        // host carries no signal about the actual company.
+        const titleIsDomain = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(title.trim());
+        const domain =
+          redirectDomain.endsWith('vertexaisearch.cloud.google.com') && titleIsDomain
+            ? title.trim().toLowerCase()
+            : redirectDomain;
         return {
           rank: i + 1,
           url,
-          domain: extractDomain(url),
-          title: c.web?.title ?? extractDomain(url),
+          domain,
+          title,
         };
       })
       .filter((c): c is ResearchCitation => c !== null);
