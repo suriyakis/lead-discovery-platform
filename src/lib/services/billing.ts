@@ -20,6 +20,8 @@ import { workspaces, type Workspace } from '@/lib/db/schema/workspaces';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
 import { getPlanById, type PlanId } from '@/lib/billing/plans';
+import { tokenPackById } from '@/lib/billing/tokens';
+import { creditTokens } from './token-ledger';
 
 export class BillingError extends Error {
   public readonly code: string;
@@ -174,6 +176,64 @@ export async function createCheckoutSession(
   return { url: session.url, sessionId: session.id };
 }
 
+export interface CreateTokenCheckoutInput {
+  packId: string;
+  successUrl: string;
+  cancelUrl: string;
+}
+
+/**
+ * One-time payment Checkout for a prepaid token pack. The pack's token
+ * amount travels in session metadata; the webhook credits the wallet on
+ * `checkout.session.completed` (mode=payment), idempotent by session id.
+ */
+export async function createTokenCheckoutSession(
+  ctx: WorkspaceContext,
+  input: CreateTokenCheckoutInput,
+): Promise<{ url: string; sessionId: string }> {
+  if (!canAdminWorkspace(ctx)) throw denied('billing.buy_tokens');
+  const pack = tokenPackById(input.packId);
+  if (!pack) throw invalid(`unknown token pack: ${input.packId}`);
+  if (!pack.priceId) {
+    throw invalid(
+      `token pack ${pack.id} is not purchasable yet — its STRIPE_PRICE_TOKENS_* env is unset`,
+    );
+  }
+
+  const { customerId } = await getOrCreateStripeCustomer(ctx);
+  const stripe = getStripeClient();
+
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    customer: customerId,
+    line_items: [{ price: pack.priceId, quantity: 1 }],
+    success_url: input.successUrl,
+    cancel_url: input.cancelUrl,
+    allow_promotion_codes: true,
+    metadata: {
+      workspace_id: ctx.workspaceId.toString(),
+      token_pack_id: pack.id,
+      tokens: pack.tokens.toString(),
+    },
+  });
+
+  if (!session.url) {
+    throw new BillingError(
+      'stripe checkout session returned no url',
+      'invariant_violation',
+    );
+  }
+
+  await recordAuditEvent(ctx, {
+    kind: 'billing.token_checkout_created',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: { packId: pack.id, tokens: pack.tokens, sessionId: session.id },
+  });
+
+  return { url: session.url, sessionId: session.id };
+}
+
 /**
  * Create a Stripe Customer Portal session so the operator can manage
  * their subscription (cancel, switch plans, update card) on Stripe's
@@ -277,6 +337,39 @@ export async function applyStripeEvent(event: Stripe.Event): Promise<ApplyResult
       const planId =
         (session.metadata?.plan_id as PlanId | undefined) ?? null;
       if (!workspaceId) return { workspaceId: null, action: 'no_workspace' };
+
+      // One-time token purchase: credit the wallet and stop — a payment-
+      // mode session must NEVER touch subscription state (the fallthrough
+      // below would wrongly flip the workspace to plan+active).
+      if (session.mode === 'payment') {
+        const tokens = Number(session.metadata?.tokens ?? '0');
+        const packId = session.metadata?.token_pack_id ?? 'unknown';
+        if (!Number.isFinite(tokens) || tokens <= 0) {
+          return {
+            workspaceId,
+            action: 'ignored',
+            detail: 'payment session without token metadata',
+          };
+        }
+        const { alreadyApplied } = await creditTokens(workspaceId, {
+          tokens,
+          kind: 'purchase',
+          reason: packId,
+          externalRef: session.id,
+          payload: {
+            stripeSessionId: session.id,
+            amountTotal: session.amount_total,
+            currency: session.currency,
+          },
+        });
+        return {
+          workspaceId,
+          action: 'updated',
+          detail: alreadyApplied
+            ? 'token purchase (replay, already credited)'
+            : `token purchase credited: ${tokens}`,
+        };
+      }
       const subscriptionId =
         typeof session.subscription === 'string'
           ? session.subscription

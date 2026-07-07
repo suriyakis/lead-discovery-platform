@@ -365,6 +365,13 @@
       "when": 1783408603511,
       "tag": "0051_mean_stellaris",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1783456384225,
+      "tag": "0052_lean_beast",
+      "breakpoints": true
     }
   ]
 }

@@ -20,6 +20,7 @@ import {
   OpenAIAIProvider,
   _setAIProviderForTests,
   getAIProviderForCtx,
+  unwrapAIProvider,
 } from '@/lib/ai';
 import {
   GeminiResearchProvider,
@@ -200,7 +201,7 @@ describe('getAIProviderForCtx (cascade)', () => {
       aiProvider: 'anthropic',
     });
     const p = await getAIProviderForCtx({ workspaceId: s.workspaceA });
-    expect(p).toBeInstanceOf(AnthropicAIProvider);
+    expect(unwrapAIProvider(p)).toBeInstanceOf(AnthropicAIProvider);
   });
 
   it('workspace mock overrides env real provider', async () => {
@@ -219,8 +220,8 @@ describe('getAIProviderForCtx (cascade)', () => {
     process.env.AI_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'sk-platform';
     const p = await getAIProviderForCtx({ workspaceId: s.workspaceA });
-    expect(p).toBeInstanceOf(OpenAIAIProvider);
-    expect((p as unknown as { apiKey: string }).apiKey).toBe('sk-platform');
+    expect(unwrapAIProvider(p)).toBeInstanceOf(OpenAIAIProvider);
+    expect((unwrapAIProvider(p) as unknown as { apiKey: string }).apiKey).toBe('sk-platform');
   });
 
   it('workspace BYOK key wins over platform key', async () => {
@@ -229,7 +230,7 @@ describe('getAIProviderForCtx (cascade)', () => {
     process.env.OPENAI_API_KEY = 'sk-platform';
     await setSecret(ctx(s.workspaceA, s.ownerA), 'openai.apiKey', 'sk-workspace');
     const p = await getAIProviderForCtx({ workspaceId: s.workspaceA });
-    expect((p as unknown as { apiKey: string }).apiKey).toBe('sk-workspace');
+    expect((unwrapAIProvider(p) as unknown as { apiKey: string }).apiKey).toBe('sk-workspace');
   });
 
   it('throws when real provider id has no key configured', async () => {

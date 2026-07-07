@@ -616,6 +616,10 @@ export async function startRun(
   input: StartRunInput,
 ): Promise<{ run: ConnectorRun; jobId: string; result?: RunResult }> {
   if (!canWrite(ctx)) throw permissionDenied('start connector run');
+  // Prepaid gate: discovery runs drive search + AI qualification spend.
+  // Empty wallet (and not billing-exempt) → refuse to start new runs.
+  const { assertTokens } = await import('./token-ledger');
+  await assertTokens(ctx);
 
   const connector = await getConnectorRow(ctx, input.connectorId);
   if (!connector.active) {

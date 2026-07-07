@@ -14,6 +14,7 @@ import {
 } from '@/lib/services/auth-context';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { translateText } from '@/lib/services/translation';
+import { TokenError, assertTokens } from '@/lib/services/token-ledger';
 
 const InputSchema = z.object({
   subject: z.string().max(998).optional().default(''),
@@ -54,6 +55,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
+    await assertTokens(ctx);
     const bodyT = await translateText(ctx, {
       text: parsed.body,
       targetLanguage: target,
@@ -72,6 +74,12 @@ export async function POST(req: Request): Promise<NextResponse> {
       body: bodyT.translatedText,
     });
   } catch (err) {
+    if (err instanceof TokenError) {
+      return NextResponse.json(
+        { error: err.code, detail: err.message },
+        { status: 402 },
+      );
+    }
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json({ error: 'translate_failed', detail }, { status: 500 });
   }
