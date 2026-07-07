@@ -8,7 +8,7 @@
 // without touching the workspace default.
 
 import { useState, useTransition } from 'react';
-import { Languages } from 'lucide-react';
+import { Languages, Sparkles } from 'lucide-react';
 
 interface SignatureOption {
   id: string;
@@ -53,6 +53,8 @@ export function CommunicationReply({
   const [tBody, setTBody] = useState('');
   const [shown, setShown] = useState(false);
   const [translating, setTranslating] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionNote, setSuggestionNote] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -88,6 +90,42 @@ export function CommunicationReply({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setTranslating(false);
+    }
+  }
+
+  async function suggest() {
+    setSuggesting(true);
+    setError(null);
+    setSuggestionNote(null);
+    try {
+      const res = await fetch('/api/communication/suggest-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadId }),
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        text?: string;
+        model?: string;
+        sources?: { chunkCount?: number; lessonCount?: number };
+        detail?: string;
+        error?: string;
+      };
+      if (!res.ok || !j.ok || !j.text) {
+        setError(j.detail || j.error || `suggestion failed (${res.status})`);
+        return;
+      }
+      setBody(j.text);
+      if (shown) setShown(false);
+      const chunkCount = j.sources?.chunkCount ?? 0;
+      setSuggestionNote(
+        `AI draft (${j.model ?? 'model'}) grounded in ${chunkCount} knowledge ` +
+          `chunk${chunkCount === 1 ? '' : 's'} — review and edit before sending.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSuggesting(false);
     }
   }
 
@@ -225,6 +263,24 @@ export function CommunicationReply({
           style={{ width: '100%' }}
         />
       </label>
+
+      <div className="action-row" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={suggest}
+          disabled={suggesting || isPending}
+          title="Draft a reply grounded in the workspace knowledge base — you review and edit before sending"
+        >
+          <Sparkles className="primary-btn-icon" aria-hidden="true" />{' '}
+          {suggesting ? 'Drafting…' : body ? 'Re-suggest reply (replaces body)' : 'Suggest reply (AI)'}
+        </button>
+        {suggestionNote ? (
+          <span className="muted" style={{ fontSize: '0.72rem', alignSelf: 'center' }}>
+            {suggestionNote}
+          </span>
+        ) : null}
+      </div>
 
       <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
         <span style={{ fontSize: '0.72rem' }} className="muted">
