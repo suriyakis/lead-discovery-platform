@@ -144,7 +144,7 @@ export function AISignatureRedesigner({
       <div style={{ marginTop: '0.5rem' }}>
         <span
           className="muted"
-          style={{ fontSize: '0.75rem', display: 'block', marginBottom: '0.35rem' }}
+          style={{ fontSize: '0.8rem', display: 'block', marginBottom: '0.35rem' }}
         >
           Style direction (optional)
         </span>
@@ -179,7 +179,7 @@ export function AISignatureRedesigner({
           })}
         </div>
         {presetId ? (
-          <p className="muted" style={{ fontSize: '0.72rem', margin: '0.35rem 0 0' }}>
+          <p className="muted" style={{ fontSize: '0.78rem', margin: '0.35rem 0 0' }}>
             {STYLE_PRESETS.find((p) => p.id === presetId)?.blurb}
           </p>
         ) : null}

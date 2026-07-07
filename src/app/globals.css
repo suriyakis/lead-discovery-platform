@@ -4,8 +4,13 @@
 :root {
   --brand-bg: oklch(0.18 0.025 250);
   --brand-fg: oklch(0.96 0.005 250);
-  --brand-muted: oklch(0.68 0.02 250);
-  --brand-border: oklch(0.3 0.025 250);
+  /* Muted text: L 0.68 → 0.75. It carries every label, hint and meta line
+     in the app, usually at small sizes — the old value sat at borderline
+     contrast on cards and read as fog. Still visibly secondary vs --brand-fg. */
+  --brand-muted: oklch(0.75 0.02 250);
+  /* Borders: 0.3 → 0.34 so cards, inputs and table rows keep visible
+     structure instead of melting into the background. */
+  --brand-border: oklch(0.34 0.025 250);
   --brand-card: oklch(0.215 0.025 250);
   --brand-card-elevated: oklch(0.235 0.025 250);
   --brand-input: oklch(0.26 0.025 250);
@@ -13,8 +18,8 @@
   --brand-primary-foreground: oklch(0.15 0.025 250);
   --brand-accent-teal: oklch(0.74 0.15 185);
   --brand-accent-amber: oklch(0.8 0.16 75);
-  --brand-status-approved: oklch(0.74 0.17 150);
-  --brand-status-rejected: oklch(0.68 0.19 25);
+  --brand-status-approved: oklch(0.78 0.17 150);
+  --brand-status-rejected: oklch(0.73 0.19 25);
 
   --brand-mark-gradient: linear-gradient(
     135deg,
@@ -286,7 +291,7 @@ main {
   list-style: none;
   cursor: pointer;
   padding: 0.4rem 0.625rem;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--brand-muted);
@@ -301,7 +306,7 @@ main {
   content: '▾';
   margin-left: 0.5rem;
   color: var(--brand-muted);
-  font-size: 0.6rem;
+  font-size: 0.8rem;
 }
 
 .sidebar-group:not([open]) > summary::after {
@@ -550,7 +555,7 @@ main section {
 
 main h2 {
   font-family: var(--brand-mono);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--brand-muted);
@@ -641,7 +646,7 @@ code {
 
 .hero .eyebrow {
   font-family: var(--brand-mono);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--brand-muted);
@@ -821,7 +826,7 @@ button.primary-btn {
   gap: 1rem;
   margin-top: 0.5rem;
   font-family: var(--brand-mono);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--brand-muted);
 }
 
@@ -989,7 +994,7 @@ button.primary-btn {
 
 .config-eyebrow {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1090,7 +1095,7 @@ button.primary-btn {
   align-items: center;
   gap: 0.3rem;
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1155,7 +1160,7 @@ button.primary-btn {
 
 .followup-step-descriptor {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   text-align: center;
   color: var(--brand-muted);
 }
@@ -1287,7 +1292,7 @@ button.primary-btn {
 
 .cmdk-group {
   padding: 0.5rem 1.1rem 0.2rem;
-  font-size: 0.66rem;
+  font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1317,7 +1322,7 @@ button.primary-btn {
 .cmdk-item-sub {
   margin-left: auto;
   color: var(--brand-muted);
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   font-family: var(--brand-mono);
 }
 
@@ -1333,7 +1338,7 @@ button.primary-btn {
   gap: 1rem;
   align-items: center;
   padding: 0.55rem 1.1rem;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   color: var(--brand-muted);
   border-top: 1px solid var(--brand-border);
   background: oklch(0.21 0.025 250 / 0.6);
@@ -1342,7 +1347,7 @@ button.primary-btn {
 .cmdk-footer kbd {
   display: inline-block;
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   background: oklch(0.3 0.025 250);
   border: 1px solid var(--brand-border);
   border-radius: 0.3rem;
@@ -1449,7 +1454,7 @@ button.primary-btn {
 }
 
 .cockpit-card-sub {
-  font-size: 0.76rem;
+  font-size: 0.8rem;
   color: var(--brand-muted);
   margin-top: 0.4rem;
   line-height: 1.4;
@@ -1545,7 +1550,7 @@ button.primary-btn {
 
 .cockpit-reply-time {
   color: var(--brand-muted);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   white-space: nowrap;
 }
 
@@ -1560,7 +1565,7 @@ button.primary-btn {
 
 .cockpit-reply-subject .badge {
   margin-right: 0.4rem;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   padding: 0.05rem 0.4rem;
 }
 
@@ -1643,7 +1648,7 @@ button.primary-btn {
 
 .form-grid small {
   color: var(--brand-muted);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
 }
 
 .form-grid fieldset {
@@ -1659,7 +1664,7 @@ button.primary-btn {
 .form-grid legend {
   padding: 0 0.5rem;
   font-family: var(--brand-mono);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--brand-muted);
@@ -2107,7 +2112,7 @@ button.primary-btn {
 
 .billing-summary dt {
   font-family: var(--brand-mono);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   color: var(--brand-muted);
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -2121,7 +2126,7 @@ button.primary-btn {
 .badge {
   display: inline-block;
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   padding: 0.25rem 0.625rem;
@@ -2264,7 +2269,7 @@ button.primary-btn {
 
 .data-table th {
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--brand-muted);
@@ -2378,7 +2383,7 @@ button.primary-btn {
 .tab-count {
   display: inline-block;
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   background: var(--brand-input);
   color: var(--brand-muted);
   padding: 0.05rem 0.4rem;
@@ -2781,7 +2786,7 @@ button.primary-btn {
 
 .ks-kind-fields legend {
   padding: 0;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -2931,7 +2936,7 @@ button.primary-btn {
   align-items: center;
   gap: 0.5rem;
   margin: 0 0 0.7rem;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -3016,7 +3021,7 @@ button.primary-btn {
 .badge-stage-pitch,
 .badge-stage-closing {
   font-family: var(--brand-mono);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -3047,7 +3052,7 @@ button.primary-btn {
 
 .section-eyebrow {
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--brand-primary);
@@ -3244,7 +3249,7 @@ button.primary-btn {
 .page-eyebrow {
   margin: 0;
   font-family: var(--brand-mono);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--brand-accent-teal);
@@ -3334,7 +3339,7 @@ button.primary-btn {
 
 .profile-card-eyebrow {
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.15em;
   color: var(--brand-muted);
@@ -3372,7 +3377,7 @@ button.primary-btn {
   display: inline-flex;
   align-items: center;
   font-family: var(--brand-mono);
-  font-size: 0.65rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   padding: 0.2rem 0.55rem;
@@ -3611,7 +3616,7 @@ button.primary-btn {
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   font-family: var(--brand-mono);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--brand-muted);
@@ -3908,7 +3913,7 @@ button.primary-btn {
 
 .metric-card-label {
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   letter-spacing: 0.13em;
   text-transform: uppercase;
   color: var(--brand-muted);
@@ -3999,7 +4004,7 @@ button.primary-btn {
   text-align: left;
   padding: 0.7rem 0.95rem;
   font-family: var(--brand-mono);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -4071,7 +4076,7 @@ button.primary-btn {
 
 .reply-class-label {
   font-family: var(--brand-mono);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   letter-spacing: 0.13em;
   text-transform: uppercase;
   color: var(--brand-muted);
@@ -4154,7 +4159,7 @@ button.primary-btn {
   align-items: center;
   gap: 0.4rem;
   font-family: var(--brand-mono);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.13em;
   color: var(--brand-accent-teal);
@@ -4168,7 +4173,7 @@ button.primary-btn {
   content: '▾';
   margin-left: 0.4rem;
   color: var(--brand-muted);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
 }
 
 .msg-translation:not([open]) > summary::after {
@@ -4290,7 +4295,7 @@ button.primary-btn {
   border-radius: 999px;
   background: var(--brand-input);
   color: var(--brand-muted);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -4438,7 +4443,7 @@ button.primary-btn {
   text-overflow: ellipsis;
 }
 .mail-row-mailbox {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   color: var(--brand-muted);
   padding: 0.05rem 0.4rem;
   border-radius: 0.25rem;
@@ -4468,7 +4473,7 @@ button.primary-btn {
   display: flex;
   gap: 0.5rem;
   margin-top: 0.2rem;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   flex-wrap: wrap;
 }
 .mail-row-hint {
@@ -4617,7 +4622,7 @@ button.primary-btn {
   font-size: 0.84rem;
 }
 .mail-row-mailbox {
-  font-size: 0.66rem;
+  font-size: 0.78rem;
 }
 .mail-row-meta {
   text-align: right;
@@ -4672,7 +4677,7 @@ button.primary-btn {
   top: 1rem;
 }
 .mail-rail-section-title {
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--brand-muted);
@@ -4843,7 +4848,7 @@ button.primary-btn {
 .mail-row-hints {
   display: inline-flex;
   gap: 0.4rem;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   margin-left: 0.4rem;
 }
 .mail-row-hint {
@@ -5238,7 +5243,7 @@ button.primary-btn {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--brand-muted);
@@ -5259,7 +5264,7 @@ button.primary-btn {
 }
 .contacts-metric-sub {
   margin-top: 0.3rem;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--brand-muted);
 }
 
@@ -5332,7 +5337,7 @@ button.primary-btn {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   color: var(--brand-muted);
 }
 .contacts-filters > label > span {
@@ -5497,7 +5502,7 @@ button.primary-btn {
 }
 .contact-card-name:hover { text-decoration: underline; }
 .contact-card-role {
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--brand-muted);
   padding: 0.1rem 0.4rem;
   background: var(--brand-input);
@@ -5523,7 +5528,7 @@ button.primary-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   padding: 0.1rem 0.5rem;
   border-radius: 0.5rem;
   color: var(--brand-fg);
@@ -5754,7 +5759,7 @@ button.primary-btn {
 .contact-thread-meta {
   display: flex;
   gap: 0.5rem;
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   color: var(--brand-muted);
   margin-top: 0.25rem;
 }
@@ -5805,7 +5810,7 @@ button.primary-btn {
 }
 .contact-message-body > a:hover { text-decoration: underline; }
 .contact-message-body > .muted {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   white-space: nowrap;
 }
 
@@ -6670,7 +6675,7 @@ button.primary-btn {
   text-decoration: underline;
 }
 .product-card-status {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   padding: 0.15rem 0.55rem;
   border-radius: 999px;
   flex-shrink: 0;
@@ -6699,7 +6704,7 @@ button.primary-btn {
 .product-card-meta {
   display: flex;
   gap: 0.4rem;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--brand-muted);
   flex-wrap: wrap;
 }
@@ -6771,7 +6776,7 @@ button.primary-btn {
   color: var(--brand-muted);
 }
 .connector-template-count {
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   font-weight: 600;
   padding: 0.25rem 0.55rem;
   border-radius: 999px;
@@ -6921,7 +6926,7 @@ button.primary-btn {
   flex-shrink: 0;
 }
 .connector-recipe-status {
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   padding: 0.15rem 0.5rem;
   border-radius: 999px;
   font-weight: 600;
@@ -6943,7 +6948,7 @@ button.primary-btn {
   gap: 0.3rem;
 }
 .connector-recipe-actions .small {
-  font-size: 0.74rem;
+  font-size: 0.78rem;
   padding: 0.28rem 0.55rem;
 }
 .connector-recipe-actions .danger {
@@ -7074,7 +7079,7 @@ button.primary-btn {
 }
 .runs-row-link:hover { text-decoration: underline; }
 .runs-status {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   padding: 0.15rem 0.5rem;
   border-radius: 999px;
   font-weight: 600;
@@ -7305,7 +7310,7 @@ button.primary-btn {
   flex-wrap: wrap;
   gap: 0.4rem 0.9rem;
   font-family: var(--brand-mono);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--brand-muted);
   margin: 0;
 }

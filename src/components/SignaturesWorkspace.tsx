@@ -531,7 +531,7 @@ function RawHtmlPanel({ renderedHtml }: { renderedHtml: string }) {
           onClick={copy}
           disabled={!renderedHtml}
           title="Copy HTML to clipboard"
-          style={{ fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+          style={{ fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
         >
           <Copy className="lucide" />
           {copied ? 'Copied' : 'Copy'}
@@ -541,7 +541,7 @@ function RawHtmlPanel({ renderedHtml }: { renderedHtml: string }) {
         <pre
           className="signature-preview-text"
           style={{
-            fontSize: '0.72rem',
+            fontSize: '0.78rem',
             wordBreak: 'break-word',
             maxHeight: '320px',
           }}

@@ -206,7 +206,7 @@ export function CommunicationReply({
         }}
       >
         <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-          <span style={{ fontSize: '0.72rem' }} className="muted">
+          <span style={{ fontSize: '0.78rem' }} className="muted">
             To
           </span>
           <input
@@ -218,7 +218,7 @@ export function CommunicationReply({
           />
         </label>
         <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-          <span style={{ fontSize: '0.72rem' }} className="muted">
+          <span style={{ fontSize: '0.78rem' }} className="muted">
             Signature
             <span style={{ color: 'var(--brand-muted)', fontWeight: 'normal' }}>
               {' · '}
@@ -249,7 +249,7 @@ export function CommunicationReply({
       </div>
 
       <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-        <span style={{ fontSize: '0.72rem' }} className="muted">
+        <span style={{ fontSize: '0.78rem' }} className="muted">
           Subject
         </span>
         <input
@@ -276,14 +276,14 @@ export function CommunicationReply({
           {suggesting ? 'Drafting…' : body ? 'Re-suggest reply (replaces body)' : 'Suggest reply (AI)'}
         </button>
         {suggestionNote ? (
-          <span className="muted" style={{ fontSize: '0.72rem', alignSelf: 'center' }}>
+          <span className="muted" style={{ fontSize: '0.78rem', alignSelf: 'center' }}>
             {suggestionNote}
           </span>
         ) : null}
       </div>
 
       <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-        <span style={{ fontSize: '0.72rem' }} className="muted">
+        <span style={{ fontSize: '0.78rem' }} className="muted">
           Body — signature appended automatically on send
         </span>
         <textarea
@@ -323,7 +323,7 @@ export function CommunicationReply({
                 : `Show translation (${targetLanguage})`}
           </button>
           {!shown ? (
-            <span className="muted" style={{ fontSize: '0.72rem', alignSelf: 'center' }}>
+            <span className="muted" style={{ fontSize: '0.78rem', alignSelf: 'center' }}>
               Recipient&rsquo;s language is {targetLanguage} — translate to send in their language.
             </span>
           ) : null}
@@ -332,12 +332,12 @@ export function CommunicationReply({
 
       {canTranslate && shown ? (
         <section>
-          <p className="muted" style={{ fontSize: '0.72rem' }}>
+          <p className="muted" style={{ fontSize: '0.78rem' }}>
             This is the exact email the recipient receives ({targetLanguage}).
             Your reply above is kept as the thread reference — edit if needed.
           </p>
           <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-            <span style={{ fontSize: '0.72rem' }} className="muted">
+            <span style={{ fontSize: '0.78rem' }} className="muted">
               Subject ({targetLanguage})
             </span>
             <input
@@ -349,7 +349,7 @@ export function CommunicationReply({
             />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-            <span style={{ fontSize: '0.72rem' }} className="muted">
+            <span style={{ fontSize: '0.78rem' }} className="muted">
               Message ({targetLanguage})
             </span>
             <textarea

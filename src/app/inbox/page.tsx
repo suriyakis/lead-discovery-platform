@@ -178,7 +178,7 @@ function TabLink({
               borderRadius: '999px',
               background: 'var(--brand-accent-amber)',
               color: 'oklch(0.18 0.025 250)',
-              fontSize: '0.72rem',
+              fontSize: '0.78rem',
               fontWeight: 700,
               minWidth: '1.5rem',
               textAlign: 'center',
