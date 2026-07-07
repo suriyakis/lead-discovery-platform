@@ -239,13 +239,16 @@ describe('classifyRecordWithAI', () => {
       },
       product,
       [],
-      { providerOverride: stub, targetCountry: 'uk' },
+      { providerOverride: stub, targetCountry: 'GB' },
     );
 
     const prompt = stub.lastPrompt!.prompt;
     expect(prompt).toContain('TARGET GEOGRAPHY');
-    expect(prompt).toContain('targets companies in: uk');
-    expect(prompt).toMatch(/OUTSIDE uk/);
+    expect(prompt).toContain('targets companies in: United Kingdom (GB)');
+    expect(prompt).toMatch(/OUTSIDE United Kingdom \(GB\)/);
+    // The model must report its location judgement so the deterministic
+    // gate can enforce it.
+    expect(prompt).toContain('detectedCountry');
   });
 
   it('omits the geo gate when the recipe sets no targetCountry', async () => {

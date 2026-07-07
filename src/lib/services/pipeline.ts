@@ -22,7 +22,7 @@ import {
   canWrite,
   type WorkspaceContext,
 } from './context';
-import { attachContact, upsertContact } from './contacts';
+import { attachContact, isPlausibleEmail, upsertContact } from './contacts';
 import { isEnabledLanguage } from '@/lib/i18n/language';
 
 export class PipelineServiceError extends Error {
@@ -256,7 +256,9 @@ export async function updateContact(
   if (input.contactName !== undefined) updates.contactName = input.contactName?.trim() || null;
   if (input.contactEmail !== undefined) {
     const e = input.contactEmail?.trim().toLowerCase() || null;
-    if (e && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+    // This address is what outreach actually mails — use the strict
+    // plausibility check so scraped artifacts can't become send targets.
+    if (e && !isPlausibleEmail(e)) {
       throw invalid('invalid contactEmail');
     }
     updates.contactEmail = e;

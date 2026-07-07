@@ -84,7 +84,9 @@ export async function loadSettings(
     .where(eq(workspaces.id, workspaceId))
     .limit(1);
   const enabled = row?.enabled ?? true;
-  const requireApproval = row?.requireApproval ?? false;
+  // Default matches the schema: approval required unless the workspace
+  // explicitly opted out. Missing row must never mean "auto-send".
+  const requireApproval = row?.requireApproval ?? true;
   // Prefer per-step JSONB config when set; fall back to the legacy
   // simple interval × maxSteps so existing workspaces keep working
   // without a backfill migration.
@@ -489,7 +491,11 @@ async function processOne(
     product,
     row.stepNumber,
     row.totalSteps,
-    { channel: 'email', language: nativeLanguage },
+    {
+      channel: 'email',
+      language: nativeLanguage,
+      lead: { contactName: lead.contactName, contactEmail: lead.contactEmail },
+    },
     provider,
     undefined,
     customInstructions || undefined,
@@ -593,7 +599,15 @@ async function processOne(
 export async function approveFollowUp(
   ctx: WorkspaceContext,
   followUpId: bigint,
-  override?: { subject?: string; body?: string },
+  override?: {
+    subject?: string;
+    body?: string;
+    /** Operator-reviewed translation. When present it is sent verbatim
+     *  instead of auto-translating the (native) staged body. */
+    translatedSubject?: string;
+    translatedBody?: string;
+    targetLanguage?: string;
+  },
   deps: ProcessDueFollowUpsDeps = {},
 ): Promise<OutreachFollowUp> {
   if (!canWrite(ctx)) throw denied('follow_up.approve');
@@ -657,13 +671,36 @@ export async function approveFollowUp(
     .orderBy(asc(mailMessages.createdAt));
   const lastMessage = messages[messages.length - 1] ?? null;
 
-  // Flow A: the staged/edited body is native; translate to the recipient's
-  // target language at send and persist both sides.
-  const dual = await prepareOutboundDualBody(ctx, {
-    reviewItemId: lead.reviewItemId,
-    productProfileId: lead.productProfileId,
-    nativeBody: body,
-  });
+  // Flow A: the staged/edited body is native. Prefer the operator-reviewed
+  // translation when provided; otherwise auto-translate at send. Either way
+  // the native body is kept as the thread reference.
+  const useProvided = Boolean(
+    override?.targetLanguage && override?.translatedBody && override.translatedBody.trim(),
+  );
+  let sendText: string;
+  let sendSubject: string;
+  let bodyTextNative: string | undefined;
+  let nativeLanguage: string | undefined;
+  let targetLanguage: string | undefined;
+  if (useProvided) {
+    sendText = override!.translatedBody!;
+    sendSubject = override!.translatedSubject?.trim() || subject;
+    bodyTextNative = body;
+    nativeLanguage = await getWorkspaceNativeLanguage(ctx);
+    targetLanguage = override!.targetLanguage!;
+  } else {
+    const dual = await prepareOutboundDualBody(ctx, {
+      reviewItemId: lead.reviewItemId,
+      productProfileId: lead.productProfileId,
+      nativeBody: body,
+      nativeSubject: subject,
+    });
+    sendText = dual.sendText;
+    sendSubject = dual.sendSubject ?? subject;
+    bodyTextNative = dual.bodyTextNative;
+    nativeLanguage = dual.nativeLanguage;
+    targetLanguage = dual.targetLanguage;
+  }
   const sent = await sendMessage(ctx, {
     mailboxId: thread.mailboxId,
     to: [
@@ -672,11 +709,11 @@ export async function approveFollowUp(
         name: lead.contactName ?? undefined,
       },
     ],
-    subject,
-    text: dual.sendText,
-    bodyTextNative: dual.bodyTextNative,
-    nativeLanguage: dual.nativeLanguage,
-    targetLanguage: dual.targetLanguage,
+    subject: sendSubject,
+    text: sendText,
+    bodyTextNative,
+    nativeLanguage,
+    targetLanguage,
     inReplyTo: lastMessage?.messageId ?? undefined,
     references: lastMessage?.references ?? [],
     providerOverride: deps.mailProviderOverride,

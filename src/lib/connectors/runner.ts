@@ -190,10 +190,18 @@ export async function runConnectorRun(
         const { runOnce } = await import('@/lib/services/autopilot');
         await runOnce(ctx);
       } catch (err) {
-        console.error(
-          '[runner] autopilot.runOnce after-crawl hook failed:',
-          err instanceof Error ? err.message : err,
-        );
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[runner] autopilot.runOnce after-crawl hook failed:', message);
+        // Persist the failure to the run's log so the operator can see WHY
+        // harvested records didn't flow to approve/draft/enqueue — a
+        // console-only error made this hook fail silently in production.
+        try {
+          await insertLog(runId, 'warn', `post-crawl autopilot failed: ${message}`, {
+            hook: 'autopilot.runOnce',
+          });
+        } catch {
+          // best-effort — nothing left to log to.
+        }
       }
     })();
   }

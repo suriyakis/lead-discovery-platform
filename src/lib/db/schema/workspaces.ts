@@ -118,11 +118,12 @@ export const workspaces = pgTable('workspaces', {
   followUpMaxSteps: integer('follow_up_max_steps').notNull().default(3),
   /** Phase 59: when true, follow-ups are composed by AI but NOT sent
    *  automatically; the operator approves each one from the Follow-ups
-   *  tab before it goes out. Defaults to false so existing setups keep
-   *  the autopilot behaviour. */
+   *  tab before it goes out. Defaults to TRUE — auto-sending AI text to
+   *  customers is the opt-out, never the silent default. Workspaces that
+   *  want full autopilot flip this off deliberately in Settings. */
   followUpRequireApproval: boolean('follow_up_require_approval')
     .notNull()
-    .default(false),
+    .default(true),
   /** Phase 59: per-step configuration. Array of
    *  { daysAfterPrev: number, customInstructions: string } in order.
    *  Length = total steps; the position is the step number (1-indexed

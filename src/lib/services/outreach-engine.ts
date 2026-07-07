@@ -26,7 +26,36 @@ export interface DraftableRecord {
 export interface DraftContext {
   channel: string;
   language: string;
+  /** Who we are talking to. When set, in-thread prompts personalize the
+   *  reply (greet by name, reference their company) instead of writing to
+   *  an anonymous recipient. */
+  lead?: {
+    contactName?: string | null;
+    contactEmail?: string | null;
+  } | null;
 }
+
+/** Shared prompt block: who the recipient is. Empty when unknown. */
+function leadIdentityLines(ctx: DraftContext): string {
+  const name = ctx.lead?.contactName?.trim();
+  const email = ctx.lead?.contactEmail?.trim();
+  if (!name && !email) return '';
+  const company = email?.split('@')[1] ?? null;
+  return [
+    `Recipient:`,
+    name ? `- Name: ${name} (greet them by name, naturally for the language)` : '',
+    company ? `- Company domain: ${company}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Shared hard rule: never improvise facts we don't have. */
+const ESCALATION_RULE =
+  `- If the recipient asks something you cannot answer from the context given here ` +
+  `(pricing, certifications, legal/contract terms, technical specs not provided), do NOT ` +
+  `invent an answer — write that you'll check with the team and come back with the detail. ` +
+  `Answer what you can, flag what you can't.`;
 
 export interface DraftEvidence {
   promptSystem?: string;
@@ -275,19 +304,57 @@ export interface ThreadMessage {
   fromAddress?: string | null;
 }
 
+/** Prompt budget for the rendered conversation. Roughly 3k tokens — small
+ *  enough for every provider tier the engine runs on, large enough that a
+ *  normal B2B thread (10–20 short emails) fits without truncation. */
+const THREAD_HISTORY_CHAR_BUDGET = 12_000;
+/** When over budget, middle messages are digested down to this length. */
+const MIDDLE_DIGEST_CHARS = 240;
+/** How many of the newest messages always render in full. */
+const RECENT_FULL_COUNT = 6;
+
+function renderMessage(m: ThreadMessage, maxChars?: number): string {
+  const sender =
+    m.direction === 'outbound'
+      ? `[us]`
+      : `[${m.fromName ?? m.fromAddress ?? 'them'}]`;
+  let body = m.body.trim();
+  if (maxChars !== undefined && body.length > maxChars) {
+    body = `${body.slice(0, maxChars - 1)}… [truncated]`;
+  }
+  return `${sender}\n${body}`;
+}
+
+/**
+ * Render the FULL conversation for the model, oldest first. The model must
+ * never lose the start of the conversation — that's where introductions,
+ * commitments and already-answered questions live; forgetting them makes
+ * the AI repeat itself or contradict prior messages.
+ *
+ * Within budget, every message renders in full. Over budget, the shape is:
+ * first message in full (anchors who we are and what we asked), middle
+ * messages digested to their first ~240 chars (enough to recall what was
+ * said), and the newest 6 in full (what we're actually replying to).
+ */
 function renderThreadHistory(thread: ReadonlyArray<ThreadMessage>): string {
-  // Newest 6 messages, oldest first. Each block prefixed with direction
-  // + sender so the model knows who said what.
-  const last = thread.slice(-6);
-  return last
-    .map((m) => {
-      const sender =
-        m.direction === 'outbound'
-          ? `[us]`
-          : `[${m.fromName ?? m.fromAddress ?? 'them'}]`;
-      return `${sender}\n${m.body.trim()}`;
-    })
-    .join('\n\n---\n\n');
+  const full = thread.map((m) => renderMessage(m)).join('\n\n---\n\n');
+  if (full.length <= THREAD_HISTORY_CHAR_BUDGET || thread.length <= RECENT_FULL_COUNT + 1) {
+    return full;
+  }
+
+  const first = thread[0]!;
+  const recent = thread.slice(-RECENT_FULL_COUNT);
+  const middle = thread.slice(1, thread.length - RECENT_FULL_COUNT);
+
+  const parts: string[] = [renderMessage(first)];
+  if (middle.length > 0) {
+    parts.push(
+      `[… ${middle.length} earlier message${middle.length === 1 ? '' : 's'}, digested …]`,
+    );
+    for (const m of middle) parts.push(renderMessage(m, MIDDLE_DIGEST_CHARS));
+  }
+  for (const m of recent) parts.push(renderMessage(m));
+  return parts.join('\n\n---\n\n');
 }
 
 /**
@@ -547,6 +614,8 @@ function buildFollowUpPrompt(
     .join('\n');
 
   const user = [
+    leadIdentityLines(ctx),
+    '',
     `Conversation so far (oldest → newest, most recent at bottom):`,
     renderThreadHistory(thread),
     '',
@@ -627,12 +696,15 @@ function buildEngagementPrompt(
 
   const system = [
     `You are a B2B outreach assistant writing an in-thread reply in ${langName} (${effectiveLang}).`,
+    `You represent the product "${product.name}" — but this stage is NOT for pitching it.`,
     `Goal: respond naturally to the most recent inbound message. Move the conversation toward identifying whether this person (or someone they can name) is the right contact for the product category.`,
     `Hard rules:`,
     `- DO NOT pitch the product. Do not list features or claim benefits.`,
     `- ≤80 words. Match the recipient's tone (formal/casual).`,
     `- If the recipient asked a specific question, answer it directly first, then optionally ONE follow-up.`,
     `- If non-committal, ask ONE specific qualifying question (not "are you interested?" — ask about a real signal: project type, timeline, current vendor).`,
+    ESCALATION_RULE,
+    `- Stay consistent with everything [us] already said in the conversation — never re-introduce yourself, never re-ask a question the recipient already answered, never contradict a prior claim.`,
     `- Sign off with "Best regards," (no name).`,
     angleLine,
     forbiddenLines,
@@ -644,6 +716,8 @@ function buildEngagementPrompt(
   const knowledgeBlock = productKnowledge ? `${productKnowledge}\n\n` : '';
 
   const user = [
+    leadIdentityLines(ctx),
+    '',
     `Conversation so far (oldest → newest):`,
     renderThreadHistory(thread),
     '',
@@ -692,6 +766,8 @@ function buildPitchPrompt(
     `- Lead with the differentiator most relevant to the recipient's project context (extract from the conversation).`,
     `- One concrete next step at the end (call, datasheet, sample).`,
     `- No superlatives, no "industry-leading", no marketing language.`,
+    ESCALATION_RULE,
+    `- Stay consistent with everything [us] already said in the conversation — never contradict a prior claim or repeat what the recipient already knows.`,
     angleLine,
     product.negativeOutreachInstructions
       ? `Avoid: ${product.negativeOutreachInstructions.trim()}`
@@ -708,6 +784,8 @@ function buildPitchPrompt(
   const knowledgeBlock = productKnowledge ? `${productKnowledge}\n` : '';
 
   const user = [
+    leadIdentityLines(ctx),
+    '',
     `Conversation so far (oldest → newest):`,
     renderThreadHistory(thread),
     '',

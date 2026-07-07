@@ -103,7 +103,7 @@ export async function suggestReply(
     }),
   ]);
 
-  const prompt = buildPrompt(thread[0].subject, lastInbound, chunks, lessons);
+  const prompt = buildPrompt(thread[0].subject, messages, lastInbound, chunks, lessons);
   const ai = input.ai ?? (await getAIProviderForCtx(ctx));
   const result = await ai.generateText(
     { system: prompt.system, prompt: prompt.user },
@@ -138,16 +138,41 @@ interface PromptParts {
   mockSeed: string;
 }
 
+/** How many recent messages the assistant sees, and per-message cap. The
+ *  reply must stay consistent with the conversation, not just the last
+ *  inbound — prior answers and commitments live upstream of it. */
+const HISTORY_MESSAGES = 8;
+const HISTORY_MESSAGE_CHARS = 600;
+
+function renderHistory(messages: ReadonlyArray<MailMessage>): string {
+  const recent = messages.slice(-HISTORY_MESSAGES);
+  const omitted = messages.length - recent.length;
+  const blocks = recent.map((m) => {
+    const who = m.direction === 'outbound' ? '[us]' : `[${m.fromName ?? m.fromAddress ?? 'them'}]`;
+    let body = (m.bodyText ?? m.subject ?? '').trim();
+    if (body.length > HISTORY_MESSAGE_CHARS) {
+      body = `${body.slice(0, HISTORY_MESSAGE_CHARS - 1)}… [truncated]`;
+    }
+    return `${who}\n${body}`;
+  });
+  const header = omitted > 0 ? [`[… ${omitted} earlier message${omitted === 1 ? '' : 's'} omitted …]`] : [];
+  return [...header, ...blocks].join('\n\n---\n\n');
+}
+
 function buildPrompt(
   subject: string,
+  messages: ReadonlyArray<MailMessage>,
   lastMessage: MailMessage,
   chunks: Awaited<ReturnType<typeof retrieve>>,
   lessons: Awaited<ReturnType<typeof retrieveLessons>>,
 ): PromptParts {
   const system = [
     'You are a technical reply assistant. Draft a concise, accurate reply to',
-    'an inbound email using the supplied context chunks. If a fact is not in',
-    'the context, say so honestly rather than inventing.',
+    'the most recent inbound email, using the supplied context chunks and the',
+    'conversation so far. If a fact is not in the context, say so honestly —',
+    'offer to check with the team rather than inventing it. Stay consistent',
+    'with everything [us] already said in the conversation; never contradict',
+    'a prior message or re-answer what was already settled.',
     'Output the message body only — no subject, no greeting metadata.',
   ].join(' ');
 
@@ -169,7 +194,10 @@ function buildPrompt(
   const user = [
     `Subject: ${subject}`,
     '',
-    `Last inbound from ${lastMessage.fromAddress}:`,
+    'Conversation so far (oldest → newest):',
+    renderHistory(messages),
+    '',
+    `Reply to this last inbound from ${lastMessage.fromAddress}:`,
     lastMessage.bodyText ?? '(no plain-text body)',
     '',
     'Workspace guidelines (priority order):',

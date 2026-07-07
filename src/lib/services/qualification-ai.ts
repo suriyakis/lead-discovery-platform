@@ -9,6 +9,7 @@ import type { ProductProfile } from '@/lib/db/schema/products';
 import type { LearningLesson } from '@/lib/db/schema/learning';
 import { getQualificationProviderForCtx } from '@/lib/ai';
 import type { WorkspaceContext } from './context';
+import { countryName } from './geo';
 import type { ClassifiableRecord, ClassificationVerdict } from './qualification-engine';
 
 const VerdictSchema = z.object({
@@ -18,6 +19,10 @@ const VerdictSchema = z.object({
   matchedKeywords: z.array(z.string()).max(10),
   disqualifyingSignals: z.array(z.string()).max(10).default([]),
   reason: z.string().min(1).max(800),
+  /** Company's country as ISO 3166-1 alpha-2, or null when the record gives
+   *  no reliable location evidence. Enforced deterministically by the geo
+   *  gate in qualification.ts — never trusted as prose. */
+  detectedCountry: z.string().max(56).nullable().default(null),
 });
 
 function buildSystemPrompt(): string {
@@ -41,6 +46,13 @@ function buildSystemPrompt(): string {
     '  "disqualifyingSignals": string[] (≤10), // concrete signals against',
     '                                          //  the match',
     '  "reason": string (≤800 chars)           // one paragraph rationale',
+    '  "detectedCountry": string | null        // the company\'s country as an',
+    '                                          //  ISO 3166-1 alpha-2 code (e.g.',
+    '                                          //  "PL", "DE", "GB"), judged from',
+    '                                          //  address / TLD / phone / language',
+    '                                          //  evidence in the record. Use null',
+    '                                          //  when the location is genuinely',
+    '                                          //  unclear — NEVER guess.',
     '}',
     '',
     'Scoring guide:',
@@ -113,19 +125,21 @@ function buildUserPrompt(
   // above. When the recipe sets no country, this section is omitted and
   // qualification behaves exactly as before.
   if (targetCountry) {
+    const targetLabel = `${countryName(targetCountry)} (${targetCountry})`;
     sections.push('');
     sections.push('### TARGET GEOGRAPHY (hard requirement)');
     sections.push(
-      `The recipe that discovered this record targets companies in: ${targetCountry}.`,
+      `The recipe that discovered this record targets companies in: ${targetLabel}.`,
     );
     sections.push(
       `Set isRelevant=false for any company that shows evidence of being based ` +
-        `OUTSIDE ${targetCountry} (e.g. a foreign address, phone code, or country ` +
+        `OUTSIDE ${targetLabel} (e.g. a foreign address, phone code, or country ` +
         `mention), even if it otherwise fits the product — a strong product fit ` +
         `does NOT override a geography mismatch. If the company's location is ` +
-        `genuinely unclear, do not assume it is in ${targetCountry}: lower the ` +
+        `genuinely unclear, do not assume it is in ${targetLabel}: lower the ` +
         `confidence and treat the missing geography as a negative signal, but do ` +
-        `not hard-reject on absence of evidence alone.`,
+        `not hard-reject on absence of evidence alone. Always report your ` +
+        `location judgement in detectedCountry (ISO alpha-2, or null when unclear).`,
     );
   }
 
@@ -168,6 +182,12 @@ export interface AIClassifyOptions {
   targetCountry?: string | null;
 }
 
+/** AI verdict = rules-engine verdict shape + the model's structured
+ *  location judgement, which the geo gate consumes deterministically. */
+export interface AIClassificationVerdict extends ClassificationVerdict {
+  detectedCountry: string | null;
+}
+
 /** Wandizz-style AI qualification. Returns the same verdict shape as the
  *  rules engine, with method='ai'. Throws on AI provider failure — caller
  *  is responsible for the rules-engine fallback. */
@@ -177,7 +197,7 @@ export async function classifyRecordWithAI(
   product: ProductProfile,
   lessons: ReadonlyArray<LearningLesson>,
   options: AIClassifyOptions = {},
-): Promise<ClassificationVerdict> {
+): Promise<AIClassificationVerdict> {
   const provider =
     options.providerOverride ?? (await getQualificationProviderForCtx(ctx));
   const verdict = await provider.generateJson(
@@ -211,5 +231,6 @@ export async function classifyRecordWithAI(
       matchedLessonIds: [] as bigint[],
     },
     method: 'ai',
+    detectedCountry: verdict.detectedCountry ?? null,
   };
 }

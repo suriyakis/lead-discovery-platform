@@ -8,6 +8,7 @@
 // without touching the workspace default.
 
 import { useState, useTransition } from 'react';
+import { Languages, Sparkles } from 'lucide-react';
 
 interface SignatureOption {
   id: string;
@@ -24,6 +25,10 @@ interface CommunicationReplyProps {
   references: string[];
   signatures: ReadonlyArray<SignatureOption>;
   defaultSignatureId: string | null;
+  /** Language the operator writes in. */
+  nativeLanguage: string;
+  /** Recipient's resolved language, or null when it matches native / no lead. */
+  targetLanguage: string | null;
 }
 
 export function CommunicationReply({
@@ -35,6 +40,8 @@ export function CommunicationReply({
   references,
   signatures,
   defaultSignatureId,
+  nativeLanguage,
+  targetLanguage,
 }: CommunicationReplyProps) {
   const [to, setTo] = useState(defaultTo);
   const [subject, setSubject] = useState(defaultSubject);
@@ -42,9 +49,85 @@ export function CommunicationReply({
   const [signaturePick, setSignaturePick] = useState<'__default__' | '__none__' | string>(
     '__default__',
   );
+  const [tSubject, setTSubject] = useState('');
+  const [tBody, setTBody] = useState('');
+  const [shown, setShown] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionNote, setSuggestionNote] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+
+  const canTranslate = Boolean(targetLanguage) && targetLanguage !== nativeLanguage;
+  const isRtl = targetLanguage === 'he' || targetLanguage === 'ar';
+
+  async function showTranslation() {
+    if (!targetLanguage) return;
+    setTranslating(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject, body, targetLanguage }),
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        subject?: string;
+        body?: string;
+        detail?: string;
+        error?: string;
+      };
+      if (!res.ok || !j.ok) {
+        setError(j.detail || j.error || `translate failed (${res.status})`);
+        return;
+      }
+      setTSubject(j.subject ?? subject);
+      setTBody(j.body ?? body);
+      setShown(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTranslating(false);
+    }
+  }
+
+  async function suggest() {
+    setSuggesting(true);
+    setError(null);
+    setSuggestionNote(null);
+    try {
+      const res = await fetch('/api/communication/suggest-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadId }),
+      });
+      const j = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        text?: string;
+        model?: string;
+        sources?: { chunkCount?: number; lessonCount?: number };
+        detail?: string;
+        error?: string;
+      };
+      if (!res.ok || !j.ok || !j.text) {
+        setError(j.detail || j.error || `suggestion failed (${res.status})`);
+        return;
+      }
+      setBody(j.text);
+      if (shown) setShown(false);
+      const chunkCount = j.sources?.chunkCount ?? 0;
+      setSuggestionNote(
+        `AI draft (${j.model ?? 'model'}) grounded in ${chunkCount} knowledge ` +
+          `chunk${chunkCount === 1 ? '' : 's'} — review and edit before sending.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSuggesting(false);
+    }
+  }
 
   function send() {
     setError(null);
@@ -63,6 +146,15 @@ export function CommunicationReply({
             inReplyTo,
             references,
             signatureId: signaturePick,
+            // When a translation is shown, send it (with the native body kept
+            // as the thread reference); otherwise send the body as written.
+            ...(shown && canTranslate
+              ? {
+                  targetLanguage,
+                  translatedSubject: tSubject,
+                  translatedBody: tBody,
+                }
+              : {}),
           }),
         });
         const j = (await res.json().catch(() => ({}))) as {
@@ -163,11 +255,32 @@ export function CommunicationReply({
         <input
           type="text"
           value={subject}
-          onChange={(e) => setSubject(e.target.value)}
+          onChange={(e) => {
+            setSubject(e.target.value);
+            if (shown) setShown(false);
+          }}
           required
           style={{ width: '100%' }}
         />
       </label>
+
+      <div className="action-row" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={suggest}
+          disabled={suggesting || isPending}
+          title="Draft a reply grounded in the workspace knowledge base — you review and edit before sending"
+        >
+          <Sparkles className="primary-btn-icon" aria-hidden="true" />{' '}
+          {suggesting ? 'Drafting…' : body ? 'Re-suggest reply (replaces body)' : 'Suggest reply (AI)'}
+        </button>
+        {suggestionNote ? (
+          <span className="muted" style={{ fontSize: '0.72rem', alignSelf: 'center' }}>
+            {suggestionNote}
+          </span>
+        ) : null}
+      </div>
 
       <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
         <span style={{ fontSize: '0.72rem' }} className="muted">
@@ -176,7 +289,10 @@ export function CommunicationReply({
         <textarea
           rows={14}
           value={body}
-          onChange={(e) => setBody(e.target.value)}
+          onChange={(e) => {
+            setBody(e.target.value);
+            if (shown) setShown(false);
+          }}
           required
           placeholder="Write your reply here…"
           style={{
@@ -191,6 +307,70 @@ export function CommunicationReply({
         />
       </label>
 
+      {canTranslate ? (
+        <div className="action-row" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={showTranslation}
+            disabled={translating || !body || !subject}
+          >
+            <Languages className="primary-btn-icon" aria-hidden="true" />{' '}
+            {translating
+              ? 'Translating…'
+              : shown
+                ? 'Re-translate'
+                : `Show translation (${targetLanguage})`}
+          </button>
+          {!shown ? (
+            <span className="muted" style={{ fontSize: '0.72rem', alignSelf: 'center' }}>
+              Recipient&rsquo;s language is {targetLanguage} — translate to send in their language.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {canTranslate && shown ? (
+        <section>
+          <p className="muted" style={{ fontSize: '0.72rem' }}>
+            This is the exact email the recipient receives ({targetLanguage}).
+            Your reply above is kept as the thread reference — edit if needed.
+          </p>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+            <span style={{ fontSize: '0.72rem' }} className="muted">
+              Subject ({targetLanguage})
+            </span>
+            <input
+              type="text"
+              value={tSubject}
+              onChange={(e) => setTSubject(e.target.value)}
+              dir={isRtl ? 'rtl' : 'ltr'}
+              style={{ width: '100%' }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+            <span style={{ fontSize: '0.72rem' }} className="muted">
+              Message ({targetLanguage})
+            </span>
+            <textarea
+              rows={14}
+              value={tBody}
+              onChange={(e) => setTBody(e.target.value)}
+              dir={isRtl ? 'rtl' : 'ltr'}
+              style={{
+                width: '100%',
+                minHeight: '22ch',
+                resize: 'vertical',
+                fontFamily: 'inherit',
+                fontSize: '0.92rem',
+                lineHeight: 1.55,
+                padding: '0.75rem',
+              }}
+            />
+          </label>
+        </section>
+      ) : null}
+
       <div
         className="action-row"
         style={{
@@ -203,10 +383,20 @@ export function CommunicationReply({
         <button
           type="button"
           onClick={send}
-          disabled={isPending || !to || !subject || !body}
+          disabled={
+            isPending ||
+            !to ||
+            !subject ||
+            !body ||
+            (canTranslate && shown && !tBody.trim())
+          }
           className="primary-btn"
         >
-          {isPending ? 'Sending…' : 'Send reply'}
+          {isPending
+            ? 'Sending…'
+            : canTranslate && shown
+              ? `Send translated (${targetLanguage})`
+              : 'Send reply'}
         </button>
         {info ? (
           <span className="form-info" style={{ margin: 0, fontSize: '0.82rem' }}>
