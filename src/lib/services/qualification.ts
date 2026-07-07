@@ -125,11 +125,9 @@ export async function classifySourceRecord(
   // verdict — AI and rules alike (grounded search can only bias sourcing).
   // Same value for every product, so resolve once before the per-product loop.
   const rawTargetCountry = await resolveRecipeCountry(sourceRecord);
+  // Normalized form for the AI prompt; the gate itself takes the raw value
+  // and handles unrecognisable targets (forces 'unverified', never no-gate).
   const targetCountry = normalizeCountry(rawTargetCountry);
-  // A target that exists but can't be normalized (legacy typo, pre-validation
-  // data) must NOT silently disable the gate — treat every record under it as
-  // geographically unverified so nothing ships without a human look.
-  const invalidTarget = rawTargetCountry !== null && targetCountry === null;
 
   const inserted: Qualification[] = [];
 
@@ -173,25 +171,13 @@ export async function classifySourceRecord(
 
     // Locality gate — deterministic, applied to EVERY verdict regardless of
     // method, so an AI outage can never bypass the geography requirement.
-    let geo: { status: GeoStatus; inferredCountry: string | null; targetCountry: string | null };
-    if (invalidTarget) {
-      verdict = {
-        ...verdict,
-        disqualifyingSignals: [
-          ...new Set([...verdict.disqualifyingSignals, `geo:invalid_target(${rawTargetCountry})`]),
-        ].slice(0, 10),
-        confidence: Math.min(verdict.confidence, 60),
-      };
-      geo = { status: 'unverified', inferredCountry: null, targetCountry: null };
-    } else {
-      const gated = applyGeoGate(verdict, classifiable, targetCountry, aiDetectedCountry);
-      verdict = gated.verdict;
-      geo = {
-        status: gated.geoStatus,
-        inferredCountry: gated.inferredCountry,
-        targetCountry: gated.targetCountry,
-      };
-    }
+    const gated = applyGeoGate(verdict, classifiable, rawTargetCountry, aiDetectedCountry);
+    verdict = gated.verdict;
+    const geo: { status: GeoStatus; inferredCountry: string | null; targetCountry: string | null } = {
+      status: gated.geoStatus,
+      inferredCountry: gated.inferredCountry,
+      targetCountry: gated.targetCountry,
+    };
 
     const row = await upsertQualification(ctx.workspaceId, sourceRecord.id, product, verdict, geo);
     inserted.push(row);

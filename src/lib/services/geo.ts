@@ -102,6 +102,15 @@ const COUNTRY_ALIASES: Record<string, string> = {
   ireland: 'IE',
 };
 
+/** Shared, lazily-built Intl.DisplayNames — constructing one per call is
+ *  measurably expensive and this module runs once per (record, product). */
+let displayNamesEn: Intl.DisplayNames | null = null;
+
+function getDisplayNames(): Intl.DisplayNames {
+  displayNamesEn ??= new Intl.DisplayNames(['en'], { type: 'region' });
+  return displayNamesEn;
+}
+
 /** English-name → code map, built lazily from Intl.DisplayNames so we don't
  *  hand-maintain 249 names. */
 let englishNameMap: Map<string, string> | null = null;
@@ -109,7 +118,7 @@ let englishNameMap: Map<string, string> | null = null;
 function getEnglishNameMap(): Map<string, string> {
   if (englishNameMap) return englishNameMap;
   const map = new Map<string, string>();
-  const display = new Intl.DisplayNames(['en'], { type: 'region' });
+  const display = getDisplayNames();
   for (const code of ISO_ALPHA2) {
     const name = display.of(code);
     if (name && name !== code) map.set(name.toLowerCase(), code);
@@ -146,7 +155,7 @@ export function normalizeCountry(input: string | null | undefined): string | nul
 /** Human-readable English name for an alpha-2 code ("PL" → "Poland"). */
 export function countryName(code: string): string {
   try {
-    return new Intl.DisplayNames(['en'], { type: 'region' }).of(code.toUpperCase()) ?? code;
+    return getDisplayNames().of(code.toUpperCase()) ?? code;
   } catch {
     return code;
   }
@@ -179,6 +188,26 @@ export interface InferredCountry {
   country: string | null;
   /** Which signals produced (or contradicted) the inference — audit trail. */
   signals: string[];
+}
+
+/** Pre-compiled country-name matchers (aliases + English names), built once —
+ *  compiling ~250 RegExps per record classified was pure waste. */
+let mentionMatchers: Array<{ re: RegExp; code: string }> | null = null;
+
+function getMentionMatchers(): Array<{ re: RegExp; code: string }> {
+  if (mentionMatchers) return mentionMatchers;
+  const out: Array<{ re: RegExp; code: string }> = [];
+  const add = (name: string, code: string) => {
+    if (name.length < 4) return; // too short to word-match safely
+    out.push({
+      re: new RegExp(`(?<![\\p{L}])${escapeRe(name)}(?![\\p{L}])`, 'u'),
+      code,
+    });
+  };
+  for (const [name, code] of Object.entries(COUNTRY_ALIASES)) add(name, code);
+  for (const [name, code] of getEnglishNameMap()) add(name, code);
+  mentionMatchers = out;
+  return out;
 }
 
 /**
@@ -230,13 +259,9 @@ export function inferCountryFromRecord(record: ClassifiableRecord): InferredCoun
   //    Germany") give no single location.
   const lowerText = text.toLowerCase();
   const mentioned = new Set<string>();
-  const tryName = (name: string, code: string) => {
-    if (name.length < 4) return; // too short to word-match safely
-    const re = new RegExp(`(?<![\\p{L}])${escapeRe(name)}(?![\\p{L}])`, 'u');
+  for (const { re, code } of getMentionMatchers()) {
     if (re.test(lowerText)) mentioned.add(code);
-  };
-  for (const [name, code] of Object.entries(COUNTRY_ALIASES)) tryName(name, code);
-  for (const [name, code] of getEnglishNameMap()) tryName(name, code);
+  }
   if (mentioned.size === 1) {
     const code = [...mentioned][0]!;
     signals.push(`mention:${code}`);
@@ -285,6 +310,11 @@ export interface GeoGateResult {
  *                            review queue surfaces it and the send-time
  *                            guard refuses dispatch until a human approves.
  *
+ * A target that is SET but unrecognisable (legacy typo predating recipe
+ * validation) must never silently disable the gate — every record under it
+ * is treated as 'unverified' with a geo:invalid_target signal, so nothing
+ * ships without a human look and the config error surfaces in review.
+ *
  * `aiDetectedCountry` (from the AI qualifier's structured output) wins
  * over heuristic inference — the model reads the whole record, the
  * heuristics only sample it. Both are normalized before comparison so
@@ -298,6 +328,21 @@ export function applyGeoGate(
 ): GeoGateResult {
   const targetCountry = normalizeCountry(rawTargetCountry);
   if (!targetCountry) {
+    if (rawTargetCountry !== null && rawTargetCountry.trim() !== '') {
+      return {
+        verdict: {
+          ...verdict,
+          disqualifyingSignals: dedupe([
+            ...verdict.disqualifyingSignals,
+            `geo:invalid_target(${rawTargetCountry.trim()})`,
+          ]),
+          confidence: Math.min(verdict.confidence, 60),
+        },
+        geoStatus: 'unverified',
+        inferredCountry: null,
+        targetCountry: null,
+      };
+    }
     return { verdict, geoStatus: 'no_gate', inferredCountry: null, targetCountry: null };
   }
 

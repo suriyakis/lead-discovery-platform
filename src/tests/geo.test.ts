@@ -198,6 +198,14 @@ describe('applyGeoGate', () => {
     expect(r.verdict.isRelevant).toBe(false);
   });
 
+  it('invalid target country → unverified (never silently no-gate)', () => {
+    const r = applyGeoGate(verdict({ confidence: 90 }), plRecord, 'Atlantis');
+    expect(r.geoStatus).toBe('unverified');
+    expect(r.targetCountry).toBeNull();
+    expect(r.verdict.confidence).toBeLessThanOrEqual(60);
+    expect(r.verdict.disqualifyingSignals.join(',')).toContain('geo:invalid_target(Atlantis)');
+  });
+
   it('unknown location → unverified, kept but flagged with capped confidence', () => {
     const unknownRecord = { ...plRecord, domain: 'acme.com', url: 'https://acme.com', title: 'Acme', snippet: 'contractor' };
     const r = applyGeoGate(verdict({ confidence: 90 }), unknownRecord, 'PL');
