@@ -481,6 +481,78 @@ describe('translateText', () => {
       }),
     ).rejects.toThrow(/exceeds/);
   });
+
+  function providerReturning(json: Record<string, unknown>): IAIProvider {
+    return {
+      id: 'stub',
+      model: 'stub-model',
+      async generateText() {
+        throw new Error('not used');
+      },
+      async generateJson() {
+        return json as never;
+      },
+      estimateCost() {
+        return 0;
+      },
+      async healthCheck() {
+        return { ok: true };
+      },
+    };
+  }
+
+  const germanSample =
+    'Vetrofluid ist ein innovatives Betonabdichtungssystem, das dauerhaften Schutz gegen Wasser bietet.';
+
+  it('blocks an echoed "translation" (input returned unchanged)', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      providerReturning({
+        translatedText: germanSample,
+        detectedLanguage: 'de',
+        isSameLanguage: false,
+      }),
+    );
+    await expect(
+      translateText(ctx(s.workspaceA, s.ownerA), {
+        text: germanSample,
+        targetLanguage: 'pl',
+      }),
+    ).rejects.toThrow(/unchanged/);
+  });
+
+  it('blocks an implausibly short translation', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      providerReturning({
+        translatedText: 'ok',
+        detectedLanguage: 'de',
+        isSameLanguage: false,
+      }),
+    );
+    await expect(
+      translateText(ctx(s.workspaceA, s.ownerA), {
+        text: germanSample,
+        targetLanguage: 'pl',
+      }),
+    ).rejects.toThrow(/implausible/);
+  });
+
+  it('same-language passthrough is still allowed', async () => {
+    const s = await setup();
+    _setAIProviderForTests(
+      providerReturning({
+        translatedText: 'Already target-language text, returned as-is.',
+        detectedLanguage: 'pl',
+        isSameLanguage: true,
+      }),
+    );
+    const r = await translateText(ctx(s.workspaceA, s.ownerA), {
+      text: 'Already target-language text, returned as-is.',
+      targetLanguage: 'pl',
+    });
+    expect(r.isSameLanguage).toBe(true);
+  });
 });
 
 // ─── translateInboundToNative ─────────────────────────────────────────

@@ -39,12 +39,29 @@ const invalid = (msg: string) =>
 const conflict = (msg: string) =>
   new ContactServiceError(msg, 'conflict');
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Syntactic plausibility, not RFC pedantry: label-aware local/domain
+ *  parts and an alphabetic TLD. Tighter than the old any-@-any-dot check
+ *  so scraped artifacts don't become contacts. */
+const EMAIL_RE =
+  /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,24}$/;
+/** Classic email-regex-on-HTML false positives: "name@2x.png" from srcset,
+ *  minified asset paths, etc. An address whose "TLD" is a file extension is
+ *  never a mailbox. */
+const ASSET_EXT_RE = /\.(png|jpe?g|gif|webp|svg|ico|css|js|mjs|map|woff2?)$/;
+const MAX_EMAIL_LEN = 254;
 const MAX_NAME_LEN = 200;
 const MAX_TAGS = 32;
 
 function normalizeEmail(input: string): string {
   return input.trim().toLowerCase();
+}
+
+/** True when the normalized address is worth storing as a contact. */
+export function isPlausibleEmail(email: string): boolean {
+  if (email.length > MAX_EMAIL_LEN) return false;
+  if (!EMAIL_RE.test(email)) return false;
+  if (ASSET_EXT_RE.test(email)) return false;
+  return true;
 }
 
 function deriveDomain(email: string): string | null {
@@ -94,7 +111,7 @@ export async function upsertContact(
 ): Promise<Contact> {
   if (!canWrite(ctx)) throw denied('contacts.upsert');
   const email = normalizeEmail(input.email);
-  if (!EMAIL_RE.test(email)) throw invalid('invalid email');
+  if (!isPlausibleEmail(email)) throw invalid('invalid email');
   const domain =
     (input.companyDomain ? input.companyDomain.trim().toLowerCase() : null) ??
     deriveDomain(email);

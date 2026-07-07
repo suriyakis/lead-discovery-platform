@@ -319,6 +319,32 @@ export async function translateText(
   const detectedLanguage = parsed.detectedLanguage ?? hint ?? 'unknown';
   const isSameLanguage = parsed.isSameLanguage ?? detectedLanguage === targetLang;
 
+  // Output sanity gate: a garbage "translation" must block the send rather
+  // than reach a customer. The mock provider is exempt (it echoes by design).
+  if (provider.id !== 'mock' && !isSameLanguage) {
+    const out = parsed.translatedText.trim();
+    if (!out) {
+      throw new TranslationError('translation returned empty text', 'implausible_output');
+    }
+    if (out === text) {
+      throw new TranslationError(
+        'translation returned the input unchanged while claiming a different source language',
+        'implausible_output',
+      );
+    }
+    // Length plausibility — real translations stay in the same order of
+    // magnitude. Only meaningful for non-trivial inputs.
+    if (text.length >= 80) {
+      const ratio = out.length / text.length;
+      if (ratio < 0.25 || ratio > 4) {
+        throw new TranslationError(
+          `translation length implausible (${text.length} chars in, ${out.length} out)`,
+          'implausible_output',
+        );
+      }
+    }
+  }
+
   if (input.recordAudit !== false) {
     await recordAuditEvent(ctx, {
       kind: 'translation.text',

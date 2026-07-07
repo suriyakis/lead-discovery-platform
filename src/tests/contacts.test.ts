@@ -20,6 +20,7 @@ import {
   countContacts,
   getContactByEmail,
   getContactDetail,
+  isPlausibleEmail,
   listAllContactTags,
   listContacts,
   mergeContacts,
@@ -587,5 +588,27 @@ describe('bulk contact actions (P61-26)', () => {
       inB.id,
     ]);
     expect(r.affected).toBe(0);
+  });
+});
+
+describe('isPlausibleEmail', () => {
+  it('accepts normal business addresses', () => {
+    expect(isPlausibleEmail('anna.kowalska@acme.pl')).toBe(true);
+    expect(isPlausibleEmail('sales+tag@sub.domain.co.uk')).toBe(true);
+    expect(isPlausibleEmail("o'brien@irish-firm.ie".toLowerCase())).toBe(true);
+  });
+
+  it('rejects scraped HTML artifacts', () => {
+    expect(isPlausibleEmail('logo@2x.png')).toBe(false);
+    expect(isPlausibleEmail('icon@small.svg')).toBe(false);
+    expect(isPlausibleEmail('bundle@v3.min.js')).toBe(false);
+  });
+
+  it('rejects structurally broken addresses', () => {
+    expect(isPlausibleEmail('no-at-sign.example.com')).toBe(false);
+    expect(isPlausibleEmail('two@@ats.com')).toBe(false);
+    expect(isPlausibleEmail('name@nodot')).toBe(false);
+    expect(isPlausibleEmail('name@domain.123')).toBe(false);
+    expect(isPlausibleEmail(`${'a'.repeat(70)}@too-long-local.com`)).toBe(false);
   });
 });
