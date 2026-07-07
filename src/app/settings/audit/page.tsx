@@ -167,7 +167,7 @@ export default async function WorkspaceAuditPage({
                   {hasPayload ? (
                     <pre
                       className="draft-body"
-                      style={{ marginTop: '0.25rem', fontSize: '0.75rem' }}
+                      style={{ marginTop: '0.25rem', fontSize: '0.8rem' }}
                     >
                       {JSON.stringify(payload, null, 2)}
                     </pre>

@@ -464,7 +464,7 @@ export default async function OutreachSettingsPage({
             </div>
           ) : null}
         </div>
-        <p className="config-row-sub" style={{ fontSize: '0.72rem' }}>
+        <p className="config-row-sub" style={{ fontSize: '0.78rem' }}>
           <X className="lucide" aria-hidden="true" /> To remove a step, clear
           its &ldquo;days&rdquo; field before saving.
         </p>

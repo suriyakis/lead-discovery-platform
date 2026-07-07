@@ -271,7 +271,7 @@ function SidebarList({
                     marginLeft: 'auto',
                     padding: '0.05rem 0.4rem',
                     borderRadius: '0.6rem',
-                    fontSize: '0.75rem',
+                    fontSize: '0.8rem',
                     background: 'oklch(0.85 0.16 75)',
                     color: 'oklch(0.2 0 0)',
                     fontWeight: 600,
