@@ -6,6 +6,7 @@
 // prop needed. Public pages (signed-out landing, /pending) bypass the
 // shell and render BrandHeader on their own.
 
+import { AssistantPanel } from './AssistantPanel';
 import { BrandHeader } from './BrandHeader';
 import { CommandPalette } from './CommandPalette';
 import { fetchCommandPaletteEntities } from './command-palette-action';
@@ -145,10 +146,13 @@ export async function AppShell({
         <main className="app-main">{children}</main>
       </div>
       {session?.user?.id ? (
-        <CommandPalette
-          fetchEntities={fetchCommandPaletteEntities}
-          isSuperAdmin={showAdmin}
-        />
+        <>
+          <CommandPalette
+            fetchEntities={fetchCommandPaletteEntities}
+            isSuperAdmin={showAdmin}
+          />
+          <AssistantPanel />
+        </>
       ) : null}
     </div>
   );

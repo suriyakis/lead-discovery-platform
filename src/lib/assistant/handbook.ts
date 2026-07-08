@@ -1,0 +1,82 @@
+// The platform handbook — the AI guide's knowledge of how the app works.
+// Deterministic in-code text beats RAG here: it's small, versioned with
+// the features it describes, and needs no indexing. Update it when flows
+// change; the guide quotes it.
+
+export const PLATFORM_HANDBOOK = `
+# Lead Discovery Platform — how it works
+
+## The pipeline
+1. PRODUCT PROFILES (/products) define what you sell: descriptions, target
+   sectors, include/exclude keywords, qualification criteria, outreach
+   language and per-stage outreach angles. Everything downstream reads them.
+2. CONNECTORS + RECIPES (/connectors) run discovery. A recipe holds the
+   search queries (written in your language; auto-translated for foreign
+   markets), the TARGET COUNTRY and the search language. The Crawl engine
+   (/connectors/engine) schedules recipes on an interval with quiet hours.
+3. Discovered records are AI-QUALIFIED against every active product:
+   relevance score, confidence, reasons, and a geography verdict.
+   THE GEOGRAPHY GATE IS HARD: companies outside the recipe's target
+   country are rejected even with a perfect product fit; companies whose
+   location can't be verified are held for human review.
+4. REVIEW QUEUE (/review): humans approve/reject. Approving a
+   geo-unverified lead confirms it is inside the target country.
+   Comments teach the system — lessons are extracted automatically and
+   influence future qualification. @mentions (write @user@email) notify
+   teammates; items can be assigned.
+5. LEADS (/leads) and PIPELINE (/pipeline): approved records become
+   qualified leads and move through stages (discovered → relevant →
+   contacted → replied → qualified → handed over / synced to CRM).
+6. OUTREACH: drafts (/drafts) are AI-composed per stage — discovery
+   (find the right person, no pitching), engagement, pitch (only when
+   the recipient asks for detail), closing. EVERY draft needs human
+   approval before it can be queued for sending. The send queue
+   respects business windows, daily caps, domain cooldowns,
+   suppression lists, and re-checks geography at dispatch.
+7. COMMUNICATION (/communication): threads with full history. Replies
+   are auto-classified (interest, referral, decline, unsubscribe) and
+   can auto-draft the next stage. The "Suggest reply (AI)" button
+   drafts a knowledge-grounded reply for you to edit. Automatic
+   FOLLOW-UPS fire when a cold email gets no reply; by default each
+   follow-up needs approval (/communication/follow-ups).
+8. TRANSLATION: you write in your language; emails are translated to
+   the recipient's language, shown side-by-side for review BEFORE
+   sending. The edited translation is exactly what is sent.
+
+## Tokens & billing (/settings/billing)
+- Tokens are the prepaid currency for metered work: discovery search,
+  AI qualification, drafting, reply suggestions, translation.
+  1 token ≈ €0.01. New workspaces start with 500 free tokens.
+- When the wallet is empty, discovery, drafting and translation PAUSE
+  until a pack is bought (Starter €10 / Growth €49 / Scale €199).
+- Actions running on your own API keys (BYOK, set under
+  /settings/integrations) are token-free.
+- Subscriptions (Starter/Pro) are managed via Stripe from the same page.
+
+## Knowledge base (/documents, /knowledge)
+Upload product docs (text, PDF, DOCX) and index them — the reply
+assistant and pitch composer ground their answers in these. Re-index
+after replacing a file.
+
+## Settings that matter
+- /settings/integrations: AI provider (BYOK), Web Search backend
+  (Gemini grounding recommended), embeddings, research provider.
+- /settings/outreach: native language, default outreach language,
+  follow-up schedule + approval requirement, send caps.
+- Mailboxes (/mailbox): SMTP for sending, IMAP for replies. Without an
+  active mailbox nothing can be sent.
+- /settings/usage: cost breakdown. /notifications: the event feed.
+
+## Common problems
+- "No leads found": check the recipe has queries + the Web Search
+  backend is real (not mock), and the wallet has tokens.
+- "Leads from the wrong country": set the recipe's target country; the
+  gate then rejects mismatches and holds unverifiable ones for review.
+- "Draft won't send": drafts must be APPROVED first; the queue also
+  enforces business windows and daily caps, and blocks geo-unverified
+  leads whose review item wasn't approved.
+- "Emails in the wrong language": set the product's outreach language
+  or the per-lead language; translations are shown for review pre-send.
+- "Everything is paused": almost always an empty token wallet — top up
+  under /settings/billing.
+`.trim();
