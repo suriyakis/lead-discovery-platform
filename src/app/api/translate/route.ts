@@ -15,6 +15,7 @@ import {
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { translateText } from '@/lib/services/translation';
 import { TokenError, assertTokens } from '@/lib/services/token-ledger';
+import { rateLimitAllow } from '@/lib/rate-limit';
 
 const InputSchema = z.object({
   subject: z.string().max(998).optional().default(''),
@@ -52,6 +53,13 @@ export async function POST(req: Request): Promise<NextResponse> {
   const target = parsed.targetLanguage.toLowerCase().split('-')[0] ?? '';
   if (!target || target === native) {
     return NextResponse.json({ ok: true, subject: parsed.subject, body: parsed.body });
+  }
+
+  if (!rateLimitAllow(`translate:ws:${ctx.workspaceId}`, 30, 60_000)) {
+    return NextResponse.json(
+      { error: 'rate_limited', detail: 'Too many translations — try again in a minute.' },
+      { status: 429 },
+    );
   }
 
   try {

@@ -154,15 +154,17 @@ export async function debitTokens(
   // discovery/drafting. Best-effort — never fails the debit.
   if (tx.balanceAfter <= LOW_TOKEN_THRESHOLD) {
     const { notify } = await import('./notifications');
+    const empty = tx.balanceAfter <= 0n;
+    // Two SEPARATE dedupe keys: an unread "running low" must not swallow
+    // the escalation to "paused" — that's the one that really matters.
     await notify(workspaceId, {
-      kind: 'tokens.low',
-      title:
-        tx.balanceAfter <= 0n
-          ? 'Out of tokens — discovery, drafting and translation are paused'
-          : `Tokens running low (${tx.balanceAfter.toLocaleString()} left)`,
+      kind: empty ? 'tokens.empty' : 'tokens.low',
+      title: empty
+        ? 'Out of tokens — discovery, drafting and translation are paused'
+        : `Tokens running low (${tx.balanceAfter.toLocaleString()} left)`,
       body: 'Buy a token pack to keep the pipeline running.',
       href: '/settings/billing',
-      dedupeKey: 'tokens.low',
+      dedupeKey: empty ? 'tokens.empty' : 'tokens.low',
     });
     // Opt-in automatic top-up (saved card, off-session). Fire-and-forget
     // — self-guarded (enabled? exempt? rate limit?) and never throws.

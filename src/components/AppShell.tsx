@@ -17,9 +17,6 @@ import { signOutAction } from '@/lib/auth-actions';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 import { listMyWorkspaces } from '@/lib/services/workspace';
 import { getNavCounts, type NavCounts } from '@/lib/services/nav-counts';
-import { db } from '@/lib/db/client';
-import { users } from '@/lib/db/schema/auth';
-import { eq } from 'drizzle-orm';
 
 export interface AppShellProps {
   children: React.ReactNode;
@@ -56,26 +53,27 @@ export async function AppShell({
   // Sidebar count badges: pending drafts / review items / open leads
   // for the user's active workspace. Best-effort — degrades to all
   // zeros when the user has no active workspace yet.
+  // Resolve the workspace THE SAME WAY pages do (incl. the god-mode
+  // branch and the ignore-foreign-pointer rule for normal users) so the
+  // shell's badges never show a different tenant than the page content.
   let navCounts: NavCounts = { draftsPending: 0, reviewPending: 0, leadsOpen: 0 };
   let unreadNotifications = 0;
   if (session?.user?.id) {
-    const userRows = await db
-      .select({ activeWorkspaceId: users.activeWorkspaceId })
-      .from(users)
-      .where(eq(users.id, session.user.id))
-      .limit(1);
-    const activeId = userRows[0]?.activeWorkspaceId ?? null;
-    const fallback =
-      activeId ?? myWorkspaces[0]?.workspace.id ?? null;
-    if (fallback !== null) {
-      navCounts = await getNavCounts({ workspaceId: BigInt(fallback) });
+    try {
+      const { resolveWorkspaceContextForUser } = await import(
+        '@/lib/services/workspace-resolution'
+      );
+      const shellCtx = await resolveWorkspaceContextForUser(
+        session.user.id,
+        session.user.role === 'super_admin',
+      );
+      navCounts = await getNavCounts({ workspaceId: shellCtx.workspaceId });
       const { unreadNotificationCount } = await import(
         '@/lib/services/notifications'
       );
-      unreadNotifications = await unreadNotificationCount({
-        workspaceId: BigInt(fallback),
-        userId: session.user.id,
-      });
+      unreadNotifications = await unreadNotificationCount(shellCtx);
+    } catch {
+      // No resolvable workspace yet — badges stay at zero.
     }
   }
 

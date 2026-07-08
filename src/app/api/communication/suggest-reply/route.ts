@@ -16,6 +16,7 @@ import {
 } from '@/lib/services/auth-context';
 import { ReplyAssistantError, suggestReply } from '@/lib/services/reply-assistant';
 import { TokenError, assertTokens } from '@/lib/services/token-ledger';
+import { rateLimitAllow } from '@/lib/rate-limit';
 
 const InputSchema = z.object({
   threadId: z.coerce.bigint(),
@@ -44,6 +45,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     parsed = InputSchema.parse(await req.json());
   } catch {
     return NextResponse.json({ error: 'invalid_input' }, { status: 400 });
+  }
+
+  if (!rateLimitAllow(`suggest-reply:ws:${ctx.workspaceId}`, 20, 60_000)) {
+    return NextResponse.json(
+      { error: 'rate_limited', detail: 'Too many suggestions — try again in a minute.' },
+      { status: 429 },
+    );
   }
 
   try {
