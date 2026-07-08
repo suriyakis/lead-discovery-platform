@@ -113,6 +113,20 @@ export const workspaces = pgTable('workspaces', {
     withTimezone: true,
   }),
 
+  /** AI workspace health check: a scheduled review that audits the
+   *  workspace configuration AND reads recent outbound conversations for
+   *  quality problems (repetition, broken flow, unnatural tone), then
+   *  warns + advises via notifications. */
+  healthCheckEnabled: boolean('health_check_enabled').notNull().default(true),
+  healthCheckIntervalDays: integer('health_check_interval_days')
+    .notNull()
+    .default(7),
+  /** Atomic claim column for the tick — see health-check.ts. */
+  healthCheckLastAt: timestamp('health_check_last_at', {
+    mode: 'date',
+    withTimezone: true,
+  }),
+
   // ---- Phase A: staged outreach defaults ----
   /** When an inbound reply lands on an outreach thread, automatically
    *  generate the next draft via AI. Operator can flip this OFF if they
