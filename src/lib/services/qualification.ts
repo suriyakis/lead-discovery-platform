@@ -210,6 +210,14 @@ export async function classifySourceRecord(
           eq(reviewItems.state, 'new'),
         ),
       );
+    const { notify } = await import('./notifications');
+    await notify(ctx.workspaceId, {
+      kind: 'review.needs_review',
+      title: 'Leads need geo review before outreach',
+      body: 'Relevant leads with unverified location are waiting — approving confirms they are inside the target country.',
+      href: '/review',
+      dedupeKey: 'review.needs_review',
+    });
   }
 
   return inserted;

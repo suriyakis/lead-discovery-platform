@@ -173,6 +173,19 @@ export async function runConnectorRun(
   const result: RunResult = { status: finalStatus, recordCount };
   if (fatalError) result.error = fatalError;
 
+  if (finalStatus === 'failed') {
+    // Surface the failure in the notification feed — a dead discovery
+    // run otherwise only shows up if someone opens the runs page.
+    const { notify } = await import('@/lib/services/notifications');
+    await notify(ctx.workspaceId, {
+      kind: 'run.failed',
+      title: 'Discovery run failed',
+      body: fatalError?.message?.slice(0, 300) ?? null,
+      href: `/connectors/${run.connectorId}/runs/${runId}`,
+      dedupeKey: `run.failed:${run.connectorId}`,
+    });
+  }
+
   // P62-07: when a crawl succeeded with new records, kick the
   // autopilot pipeline immediately so harvested records flow through
   // approve+draft+enqueue within seconds instead of waiting for the

@@ -484,6 +484,20 @@ export async function assignReviewItem(
     });
 
     return result;
+  }).then(async (result) => {
+    // Targeted nudge for the new assignee (not for self-assignment).
+    // Outside the transaction — notify is best-effort by contract.
+    if (toUserId && toUserId !== ctx.userId) {
+      const { notify } = await import('./notifications');
+      await notify(ctx.workspaceId, {
+        kind: 'assignment',
+        title: 'A review item was assigned to you',
+        href: `/review/${result.id}`,
+        userId: toUserId,
+        dedupeKey: `assignment:${result.id}:${toUserId}`,
+      });
+    }
+    return result;
   });
 }
 
@@ -547,6 +561,48 @@ export async function commentOnReviewItem(
       });
     } catch (err) {
       console.error('[review.comment] recordFeedback failed:', err);
+    }
+
+    // @mentions: "@user@example.com" in a comment pings that member with
+    // a targeted notification. Only resolves users who are actually
+    // members of THIS workspace — mentioning an outsider does nothing.
+    try {
+      const mentioned = [
+        ...new Set(
+          (text.match(/@([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/gi) ?? []).map(
+            (m) => m.slice(1).toLowerCase(),
+          ),
+        ),
+      ];
+      if (mentioned.length > 0) {
+        const { users } = await import('@/lib/db/schema/auth');
+        const { workspaceMembers } = await import('@/lib/db/schema/workspaces');
+        const { inArray } = await import('drizzle-orm');
+        const members = await db
+          .select({ userId: users.id, email: users.email })
+          .from(users)
+          .innerJoin(workspaceMembers, eq(workspaceMembers.userId, users.id))
+          .where(
+            and(
+              eq(workspaceMembers.workspaceId, ctx.workspaceId),
+              inArray(users.email, mentioned),
+            ),
+          );
+        const { notify } = await import('./notifications');
+        for (const m of members) {
+          if (m.userId === ctx.userId) continue;
+          await notify(ctx.workspaceId, {
+            kind: 'mention',
+            title: 'You were mentioned on a review item',
+            body: text.trim().slice(0, 200),
+            href: `/review/${id}`,
+            userId: m.userId,
+            dedupeKey: `mention:${comment.id}:${m.userId}`,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[review.comment] mention notify failed:', err);
     }
     return comment;
   });

@@ -726,6 +726,18 @@ async function persistInbound(
     console.error('[mail.persistInbound] post-receive hooks failed:', err);
   }
 
+  // Pull the team back to the app — a reply is the highest-value event
+  // in the whole pipeline. Best-effort by construction (notify never
+  // throws) and deduped per thread while unread.
+  const { notify } = await import('./notifications');
+  await notify(ctx.workspaceId, {
+    kind: 'lead.replied',
+    title: `Reply from ${inbound.from.name ?? inbound.from.address}`,
+    body: inbound.subject?.slice(0, 200) ?? null,
+    href: `/communication/${thread.id}`,
+    dedupeKey: `lead.replied:${thread.id}`,
+  });
+
   return false;
 }
 

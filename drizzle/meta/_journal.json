@@ -372,6 +372,13 @@
       "when": 1783456384225,
       "tag": "0052_lean_beast",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1783513026319,
+      "tag": "0053_sudden_plazm",
+      "breakpoints": true
     }
   ]
 }
