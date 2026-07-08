@@ -30,6 +30,7 @@ import { purgeOldTrashUnattended, safeSyncOne, syncInbound } from '@/lib/service
 import { processDueCrawlPlans } from '@/lib/services/crawl-engine';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
+import { processDueHealthChecks } from '@/lib/services/health-check';
 import {
   classifyImapError,
   computeBackoffMs,
@@ -53,6 +54,10 @@ export const MAIL_TRASH_PURGE_TICK_MS = 24 * 60 * 60 * 1000;
  *  plan can ever fire at (validated by MIN_INTERVAL_MINUTES). Plans
  *  with longer intervals just get checked-and-skipped until due. */
 export const CRAWL_ENGINE_TICK_MS = 5 * 60 * 1000;
+/** AI workspace health check: per-workspace interval (default 7 days)
+ *  lives on the workspace row; this is just how often we look for due
+ *  ones. The service claims each due workspace atomically. */
+export const HEALTH_CHECK_TICK_MS = 6 * 60 * 60 * 1000;
 
 function ownerCtx(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
   return makeWorkspaceContext({
@@ -281,6 +286,10 @@ const handleKnowledgeCompactTick: JobHandler = async () => {
   return { workspaces: wss.length, processed, merged, retired, failed };
 };
 
+const handleHealthCheckTick: JobHandler = async () => {
+  return processDueHealthChecks();
+};
+
 let registered = false;
 
 /**
@@ -300,6 +309,7 @@ export async function registerRepeatableJobs(
   q.on('knowledge.compact.tick', handleKnowledgeCompactTick);
   q.on('mail.trash.purge.tick', handleMailTrashPurgeTick);
   q.on('crawl.engine.tick', handleCrawlEngineTick);
+  q.on('health.check.tick', handleHealthCheckTick);
   if (!options.skipSchedule) {
     await q.enqueueRepeatable('autopilot.tick', {}, {
       everyMs: AUTOPILOT_TICK_MS,
@@ -328,6 +338,10 @@ export async function registerRepeatableJobs(
     await q.enqueueRepeatable('crawl.engine.tick', {}, {
       everyMs: CRAWL_ENGINE_TICK_MS,
       jobId: 'crawl-engine-tick',
+    });
+    await q.enqueueRepeatable('health.check.tick', {}, {
+      everyMs: HEALTH_CHECK_TICK_MS,
+      jobId: 'health-check-tick',
     });
   }
   registered = true;

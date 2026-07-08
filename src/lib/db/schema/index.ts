@@ -24,3 +24,4 @@ export * from './contacts';
 export * from './autopilot';
 export * from './tokens';
 export * from './notifications';
+export * from './health';
