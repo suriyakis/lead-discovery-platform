@@ -148,3 +148,72 @@ describe('setActiveWorkspace god-mode audit', () => {
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });
+
+// ─── god-mode context resolution (the switch must be REAL) ─────────────
+
+describe('resolveWorkspaceContextForUser — god mode', () => {
+  it('super-admin switched into a NON-member workspace gets THAT workspace context', async () => {
+    const s = await setup();
+    const { resolveWorkspaceContextForUser } = await import(
+      '@/lib/services/workspace-resolution'
+    );
+    // God-mode switch into workspaceB (super-admin is only a member of A).
+    await setActiveWorkspace(s.superAdmin, s.workspaceB, {
+      allowAnyAsSuperAdmin: true,
+    });
+    const resolved = await resolveWorkspaceContextForUser(s.superAdmin, true);
+    // Regression: the old resolver silently fell back to workspaceA here,
+    // so god mode showed the admin's OWN products/leads in the target's UI.
+    expect(resolved.workspaceId).toBe(s.workspaceB);
+    expect(resolved.role).toBe('super_admin');
+  });
+
+  it('normal users NEVER resolve to a workspace they are not a member of', async () => {
+    const s = await setup();
+    const { resolveWorkspaceContextForUser } = await import(
+      '@/lib/services/workspace-resolution'
+    );
+    // Simulate a tampered/stale pointer at someone else's workspace.
+    const { users } = await import('@/lib/db/schema/auth');
+    await db
+      .update(users)
+      .set({ activeWorkspaceId: s.workspaceB })
+      .where(eq(users.id, s.ownerA));
+    const resolved = await resolveWorkspaceContextForUser(s.ownerA, false);
+    expect(resolved.workspaceId).toBe(s.workspaceA); // own membership wins
+    expect(resolved.role).not.toBe('super_admin');
+  });
+
+  it('god mode reaches ARCHIVED workspaces too (inspection must stay possible)', async () => {
+    const s = await setup();
+    const { resolveWorkspaceContextForUser } = await import(
+      '@/lib/services/workspace-resolution'
+    );
+    const { workspaces } = await import('@/lib/db/schema/workspaces');
+    await db
+      .update(workspaces)
+      .set({ status: 'archived' })
+      .where(eq(workspaces.id, s.workspaceB));
+    await setActiveWorkspace(s.superAdmin, s.workspaceB, {
+      allowAnyAsSuperAdmin: true,
+    });
+    const resolved = await resolveWorkspaceContextForUser(s.superAdmin, true);
+    expect(resolved.workspaceId).toBe(s.workspaceB);
+    expect(resolved.role).toBe('super_admin');
+  });
+
+  it('switching back home restores the member context', async () => {
+    const s = await setup();
+    const { resolveWorkspaceContextForUser } = await import(
+      '@/lib/services/workspace-resolution'
+    );
+    await setActiveWorkspace(s.superAdmin, s.workspaceB, {
+      allowAnyAsSuperAdmin: true,
+    });
+    await setActiveWorkspace(s.superAdmin, s.workspaceA, {
+      allowAnyAsSuperAdmin: true,
+    });
+    const resolved = await resolveWorkspaceContextForUser(s.superAdmin, true);
+    expect(resolved.workspaceId).toBe(s.workspaceA);
+  });
+});
