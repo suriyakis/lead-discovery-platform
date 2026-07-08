@@ -18,7 +18,6 @@ import {
 } from '@/lib/services/context';
 import { createConnector, startRun } from '@/lib/services/connector-run';
 import {
-  TokenError,
   adjustTokens,
   assertTokens,
   creditTokens,
@@ -253,6 +252,63 @@ describe('recordUsage token debits', () => {
 
     const wallet = await getTokenWallet(ctx(s.workspaceA, s.ownerA));
     expect(wallet.balance).toBe(500n); // untouched by all three
+  });
+});
+
+// ---- admin billing stats + exemption ---------------------------------------
+
+describe('admin billing management', () => {
+  it('platformWorkspaceStats aggregates tokens + usage per workspace (super-admin only)', async () => {
+    const s = await setup();
+    const { platformWorkspaceStats } = await import('@/lib/services/admin');
+
+    await creditTokens(s.workspaceA, { tokens: 1000, kind: 'purchase', reason: 'pack_s' });
+    await debitTokens(s.workspaceA, { tokens: 300, reason: 'ai.qualification' });
+    await recordUsage(ctx(s.workspaceA, s.ownerA), {
+      kind: 'ai.qualification',
+      provider: 'anthropic',
+      units: 500,
+      costEstimateCents: 7,
+      payload: { keySource: 'platform' },
+    });
+
+    await expect(
+      platformWorkspaceStats(ctx(s.workspaceA, s.ownerA, 'admin')),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+
+    const superCtx = makeWorkspaceContext({
+      workspaceId: s.workspaceA,
+      userId: s.ownerA,
+      role: 'super_admin',
+    });
+    const stats = await platformWorkspaceStats(superCtx);
+    const a = stats.find((r) => r.workspaceId === s.workspaceA)!;
+    expect(a.tokensPurchased).toBe(1000n);
+    // 300 manual debit + 21 from the usage event (7 cents × markup 3)
+    expect(a.tokensSpent).toBe(321n);
+    expect(a.usageCostCents30d).toBe(7);
+    expect(a.usageEvents30d).toBe(1);
+    const b = stats.find((r) => r.workspaceId === s.workspaceB)!;
+    expect(b.tokensPurchased).toBe(0n);
+    expect(b.tokenBalance).toBe(500n);
+  });
+
+  it('setBillingExempt toggles the flag and is super-admin only', async () => {
+    const s = await setup();
+    const { setBillingExempt } = await import('@/lib/services/admin');
+
+    await expect(
+      setBillingExempt(ctx(s.workspaceA, s.ownerA, 'owner'), s.workspaceA, true),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+
+    const superCtx = makeWorkspaceContext({
+      workspaceId: s.workspaceA,
+      userId: s.ownerA,
+      role: 'super_admin',
+    });
+    const updated = await setBillingExempt(superCtx, s.workspaceB, true);
+    expect(updated.billingExempt).toBe(true);
+    expect(await hasTokens(ctx(s.workspaceB, s.ownerB))).toBe(true);
   });
 });
 

@@ -11,6 +11,7 @@ import { isSuperAdmin } from '@/lib/services/context';
 import {
   listAllWorkspaces,
   listImpersonationSessions,
+  platformWorkspaceStats,
   recentAuditAcrossWorkspaces,
 } from '@/lib/services/admin';
 
@@ -48,10 +49,11 @@ export default async function AdminPage() {
     );
   }
 
-  const [workspaces, activeSessions, recentAudit] = await Promise.all([
+  const [workspaces, activeSessions, recentAudit, billingStats] = await Promise.all([
     listAllWorkspaces(ctx),
     listImpersonationSessions(ctx, { activeOnly: true }),
     recentAuditAcrossWorkspaces(ctx, 25),
+    platformWorkspaceStats(ctx),
   ]);
 
   return (
@@ -87,6 +89,52 @@ export default async function AdminPage() {
               ))}
             </ul>
           )}
+        </section>
+
+        <section>
+          <h2>Billing &amp; usage by workspace</h2>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Workspace</th>
+                <th>Plan / status</th>
+                <th>Token balance</th>
+                <th>Purchased</th>
+                <th>Spent</th>
+                <th>Cost 30d</th>
+                <th>Events 30d</th>
+              </tr>
+            </thead>
+            <tbody>
+              {billingStats.map((s) => (
+                <tr key={s.workspaceId.toString()}>
+                  <td>
+                    <Link href={`/admin/workspaces/${s.workspaceId}`}>{s.name}</Link>
+                    {s.billingExempt ? <span className="badge" style={{ marginLeft: '0.4rem' }}>exempt</span> : null}
+                  </td>
+                  <td>
+                    {s.plan}{' '}
+                    <span className={s.subscriptionStatus === 'active' ? 'badge badge-good' : 'badge'}>
+                      {s.subscriptionStatus}
+                    </span>
+                  </td>
+                  <td className={!s.billingExempt && s.tokenBalance <= 0n ? 'delta-bad' : ''}>
+                    {s.tokenBalance.toLocaleString()}
+                  </td>
+                  <td>{s.tokensPurchased.toLocaleString()}</td>
+                  <td>{s.tokensSpent.toLocaleString()}</td>
+                  <td>€{(s.usageCostCents30d / 100).toFixed(2)}</td>
+                  <td>{s.usageEvents30d}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="muted small">
+            Token grants, deductions and billing exemption live on each
+            workspace&apos;s admin page. User blocking is under{' '}
+            <Link href="/admin/users">Users</Link> (set status to
+            &ldquo;suspended&rdquo;).
+          </p>
         </section>
 
         <section>
