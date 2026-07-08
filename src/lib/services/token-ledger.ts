@@ -164,6 +164,17 @@ export async function debitTokens(
       href: '/settings/billing',
       dedupeKey: 'tokens.low',
     });
+    // Opt-in automatic top-up (saved card, off-session). Fire-and-forget
+    // — self-guarded (enabled? exempt? rate limit?) and never throws.
+    // Dynamic import breaks the billing ↔ token-ledger import cycle.
+    void import('./billing')
+      .then(({ attemptAutoTopup }) => attemptAutoTopup(workspaceId))
+      .catch((err) =>
+        console.error(
+          '[token-ledger] auto top-up trigger failed:',
+          err instanceof Error ? err.message : err,
+        ),
+      );
   }
   return tx;
 }

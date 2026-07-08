@@ -362,6 +362,79 @@ describe('applyStripeEvent — token purchase', () => {
     expect(wallet.balance).toBe(1500n);
   });
 
+  it('payment_intent.succeeded with token metadata credits the wallet (replay-safe)', async () => {
+    const s = await setup();
+    const evt = {
+      type: 'payment_intent.succeeded',
+      data: {
+        object: {
+          id: 'pi_auto_1',
+          metadata: {
+            workspace_id: s.workspaceA.toString(),
+            token_pack_id: 'pack_s',
+            tokens: '1000',
+            auto_topup: '1',
+          },
+          amount_received: 1000,
+          currency: 'eur',
+        },
+      },
+    } as unknown as Stripe.Event;
+
+    const first = await applyStripeEvent(evt);
+    expect(first.action).toBe('updated');
+    const replay = await applyStripeEvent(evt);
+    expect(replay.detail).toContain('replay');
+
+    const wallet = await getTokenWallet(ctx(s.workspaceA, s.ownerA));
+    expect(wallet.balance).toBe(1500n);
+    const txs = await listTokenTransactions(ctx(s.workspaceA, s.ownerA));
+    expect(txs[0]!.reason).toContain('auto top-up');
+  });
+
+  it('payment_intent.succeeded WITHOUT token metadata is ignored (checkout intents)', async () => {
+    const s = await setup();
+    const evt = {
+      type: 'payment_intent.succeeded',
+      data: {
+        object: {
+          id: 'pi_checkout_1',
+          metadata: {},
+          amount_received: 2900,
+          currency: 'eur',
+        },
+      },
+    } as unknown as Stripe.Event;
+    const result = await applyStripeEvent(evt);
+    expect(result.action).toBe('ignored');
+    const wallet = await getTokenWallet(ctx(s.workspaceA, s.ownerA));
+    expect(wallet.balance).toBe(500n);
+  });
+
+  it('attemptAutoTopup skips when disabled, exempt, or rate-limited', async () => {
+    const s = await setup();
+    const { attemptAutoTopup } = await import('@/lib/services/billing');
+    const { workspaces } = await import('@/lib/db/schema/workspaces');
+    const { eq: eqOp } = await import('drizzle-orm');
+
+    // Disabled (default) → skipped.
+    expect(await attemptAutoTopup(s.workspaceA)).toBe('skipped');
+
+    // Enabled but billing-exempt → skipped.
+    await db
+      .update(workspaces)
+      .set({ autoTopupEnabled: true, autoTopupPackId: 'pack_s', billingExempt: true })
+      .where(eqOp(workspaces.id, s.workspaceA));
+    expect(await attemptAutoTopup(s.workspaceA)).toBe('skipped');
+
+    // Enabled, not exempt, but attempted 10 minutes ago → rate-limited.
+    await db
+      .update(workspaces)
+      .set({ billingExempt: false, autoTopupLastAt: new Date(Date.now() - 10 * 60 * 1000) })
+      .where(eqOp(workspaces.id, s.workspaceA));
+    expect(await attemptAutoTopup(s.workspaceA)).toBe('skipped');
+  });
+
   it('payment session without token metadata is ignored gracefully', async () => {
     const s = await setup();
     const evt = {
