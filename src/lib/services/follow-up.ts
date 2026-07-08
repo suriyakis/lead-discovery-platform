@@ -542,9 +542,13 @@ async function processOne(
       },
     });
     const { notify } = await import('./notifications');
+    // Generic title on purpose: the dedupe key is shared across leads, so
+    // a lead-specific title would misrepresent later staged follow-ups
+    // that get deduped while this one is unread. The linked page lists
+    // every pending approval.
     await notify(ctx.workspaceId, {
       kind: 'follow_up.awaiting_approval',
-      title: `Follow-up ${row.stepNumber}/${row.totalSteps} to ${lead.contactEmail} awaits approval`,
+      title: 'Follow-ups are awaiting your approval',
       href: '/communication/follow-ups',
       dedupeKey: 'follow_up.awaiting_approval',
     });

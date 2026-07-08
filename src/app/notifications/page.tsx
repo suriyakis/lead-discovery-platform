@@ -73,6 +73,9 @@ export default async function NotificationsPage() {
           <p className="page-lede">
             Replies, approvals, geo reviews, failed runs, low tokens, mentions
             and assignments — everything that needs a human, in one feed.
+            This is a shared team inbox: marking a workspace notification read
+            clears it for the whole team (mentions and assignments are yours
+            alone).
           </p>
         </header>
 

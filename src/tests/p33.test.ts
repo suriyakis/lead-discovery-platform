@@ -45,6 +45,7 @@ afterEach(() => {
   delete process.env.AI_PROVIDER;
   delete process.env.OPENAI_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.GEMINI_API_KEY;
   delete process.env.AI_MODEL;
   _setAIProviderForTests(null);
 });

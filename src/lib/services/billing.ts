@@ -14,7 +14,7 @@
 // platform Stripe key never imports the dependency at request time.
 
 import Stripe from 'stripe';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces, type Workspace } from '@/lib/db/schema/workspaces';
 import { recordAuditEvent } from './audit';
@@ -261,18 +261,30 @@ export async function attemptAutoTopup(workspaceId: bigint): Promise<
   if (!ws.autoTopupEnabled || !ws.autoTopupPackId || ws.billingExempt) {
     return 'skipped';
   }
-  const RATE_LIMIT_MS = 6 * 60 * 60 * 1000;
-  if (ws.autoTopupLastAt && Date.now() - ws.autoTopupLastAt.getTime() < RATE_LIMIT_MS) {
-    return 'skipped';
-  }
   const pack = tokenPackById(ws.autoTopupPackId);
   if (!pack?.priceId) return 'skipped';
 
-  // Stamp the attempt BEFORE calling Stripe so a crash can't retry-storm.
-  await db
+  // ATOMIC claim of the rate-limit window. Concurrent debits all fire
+  // this function at once when the balance crosses the threshold; a
+  // read-check-then-write stamp would let several of them pass and each
+  // charge the card (real double-billing). The conditional UPDATE lets
+  // exactly ONE caller win per 6h window — losers see rowCount 0.
+  const RATE_LIMIT_MS = 6 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - RATE_LIMIT_MS);
+  const claimed = await db
     .update(workspaces)
     .set({ autoTopupLastAt: new Date(), updatedAt: new Date() })
-    .where(eq(workspaces.id, workspaceId));
+    .where(
+      and(
+        eq(workspaces.id, workspaceId),
+        or(
+          isNull(workspaces.autoTopupLastAt),
+          lt(workspaces.autoTopupLastAt, cutoff),
+        ),
+      ),
+    )
+    .returning({ id: workspaces.id });
+  if (!claimed[0]) return 'skipped';
 
   const { notify } = await import('./notifications');
   try {
@@ -322,8 +334,17 @@ export async function attemptAutoTopup(workspaceId: bigint): Promise<
       });
       return 'charged';
     }
-    // requires_action / processing → the webhook settles it either way.
-    return 'charged';
+    // Not settled synchronously ('processing' etc.) — the webhook credits
+    // on payment_intent.succeeded if it lands. Don't claim success, and
+    // tell the operator something is pending so a silent async failure
+    // isn't a mystery pause (the 6h stamp blocks immediate retries).
+    await notify(workspaceId, {
+      kind: 'tokens.auto_topup_pending',
+      title: `Auto top-up is processing (${pack.display}) — tokens arrive when the payment settles`,
+      href: '/settings/billing',
+      dedupeKey: 'tokens.auto_topup_pending',
+    });
+    return 'skipped';
   } catch (err) {
     console.error(
       `[billing] auto top-up failed for workspace ${workspaceId}:`,
