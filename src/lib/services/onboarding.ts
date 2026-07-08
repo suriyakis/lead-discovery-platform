@@ -46,6 +46,7 @@ const denied = (op: string) =>
 export type OnboardingStepKey =
   | 'plan'
   | 'ai'
+  | 'search'
   | 'mailbox'
   | 'product'
   | 'connector';
@@ -111,10 +112,12 @@ export async function getOnboardingState(
     const secretKey =
       aiActive.id === 'openai' ? 'openai.apiKey' :
       aiActive.id === 'anthropic' ? 'anthropic.apiKey' :
+      aiActive.id === 'gemini' ? 'gemini.apiKey' :
       null;
     const envVar =
       aiActive.id === 'openai' ? 'OPENAI_API_KEY' :
       aiActive.id === 'anthropic' ? 'ANTHROPIC_API_KEY' :
+      aiActive.id === 'gemini' ? 'GEMINI_API_KEY' :
       null;
     if (!secretKey || !envVar) {
       aiWhy = `Unsupported AI provider id: ${aiActive.id}`;
@@ -126,6 +129,34 @@ export async function getOnboardingState(
         aiDone = true;
       }
     }
+  }
+
+  // ─── Step 2b: web search ────────────────────────────────────────────
+  // Discovery is only real when the effective Web Search backend isn't
+  // mock. Mirrors getWebSearchProviderForCtx: an explicit workspace
+  // research provider wins; otherwise the grounded fallback counts when
+  // a Gemini key is reachable; otherwise env SEARCH_PROVIDER decides.
+  const { getProviderSettings } = await import('./provider-settings');
+  const providerSettings = await getProviderSettings(ctx);
+  const researchChoice = providerSettings.researchProvider?.trim();
+  const searchChoice = providerSettings.searchProvider?.trim();
+  let searchDone = false;
+  let searchWhy: string | undefined;
+  if (researchChoice === 'gemini' || researchChoice === 'perplexity') {
+    searchDone = true;
+  } else if ((searchChoice ?? process.env.SEARCH_PROVIDER ?? 'mock') === 'serpapi') {
+    searchDone = true;
+  } else if (!researchChoice && !searchChoice) {
+    const geminiKey = await resolveProviderKey(ctx, 'gemini.apiKey', 'GEMINI_API_KEY');
+    if (geminiKey) {
+      searchDone = true; // grounded-Gemini fallback will serve discovery
+    } else {
+      searchWhy =
+        'No real search backend — discovery would return mock data. Pick Gemini or Perplexity under Web Search, or configure SerpAPI.';
+    }
+  } else {
+    searchWhy =
+      'Web Search is set to mock — discovery returns fake results until you pick a real backend.';
   }
 
   // ─── Step 3: mailbox ───────────────────────────────────────────────
@@ -169,7 +200,7 @@ export async function getOnboardingState(
       key: 'plan',
       title: 'Pick a plan',
       blurb:
-        'Subscription billing is rolling out next phase. For now every workspace gets full feature access while you set things up.',
+        'Subscriptions are live (Starter / Pro via Stripe), and every new workspace starts with 500 free tokens — the prepaid currency that metered work (discovery, AI qualification, drafting, translation) spends. Top up anytime under Settings → Billing.',
       done: planDone,
       href: '/onboarding#plan',
     },
@@ -177,10 +208,19 @@ export async function getOnboardingState(
       key: 'ai',
       title: 'Connect an AI provider',
       blurb:
-        'Drafts, qualification, and reply assistance need a real LLM. Pick OpenAI or Anthropic in Active providers and paste your API key.',
+        'Drafts, qualification, and reply assistance need a real LLM. The platform default works out of the box; bring your own OpenAI / Anthropic / Gemini key in Active providers to run on your own account instead (BYOK usage is token-free).',
       done: aiDone,
       href: '/settings/integrations',
       why: aiWhy,
+    },
+    {
+      key: 'search',
+      title: 'Pick a Web Search backend',
+      blurb:
+        'Discovery finds companies via grounded web search. Gemini grounding is the recommended backend (used automatically when available); SerpAPI is the alternative. Without a real backend, discovery returns mock data.',
+      done: searchDone,
+      href: '/settings/integrations',
+      why: searchWhy,
     },
     {
       key: 'mailbox',
@@ -195,7 +235,7 @@ export async function getOnboardingState(
       key: 'product',
       title: 'Create your first product',
       blurb:
-        'Products define what you sell. Discovery, qualification, and outreach all read from the product profile.',
+        'Products define what you sell. Discovery, qualification, and outreach all read from the product profile — description, sectors, keywords, and outreach language.',
       done: productDone,
       href: '/products/new',
       why: productDone ? undefined : 'No active product profile yet.',
@@ -204,7 +244,7 @@ export async function getOnboardingState(
       key: 'connector',
       title: 'Configure a connector',
       blurb:
-        'Connectors run discovery against the providers you have configured (SerpAPI, directory harvesters, etc.) so leads flow into the review queue.',
+        'Connectors run discovery so leads flow into the review queue. Important: set the TARGET COUNTRY and language on each recipe — the geography gate rejects companies outside the recipe’s country, at qualification and again before any email is sent.',
       done: connectorDone,
       href: '/connectors',
       why: connectorDone ? undefined : 'No active connector yet.',

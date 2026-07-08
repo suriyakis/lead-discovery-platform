@@ -14,6 +14,8 @@ import {
   getOnboardingState,
   markOnboardingComplete,
   markOnboardingStarted,
+  type OnboardingState,
+  type OnboardingStepKey,
 } from '@/lib/services/onboarding';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { updateProviderSettings } from '@/lib/services/provider-settings';
@@ -44,6 +46,14 @@ function ctx(
   return makeWorkspaceContext({ workspaceId, userId, role });
 }
 
+/** Key-based step lookup — the wizard's step ORDER is presentation, not
+ *  contract; tests assert by key so inserting a step doesn't break them. */
+function step(state: OnboardingState, key: OnboardingStepKey) {
+  const found = state.steps.find((s) => s.key === key);
+  if (!found) throw new Error(`step ${key} missing`);
+  return found;
+}
+
 beforeEach(async () => {
   await truncateAll();
 });
@@ -59,26 +69,45 @@ afterAll(async () => {
 });
 
 describe('getOnboardingState', () => {
-  it('returns 5 steps with sensible defaults on a fresh workspace', async () => {
+  it('returns 6 steps with sensible defaults on a fresh workspace', async () => {
     const s = await setup();
     const state = await getOnboardingState(ctx(s.workspaceA, s.ownerA));
-    expect(state.steps).toHaveLength(5);
+    expect(state.steps).toHaveLength(6);
     expect(state.steps.map((x) => x.key)).toEqual([
       'plan',
       'ai',
+      'search',
       'mailbox',
       'product',
       'connector',
     ]);
     // Plan is auto-done because new workspaces are 'trial'.
-    expect(state.steps[0]!.done).toBe(true);
-    // The other four are not done yet.
-    expect(state.steps[1]!.done).toBe(false);
-    expect(state.steps[2]!.done).toBe(false);
-    expect(state.steps[3]!.done).toBe(false);
-    expect(state.steps[4]!.done).toBe(false);
+    expect(step(state, 'plan').done).toBe(true);
+    // The others are not done yet (test env: mock AI, mock search, no key).
+    expect(step(state, 'ai').done).toBe(false);
+    expect(step(state, 'search').done).toBe(false);
+    expect(step(state, 'search').why).toMatch(/mock data/);
+    expect(step(state, 'mailbox').done).toBe(false);
+    expect(step(state, 'product').done).toBe(false);
+    expect(step(state, 'connector').done).toBe(false);
     expect(state.nextStepIdx).toBe(1);
     expect(state.effectivelyComplete).toBe(false);
+  });
+
+  it('search step is done when the workspace picks a grounding provider', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await updateProviderSettings(c, { researchProvider: 'gemini' });
+    const state = await getOnboardingState(c);
+    expect(step(state, 'search').done).toBe(true);
+  });
+
+  it('search step is done via the grounded fallback when a Gemini key is reachable', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await setSecret(c, 'gemini.apiKey', 'g-test');
+    const state = await getOnboardingState(c);
+    expect(step(state, 'search').done).toBe(true);
   });
 
   it('marks AI step done when a real provider is selected and a key is reachable', async () => {
@@ -87,7 +116,7 @@ describe('getOnboardingState', () => {
     await updateProviderSettings(c, { aiProvider: 'openai' });
     await setSecret(c, 'openai.apiKey', 'sk-test');
     const state = await getOnboardingState(c);
-    expect(state.steps[1]!.done).toBe(true);
+    expect(step(state, 'ai').done).toBe(true);
   });
 
   it("AI step stays not-done when provider is real but no key is set", async () => {
@@ -96,8 +125,8 @@ describe('getOnboardingState', () => {
     await updateProviderSettings(c, { aiProvider: 'openai' });
     delete process.env.OPENAI_API_KEY;
     const state = await getOnboardingState(c);
-    expect(state.steps[1]!.done).toBe(false);
-    expect(state.steps[1]!.why).toMatch(/no key/);
+    expect(step(state, 'ai').done).toBe(false);
+    expect(step(state, 'ai').why).toMatch(/no key/);
   });
 
   it('marks mailbox step done when at least one active mailbox exists', async () => {
@@ -114,7 +143,7 @@ describe('getOnboardingState', () => {
       status: 'active',
     });
     const state = await getOnboardingState(c);
-    expect(state.steps[2]!.done).toBe(true);
+    expect(step(state, 'mailbox').done).toBe(true);
   });
 
   it('marks product step done when at least one active product exists', async () => {
@@ -122,7 +151,7 @@ describe('getOnboardingState', () => {
     const c = ctx(s.workspaceA, s.ownerA);
     await createProductProfile(c, { name: 'Vetrofluid' });
     const state = await getOnboardingState(c);
-    expect(state.steps[3]!.done).toBe(true);
+    expect(step(state, 'product').done).toBe(true);
   });
 
   it('marks connector step done when one is created', async () => {
@@ -130,13 +159,13 @@ describe('getOnboardingState', () => {
     const c = ctx(s.workspaceA, s.ownerA);
     await createConnector(c, { templateType: 'mock', name: 'M', config: {} });
     const state = await getOnboardingState(c);
-    expect(state.steps[4]!.done).toBe(true);
+    expect(step(state, 'connector').done).toBe(true);
   });
 
   it('effectivelyComplete flips when every step is done', async () => {
     const s = await setup();
     const c = ctx(s.workspaceA, s.ownerA);
-    await updateProviderSettings(c, { aiProvider: 'openai' });
+    await updateProviderSettings(c, { aiProvider: 'openai', researchProvider: 'gemini' });
     await setSecret(c, 'openai.apiKey', 'sk-test');
     await db.insert(mailboxes).values({
       workspaceId: s.workspaceA,
