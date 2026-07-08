@@ -13,6 +13,7 @@ import { Sidebar } from './Sidebar';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { auth } from '@/lib/auth';
 import { signOutAction } from '@/lib/auth-actions';
+import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 import { listMyWorkspaces } from '@/lib/services/workspace';
 import { getNavCounts, type NavCounts } from '@/lib/services/nav-counts';
 import { db } from '@/lib/db/client';
@@ -87,9 +88,49 @@ export async function AppShell({
       />
     ) : null);
 
+  // God-mode indicator: the active workspace is one the super-admin is
+  // NOT a member of. Every page below renders the TARGET tenant's data,
+  // so make that unmissable and offer a one-click way home.
+  const godModeRow = myWorkspaces.find((m) => m.isGodMode && m.isActive);
+  const homeWorkspace = myWorkspaces.find((m) => !m.isGodMode);
+  const returnHome = homeWorkspace
+    ? setActiveWorkspaceAction.bind(null, homeWorkspace.workspace.id.toString())
+    : null;
+
   return (
     <div className="app-shell">
       <BrandHeader rightSlot={slot} />
+      {godModeRow ? (
+        <div
+          role="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '1rem',
+            padding: '0.5rem 1rem',
+            background: 'oklch(0.45 0.16 25)',
+            color: 'oklch(0.98 0.01 25)',
+            fontWeight: 600,
+          }}
+        >
+          <span>
+            👑 GOD MODE — you are inside workspace “{godModeRow.workspace.name}”.
+            Every page shows that tenant&apos;s data and your actions apply to it.
+          </span>
+          {returnHome ? (
+            <form action={returnHome}>
+              <button
+                type="submit"
+                className="ghost-btn"
+                style={{ borderColor: 'currentColor', color: 'inherit' }}
+              >
+                Return to my workspace
+              </button>
+            </form>
+          ) : null}
+        </div>
+      ) : null}
       <div className="app-body">
         <Sidebar isSuperAdmin={showAdmin} navCounts={navCounts} />
         <main className="app-main">{children}</main>
