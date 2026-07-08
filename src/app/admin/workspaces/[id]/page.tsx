@@ -20,11 +20,18 @@ import {
   listFeatureFlags,
   listImpersonationSessions,
   restoreWorkspace,
+  setBillingExempt,
   setFeatureFlag,
   setWorkspaceDefault,
   startImpersonation,
   updateWorkspaceProfile,
 } from '@/lib/services/admin';
+import {
+  TokenError,
+  adjustTokens,
+  listTokenTransactions,
+} from '@/lib/services/token-ledger';
+import { summarizeUsage } from '@/lib/services/usage';
 import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { db } from '@/lib/db/client';
 import { workspaces, workspaceMembers } from '@/lib/db/schema/workspaces';
@@ -88,10 +95,59 @@ export default async function AdminWorkspaceDetail({
   const flags = await listFeatureFlags(ctx, targetWorkspaceId);
   const flagByKey = new Map(flags.map((f) => [f.key, f]));
 
+  // Billing + usage snapshot for THIS workspace. Both reads are
+  // workspace-scoped services aimed at the target tenant — legitimate
+  // here because the whole page is super-admin gated above.
+  const targetScope = { workspaceId: targetWorkspaceId };
+  const usage30d = await summarizeUsage(targetScope, {
+    since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+  });
+  const usageTotalCents = usage30d.reduce((acc, r) => acc + r.totalCostCents, 0);
+  const tokenTx = await listTokenTransactions(targetScope, { limit: 20 });
+
   const myImps = await listImpersonationSessions(ctx, { activeOnly: false });
   const activeMine = myImps.find(
     (s) => s.actorUserId === ctx.userId && s.endedAt === null,
   );
+
+  async function grantTokens(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const raw = String(formData.get('tokens') ?? '').trim();
+    const reason = String(formData.get('reason') ?? '').trim() || 'manual adjustment';
+    const tokens = Number(raw);
+    if (!Number.isFinite(tokens) || !Number.isInteger(tokens) || tokens === 0) {
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent('tokens must be a non-zero integer (negative = deduct)')}`);
+    }
+    try {
+      await adjustTokens(c, targetWorkspaceId, tokens, reason);
+      redirect(
+        `/admin/workspaces/${idStr}?message=${encodeURIComponent(`${tokens > 0 ? '+' : ''}${tokens} tokens applied`)}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof TokenError ? err.message : err instanceof Error ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function toggleExempt() {
+    'use server';
+    const c = await getWorkspaceContext();
+    const rows = await db
+      .select({ exempt: workspaces.billingExempt })
+      .from(workspaces)
+      .where(eq(workspaces.id, targetWorkspaceId))
+      .limit(1);
+    try {
+      await setBillingExempt(c, targetWorkspaceId, !(rows[0]?.exempt ?? false));
+      redirect(`/admin/workspaces/${idStr}?message=Billing+exemption+updated`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof AdminServiceError ? err.message : err instanceof Error ? err.message : 'failed';
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
 
   async function startImp(formData: FormData) {
     'use server';
@@ -315,6 +371,91 @@ export default async function AdminWorkspaceDetail({
               Save
             </button>
           </form>
+        </section>
+
+        <section>
+          <h2>Billing &amp; tokens</h2>
+          <p>
+            Plan: <strong>{ws.plan}</strong>{' '}
+            <span className={ws.subscriptionStatus === 'active' ? 'badge badge-good' : 'badge'}>
+              {ws.subscriptionStatus}
+            </span>
+            {' · '}Stripe:{' '}
+            {ws.stripeCustomerId ? <code>{ws.stripeCustomerId}</code> : <span className="muted">none</span>}
+            {' · '}Balance:{' '}
+            <strong>{ws.tokenBalance.toLocaleString()}</strong> tokens
+            {ws.billingExempt ? (
+              <span className="badge" style={{ marginLeft: '0.5rem' }}>billing exempt</span>
+            ) : null}
+          </p>
+          <p className="muted">
+            Usage last 30 days: <strong>€{(usageTotalCents / 100).toFixed(2)}</strong> estimated
+            provider cost across {usage30d.reduce((a, r) => a + r.eventCount, 0)} events.
+          </p>
+
+          <div className="action-row" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <form action={grantTokens} className="inline-form">
+              <label>
+                <span>Tokens (negative = deduct)</span>
+                <input type="number" name="tokens" step={1} required placeholder="e.g. 1000" />
+              </label>
+              <label>
+                <span>Reason</span>
+                <input type="text" name="reason" maxLength={200} placeholder="promo / support credit / correction" />
+              </label>
+              <button type="submit" className="primary-btn">Apply</button>
+            </form>
+            <form action={toggleExempt}>
+              <button type="submit" className="ghost-btn">
+                {ws.billingExempt ? 'Disable billing exemption' : 'Make billing exempt'}
+              </button>
+            </form>
+          </div>
+
+          {usage30d.length > 0 ? (
+            <details style={{ marginTop: '0.75rem' }}>
+              <summary>Usage breakdown (30d)</summary>
+              <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                <thead>
+                  <tr><th>Kind</th><th>Provider</th><th>Events</th><th>Est. cost</th></tr>
+                </thead>
+                <tbody>
+                  {usage30d.map((r) => (
+                    <tr key={`${r.kind}-${r.provider}`}>
+                      <td><code>{r.kind}</code></td>
+                      <td>{r.provider}</td>
+                      <td>{r.eventCount}</td>
+                      <td>€{(r.totalCostCents / 100).toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          ) : null}
+
+          {tokenTx.length > 0 ? (
+            <details style={{ marginTop: '0.5rem' }}>
+              <summary>Token ledger (last {tokenTx.length})</summary>
+              <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                <thead>
+                  <tr><th>When</th><th>Change</th><th>Balance after</th><th>Kind</th><th>Reason</th></tr>
+                </thead>
+                <tbody>
+                  {tokenTx.map((t) => (
+                    <tr key={t.id.toString()}>
+                      <td>{t.createdAt.toLocaleString()}</td>
+                      <td className={t.delta > 0n ? 'delta-good' : 'delta-bad'}>
+                        {t.delta > 0n ? '+' : ''}{t.delta.toLocaleString()}
+                      </td>
+                      <td>{t.balanceAfter.toLocaleString()}</td>
+                      <td><code>{t.kind}</code></td>
+                      <td>{t.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          ) : null}
         </section>
 
         <section>

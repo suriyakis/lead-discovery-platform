@@ -88,7 +88,7 @@ export async function suggestStageAngle(
     );
   }
   const product = await getProductProfile(ctx, productProfileId);
-  const provider = await getAIProviderById(ctx, vendor);
+  const provider = await getAIProviderById(ctx, vendor, 'ai.suggestion');
   if (!provider) {
     throw new ProductAngleSuggesterError(
       `No ${vendor} key configured for this workspace — set one in /settings/integrations.`,

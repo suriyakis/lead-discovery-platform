@@ -113,6 +113,107 @@ export async function listAllWorkspaces(
   return out;
 }
 
+// ---- billing / usage stats (super-admin) ---------------------------
+
+export interface WorkspaceBillingStatsRow {
+  workspaceId: bigint;
+  name: string;
+  slug: string;
+  status: WorkspaceStatus;
+  plan: string;
+  subscriptionStatus: string;
+  tokenBalance: bigint;
+  billingExempt: boolean;
+  /** Estimated provider cost over the window, in cents. */
+  usageCostCents30d: number;
+  usageEvents30d: number;
+  /** Sum of purchased tokens (kind='purchase'), all time. */
+  tokensPurchased: bigint;
+  /** Sum of usage debits (kind='usage'), all time, as a positive number. */
+  tokensSpent: bigint;
+}
+
+/**
+ * Per-workspace billing + usage snapshot for the admin dashboard: who is
+ * paying, who is burning tokens, who is coasting on the welcome balance.
+ * 30-day usage window; token totals are all-time from the ledger.
+ */
+export async function platformWorkspaceStats(
+  ctx: WorkspaceContext,
+): Promise<WorkspaceBillingStatsRow[]> {
+  assertSuperAdmin(ctx, 'admin.platform_stats');
+  const { tokenTransactions } = await import('@/lib/db/schema/tokens');
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const wsRows = await db
+    .select()
+    .from(workspaces)
+    .orderBy(desc(workspaces.createdAt));
+
+  const usage = await db
+    .select({
+      workspaceId: usageLog.workspaceId,
+      cost: sql<number>`coalesce(sum(${usageLog.costEstimateCents}), 0)::int`,
+      events: sql<number>`count(*)::int`,
+    })
+    .from(usageLog)
+    .where(sql`${usageLog.createdAt} > ${since.toISOString()}::timestamptz`)
+    .groupBy(usageLog.workspaceId);
+  const usageByWs = new Map(usage.map((u) => [u.workspaceId.toString(), u]));
+
+  const tokens = await db
+    .select({
+      workspaceId: tokenTransactions.workspaceId,
+      purchased: sql<string>`coalesce(sum(case when ${tokenTransactions.kind} = 'purchase' then ${tokenTransactions.delta} else 0 end), 0)`,
+      spent: sql<string>`coalesce(sum(case when ${tokenTransactions.kind} = 'usage' then -${tokenTransactions.delta} else 0 end), 0)`,
+    })
+    .from(tokenTransactions)
+    .groupBy(tokenTransactions.workspaceId);
+  const tokensByWs = new Map(tokens.map((t) => [t.workspaceId.toString(), t]));
+
+  return wsRows.map((w) => {
+    const u = usageByWs.get(w.id.toString());
+    const t = tokensByWs.get(w.id.toString());
+    return {
+      workspaceId: w.id,
+      name: w.name,
+      slug: w.slug,
+      status: w.status,
+      plan: w.plan,
+      subscriptionStatus: w.subscriptionStatus,
+      tokenBalance: w.tokenBalance,
+      billingExempt: w.billingExempt,
+      usageCostCents30d: Number(u?.cost ?? 0),
+      usageEvents30d: Number(u?.events ?? 0),
+      tokensPurchased: BigInt(t?.purchased ?? 0),
+      tokensSpent: BigInt(t?.spent ?? 0),
+    };
+  });
+}
+
+/** Toggle a workspace's billing exemption (platform-internal tenants).
+ *  Super-admin only, audit-logged. */
+export async function setBillingExempt(
+  ctx: WorkspaceContext,
+  workspaceId: bigint,
+  exempt: boolean,
+): Promise<Workspace> {
+  assertSuperAdmin(ctx, 'admin.set_billing_exempt');
+  const [updated] = await db
+    .update(workspaces)
+    .set({ billingExempt: exempt, updatedAt: new Date() })
+    .where(eq(workspaces.id, workspaceId))
+    .returning();
+  if (!updated) throw notFound('workspace');
+  await recordAuditEvent(ctx, {
+    kind: 'admin.set_billing_exempt',
+    entityType: 'workspace',
+    entityId: workspaceId,
+    payload: { exempt },
+  });
+  return updated;
+}
+
 // ---- workspace lifecycle (super-admin) -----------------------------
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;

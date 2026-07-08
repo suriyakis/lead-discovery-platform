@@ -541,6 +541,9 @@ export function getAIProvider(): IAIProvider {
  */
 export async function getAIProviderForCtx(
   ctx: { workspaceId: bigint },
+  /** Usage-log kind for metering — lets callers keep billing itemization
+   *  meaningful ('ai.qualification' vs generic 'ai.generate'). */
+  usageKind: string = 'ai.generate',
 ): Promise<IAIProvider> {
   // Test injection wins — `_setAIProviderForTests(stub)` writes `cached`,
   // and tests rely on getAIProviderForCtx returning the same stub.
@@ -569,7 +572,7 @@ export async function getAIProviderForCtx(
         baseUrl: process.env.OPENAI_BASE_URL,
       }),
       ctx,
-      'ai.generate',
+      usageKind,
       resolved.source,
     );
   }
@@ -591,7 +594,7 @@ export async function getAIProviderForCtx(
         baseUrl: process.env.ANTHROPIC_BASE_URL,
       }),
       ctx,
-      'ai.generate',
+      usageKind,
       resolved.source,
     );
   }
@@ -613,7 +616,7 @@ export async function getAIProviderForCtx(
         baseUrl: process.env.GEMINI_BASE_URL,
       }),
       ctx,
-      'ai.generate',
+      usageKind,
       resolved.source,
     );
   }
@@ -641,7 +644,7 @@ export async function getQualificationProviderForCtx(
   const qpId = settings.qualificationProvider?.trim();
   // If the workspace hasn't picked a qualification provider, defer
   // entirely to the general AI provider (legacy behaviour preserved).
-  if (!qpId) return getAIProviderForCtx(ctx);
+  if (!qpId) return getAIProviderForCtx(ctx, 'ai.qualification');
   if (qpId === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
   const qModel =
@@ -732,6 +735,8 @@ export function _setAIProviderForTests(provider: IAIProvider | null): void {
 export async function getAIProviderById(
   ctx: { workspaceId: bigint },
   providerId: 'openai' | 'anthropic',
+  /** Usage-log kind for metering (billing itemization). */
+  usageKind: string = 'ai.generate',
 ): Promise<IAIProvider | null> {
   // Test injection wins, same as getAIProviderForCtx, so unit tests
   // that stub the provider don't need to know which vendor a stage
@@ -748,7 +753,7 @@ export async function getAIProviderById(
         baseUrl: process.env.OPENAI_BASE_URL,
       }),
       ctx,
-      'ai.generate',
+      usageKind,
       resolved.source,
     );
   }
@@ -766,7 +771,7 @@ export async function getAIProviderById(
         baseUrl: process.env.ANTHROPIC_BASE_URL,
       }),
       ctx,
-      'ai.generate',
+      usageKind,
       resolved.source,
     );
   }
