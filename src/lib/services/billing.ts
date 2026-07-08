@@ -210,6 +210,9 @@ export async function createTokenCheckoutSession(
     success_url: input.successUrl,
     cancel_url: input.cancelUrl,
     allow_promotion_codes: true,
+    // Save the card for off-session auto top-up (opt-in feature — the
+    // charge itself only happens if the workspace enables it).
+    payment_intent_data: { setup_future_usage: 'off_session' },
     metadata: {
       workspace_id: ctx.workspaceId.toString(),
       token_pack_id: pack.id,
@@ -232,6 +235,109 @@ export async function createTokenCheckoutSession(
   });
 
   return { url: session.url, sessionId: session.id };
+}
+
+/**
+ * Attempt an automatic off-session token top-up for a workspace whose
+ * wallet crossed the low threshold. Called fire-and-forget from the
+ * debit path — every exit is silent-but-notified, never throws upward.
+ *
+ * Guards, in order: feature enabled + pack chosen, not billing-exempt,
+ * rate limit (one ATTEMPT per 6h — success or fail — so a declining
+ * card isn't hammered), Stripe configured, customer + saved card exist.
+ *
+ * Crediting happens on the webhook (payment_intent.succeeded) AND
+ * inline on synchronous success — both idempotent by PaymentIntent id.
+ */
+export async function attemptAutoTopup(workspaceId: bigint): Promise<
+  'charged' | 'skipped' | 'failed'
+> {
+  const [ws] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!ws) return 'skipped';
+  if (!ws.autoTopupEnabled || !ws.autoTopupPackId || ws.billingExempt) {
+    return 'skipped';
+  }
+  const RATE_LIMIT_MS = 6 * 60 * 60 * 1000;
+  if (ws.autoTopupLastAt && Date.now() - ws.autoTopupLastAt.getTime() < RATE_LIMIT_MS) {
+    return 'skipped';
+  }
+  const pack = tokenPackById(ws.autoTopupPackId);
+  if (!pack?.priceId) return 'skipped';
+
+  // Stamp the attempt BEFORE calling Stripe so a crash can't retry-storm.
+  await db
+    .update(workspaces)
+    .set({ autoTopupLastAt: new Date(), updatedAt: new Date() })
+    .where(eq(workspaces.id, workspaceId));
+
+  const { notify } = await import('./notifications');
+  try {
+    const stripe = getStripeClient();
+    if (!ws.stripeCustomerId) throw new Error('no stripe customer');
+    const methods = await stripe.paymentMethods.list({
+      customer: ws.stripeCustomerId,
+      type: 'card',
+      limit: 1,
+    });
+    const card = methods.data[0];
+    if (!card) throw new Error('no saved card');
+
+    const price = await stripe.prices.retrieve(pack.priceId);
+    if (!price.unit_amount || !price.currency) {
+      throw new Error('pack price has no amount');
+    }
+
+    const intent = await stripe.paymentIntents.create({
+      amount: price.unit_amount,
+      currency: price.currency,
+      customer: ws.stripeCustomerId,
+      payment_method: card.id,
+      off_session: true,
+      confirm: true,
+      description: `Auto top-up: ${pack.name} (${pack.tokens.toLocaleString()} tokens)`,
+      metadata: {
+        workspace_id: workspaceId.toString(),
+        token_pack_id: pack.id,
+        tokens: pack.tokens.toString(),
+        auto_topup: '1',
+      },
+    });
+
+    if (intent.status === 'succeeded') {
+      await creditTokens(workspaceId, {
+        tokens: pack.tokens,
+        kind: 'purchase',
+        reason: `${pack.id} (auto top-up)`,
+        externalRef: intent.id,
+        payload: { paymentIntentId: intent.id, autoTopup: true },
+      });
+      await notify(workspaceId, {
+        kind: 'tokens.auto_topup',
+        title: `Auto top-up: +${pack.tokens.toLocaleString()} tokens (${pack.display})`,
+        href: '/settings/billing',
+      });
+      return 'charged';
+    }
+    // requires_action / processing → the webhook settles it either way.
+    return 'charged';
+  } catch (err) {
+    console.error(
+      `[billing] auto top-up failed for workspace ${workspaceId}:`,
+      err instanceof Error ? err.message : err,
+    );
+    await notify(workspaceId, {
+      kind: 'tokens.auto_topup_failed',
+      title: 'Automatic top-up failed — update your card',
+      body: err instanceof Error ? err.message.slice(0, 200) : null,
+      href: '/settings/billing',
+      dedupeKey: 'tokens.auto_topup_failed',
+    });
+    return 'failed';
+  }
 }
 
 /**
@@ -393,6 +499,44 @@ export async function applyStripeEvent(event: Stripe.Event): Promise<ApplyResult
         })
         .where(eq(workspaces.id, workspaceId));
       return { workspaceId, action: 'updated', detail: 'checkout.completed' };
+    }
+
+    case 'payment_intent.succeeded': {
+      // Auto top-up settlement. Only intents WE created carry token
+      // metadata; checkout-session intents don't (their credit happens on
+      // checkout.session.completed with the session id as the idempotency
+      // ref, so no double-credit is possible).
+      const intent = event.data.object as Stripe.PaymentIntent;
+      const workspaceId = parseWorkspaceId(intent.metadata);
+      const tokens = Number(intent.metadata?.tokens ?? '0');
+      if (!workspaceId || !Number.isFinite(tokens) || tokens <= 0) {
+        return {
+          workspaceId: workspaceId ?? null,
+          action: 'ignored',
+          detail: 'payment_intent without token metadata',
+        };
+      }
+      const packId = intent.metadata?.token_pack_id ?? 'unknown';
+      const isAuto = intent.metadata?.auto_topup === '1';
+      const { alreadyApplied } = await creditTokens(workspaceId, {
+        tokens,
+        kind: 'purchase',
+        reason: isAuto ? `${packId} (auto top-up)` : packId,
+        externalRef: intent.id,
+        payload: {
+          paymentIntentId: intent.id,
+          amountReceived: intent.amount_received,
+          currency: intent.currency,
+          autoTopup: isAuto,
+        },
+      });
+      return {
+        workspaceId,
+        action: 'updated',
+        detail: alreadyApplied
+          ? 'token purchase (replay, already credited)'
+          : `token purchase credited: ${tokens}`,
+      };
     }
 
     case 'customer.subscription.created':

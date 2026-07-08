@@ -62,6 +62,27 @@ export default async function BillingPage({
   }));
   const recentTokenTx = await listTokenTransactions(ctx, { limit: 15 });
 
+  async function saveAutoTopup(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    if (!canAdminWorkspace(c)) {
+      redirect('/settings/billing?err=Only+admins+can+change+auto+top-up');
+    }
+    const enabled = formData.get('enabled') === 'on';
+    const packId = String(formData.get('packId') ?? 'pack_s');
+    await db
+      .update(workspaces)
+      .set({
+        autoTopupEnabled: enabled,
+        autoTopupPackId: packId,
+        updatedAt: new Date(),
+      })
+      .where(eq(workspaces.id, c.workspaceId));
+    redirect(
+      `/settings/billing?msg=${encodeURIComponent(enabled ? 'Auto top-up enabled.' : 'Auto top-up disabled.')}`,
+    );
+  }
+
   async function openPortal() {
     'use server';
     const c = await getWorkspaceContext();
@@ -138,6 +159,39 @@ export default async function BillingPage({
           </p>
 
           <BuyTokensButtons packs={packs} />
+
+          {isAdmin ? (
+            <form
+              action={saveAutoTopup}
+              className="inline-form"
+              style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}
+            >
+              <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  name="enabled"
+                  defaultChecked={ws.autoTopupEnabled}
+                />
+                <span>Auto top-up when tokens run low</span>
+              </label>
+              <label>
+                <span>Pack</span>
+                <select name="packId" defaultValue={ws.autoTopupPackId ?? 'pack_s'}>
+                  {packs.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} — {p.tokens.toLocaleString()} tokens ({p.display})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="submit" className="ghost-btn">Save</button>
+              <span className="muted small" style={{ flexBasis: '100%' }}>
+                Charges the card saved from your last token purchase
+                (off-session) when the balance drops to 100 tokens. At most one
+                attempt per 6 hours; failures notify you instead of retrying.
+              </span>
+            </form>
+          ) : null}
 
           {recentTokenTx.length > 0 ? (
             <details style={{ marginTop: '1rem' }}>

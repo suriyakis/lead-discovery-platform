@@ -100,6 +100,18 @@ export const workspaces = pgTable('workspaces', {
   /** Platform-internal workspaces (the operator's own) skip token debits
    *  and gates entirely. Toggled by super-admin only. */
   billingExempt: boolean('billing_exempt').notNull().default(false),
+  /** Auto top-up: when the wallet crosses the low threshold, charge the
+   *  customer's saved card (off-session) for the chosen pack. Opt-in by
+   *  a workspace admin from Settings → Billing. */
+  autoTopupEnabled: boolean('auto_topup_enabled').notNull().default(false),
+  /** Which pack to buy automatically ('pack_s' | 'pack_m' | 'pack_l'). */
+  autoTopupPackId: text('auto_topup_pack_id'),
+  /** Last auto top-up ATTEMPT (success or fail) — rate-limits retries so
+   *  a declining card can't be hammered on every debit. */
+  autoTopupLastAt: timestamp('auto_topup_last_at', {
+    mode: 'date',
+    withTimezone: true,
+  }),
 
   // ---- Phase A: staged outreach defaults ----
   /** When an inbound reply lands on an outreach thread, automatically
