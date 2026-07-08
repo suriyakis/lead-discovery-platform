@@ -63,7 +63,7 @@ export async function getStageProvider(
   role: StageRole,
 ): Promise<StageProvider> {
   const tier = TIERS[role];
-  const specific = await getAIProviderById(ctx, tier.vendor);
+  const specific = await getAIProviderById(ctx, tier.vendor, 'ai.outreach');
   if (specific) {
     return { provider: specific, model: tier.model };
   }
