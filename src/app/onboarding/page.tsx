@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Check,
   CreditCard,
+  Globe2,
   Inbox,
   Network,
   ShoppingBag,
@@ -33,6 +34,7 @@ import {
 const STEP_ICONS: Record<OnboardingStepKey, React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>> = {
   plan: CreditCard,
   ai: Sparkles,
+  search: Globe2,
   mailbox: Inbox,
   product: ShoppingBag,
   connector: Network,

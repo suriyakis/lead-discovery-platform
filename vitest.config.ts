@@ -29,6 +29,10 @@ export default defineConfig({
       SEARCH_PROVIDER: 'mock',
       JOB_QUEUE_PROVIDER: 'memory',
       STORAGE_PROVIDER: 'local',
+      // Explicitly blank so the web-search grounded-fallback (which kicks
+      // in when a platform Gemini key exists) can never fire in tests,
+      // even on a machine whose shell exports a real key.
+      GEMINI_API_KEY: '',
     },
   },
   resolve: {

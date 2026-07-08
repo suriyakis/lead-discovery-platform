@@ -109,5 +109,30 @@ export async function getWebSearchProviderForCtx(
       // the connector at least limps with mock instead of crashing.
     }
   }
+
+  // Production safety net: a workspace that never chose a Web Search
+  // provider must NOT silently harvest mock data while a real grounding
+  // key exists at the platform level. New workspaces have no
+  // researchProvider setting, and env SEARCH_PROVIDER stays 'mock'
+  // unless SerpAPI is paid for — without this, every fresh tenant's
+  // first discovery run would return fake results with no indication.
+  // Explicit choices are respected: a workspace that deliberately set
+  // its Web Search to mock/serpapi in Settings → Integrations (any
+  // non-empty researchProvider or searchProvider value) skips this.
+  const explicitSearch = settings.searchProvider?.trim();
+  if (
+    !research &&
+    !explicitSearch &&
+    (process.env.SEARCH_PROVIDER ?? 'mock') === 'mock'
+  ) {
+    const { resolveProviderKey } = await import('@/lib/services/secrets');
+    const geminiKey = await resolveProviderKey(ctx, 'gemini.apiKey', 'GEMINI_API_KEY');
+    if (geminiKey) {
+      const { GeminiResearchProvider } = await import('@/lib/research/gemini');
+      return new ResearchAsSearchAdapter(
+        new GeminiResearchProvider({ apiKey: geminiKey.key }),
+      );
+    }
+  }
   return getSearchProviderForCtx(ctx);
 }
