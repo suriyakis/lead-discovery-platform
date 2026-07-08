@@ -541,6 +541,13 @@ async function processOne(
         totalSteps: row.totalSteps,
       },
     });
+    const { notify } = await import('./notifications');
+    await notify(ctx.workspaceId, {
+      kind: 'follow_up.awaiting_approval',
+      title: `Follow-up ${row.stepNumber}/${row.totalSteps} to ${lead.contactEmail} awaits approval`,
+      href: '/communication/follow-ups',
+      dedupeKey: 'follow_up.awaiting_approval',
+    });
     return 'skipped';
   }
 

@@ -136,6 +136,9 @@ export async function creditTokens(
   }
 }
 
+/** Balance at/below which the workspace gets a "tokens low" nudge. */
+const LOW_TOKEN_THRESHOLD = 100n;
+
 /** Debit tokens for metered usage. No floor check — usage debits record
  *  what actually happened; the gates prevent runaway spending. */
 export async function debitTokens(
@@ -144,7 +147,25 @@ export async function debitTokens(
 ): Promise<TokenTransaction> {
   const tokens = BigInt(input.tokens);
   if (tokens <= 0n) throw invalid('debit must be positive');
-  return applyDelta(workspaceId, -tokens, { ...input, kind: 'usage' });
+  const tx = await applyDelta(workspaceId, -tokens, { ...input, kind: 'usage' });
+
+  // Low-balance nudge: fires once (deduped while unread) as the wallet
+  // crosses the threshold, so operators top up BEFORE the gates pause
+  // discovery/drafting. Best-effort — never fails the debit.
+  if (tx.balanceAfter <= LOW_TOKEN_THRESHOLD) {
+    const { notify } = await import('./notifications');
+    await notify(workspaceId, {
+      kind: 'tokens.low',
+      title:
+        tx.balanceAfter <= 0n
+          ? 'Out of tokens — discovery, drafting and translation are paused'
+          : `Tokens running low (${tx.balanceAfter.toLocaleString()} left)`,
+      body: 'Buy a token pack to keep the pipeline running.',
+      href: '/settings/billing',
+      dedupeKey: 'tokens.low',
+    });
+  }
+  return tx;
 }
 
 /**

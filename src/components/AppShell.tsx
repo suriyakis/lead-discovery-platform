@@ -56,6 +56,7 @@ export async function AppShell({
   // for the user's active workspace. Best-effort — degrades to all
   // zeros when the user has no active workspace yet.
   let navCounts: NavCounts = { draftsPending: 0, reviewPending: 0, leadsOpen: 0 };
+  let unreadNotifications = 0;
   if (session?.user?.id) {
     const userRows = await db
       .select({ activeWorkspaceId: users.activeWorkspaceId })
@@ -67,6 +68,13 @@ export async function AppShell({
       activeId ?? myWorkspaces[0]?.workspace.id ?? null;
     if (fallback !== null) {
       navCounts = await getNavCounts({ workspaceId: BigInt(fallback) });
+      const { unreadNotificationCount } = await import(
+        '@/lib/services/notifications'
+      );
+      unreadNotifications = await unreadNotificationCount({
+        workspaceId: BigInt(fallback),
+        userId: session.user.id,
+      });
     }
   }
 
@@ -75,6 +83,7 @@ export async function AppShell({
     (session?.user?.email ? (
       <DefaultRightSlot
         email={session.user.email}
+        unreadNotifications={unreadNotifications}
         myWorkspaces={myWorkspaces.map((m) => ({
           id: m.workspace.id.toString(),
           name: m.workspace.name,
@@ -147,13 +156,49 @@ export async function AppShell({
 
 function DefaultRightSlot({
   email,
+  unreadNotifications,
   myWorkspaces,
 }: Readonly<{
   email: string;
+  unreadNotifications: number;
   myWorkspaces: React.ComponentProps<typeof WorkspaceSwitcher>['workspaces'];
 }>) {
   return (
     <>
+      <a
+        href="/notifications"
+        title="Notifications"
+        style={{
+          position: 'relative',
+          display: 'inline-flex',
+          alignItems: 'center',
+          textDecoration: 'none',
+          fontSize: '1.1rem',
+          lineHeight: 1,
+          padding: '0.3rem',
+        }}
+      >
+        🔔
+        {unreadNotifications > 0 ? (
+          <span
+            style={{
+              position: 'absolute',
+              top: '-0.25rem',
+              right: '-0.45rem',
+              background: 'oklch(0.62 0.22 25)',
+              color: 'white',
+              borderRadius: '999px',
+              fontSize: '0.68rem',
+              fontWeight: 700,
+              minWidth: '1.1rem',
+              textAlign: 'center',
+              padding: '0.05rem 0.25rem',
+            }}
+          >
+            {unreadNotifications > 99 ? '99+' : unreadNotifications}
+          </span>
+        ) : null}
+      </a>
       {myWorkspaces.length > 1 ? (
         <WorkspaceSwitcher workspaces={myWorkspaces} />
       ) : null}
