@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -11,6 +10,7 @@ import { isSuperAdmin } from '@/lib/services/context';
 import {
   listAllWorkspaces,
   listImpersonationSessions,
+  platformTotals,
   platformWorkspaceStats,
   recentAuditAcrossWorkspaces,
 } from '@/lib/services/admin';
@@ -26,10 +26,10 @@ export default async function AdminPage() {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
       return (
-        <AppShell>
+        <div className="dashboard-wrap">
             <h1>Admin (god mode)</h1>
             <p>You don&apos;t belong to a workspace yet.</p>
-          </AppShell>
+          </div>
       );
     }
     throw err;
@@ -37,7 +37,7 @@ export default async function AdminPage() {
 
   if (!isSuperAdmin(ctx)) {
     return (
-      <AppShell>
+      <div className="dashboard-wrap">
           <p className="muted">
             <Link href="/dashboard">Dashboard</Link>
           </p>
@@ -45,27 +45,59 @@ export default async function AdminPage() {
           <p className="form-error">
             This area is for platform super-admins only.
           </p>
-        </AppShell>
+        </div>
     );
   }
 
-  const [workspaces, activeSessions, recentAudit, billingStats] = await Promise.all([
+  const [workspaces, activeSessions, recentAudit, billingStats, totals] = await Promise.all([
     listAllWorkspaces(ctx),
     listImpersonationSessions(ctx, { activeOnly: true }),
     recentAuditAcrossWorkspaces(ctx, 25),
     platformWorkspaceStats(ctx),
+    platformTotals(ctx),
   ]);
 
   return (
-    <AppShell>
-        <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Admin
-        </p>
-        <h1>Admin (god mode)</h1>
+    <div className="dashboard-wrap">
+        <h1>Platform overview</h1>
         <p className="muted">
           Platform-wide views. Every action you take here is audit-logged
           with your user id, regardless of which workspace it lands in.
         </p>
+
+        <div className="admin-totals">
+          <div className="admin-total-card">
+            <strong>{totals.workspacesActive}</strong>
+            <span>active workspaces</span>
+          </div>
+          <div className="admin-total-card">
+            <strong>{totals.usersTotal}</strong>
+            <span>users</span>
+          </div>
+          <div className="admin-total-card">
+            <strong>{totals.subscriptionsActive}</strong>
+            <span>paid subscriptions</span>
+          </div>
+          <div className="admin-total-card">
+            <strong>{totals.tokenBalanceTotal.toLocaleString()}</strong>
+            <span>tokens in wallets</span>
+          </div>
+          <div className="admin-total-card">
+            <strong>€{(totals.usageCostCents30d / 100).toFixed(2)}</strong>
+            <span>provider cost, 30d</span>
+          </div>
+          <div className="admin-total-card">
+            <strong>
+              {totals.supportOpen}
+              {totals.supportUnread > 0 ? (
+                <span className="admin-nav-badge" style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }}>
+                  {totals.supportUnread} unread
+                </span>
+              ) : null}
+            </strong>
+            <span><Link href="/admin/support">open support threads</Link></span>
+          </div>
+        </div>
 
         <section>
           <h2>Workspaces ({workspaces.length})</h2>
@@ -173,6 +205,6 @@ export default async function AdminPage() {
             </ul>
           )}
         </section>
-      </AppShell>
+      </div>
   );
 }

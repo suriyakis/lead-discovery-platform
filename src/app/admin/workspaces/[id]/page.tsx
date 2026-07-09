@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
-import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -71,10 +70,10 @@ export default async function AdminWorkspaceDetail({
   }
   if (!isSuperAdmin(ctx)) {
     return (
-      <AppShell>
+      <div className="dashboard-wrap">
           <h1>Admin</h1>
           <p className="form-error">Super-admin only.</p>
-        </AppShell>
+        </div>
     );
   }
 
@@ -327,7 +326,7 @@ export default async function AdminWorkspaceDetail({
   ).filter((u) => !memberIds.has(u.id));
 
   return (
-    <AppShell>
+    <div className="dashboard-wrap">
         <p className="muted">
           <Link href="/dashboard">Dashboard</Link> /{' '}
           <Link href="/admin">Admin</Link> /{' '}
@@ -677,7 +676,7 @@ export default async function AdminWorkspaceDetail({
             })}
           </ul>
         </section>
-      </AppShell>
+      </div>
   );
 }
 

@@ -6,7 +6,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { inArray, sql } from 'drizzle-orm';
-import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -51,10 +50,10 @@ export default async function PlatformAuditPage({
   }
   if (!isSuperAdmin(ctx)) {
     return (
-      <AppShell>
+      <div className="dashboard-wrap">
         <h1>Audit log</h1>
         <p className="form-error">Super-admin only.</p>
-      </AppShell>
+      </div>
     );
   }
 
@@ -94,7 +93,7 @@ export default async function PlatformAuditPage({
   const userById = new Map(userRows.map((u) => [u.id, u]));
 
   return (
-    <AppShell>
+    <div className="dashboard-wrap">
       <p className="muted">
         <Link href="/dashboard">Dashboard</Link> /{' '}
         <Link href="/admin">Admin</Link> / Audit log
@@ -197,7 +196,7 @@ export default async function PlatformAuditPage({
           </ul>
         )}
       </section>
-    </AppShell>
+    </div>
   );
 }
 

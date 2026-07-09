@@ -7,7 +7,9 @@ import {
   CreditCard,
   Globe2,
   Inbox,
+  ListChecks,
   Network,
+  Radar,
   ShoppingBag,
   Sparkles,
 } from 'lucide-react';
@@ -39,6 +41,8 @@ const STEP_ICONS: Record<OnboardingStepKey, React.ComponentType<{ className?: st
   mailbox: Inbox,
   product: ShoppingBag,
   connector: Network,
+  run: Radar,
+  review: ListChecks,
 };
 
 export default async function OnboardingPage({
@@ -134,6 +138,20 @@ export default async function OnboardingPage({
             {stripeBanner}
           </p>
         ) : null}
+
+        <div
+          className="onboarding-progress"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={totalSteps}
+          aria-valuenow={completedSteps}
+          aria-label={`${completedSteps} of ${totalSteps} setup steps complete`}
+        >
+          <div
+            className="onboarding-progress-fill"
+            style={{ width: `${Math.round((completedSteps / totalSteps) * 100)}%` }}
+          />
+        </div>
 
         <ol className="onboarding-list">
           {state.steps.map((step, i) => {

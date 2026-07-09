@@ -25,3 +25,4 @@ export * from './autopilot';
 export * from './tokens';
 export * from './notifications';
 export * from './health';
+export * from './support';

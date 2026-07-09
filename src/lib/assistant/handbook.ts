@@ -80,6 +80,12 @@ lessons retire automatically. Any lesson can be edited or disabled.
   active mailbox nothing can be sent.
 - /settings/usage: cost breakdown. /notifications: the event feed.
 
+## Contacting a human (/support)
+When the assistant can't solve it, /support (sidebar → Account →
+Support) messages the platform team directly — billing disputes, bugs,
+feature requests. Replies arrive on the same page and as a
+notification. Available to every member, including viewers.
+
 ## Common problems
 - "No leads found": check the recipe has queries + the Web Search
   backend is real (not mock), and the wallet has tokens.

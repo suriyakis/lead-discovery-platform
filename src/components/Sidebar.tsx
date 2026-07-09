@@ -26,6 +26,7 @@ import {
   KanbanSquare,
   Key,
   LayoutDashboard,
+  LifeBuoy,
   ListChecks,
   Lightbulb,
   type LucideIcon,
@@ -33,7 +34,6 @@ import {
   MailWarning,
   MessagesSquare,
   Network,
-  Package,
   PencilLine,
   Receipt,
   Send,
@@ -56,7 +56,7 @@ interface NavItem {
   match?: ReadonlyArray<string>;
   /** Pull a count from the navCounts payload by key. Renders a small
    *  badge next to the label when the count is > 0. */
-  countKey?: 'draftsPending' | 'reviewPending' | 'leadsOpen';
+  countKey?: 'draftsPending' | 'reviewPending' | 'leadsOpen' | 'supportUnread';
 }
 
 interface NavSection {
@@ -134,6 +134,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     defaultOpen: false,
     items: [
       { href: '/settings/account', label: 'My account', icon: UserCircle },
+      { href: '/support', label: 'Support', icon: LifeBuoy, countKey: 'supportUnread' },
     ],
   },
   {
@@ -146,12 +147,7 @@ const SECTIONS: ReadonlyArray<NavSection> = [
     title: 'Platform',
     defaultOpen: false,
     superAdminOnly: true,
-    items: [
-      { href: '/admin', label: 'God mode', icon: Crown },
-      { href: '/admin/workspaces', label: 'Workspaces', icon: Package },
-      { href: '/admin/users', label: 'Users', icon: Users },
-      { href: '/admin/audit', label: 'Audit log', icon: ShieldCheck },
-    ],
+    items: [{ href: '/admin', label: 'Platform console', icon: Crown }],
   },
 ];
 
@@ -169,6 +165,7 @@ export interface SidebarProps {
     draftsPending: number;
     reviewPending: number;
     leadsOpen: number;
+    supportUnread: number;
   };
 }
 

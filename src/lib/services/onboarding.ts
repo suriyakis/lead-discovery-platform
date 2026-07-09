@@ -15,9 +15,10 @@
 // Each step returns a boolean `done`. The wizard is "completed" once
 // every step is done OR the operator clicks Skip / Finish.
 
-import { and, count, eq } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { connectors } from '@/lib/db/schema/connectors';
+import { connectors, sourceRecords } from '@/lib/db/schema/connectors';
+import { reviewItems } from '@/lib/db/schema/review';
 import { mailboxes } from '@/lib/db/schema/mailing';
 import { productProfiles } from '@/lib/db/schema/products';
 import {
@@ -49,7 +50,9 @@ export type OnboardingStepKey =
   | 'search'
   | 'mailbox'
   | 'product'
-  | 'connector';
+  | 'connector'
+  | 'run'
+  | 'review';
 
 export interface OnboardingStep {
   key: OnboardingStepKey;
@@ -195,6 +198,29 @@ export async function getOnboardingState(
     );
   const connectorDone = Number(connectorRow?.c ?? 0) > 0;
 
+  // ─── Step 6: first discovery run ──────────────────────────────────
+  // Configuration is done; this is the first VALUE moment — records in
+  // the funnel. Any source record counts, however it was discovered.
+  const [recordRow] = await db
+    .select({ c: count() })
+    .from(sourceRecords)
+    .where(eq(sourceRecords.workspaceId, ctx.workspaceId));
+  const runDone = Number(recordRow?.c ?? 0) > 0;
+
+  // ─── Step 7: first review decision ─────────────────────────────────
+  // Approving/rejecting the first leads teaches the learning memory and
+  // unlocks outreach — a lead only becomes contactable once approved.
+  const [decisionRow] = await db
+    .select({ c: count() })
+    .from(reviewItems)
+    .where(
+      and(
+        eq(reviewItems.workspaceId, ctx.workspaceId),
+        inArray(reviewItems.state, ['approved', 'rejected']),
+      ),
+    );
+  const reviewDone = Number(decisionRow?.c ?? 0) > 0;
+
   const steps: OnboardingStep[] = [
     {
       key: 'plan',
@@ -248,6 +274,24 @@ export async function getOnboardingState(
       done: connectorDone,
       href: '/connectors',
       why: connectorDone ? undefined : 'No active connector yet.',
+    },
+    {
+      key: 'run',
+      title: 'Run your first discovery',
+      blurb:
+        'Start a run from the connector (or let the Crawl Engine schedule fire). Discovered companies land in the review queue, already AI-qualified against your product and geo-checked against the recipe’s country.',
+      done: runDone,
+      href: '/connectors',
+      why: runDone ? undefined : 'No records discovered yet — start a run on your connector.',
+    },
+    {
+      key: 'review',
+      title: 'Review your first leads',
+      blurb:
+        'Approve or reject what discovery found. Approvals become contactable leads; every decision (and comment) trains the learning memory, so the platform qualifies better each week.',
+      done: reviewDone,
+      href: '/review',
+      why: reviewDone ? undefined : 'No approve/reject decisions yet.',
     },
   ];
 
