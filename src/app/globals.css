@@ -472,6 +472,23 @@ main {
   cursor: progress;
 }
 
+/* The native dropdown popup doesn't inherit the app theme — without
+ * explicit colors Chromium/Windows renders options in low-contrast
+ * grey-on-dark. Applies to EVERY select in the app: solid background,
+ * full-strength option text, muted group headers (options must set
+ * their own color or they'd inherit the optgroup's). */
+select optgroup {
+  background: var(--brand-bg);
+  color: var(--brand-muted);
+  font-style: normal;
+}
+
+select option {
+  background: var(--brand-bg);
+  color: var(--brand-fg);
+  padding: 0.3rem 0.5rem;
+}
+
 .workspace-switcher-god {
   border-color: oklch(0.78 0.17 50 / 0.6);
   background: oklch(0.78 0.17 50 / 0.08);

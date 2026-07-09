@@ -54,8 +54,13 @@ export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProp
     });
   };
 
+  // God-mode rows carry role='super_admin' internally, but that's the
+  // viewer's PLATFORM privilege, not a role held in the workspace — the
+  // label says "god mode" so it can't be misread as a membership.
   const optionLabel = (w: WorkspaceSwitcherProps['workspaces'][number]) =>
-    `${w.name}${w.isArchived ? ' (archived)' : ''}${w.isDefault ? ' • default' : ''} — ${w.role}`;
+    `${w.name}${w.isArchived ? ' (archived)' : ''}${w.isDefault ? ' • default' : ''} — ${
+      w.isGodMode ? 'god mode' : w.role
+    }`;
 
   return (
     <label
