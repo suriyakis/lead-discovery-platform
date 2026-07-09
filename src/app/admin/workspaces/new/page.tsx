@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { isNextRedirectError } from '@/lib/server-redirect';
 import { eq } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
@@ -67,6 +68,7 @@ export default async function AdminCreateWorkspacePage({
       });
       redirect(`/admin/workspaces/${ws.id}?message=Workspace+created`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : 'failed';
       const params = new URLSearchParams({
         error: m,

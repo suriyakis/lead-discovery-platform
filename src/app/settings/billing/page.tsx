@@ -19,14 +19,17 @@ import {
 } from '@/lib/services/auth-context';
 import {
   BillingError,
+  createCheckoutSession,
   createPortalSession,
 } from '@/lib/services/billing';
 import { canAdminWorkspace } from '@/lib/services/context';
+import { isNextRedirectError } from '@/lib/server-redirect';
+import type { PlanId } from '@/lib/billing/plans';
 
 export default async function BillingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ msg?: string; err?: string }>;
+  searchParams: Promise<{ msg?: string; err?: string; stripe?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -93,12 +96,39 @@ export default async function BillingPage({
       );
       redirect(result.url);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof BillingError
           ? err.message
           : err instanceof Error
             ? err.message
             : 'portal failed';
+      redirect(`/settings/billing?err=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function subscribeToPlan(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const planId = String(formData.get('planId') ?? '') as PlanId;
+    if (planId !== 'starter' && planId !== 'pro') {
+      redirect(`/settings/billing?err=${encodeURIComponent('Unknown plan.')}`);
+    }
+    try {
+      const result = await createCheckoutSession(c, {
+        planId,
+        successUrl: 'https://discover.nulife.pl/settings/billing?stripe=success',
+        cancelUrl: 'https://discover.nulife.pl/settings/billing?stripe=canceled',
+      });
+      redirect(result.url);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof BillingError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'checkout failed';
       redirect(`/settings/billing?err=${encodeURIComponent(m)}`);
     }
   }
@@ -125,6 +155,16 @@ export default async function BillingPage({
 
         {sp.msg ? <p className="form-info">{sp.msg}</p> : null}
         {sp.err ? <p className="form-error">{sp.err}</p> : null}
+        {sp.stripe === 'success' ? (
+          <p className="form-success">
+            Subscription started — your plan updates here as soon as Stripe
+            confirms the payment (usually a few seconds).
+          </p>
+        ) : sp.stripe === 'canceled' ? (
+          <p className="form-info">
+            Checkout canceled — you can subscribe whenever you&apos;re ready.
+          </p>
+        ) : null}
 
         <section>
           <h2>
@@ -297,7 +337,9 @@ export default async function BillingPage({
           <section>
             <h2>Available plans</h2>
             <p className="muted small">
-              To switch plan, open the billing portal above.
+              {ws.stripeSubscriptionId
+                ? 'To switch or cancel your plan, open the billing portal above.'
+                : 'Subscribe below — payment and invoicing are handled by Stripe.'}
             </p>
             <div className="plan-picker">
               {allPlans.map((p) => {
@@ -325,6 +367,15 @@ export default async function BillingPage({
                     </ul>
                     {isCurrent ? (
                       <p className="muted small">Your current plan.</p>
+                    ) : !ws.stripeSubscriptionId && isAdmin && stripeConfigured ? (
+                      <form action={subscribeToPlan}>
+                        <input type="hidden" name="planId" value={p.id} />
+                        <button type="submit" className="primary-btn">
+                          {p.trialDays > 0
+                            ? `Start ${p.trialDays}-day trial`
+                            : 'Subscribe'}
+                        </button>
+                      </form>
                     ) : null}
                   </article>
                 );

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   ArrowRight,
   Check,
@@ -88,6 +89,7 @@ export default async function OnboardingPage({
       });
       redirect(result.url);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m =
         err instanceof BillingError
           ? err.message
