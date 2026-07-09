@@ -22,6 +22,8 @@ import {
   compactWorkspaceKnowledge,
   lastCompactionRun,
 } from '@/lib/services/knowledge-compaction';
+import { synthesizeWorkspaceLearning } from '@/lib/services/learning-synthesis';
+import { isNextRedirectError } from '@/lib/server-redirect';
 import { listProductProfiles } from '@/lib/services/product-profile';
 import { bulkDisableAction, bulkEnableAction } from './actions';
 
@@ -32,6 +34,24 @@ function confidenceBadgeClass(conf: number): string {
   if (conf >= 75) return 'badge badge-good';
   if (conf < 40) return 'badge badge-bad';
   return 'badge';
+}
+
+/** Provenance badge: who taught the platform this rule. */
+function sourceLabel(source: string): { label: string; title: string } | null {
+  switch (source) {
+    case 'synthesis':
+      return {
+        label: '✦ auto-learned',
+        title: 'Proposed by the weekly self-learning pass from recent activity patterns',
+      };
+    case 'draft_edit':
+      return {
+        label: '✎ from your edits',
+        title: 'Learned by comparing an AI draft with the operator’s edited version',
+      };
+    default:
+      return null; // operator-taught is the norm — no badge noise
+  }
 }
 
 const CATEGORY_FILTERS = [
@@ -109,6 +129,26 @@ export default async function LearningPage({
     redirect('/learning');
   }
 
+  async function runSynthesis() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      const s = await synthesizeWorkspaceLearning(c);
+      const msg = !s.ran
+        ? s.skippedReason === 'insufficient_events'
+          ? `Not enough recent activity to learn from yet (${s.eventsExamined} events in the last 14 days — need 10+).`
+          : 'Skipped — no tokens left for the AI pass.'
+        : s.lessonsCreated > 0
+          ? `Learned ${s.lessonsCreated} new rule${s.lessonsCreated === 1 ? '' : 's'} from ${s.eventsExamined} recent events.`
+          : `Examined ${s.eventsExamined} recent events — no reliable new pattern found.`;
+      redirect(`/learning?message=${encodeURIComponent(msg)}`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'synthesis failed';
+      redirect(`/learning?error=${encodeURIComponent(m)}`);
+    }
+  }
+
   return (
     <AppShell>
         <div className="page-header">
@@ -116,8 +156,12 @@ export default async function LearningPage({
             <p className="page-eyebrow">Knowledge base</p>
             <h1 className="page-title">Learning memory</h1>
             <p className="page-lede">
-              Structured lessons distilled from review feedback. Qualification
-              and outreach prompts read these to refine their behavior.
+              Structured lessons the platform follows when qualifying and
+              writing outreach. It learns from four channels: your review
+              comments, your edits to AI drafts, how leads actually reply,
+              and a weekly AI pass that mines recent activity for patterns.
+              Confidence self-adjusts — rules confirmed by outcomes rise,
+              contradicted ones sink and eventually retire.
             </p>
           </div>
           <div className="action-row">
@@ -154,11 +198,22 @@ export default async function LearningPage({
             )}
           </div>
           {isAdmin ? (
-            <form action={runCompaction}>
-              <button type="submit" className="ghost-btn">
-                Compact now
-              </button>
-            </form>
+            <div className="action-row" style={{ display: 'flex', gap: '0.5rem' }}>
+              <form action={runCompaction}>
+                <button type="submit" className="ghost-btn">
+                  Compact now
+                </button>
+              </form>
+              <form action={runSynthesis}>
+                <button
+                  type="submit"
+                  className="ghost-btn"
+                  title="AI pass over the last 14 days of decisions, replies and edits — proposes new rules the base doesn't cover yet"
+                >
+                  ✦ Synthesize now
+                </button>
+              </form>
+            </div>
           ) : null}
         </section>
 
@@ -268,6 +323,19 @@ export default async function LearningPage({
                       <span>
                         {productName ? `→ ${productName}` : 'workspace-wide'}
                       </span>
+                      {(() => {
+                        const s = sourceLabel(l.source);
+                        return s ? (
+                          <span className="badge" title={s.title}>
+                            {s.label}
+                          </span>
+                        ) : null;
+                      })()}
+                      {l.applicationCount > 0 ? (
+                        <span title="How many times qualification/outreach pulled this rule into a prompt">
+                          used {l.applicationCount}×
+                        </span>
+                      ) : null}
                       {!l.enabled ? <span>disabled</span> : null}
                     </div>
                   </li>

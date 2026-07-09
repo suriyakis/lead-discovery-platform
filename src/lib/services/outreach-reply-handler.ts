@@ -135,6 +135,24 @@ export async function handleClassifiedReply(
     },
   });
 
+  // Self-learning: the reply is the real world grading our last outbound
+  // message. Feed it back — event for the weekly synthesizer + confidence
+  // reinforcement of the lessons that shaped the preceding draft.
+  // Fire-and-forget: learning must never delay or break reply handling.
+  void (async () => {
+    const precedingDraftId = await latestOutboundDraftId(ctx, lead);
+    const { learnFromReplyOutcome } = await import('./learning-loop');
+    await learnFromReplyOutcome(ctx, {
+      messageId,
+      replyClass: classification.type,
+      classifierConfidence: classification.confidence,
+      productProfileId: lead.productProfileId,
+      precedingDraftId,
+    });
+  })().catch((err) =>
+    console.error('[outreach-reply-handler] learning hook failed:', err),
+  );
+
   // close_and_suppress: terminal. Unsubscribe/bounce always close +
   // suppress (deliverability + legal). Decline (negative reply) honors
   // the workspace's autoCloseNegative flag so an operator who wants to

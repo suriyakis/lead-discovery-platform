@@ -324,7 +324,7 @@ interface MergeOutcome {
 }
 
 async function mergeClusterWithAI(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId' | 'role'>,
   cluster: LearningLesson[],
 ): Promise<MergeOutcome> {
   const provider = await getAIProviderForCtx(ctx);
@@ -412,6 +412,13 @@ async function mergeClusterWithAI(
       consolidatedRule,
     },
   });
+
+  // The survivor's rule text changed — refresh its embedding so semantic
+  // retrieval matches the consolidated wording, not the pre-merge one.
+  if (consolidatedRule !== survivor.rule) {
+    const { scheduleLessonEmbedding } = await import('./learning');
+    scheduleLessonEmbedding(ctx as WorkspaceContext, survivor.id);
+  }
 
   return { action: 'merge', retiredIds };
 }

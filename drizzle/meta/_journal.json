@@ -393,6 +393,13 @@
       "when": 1783536712497,
       "tag": "0055_open_bastion",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1783574494351,
+      "tag": "0056_eminent_vampiro",
+      "breakpoints": true
     }
   ]
 }
