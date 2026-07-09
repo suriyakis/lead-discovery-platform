@@ -30,6 +30,7 @@ import { purgeOldTrashUnattended, safeSyncOne, syncInbound } from '@/lib/service
 import { processDueCrawlPlans } from '@/lib/services/crawl-engine';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
+import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
 import { processDueHealthChecks } from '@/lib/services/health-check';
 import {
   classifyImapError,
@@ -268,6 +269,7 @@ const handleKnowledgeCompactTick: JobHandler = async () => {
   let processed = 0;
   let merged = 0;
   let retired = 0;
+  let synthesized = 0;
   let failed = 0;
   for (const ws of wss) {
     try {
@@ -282,8 +284,20 @@ const handleKnowledgeCompactTick: JobHandler = async () => {
         err instanceof Error ? err.message : err,
       );
     }
+    // Self-learning synthesis rides the same weekly cadence, AFTER
+    // compaction so it mines a deduplicated rule base. Its own failure
+    // must not count against compaction (and vice versa).
+    try {
+      const s = await synthesizeWorkspaceLearningUnattended(ws.id);
+      synthesized += s.lessonsCreated;
+    } catch (err) {
+      console.error(
+        `[knowledge.compact.tick] synthesis workspace=${ws.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
-  return { workspaces: wss.length, processed, merged, retired, failed };
+  return { workspaces: wss.length, processed, merged, retired, synthesized, failed };
 };
 
 const handleHealthCheckTick: JobHandler = async () => {

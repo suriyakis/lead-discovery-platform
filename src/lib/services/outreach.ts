@@ -92,13 +92,22 @@ export async function generateOutreachDraft(
 
   if (!product.active) throw invalid('product profile is archived');
 
+  // Semantic anchor: rank style/positioning lessons by relevance to this
+  // record once the base outgrows the prompt budget.
+  const normalized = sourceRecord.normalizedData as Record<string, unknown> | null;
+  const lessonContext = [normalized?.title, normalized?.snippet]
+    .filter((v): v is string => typeof v === 'string')
+    .join(' — ')
+    .slice(0, 500);
   const lessons = await getRelevantLessons(ctx, {
     productProfileId: product.id,
     taskType: 'outreach',
+    contextText: lessonContext,
   });
   const wsLessons = await getRelevantLessons(ctx, {
     productProfileId: null,
     taskType: 'outreach',
+    contextText: lessonContext,
   });
   const allLessons = [...lessons, ...wsLessons];
   if (allLessons.length > 0) {
@@ -427,6 +436,30 @@ export async function editOutreachDraft(
       forbiddenStripped: stripped,
     },
   });
+
+  // Self-learning: a material rewrite of an AI-composed draft is free
+  // style supervision — an AI diff distills it into an outreach_style
+  // lesson (once per draft). Only AI/hybrid drafts carry a signal about
+  // the COMPOSER; edits of rules-drafts teach nothing about AI style.
+  // Fire-and-forget — learning never blocks the edit.
+  if (
+    input.body !== undefined &&
+    existing.method !== 'rules' &&
+    nextBody !== existing.body
+  ) {
+    void import('./learning-loop')
+      .then(({ learnFromDraftEdit }) =>
+        learnFromDraftEdit(ctx, {
+          draftId: id,
+          productProfileId: existing.productProfileId,
+          originalBody: existing.body,
+          editedBody: nextBody,
+        }),
+      )
+      .catch((err) =>
+        console.error('[outreach.edit] draft-edit learning failed:', err),
+      );
+  }
 
   return updated;
 }

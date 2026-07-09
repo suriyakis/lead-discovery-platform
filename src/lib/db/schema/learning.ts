@@ -106,6 +106,11 @@ export const learningLessons = pgTable(
     category: text('category').notNull(),
     /** One-sentence imperative, e.g. "Skip councils for Vetrofluid offers." */
     rule: text('rule').notNull(),
+    /** Where this lesson came from:
+     *  - operator:   manual create or extracted from an operator's comment
+     *  - draft_edit: learned by diffing an AI draft against the operator's edit
+     *  - synthesis:  proposed by the weekly self-learning pattern miner */
+    source: text('source').notNull().default('operator'),
     evidenceEventIds: bigint('evidence_event_ids', { mode: 'bigint' })
       .array()
       .notNull()

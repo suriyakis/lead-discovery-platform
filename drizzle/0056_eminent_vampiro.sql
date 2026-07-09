@@ -1,0 +1,1 @@
+ALTER TABLE "learning_lessons" ADD COLUMN "source" text DEFAULT 'operator' NOT NULL;

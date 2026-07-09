@@ -131,15 +131,22 @@ export async function classifySourceRecord(
 
   const inserted: Qualification[] = [];
 
+  // Semantic anchor for lesson retrieval: when the lesson base outgrows the
+  // prompt budget, the ones most similar to THIS record win the slots.
+  const lessonContext = [classifiable.title, classifiable.snippet]
+    .filter(Boolean)
+    .join(' — ')
+    .slice(0, 500);
+
   for (const product of products) {
     // Per-product lesson scope: workspace-wide + this product's lessons.
     const lessons = await getRelevantLessons(
       makeReadCtx(ctx),
-      { productProfileId: product.id, taskType: 'classification' },
+      { productProfileId: product.id, taskType: 'classification', contextText: lessonContext },
     );
     const wsLessons = await getRelevantLessons(
       makeReadCtx(ctx),
-      { productProfileId: null, taskType: 'classification' },
+      { productProfileId: null, taskType: 'classification', contextText: lessonContext },
     );
     const allLessons = [...lessons, ...wsLessons];
 

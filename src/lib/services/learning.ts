@@ -57,6 +57,30 @@ function assertCategory(input: string): LessonCategory {
   return input as LessonCategory;
 }
 
+export type LessonSource = 'operator' | 'draft_edit' | 'synthesis';
+
+// ---- auto-embedding ------------------------------------------------------
+
+/**
+ * Fire-and-forget embedding of a freshly created / edited lesson so the
+ * semantic retrieval paths (reply-assistant, contextText reranking) see it
+ * immediately instead of waiting for a manual bulk embed. Never throws —
+ * a missing embedding provider only degrades retrieval to confidence order.
+ */
+export function scheduleLessonEmbedding(
+  ctx: WorkspaceContext,
+  lessonId: bigint,
+): void {
+  void import('./rag')
+    .then(({ embedLesson }) => embedLesson(ctx, lessonId))
+    .catch((err) =>
+      console.error(
+        `[learning] auto-embed failed for lesson ${lessonId}:`,
+        err instanceof Error ? err.message : err,
+      ),
+    );
+}
+
 // ---- feedback recording ------------------------------------------------
 
 export interface FeedbackInput {
@@ -139,6 +163,10 @@ export async function recordFeedback(
     });
 
     return { event: insertedEvent, lesson };
+  }).then((result) => {
+    // Outside the tx: make the new lesson semantically retrievable now.
+    if (result.lesson) scheduleLessonEmbedding(ctx, result.lesson.id);
+    return result;
   });
 }
 
@@ -421,6 +449,9 @@ export interface CreateLessonInput {
   rule: string;
   productProfileId?: bigint | null;
   confidence?: number;
+  /** Provenance shown on /learning. Defaults to 'operator'. */
+  source?: LessonSource;
+  evidenceEventIds?: readonly bigint[];
 }
 
 export async function createLesson(
@@ -438,6 +469,8 @@ export async function createLesson(
     productProfileId: input.productProfileId ?? null,
     category: input.category,
     rule,
+    source: input.source ?? 'operator',
+    evidenceEventIds: input.evidenceEventIds ? [...input.evidenceEventIds] : [],
     confidence: clampConfidence(input.confidence ?? 65),
     createdBy: ctx.userId,
     updatedBy: ctx.userId,
@@ -449,9 +482,14 @@ export async function createLesson(
     kind: 'learning.lesson.create',
     entityType: 'learning_lesson',
     entityId: inserted.id,
-    payload: { category: inserted.category, productProfileId: input.productProfileId?.toString() ?? null },
+    payload: {
+      category: inserted.category,
+      source: inserted.source,
+      productProfileId: input.productProfileId?.toString() ?? null,
+    },
   });
 
+  scheduleLessonEmbedding(ctx, inserted.id);
   return inserted;
 }
 
@@ -519,6 +557,10 @@ export async function updateLesson(
     });
 
     return updated;
+  }).then((updated) => {
+    // Rule text changed → the stored embedding is stale; refresh it.
+    if (patch.rule !== undefined) scheduleLessonEmbedding(ctx, updated.id);
+    return updated;
   });
 }
 
@@ -580,20 +622,89 @@ export interface LessonQuery {
 }
 
 /**
- * Phase 5 retrieval: filter by workspace/category/(product) + enabled,
- * rank by confidence then recency. Phase 12 reranks via embedding similarity
- * against `contextText`.
+ * Retrieval: filter by workspace/category/(product) + enabled, rank by
+ * confidence then recency. When the caller provides `contextText` AND the
+ * candidate pool exceeds the limit (prompt budget), rerank by embedding
+ * similarity so the lessons most relevant to the record at hand win a
+ * slot instead of just the most confident ones. Falls back to confidence
+ * order on any embedding failure — retrieval must never break a caller.
  */
 export async function getRelevantLessons(
   ctx: WorkspaceContext,
   query: LessonQuery = {},
 ): Promise<LearningLesson[]> {
   const categories = resolveCategoriesForTask(query);
-  const filter: ListLessonsFilter = { enabled: true, limit: query.limit ?? 20 };
+  const limit = query.limit ?? 20;
+  const filter: ListLessonsFilter = { enabled: true, limit };
   if (categories) filter.category = categories;
   if (query.productProfileId !== undefined) filter.productProfileId = query.productProfileId;
 
+  const contextText = query.contextText?.trim();
+  if (contextText) {
+    try {
+      const total = await countLessons(ctx, {
+        category: filter.category,
+        productProfileId: filter.productProfileId,
+        enabled: true,
+      });
+      if (total > limit) {
+        return await rerankLessonsBySimilarity(ctx, filter, contextText, limit);
+      }
+    } catch (err) {
+      console.error(
+        '[learning.getRelevantLessons] semantic rerank failed, using confidence order:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
   return listLessons(ctx, filter);
+}
+
+const RERANK_CANDIDATE_CAP = 200;
+/** Similarity dominates but confidence still matters — a barely-related
+ *  high-confidence rule shouldn't beat a directly-relevant mid one. */
+const RERANK_SIMILARITY_WEIGHT = 0.7;
+
+async function rerankLessonsBySimilarity(
+  ctx: WorkspaceContext,
+  filter: ListLessonsFilter,
+  contextText: string,
+  limit: number,
+): Promise<LearningLesson[]> {
+  const candidates = await listLessons(ctx, { ...filter, limit: RERANK_CANDIDATE_CAP });
+  const { getEmbeddingProviderForCtx } = await import('@/lib/embeddings');
+  const embedder = await getEmbeddingProviderForCtx(ctx);
+  const result = await embedder.embed({ texts: [contextText.slice(0, 2000)] });
+  const queryVec = result.embeddings[0];
+  if (!queryVec) return candidates.slice(0, limit);
+
+  const scored = candidates.map((lesson) => {
+    const sim =
+      lesson.embedding && lesson.embedding.length === queryVec.length
+        ? cosineSimilarity(lesson.embedding, queryVec)
+        : 0;
+    return {
+      lesson,
+      score:
+        sim * RERANK_SIMILARITY_WEIGHT +
+        (lesson.confidence / 100) * (1 - RERANK_SIMILARITY_WEIGHT),
+    };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((s) => s.lesson);
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    na += a[i]! * a[i]!;
+    nb += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
 }
 
 function resolveCategoriesForTask(query: LessonQuery): LessonCategory[] | undefined {
@@ -664,6 +775,67 @@ export async function recordLessonsApplied(
       );
   } catch (err) {
     console.error('[learning.recordLessonsApplied] failed:', err);
+  }
+}
+
+/** Bounds for outcome-driven confidence adjustment. The floor keeps a
+ *  repeatedly-punished lesson visible (an operator can still read and
+ *  delete it); the ceiling leaves headroom so no lesson becomes gospel. */
+const REINFORCE_UP_STEP = 2;
+const REINFORCE_DOWN_STEP = 3;
+const REINFORCE_FLOOR = 5;
+const REINFORCE_CEILING = 95;
+
+/**
+ * Outcome feedback: nudge the confidence of lessons that were APPLIED to a
+ * decision the real world just judged. Approvals / positive replies push
+ * the applied lessons up; rejections / negative replies push them down
+ * (down is steeper — wrong advice is worse than the absence of advice).
+ * Compaction's stale-retirement then naturally garbage-collects lessons
+ * the outcomes keep punishing. Workspace-scoped; never throws.
+ */
+export async function reinforceLessons(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  lessonIds: readonly bigint[],
+  direction: 'up' | 'down',
+  reason: string,
+): Promise<number> {
+  if (lessonIds.length === 0) return 0;
+  try {
+    const updated = await db
+      .update(learningLessons)
+      .set({
+        confidence:
+          direction === 'up'
+            ? sql`LEAST(${learningLessons.confidence} + ${REINFORCE_UP_STEP}, ${REINFORCE_CEILING})`
+            : sql`GREATEST(${learningLessons.confidence} - ${REINFORCE_DOWN_STEP}, ${REINFORCE_FLOOR})`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(learningLessons.workspaceId, ctx.workspaceId),
+          inArray(learningLessons.id, lessonIds as bigint[]),
+        ),
+      )
+      .returning({ id: learningLessons.id });
+    if (updated.length > 0) {
+      const { recordPlatformAuditEvent } = await import('./audit');
+      await recordPlatformAuditEvent(null, {
+        kind: 'learning.lesson.reinforce',
+        entityType: 'learning_lesson',
+        entityId: null,
+        payload: {
+          workspaceId: ctx.workspaceId.toString(),
+          direction,
+          reason,
+          ids: updated.map((u) => u.id.toString()),
+        },
+      });
+    }
+    return updated.length;
+  } catch (err) {
+    console.error('[learning.reinforceLessons] failed:', err);
+    return 0;
   }
 }
 

@@ -291,7 +291,10 @@ async function feedDecisionIntoLearning(
   const confidence = args.reason && args.reason.trim().length > 0 ? 75 : 60;
 
   const quals = await db
-    .select({ productProfileId: qualifications.productProfileId })
+    .select({
+      productProfileId: qualifications.productProfileId,
+      evidence: qualifications.evidence,
+    })
     .from(qualifications)
     .where(
       and(
@@ -299,6 +302,30 @@ async function feedDecisionIntoLearning(
         eq(qualifications.sourceRecordId, args.sourceRecordId),
       ),
     );
+
+  // Outcome reinforcement: the operator's verdict judges the lessons that
+  // steered these qualifications. Approve → the applied lessons earn
+  // confidence; reject → they lose some. Fire-and-forget — reinforcement
+  // must never block the decision itself.
+  const appliedLessonIds = Array.from(
+    new Set(
+      quals.flatMap((q) => {
+        const ev = q.evidence as { matchedLessonIds?: unknown } | null;
+        return Array.isArray(ev?.matchedLessonIds)
+          ? ev.matchedLessonIds.filter((v): v is string => typeof v === 'string' && /^\d+$/.test(v))
+          : [];
+      }),
+    ),
+  ).map(BigInt);
+  if (appliedLessonIds.length > 0) {
+    const { reinforceLessons } = await import('./learning');
+    void reinforceLessons(
+      ctx,
+      appliedLessonIds,
+      args.decision === 'approved' ? 'up' : 'down',
+      `review:${args.decision}`,
+    ).catch(() => {});
+  }
 
   if (quals.length === 0) {
     await recordFeedback(ctx, {

@@ -58,6 +58,19 @@ Upload product docs (text, PDF, DOCX) and index them — the reply
 assistant and pitch composer ground their answers in these. Re-index
 after replacing a file.
 
+## Learning memory (/learning) — the platform teaches itself
+Lessons are rules qualification and outreach follow. They come from
+four channels: (1) operator review comments, auto-extracted; (2) the
+operator's edits to AI drafts — a material rewrite is diffed and
+distilled into a style rule (badge "from your edits"); (3) reply
+outcomes — a positive reply raises the confidence of the lessons that
+shaped the email, a decline lowers it; (4) a weekly AI synthesis pass
+that mines the recent decision/reply stream for patterns and proposes
+new rules (badge "auto-learned", modest starting confidence). Admins
+can trigger "Synthesize now" and "Compact now" on /learning.
+Confidence self-adjusts from outcomes; persistently contradicted
+lessons retire automatically. Any lesson can be edited or disabled.
+
 ## Settings that matter
 - /settings/integrations: AI provider (BYOK), Web Search backend
   (Gemini grounding recommended), embeddings, research provider.
