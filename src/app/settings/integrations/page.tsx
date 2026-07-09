@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { isNextRedirectError } from '@/lib/server-redirect';
 import { AppShell } from '@/components/AppShell';
 import { SettingsNav } from '@/components/SettingsNav';
 import { ProviderModelPair } from '@/components/ProviderModelPair';
@@ -226,6 +227,7 @@ export default async function IntegrationsPage({
       await setSecret(c, SERPAPI_SECRET_KEY, value);
       redirect('/settings/integrations?ok=saved');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(`/settings/integrations?err=${encodeURIComponent(err.code)}`);
       }
@@ -240,6 +242,7 @@ export default async function IntegrationsPage({
       await deleteSecret(c, SERPAPI_SECRET_KEY);
       redirect('/settings/integrations?ok=cleared');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(`/settings/integrations?err=${encodeURIComponent(err.code)}`);
       }
@@ -255,6 +258,7 @@ export default async function IntegrationsPage({
       await setSecret(c, OPENAI_SECRET_KEY, value);
       redirect('/settings/integrations?ok=saved&provider=openai');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=openai`,
@@ -271,6 +275,7 @@ export default async function IntegrationsPage({
       await deleteSecret(c, OPENAI_SECRET_KEY);
       redirect('/settings/integrations?ok=cleared&provider=openai');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=openai`,
@@ -288,6 +293,7 @@ export default async function IntegrationsPage({
       await setSecret(c, ANTHROPIC_SECRET_KEY, value);
       redirect('/settings/integrations?ok=saved&provider=anthropic');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=anthropic`,
@@ -304,6 +310,7 @@ export default async function IntegrationsPage({
       await deleteSecret(c, ANTHROPIC_SECRET_KEY);
       redirect('/settings/integrations?ok=cleared&provider=anthropic');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=anthropic`,
@@ -321,6 +328,7 @@ export default async function IntegrationsPage({
       await setSecret(c, GEMINI_SECRET_KEY, value);
       redirect('/settings/integrations?ok=saved&provider=gemini');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=gemini`,
@@ -337,6 +345,7 @@ export default async function IntegrationsPage({
       await deleteSecret(c, GEMINI_SECRET_KEY);
       redirect('/settings/integrations?ok=cleared&provider=gemini');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=gemini`,
@@ -354,6 +363,7 @@ export default async function IntegrationsPage({
       await setSecret(c, PERPLEXITY_SECRET_KEY, value);
       redirect('/settings/integrations?ok=saved&provider=perplexity');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=perplexity`,
@@ -421,6 +431,7 @@ export default async function IntegrationsPage({
       });
       redirect('/settings/integrations?ok=providers-saved');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof ProviderSettingsError) {
         redirect(`/settings/integrations?err=${encodeURIComponent(err.code)}&provider=active`);
       }
@@ -437,6 +448,7 @@ export default async function IntegrationsPage({
       await updateWorkspaceVectorStorageQuota(c, quotaMb);
       redirect('/settings/integrations?ok=quota-saved&provider=vector_storage');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const detail = err instanceof Error ? err.message : 'invalid quota';
       redirect(
         `/settings/integrations?err=${encodeURIComponent(detail)}&provider=vector_storage`,
@@ -462,6 +474,7 @@ export default async function IntegrationsPage({
           : { ok: false, detail: probe.reason };
       }
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       result = {
         ok: false,
         detail: err instanceof Error ? err.message : String(err),
@@ -480,6 +493,7 @@ export default async function IntegrationsPage({
       await deleteSecret(c, PERPLEXITY_SECRET_KEY);
       redirect('/settings/integrations?ok=cleared&provider=perplexity');
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=perplexity`,
@@ -500,6 +514,7 @@ export default async function IntegrationsPage({
     try {
       result = await provider.testConnection(c);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       result = {
         ok: false,
         detail: err instanceof Error ? err.message : String(err),
@@ -522,6 +537,7 @@ export default async function IntegrationsPage({
       }
       result = await provider.healthCheck();
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       result = {
         ok: false,
         detail: err instanceof Error ? err.message : String(err),
@@ -544,6 +560,7 @@ export default async function IntegrationsPage({
       }
       result = await provider.healthCheck();
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       result = {
         ok: false,
         detail: err instanceof Error ? err.message : String(err),
@@ -566,6 +583,7 @@ export default async function IntegrationsPage({
       }
       result = await provider.testConnection();
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       result = {
         ok: false,
         detail: err instanceof Error ? err.message : String(err),
