@@ -56,7 +56,12 @@ export async function AppShell({
   // Resolve the workspace THE SAME WAY pages do (incl. the god-mode
   // branch and the ignore-foreign-pointer rule for normal users) so the
   // shell's badges never show a different tenant than the page content.
-  let navCounts: NavCounts = { draftsPending: 0, reviewPending: 0, leadsOpen: 0 };
+  let navCounts: NavCounts = {
+    draftsPending: 0,
+    reviewPending: 0,
+    leadsOpen: 0,
+    supportUnread: 0,
+  };
   let unreadNotifications = 0;
   if (session?.user?.id) {
     try {

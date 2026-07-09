@@ -113,6 +113,61 @@ export async function listAllWorkspaces(
   return out;
 }
 
+// ---- platform totals (console overview cards) -----------------------
+
+export interface PlatformTotals {
+  workspacesActive: number;
+  usersTotal: number;
+  subscriptionsActive: number;
+  /** Sum of every workspace wallet, in tokens. */
+  tokenBalanceTotal: bigint;
+  /** Estimated provider cost across the platform, last 30 days, cents. */
+  usageCostCents30d: number;
+  supportOpen: number;
+  supportUnread: number;
+}
+
+export async function platformTotals(ctx: WorkspaceContext): Promise<PlatformTotals> {
+  assertSuperAdmin(ctx, 'admin.platform_totals');
+  const { supportThreads } = await import('@/lib/db/schema/support');
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [wsRow, userRow, subRow, balanceRow, usageRow, supportOpenRow, supportUnreadRow] =
+    await Promise.all([
+      db.select({ c: count() }).from(workspaces).where(eq(workspaces.status, 'active')),
+      db.select({ c: count() }).from(users),
+      db
+        .select({ c: count() })
+        .from(workspaces)
+        .where(eq(workspaces.subscriptionStatus, 'active')),
+      db
+        .select({ s: sql<string>`coalesce(sum(${workspaces.tokenBalance}), 0)` })
+        .from(workspaces),
+      db
+        .select({ s: sql<number>`coalesce(sum(${usageLog.costEstimateCents}), 0)::int` })
+        .from(usageLog)
+        .where(sql`${usageLog.createdAt} > ${since.toISOString()}::timestamptz`),
+      db
+        .select({ c: count() })
+        .from(supportThreads)
+        .where(eq(supportThreads.status, 'open')),
+      db
+        .select({ c: count() })
+        .from(supportThreads)
+        .where(eq(supportThreads.adminUnread, true)),
+    ]);
+
+  return {
+    workspacesActive: Number(wsRow[0]?.c ?? 0),
+    usersTotal: Number(userRow[0]?.c ?? 0),
+    subscriptionsActive: Number(subRow[0]?.c ?? 0),
+    tokenBalanceTotal: BigInt(balanceRow[0]?.s ?? '0'),
+    usageCostCents30d: Number(usageRow[0]?.s ?? 0),
+    supportOpen: Number(supportOpenRow[0]?.c ?? 0),
+    supportUnread: Number(supportUnreadRow[0]?.c ?? 0),
+  };
+}
+
 // ---- billing / usage stats (super-admin) ---------------------------
 
 export interface WorkspaceBillingStatsRow {

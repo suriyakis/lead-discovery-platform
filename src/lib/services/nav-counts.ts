@@ -8,6 +8,7 @@ import { db } from '@/lib/db/client';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { reviewItems } from '@/lib/db/schema/review';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { supportThreads } from '@/lib/db/schema/support';
 import type { WorkspaceContext } from './context';
 
 export interface NavCounts {
@@ -17,15 +18,22 @@ export interface NavCounts {
   reviewPending: number;
   /** Pipeline leads not closed. */
   leadsOpen: number;
+  /** Support threads with an unread admin reply. */
+  supportUnread: number;
 }
 
-const ZERO: NavCounts = { draftsPending: 0, reviewPending: 0, leadsOpen: 0 };
+const ZERO: NavCounts = {
+  draftsPending: 0,
+  reviewPending: 0,
+  leadsOpen: 0,
+  supportUnread: 0,
+};
 
 export async function getNavCounts(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<NavCounts> {
   try {
-    const [draftsRow, reviewRow, leadsRow] = await Promise.all([
+    const [draftsRow, reviewRow, leadsRow, supportRow] = await Promise.all([
       db
         .select({ n: sql<number>`count(*)::int` })
         .from(outreachDrafts)
@@ -53,11 +61,21 @@ export async function getNavCounts(
             sql`${qualifiedLeads.state} <> 'closed'`,
           ),
         ),
+      db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(supportThreads)
+        .where(
+          and(
+            eq(supportThreads.workspaceId, ctx.workspaceId),
+            eq(supportThreads.customerUnread, true),
+          ),
+        ),
     ]);
     return {
       draftsPending: draftsRow[0]?.n ?? 0,
       reviewPending: reviewRow[0]?.n ?? 0,
       leadsOpen: leadsRow[0]?.n ?? 0,
+      supportUnread: supportRow[0]?.n ?? 0,
     };
   } catch (err) {
     console.warn('[nav-counts] degraded to zero:', err);

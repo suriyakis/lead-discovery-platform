@@ -8,7 +8,9 @@ import {
   type WorkspaceContext,
   makeWorkspaceContext,
 } from '@/lib/services/context';
-import { createConnector } from '@/lib/services/connector-run';
+import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
+import { reviewItems } from '@/lib/db/schema/review';
+import { approveReviewItem } from '@/lib/services/review';
 import {
   OnboardingError,
   getOnboardingState,
@@ -69,10 +71,10 @@ afterAll(async () => {
 });
 
 describe('getOnboardingState', () => {
-  it('returns 6 steps with sensible defaults on a fresh workspace', async () => {
+  it('returns 8 steps with sensible defaults on a fresh workspace', async () => {
     const s = await setup();
     const state = await getOnboardingState(ctx(s.workspaceA, s.ownerA));
-    expect(state.steps).toHaveLength(6);
+    expect(state.steps).toHaveLength(8);
     expect(state.steps.map((x) => x.key)).toEqual([
       'plan',
       'ai',
@@ -80,6 +82,8 @@ describe('getOnboardingState', () => {
       'mailbox',
       'product',
       'connector',
+      'run',
+      'review',
     ]);
     // Plan is auto-done because new workspaces are 'trial'.
     expect(step(state, 'plan').done).toBe(true);
@@ -90,6 +94,8 @@ describe('getOnboardingState', () => {
     expect(step(state, 'mailbox').done).toBe(false);
     expect(step(state, 'product').done).toBe(false);
     expect(step(state, 'connector').done).toBe(false);
+    expect(step(state, 'run').done).toBe(false);
+    expect(step(state, 'review').done).toBe(false);
     expect(state.nextStepIdx).toBe(1);
     expect(state.effectivelyComplete).toBe(false);
   });
@@ -178,11 +184,48 @@ describe('getOnboardingState', () => {
       status: 'active',
     });
     await createProductProfile(c, { name: 'P' });
-    await createConnector(c, { templateType: 'mock', name: 'M', config: {} });
+    const connector = await createConnector(c, { templateType: 'mock', name: 'M', config: {} });
+    // First-value steps: run discovery, then decide one review item.
+    const recipe = await createRecipe(c, {
+      connectorId: connector.id,
+      name: 'r',
+      selectors: { seed: 'onboarding', count: 1, delayMs: 0 },
+    });
+    await startRun(c, { connectorId: connector.id, recipeId: recipe.id, wait: true });
+    const reviews = await db
+      .select()
+      .from(reviewItems)
+      .where(eq(reviewItems.workspaceId, s.workspaceA));
+    await approveReviewItem(c, reviews[0]!.id);
+
     const state = await getOnboardingState(c);
     expect(state.steps.every((x) => x.done)).toBe(true);
     expect(state.effectivelyComplete).toBe(true);
     expect(state.nextStepIdx).toBe(-1);
+  });
+
+  it('run and review steps flip as the workspace produces value', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    const connector = await createConnector(c, { templateType: 'mock', name: 'M', config: {} });
+    const recipe = await createRecipe(c, {
+      connectorId: connector.id,
+      name: 'r',
+      selectors: { seed: 'onboarding2', count: 1, delayMs: 0 },
+    });
+    await startRun(c, { connectorId: connector.id, recipeId: recipe.id, wait: true });
+
+    let state = await getOnboardingState(c);
+    expect(step(state, 'run').done).toBe(true);
+    expect(step(state, 'review').done).toBe(false);
+
+    const reviews = await db
+      .select()
+      .from(reviewItems)
+      .where(eq(reviewItems.workspaceId, s.workspaceA));
+    await approveReviewItem(c, reviews[0]!.id);
+    state = await getOnboardingState(c);
+    expect(step(state, 'review').done).toBe(true);
   });
 
   it('effectivelyComplete also flips when workspace.onboardingStatus is completed even if steps are missing', async () => {

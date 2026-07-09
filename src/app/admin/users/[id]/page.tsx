@@ -4,7 +4,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
-import { AppShell } from '@/components/AppShell';
 import { UserAvatar } from '@/components/UserAvatar';
 import { auth } from '@/lib/auth';
 import {
@@ -58,10 +57,10 @@ export default async function AdminUserDetail({
   }
   if (!isSuperAdmin(ctx)) {
     return (
-      <AppShell>
+      <div className="dashboard-wrap">
         <h1>Users</h1>
         <p className="form-error">Super-admin only.</p>
-      </AppShell>
+      </div>
     );
   }
 
@@ -222,7 +221,7 @@ export default async function AdminUserDetail({
   }
 
   return (
-    <AppShell>
+    <div className="dashboard-wrap">
       <p className="muted">
         <Link href="/dashboard">Dashboard</Link> /{' '}
         <Link href="/admin">Admin</Link> /{' '}
@@ -493,7 +492,7 @@ export default async function AdminUserDetail({
           </form>
         </section>
       ) : null}
-    </AppShell>
+    </div>
   );
 }
 

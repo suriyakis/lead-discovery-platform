@@ -3,7 +3,6 @@
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -42,10 +41,10 @@ export default async function AdminWorkspacesPage({
   }
   if (!isSuperAdmin(ctx)) {
     return (
-      <AppShell>
+      <div className="dashboard-wrap">
         <h1>Workspaces</h1>
         <p className="form-error">Super-admin only.</p>
-      </AppShell>
+      </div>
     );
   }
 
@@ -82,7 +81,7 @@ export default async function AdminWorkspacesPage({
   }
 
   return (
-    <AppShell>
+    <div className="dashboard-wrap">
       <p className="muted">
         <Link href="/dashboard">Dashboard</Link> /{' '}
         <Link href="/admin">Admin</Link> / Workspaces
@@ -183,6 +182,6 @@ export default async function AdminWorkspacesPage({
           </ul>
         )}
       </section>
-    </AppShell>
+    </div>
   );
 }

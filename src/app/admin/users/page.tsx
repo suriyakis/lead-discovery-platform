@@ -5,7 +5,6 @@
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { AppShell } from '@/components/AppShell';
 import { UserAvatar } from '@/components/UserAvatar';
 import { auth } from '@/lib/auth';
 import {
@@ -51,10 +50,10 @@ export default async function AdminUsersPage({
   }
   if (!isSuperAdmin(ctx)) {
     return (
-      <AppShell>
+      <div className="dashboard-wrap">
         <h1>Users</h1>
         <p className="form-error">Super-admin only.</p>
-      </AppShell>
+      </div>
     );
   }
 
@@ -132,7 +131,7 @@ export default async function AdminUsersPage({
   }
 
   return (
-    <AppShell>
+    <div className="dashboard-wrap">
       <p className="muted">
         <Link href="/dashboard">Dashboard</Link> /{' '}
         <Link href="/admin">Admin</Link> / Users
@@ -278,7 +277,7 @@ export default async function AdminUsersPage({
         setStatus={setStatus}
         emptyText="No suspended or rejected users."
       />
-    </AppShell>
+    </div>
   );
 }
 
