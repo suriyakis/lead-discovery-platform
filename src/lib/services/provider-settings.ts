@@ -3,8 +3,9 @@
 // integrations page instead of needing an SSH-edit on .env.
 //
 // Resolution model: workspace setting (this table) wins; env var is the
-// fallback. NULL in the workspace row means "inherit the env default",
-// so existing setups without an opt-in stay on the env-driven behaviour.
+// fallback; last comes the auto-detected system default (first vendor
+// with a platform key — see systemDefaultProvider). NULL in the
+// workspace row means "inherit the platform default".
 //
 // Pure read helpers are exported so the per-ctx factories in
 // src/lib/{ai,embeddings,research,search} can consult the workspace
@@ -183,18 +184,76 @@ export async function getProviderSettings(
 }
 
 /**
- * Cascade resolver: workspace setting (when set) → env var → 'mock'.
- * Used by every per-ctx provider factory so the resolution logic lives
- * in one place.
+ * Cascade resolver: workspace setting (when set) → env var → system
+ * default (see `systemDefaultProvider`). Used by every per-ctx provider
+ * factory so the resolution logic lives in one place.
  */
 export interface ResolvedProvider {
   id: string;
   source: 'workspace' | 'env' | 'default';
 }
 
+export type ProviderCapability =
+  | 'ai'
+  | 'embedding'
+  | 'research'
+  | 'search'
+  | 'vector_storage';
+
+// Vendor preference per capability for the system default, in order.
+// A vendor qualifies when its platform key env var is set (envKey null
+// = keyless vendor, always qualifies). Gemini leads the AI/research
+// lists because it's the vendor the platform itself runs on.
+const SYSTEM_DEFAULT_CANDIDATES: Record<
+  ProviderCapability,
+  ReadonlyArray<{ id: string; envKey: string | null }>
+> = {
+  ai: [
+    { id: 'gemini', envKey: 'GEMINI_API_KEY' },
+    { id: 'openai', envKey: 'OPENAI_API_KEY' },
+    { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
+  ],
+  embedding: [{ id: 'openai', envKey: 'OPENAI_API_KEY' }],
+  research: [
+    { id: 'gemini', envKey: 'GEMINI_API_KEY' },
+    { id: 'perplexity', envKey: 'PERPLEXITY_API_KEY' },
+  ],
+  search: [{ id: 'serpapi', envKey: 'SERPAPI_KEY' }],
+  vector_storage: [{ id: 'pgvector', envKey: null }],
+};
+
+/**
+ * System default for a capability when neither the workspace nor the
+ * env selector picked a provider. Auto-detects the first vendor whose
+ * platform key is configured, so a fresh workspace is live on real
+ * providers the moment the server has keys — no per-workspace setup.
+ *
+ * When NO platform key exists for the capability:
+ *   - production  → returns the preferred real vendor anyway, so calls
+ *     fail loudly with "no key configured" instead of fabricating mock
+ *     data. Exception: 'search' stays mock because grounded research is
+ *     its real fallback (see getWebSearchProviderForCtx) and a loud
+ *     serpapi failure would mask that path.
+ *   - dev/test    → 'mock'.
+ */
+export function systemDefaultProvider(
+  capability: ProviderCapability,
+): ResolvedProvider {
+  const candidates = SYSTEM_DEFAULT_CANDIDATES[capability];
+  for (const c of candidates) {
+    if (c.envKey === null || process.env[c.envKey]?.trim()) {
+      return { id: c.id, source: 'default' };
+    }
+  }
+  if (process.env.NODE_ENV === 'production' && capability !== 'search') {
+    return { id: candidates[0]!.id, source: 'default' };
+  }
+  return { id: 'mock', source: 'default' };
+}
+
 export async function resolveActiveProvider(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  capability: 'ai' | 'embedding' | 'research' | 'search' | 'vector_storage',
+  capability: ProviderCapability,
   envFallback: string | undefined,
 ): Promise<ResolvedProvider> {
   const settings = await getProviderSettings(ctx);
@@ -213,7 +272,7 @@ export async function resolveActiveProvider(
   }
   const envVal = envFallback?.trim();
   if (envVal) return { id: envVal, source: 'env' };
-  return { id: 'mock', source: 'default' };
+  return systemDefaultProvider(capability);
 }
 
 // ─── Write ────────────────────────────────────────────────────────────

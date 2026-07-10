@@ -16,9 +16,11 @@ import {
   getOnboardingState,
   markOnboardingComplete,
   markOnboardingStarted,
+  setSetupMode,
   type OnboardingState,
   type OnboardingStepKey,
 } from '@/lib/services/onboarding';
+import { getProviderSettings } from '@/lib/services/provider-settings';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { updateProviderSettings } from '@/lib/services/provider-settings';
 import { setSecret } from '@/lib/services/secrets';
@@ -71,11 +73,12 @@ afterAll(async () => {
 });
 
 describe('getOnboardingState', () => {
-  it('returns 8 steps with sensible defaults on a fresh workspace', async () => {
+  it('returns 9 steps with sensible defaults on a fresh workspace', async () => {
     const s = await setup();
     const state = await getOnboardingState(ctx(s.workspaceA, s.ownerA));
-    expect(state.steps).toHaveLength(8);
+    expect(state.steps).toHaveLength(9);
     expect(state.steps.map((x) => x.key)).toEqual([
+      'setup',
       'plan',
       'ai',
       'search',
@@ -85,6 +88,9 @@ describe('getOnboardingState', () => {
       'run',
       'review',
     ]);
+    // Setup mode hasn't been chosen yet — it's the first thing to do.
+    expect(step(state, 'setup').done).toBe(false);
+    expect(state.nextStepIdx).toBe(0);
     // Plan is auto-done because new workspaces are 'trial'.
     expect(step(state, 'plan').done).toBe(true);
     // The others are not done yet (test env: mock AI, mock search, no key).
@@ -96,7 +102,6 @@ describe('getOnboardingState', () => {
     expect(step(state, 'connector').done).toBe(false);
     expect(step(state, 'run').done).toBe(false);
     expect(step(state, 'review').done).toBe(false);
-    expect(state.nextStepIdx).toBe(1);
     expect(state.effectivelyComplete).toBe(false);
   });
 
@@ -171,6 +176,7 @@ describe('getOnboardingState', () => {
   it('effectivelyComplete flips when every step is done', async () => {
     const s = await setup();
     const c = ctx(s.workspaceA, s.ownerA);
+    await setSetupMode(c, 'advanced');
     await updateProviderSettings(c, { aiProvider: 'openai', researchProvider: 'gemini' });
     await setSecret(c, 'openai.apiKey', 'sk-test');
     await db.insert(mailboxes).values({
@@ -236,6 +242,73 @@ describe('getOnboardingState', () => {
       .where(eq(workspaces.id, s.workspaceA));
     const state = await getOnboardingState(ctx(s.workspaceA, s.ownerA));
     expect(state.effectivelyComplete).toBe(true);
+  });
+});
+
+describe('setSetupMode', () => {
+  it('marks the setup step done and persists the mode', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await setSetupMode(c, 'simple');
+    const [ws] = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, s.workspaceA));
+    expect(ws!.setupMode).toBe('simple');
+    const state = await getOnboardingState(c);
+    expect(step(state, 'setup').done).toBe(true);
+  });
+
+  it('switching to simple resets provider-selection overrides to system defaults', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await updateProviderSettings(c, {
+      aiProvider: 'anthropic',
+      researchProvider: 'gemini',
+    });
+    await setSetupMode(c, 'simple');
+    const settings = await getProviderSettings(c);
+    expect(settings.aiProvider).toBeNull();
+    expect(settings.researchProvider).toBeNull();
+  });
+
+  it('switching to advanced keeps provider overrides untouched', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await updateProviderSettings(c, { aiProvider: 'anthropic' });
+    await setSetupMode(c, 'advanced');
+    const settings = await getProviderSettings(c);
+    expect(settings.aiProvider).toBe('anthropic');
+  });
+
+  it('simple mode rewrites the ai/search steps as system-default steps', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await setSetupMode(c, 'simple');
+    const state = await getOnboardingState(c);
+    expect(step(state, 'ai').title).toMatch(/system default/);
+    expect(step(state, 'search').title).toMatch(/system default/);
+    // Test env has no platform keys, so the steps read as a platform
+    // problem, not a "go configure it" instruction.
+    expect(step(state, 'ai').why).toMatch(/contact support/);
+    expect(step(state, 'search').why).toMatch(/contact support/);
+  });
+
+  it('viewer role cannot set the mode', async () => {
+    const s = await setup();
+    await expect(
+      setSetupMode(ctx(s.workspaceA, s.ownerA, 'viewer'), 'simple'),
+    ).rejects.toThrow(OnboardingError);
+  });
+
+  it('rejects unknown modes', async () => {
+    const s = await setup();
+    await expect(
+      setSetupMode(
+        ctx(s.workspaceA, s.ownerA),
+        'banana' as unknown as Parameters<typeof setSetupMode>[1],
+      ),
+    ).rejects.toThrow(/unknown setup mode/);
   });
 });
 

@@ -179,7 +179,7 @@ export function ProviderModelPair({
           onChange={(e) => onProviderChange(e.target.value)}
         >
           <option value={ENV_TOKEN}>
-            inherit env default ({envFallbackLabel})
+            platform default ({envFallbackLabel})
           </option>
           {providers.map((p) => (
             <option key={p} value={p}>

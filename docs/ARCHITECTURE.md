@@ -73,7 +73,9 @@ interface IAIProvider {
   healthCheck(): Promise<{ ok: boolean; detail?: string }>;
 }
 ```
-Selected at boot via `AI_PROVIDER` env var. The `mock` provider returns deterministic stubs for tests and for running the whole platform without any API spend.
+Active-provider resolution (all capabilities, see `src/lib/services/provider-settings.ts`): workspace setting → env selector (`AI_PROVIDER` etc.) → **auto-detected system default** — the first vendor whose platform key env var is set (`systemDefaultProvider`). `mock` is a dev/test tool only: it returns deterministic stubs, is never offered in the customer UI, and in production a capability with no platform key resolves to the preferred real vendor so calls fail loudly ("no key configured") instead of fabricating mock data. Vector storage defaults to `pgvector` (keyless).
+
+**Setup modes** (chosen in onboarding, stored on `workspaces.setup_mode`): `simple` = the workspace runs on the platform's system keys/defaults and `/settings/integrations` is a read-only summary; `advanced` = same defaults but provider selection and BYOK keys are editable. Switching to simple resets provider-selection overrides to NULL (BYOK secrets are kept). NULL setup_mode (legacy workspaces) behaves as advanced.
 
 ### `ISearchProvider`
 ```ts

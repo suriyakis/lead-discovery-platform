@@ -29,10 +29,14 @@ export default defineConfig({
       SEARCH_PROVIDER: 'mock',
       JOB_QUEUE_PROVIDER: 'memory',
       STORAGE_PROVIDER: 'local',
-      // Explicitly blank so the web-search grounded-fallback (which kicks
-      // in when a platform Gemini key exists) can never fire in tests,
-      // even on a machine whose shell exports a real key.
+      // Explicitly blank so the web-search grounded-fallback and the
+      // systemDefaultProvider key auto-detect can never pick up a real
+      // vendor in tests, even on a machine whose shell exports real keys.
       GEMINI_API_KEY: '',
+      OPENAI_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
+      PERPLEXITY_API_KEY: '',
+      SERPAPI_KEY: '',
     },
   },
   resolve: {

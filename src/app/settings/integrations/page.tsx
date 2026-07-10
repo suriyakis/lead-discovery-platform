@@ -27,13 +27,11 @@ import {
   AI_MODELS,
   ALLOWED_AI_PROVIDERS,
   ALLOWED_EMBEDDING_PROVIDERS,
-  ALLOWED_RESEARCH_PROVIDERS,
-  ALLOWED_SEARCH_PROVIDERS,
   ALLOWED_VECTOR_STORAGE_PROVIDERS,
   ProviderSettingsError,
-  RESEARCH_MODELS,
   getProviderSettings,
   resolveActiveProvider,
+  systemDefaultProvider,
   updateProviderSettings,
   type AiProviderId,
   type EmbeddingProviderId,
@@ -41,6 +39,17 @@ import {
   type SearchProviderId,
   type VectorStorageProviderId,
 } from '@/lib/services/provider-settings';
+import {
+  OnboardingError,
+  setSetupMode,
+  type SetupMode,
+} from '@/lib/services/onboarding';
+
+/** Mock is a dev/test tool — never offered to customers in the UI.
+ *  (It stays in the ALLOWED_* lists so tests can select it via the
+ *  service layer.) */
+const nonMock = (arr: ReadonlyArray<string>): ReadonlyArray<string> =>
+  arr.filter((p) => p !== 'mock');
 
 const SERPAPI_SECRET_KEY = 'serpapi.apiKey';
 const SERPAPI_ENV = 'SERPAPI_KEY';
@@ -148,9 +157,12 @@ export default async function IntegrationsPage({
       : platformHasPerplexity
         ? 'platform'
         : 'none';
-  const aiProviderEnv = process.env.AI_PROVIDER ?? 'mock';
-  const researchProviderEnv = process.env.RESEARCH_PROVIDER ?? 'mock';
-  const searchProviderEnvLabel = process.env.SEARCH_PROVIDER ?? 'mock';
+  const aiProviderEnv =
+    process.env.AI_PROVIDER ?? systemDefaultProvider('ai').id;
+  const researchProviderEnv =
+    process.env.RESEARCH_PROVIDER ?? systemDefaultProvider('research').id;
+  const searchProviderEnvLabel =
+    process.env.SEARCH_PROVIDER ?? systemDefaultProvider('search').id;
 
   // Phase 45: per-workspace provider selection. Read the row + resolve
   // each capability so the UI shows both "what you've configured" and
@@ -218,7 +230,28 @@ export default async function IntegrationsPage({
   const workspaceRow = await getWorkspace(ctx);
   const vectorQuotaMb = workspaceRow.vectorStorageQuotaMbPerProduct ?? 20;
 
+  // Setup mode: 'simple' locks this page to a read-only summary of the
+  // system defaults. NULL (pre-setup-mode workspaces) behaves as
+  // 'advanced' so nothing legacy tenants configured gets locked away.
+  const setupMode: SetupMode =
+    workspaceRow.setupMode === 'simple' ? 'simple' : 'advanced';
+  const isSimple = setupMode === 'simple';
+
   // ---- server actions ----
+  async function switchSetupMode(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const mode = String(formData.get('mode') ?? '') as SetupMode;
+    try {
+      await setSetupMode(c, mode);
+      redirect(`/settings/integrations?ok=mode-${mode}`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const code = err instanceof OnboardingError ? err.code : 'setup_mode_failed';
+      redirect(`/settings/integrations?err=${encodeURIComponent(code)}`);
+    }
+  }
+
   async function saveKey(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -611,7 +644,11 @@ export default async function IntegrationsPage({
                 ? 'Workspace key cleared.'
                 : sp.ok === 'providers-saved'
                   ? 'Active providers saved.'
-                  : 'Done.'}
+                  : sp.ok === 'mode-simple'
+                    ? 'Switched to Simple setup — the workspace now runs on the platform system defaults.'
+                    : sp.ok === 'mode-advanced'
+                      ? 'Switched to Advanced setup — provider selection and workspace keys are now editable.'
+                      : 'Done.'}
           </p>
         ) : null}
         {sp.err ? <p className="form-error">Error: {sp.err}</p> : null}
@@ -633,6 +670,107 @@ export default async function IntegrationsPage({
         ) : null}
 
         <section>
+          <h2>Setup mode</h2>
+          <p className="muted">
+            <span className="badge">{isSimple ? 'Simple' : 'Advanced'}</span>{' '}
+            {isSimple
+              ? '— this workspace runs on the platform’s system API keys and default providers. Everything below is preconfigured; usage is billed from your token balance.'
+              : '— system defaults apply until you override them; provider selection and workspace (BYOK) keys are editable below.'}
+          </p>
+          {isAdmin ? (
+            <form action={switchSetupMode}>
+              <input
+                type="hidden"
+                name="mode"
+                value={isSimple ? 'advanced' : 'simple'}
+              />
+              <button type="submit" className="ghost-btn">
+                {isSimple ? 'Switch to Advanced setup' : 'Switch to Simple setup'}
+              </button>
+              {!isSimple ? (
+                <p className="muted small" style={{ marginTop: '0.5rem' }}>
+                  Switching to Simple resets any provider overrides back to
+                  the system defaults. Stored workspace API keys are kept.
+                </p>
+              ) : null}
+            </form>
+          ) : (
+            <p className="muted small">
+              Only workspace admins and owners can change the setup mode.
+            </p>
+          )}
+        </section>
+
+        {isSimple ? (
+          <section>
+            <h2>Active providers (system defaults)</h2>
+            <p className="muted">
+              What actually drives each capability right now. Nothing to
+              configure — switch to Advanced setup to change providers or
+              bring your own API keys (BYOK usage is token-free).
+            </p>
+            <dl>
+              <dt>AI provider (drafts, learning, research, etc.)</dt>
+              <dd>
+                <code>{aiActive.id}</code>
+                <span className="muted small"> — via {aiActive.source}</span>
+              </dd>
+              <dt>Internet Data Extraction</dt>
+              <dd>
+                <code>{qualificationActive.id}</code>
+                <span className="muted small">
+                  {' '}
+                  — via {qualificationActive.source}
+                </span>
+              </dd>
+              <dt>Web Search</dt>
+              <dd>
+                <code>{webSearchActive.id}</code>
+                <span className="muted small"> — via {webSearchActive.source}</span>
+              </dd>
+              <dt>Embedding provider</dt>
+              <dd>
+                <code>{embeddingActive.id}</code>
+                <span className="muted small"> — via {embeddingActive.source}</span>
+              </dd>
+              <dt>Vector storage</dt>
+              <dd>
+                <code>{vectorStorageActive.id}</code>
+                <span className="muted small">
+                  {' '}
+                  — via {vectorStorageActive.source}
+                </span>
+              </dd>
+            </dl>
+            <h3>API keys in use</h3>
+            <dl>
+              {(
+                [
+                  ['OpenAI', openaiEffectiveSource],
+                  ['Anthropic', anthropicEffectiveSource],
+                  ['Gemini', geminiEffectiveSource],
+                  ['Perplexity', perplexityEffectiveSource],
+                  ['SerpAPI', effectiveSource],
+                ] as const
+              ).map(([vendor, source]) => (
+                <div key={vendor} style={{ display: 'contents' }}>
+                  <dt>{vendor}</dt>
+                  <dd>
+                    {source === 'workspace' ? (
+                      <span className="badge badge-good">Workspace key</span>
+                    ) : source === 'platform' ? (
+                      <span className="badge">System key</span>
+                    ) : (
+                      <span className="muted small">not configured</span>
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        ) : (
+          <>
+        <section>
           <h2>Active providers</h2>
           <p className="muted">
             Pick which provider drives each capability for this workspace.
@@ -653,7 +791,7 @@ export default async function IntegrationsPage({
               <div className="provider-select provider-select-group">
                 <span>AI provider (drafts, learning, research, etc.)</span>
                 <ProviderModelPair
-                  providers={ALLOWED_AI_PROVIDERS}
+                  providers={nonMock(ALLOWED_AI_PROVIDERS)}
                   catalog={AI_MODELS}
                   providerName="aiProvider"
                   modelName="aiModel"
@@ -666,7 +804,7 @@ export default async function IntegrationsPage({
               <div className="provider-select provider-select-group">
                 <span>Internet Data Extraction</span>
                 <ProviderModelPair
-                  providers={ALLOWED_AI_PROVIDERS}
+                  providers={nonMock(ALLOWED_AI_PROVIDERS)}
                   catalog={AI_MODELS}
                   providerName="qualificationProvider"
                   modelName="qualificationModel"
@@ -682,7 +820,7 @@ export default async function IntegrationsPage({
                 workspaceValue={providerSettings.embeddingProvider}
                 envFallback={process.env.EMBEDDING_PROVIDER ?? 'mock'}
                 resolved={embeddingActive}
-                options={ALLOWED_EMBEDDING_PROVIDERS}
+                options={nonMock(ALLOWED_EMBEDDING_PROVIDERS)}
               />
               <div className="provider-select provider-select-group">
                 <span>Web Search</span>
@@ -703,7 +841,7 @@ export default async function IntegrationsPage({
                 workspaceValue={providerSettings.vectorStorageProvider}
                 envFallback={process.env.VECTOR_STORAGE_PROVIDER ?? 'mock'}
                 resolved={vectorStorageActive}
-                options={ALLOWED_VECTOR_STORAGE_PROVIDERS}
+                options={nonMock(ALLOWED_VECTOR_STORAGE_PROVIDERS)}
               />
               <div className="action-row" style={{ gridColumn: '1 / -1' }}>
                 <button type="submit" className="primary-btn">
@@ -1244,6 +1382,8 @@ export default async function IntegrationsPage({
             pattern applies.
           </p>
         </section>
+          </>
+        )}
       </AppShell>
   );
 }
@@ -1277,7 +1417,7 @@ function ProviderSelect({
         </span>
       </span>
       <select name={name} defaultValue={value}>
-        <option value="__env__">inherit env default ({envFallback})</option>
+        <option value="__env__">platform default ({envFallback})</option>
         {options.map((opt) => (
           <option key={opt} value={opt}>
             {opt}

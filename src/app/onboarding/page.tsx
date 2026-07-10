@@ -11,6 +11,7 @@ import {
   Network,
   Radar,
   ShoppingBag,
+  SlidersHorizontal,
   Sparkles,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
@@ -28,13 +29,17 @@ import {
 } from '@/lib/services/billing';
 import { canAdminWorkspace } from '@/lib/services/context';
 import {
+  OnboardingError,
   getOnboardingState,
   markOnboardingComplete,
   markOnboardingStarted,
+  setSetupMode,
   type OnboardingStepKey,
+  type SetupMode,
 } from '@/lib/services/onboarding';
 
 const STEP_ICONS: Record<OnboardingStepKey, React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>> = {
+  setup: SlidersHorizontal,
   plan: CreditCard,
   ai: Sparkles,
   search: Globe2,
@@ -76,6 +81,21 @@ export default async function OnboardingPage({
     const c = await getWorkspaceContext();
     await markOnboardingComplete(c);
     redirect('/dashboard');
+  }
+
+  async function chooseSetupMode(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const mode = String(formData.get('mode') ?? '') as SetupMode;
+    try {
+      await setSetupMode(c, mode);
+      redirect('/onboarding');
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof OnboardingError ? err.message : 'could not save setup mode';
+      redirect(`/onboarding?msg=${encodeURIComponent(m)}`);
+    }
   }
 
   async function startCheckout(formData: FormData) {
@@ -160,6 +180,7 @@ export default async function OnboardingPage({
             return (
               <li
                 key={step.key}
+                id={step.key}
                 className={`onboarding-step ${step.done ? 'done' : ''} ${isNext ? 'next' : ''}`}
               >
                 <div className="onboarding-step-icon" aria-hidden="true">
@@ -180,7 +201,13 @@ export default async function OnboardingPage({
                   {step.why && !step.done ? (
                     <p className="onboarding-step-why muted small">{step.why}</p>
                   ) : null}
-                  {step.key === 'plan' ? (
+                  {step.key === 'setup' ? (
+                    <SetupModePicker
+                      current={(state.workspace.setupMode ?? null) as SetupMode | null}
+                      isAdmin={isAdmin}
+                      chooseAction={chooseSetupMode}
+                    />
+                  ) : step.key === 'plan' ? (
                     <PlanPicker
                       plans={availablePlans}
                       currentPlan={state.workspace.plan}
@@ -230,6 +257,94 @@ export default async function OnboardingPage({
         )}
       </div>
     </AppShell>
+  );
+}
+
+function SetupModePicker({
+  current,
+  isAdmin,
+  chooseAction,
+}: {
+  current: SetupMode | null;
+  isAdmin: boolean;
+  chooseAction: (formData: FormData) => Promise<void>;
+}) {
+  if (!isAdmin) {
+    return (
+      <p className="muted small">
+        {current
+          ? `This workspace is on the ${current} setup. Only workspace admins can change it.`
+          : 'A workspace admin needs to pick the setup mode.'}
+      </p>
+    );
+  }
+  const modes: Array<{
+    id: SetupMode;
+    name: string;
+    pitch: string;
+    points: string[];
+  }> = [
+    {
+      id: 'simple',
+      name: 'Simple',
+      pitch: 'Zero configuration. Recommended for most teams.',
+      points: [
+        'Runs on the platform’s system API keys — AI, web search, and storage are preconfigured',
+        'Ready to work as soon as you have tokens or a subscription',
+        'Usage is billed from your token balance',
+        'You can switch to Advanced later at any time',
+      ],
+    },
+    {
+      id: 'advanced',
+      name: 'Advanced',
+      pitch: 'Same system defaults, full control when you want it.',
+      points: [
+        'Starts on the exact same system API keys as Simple',
+        'Change the AI, web-search, embedding, or storage provider per workspace',
+        'Bring your own API keys — BYOK usage is token-free',
+        'Provider settings live under Settings → Integrations',
+      ],
+    },
+  ];
+  return (
+    <div className="plan-picker">
+      {modes.map((m) => {
+        const isCurrent = current === m.id;
+        return (
+          <article
+            key={m.id}
+            className={isCurrent ? 'plan-card plan-card-current' : 'plan-card'}
+          >
+            <header className="plan-card-head">
+              <h3>{m.name}</h3>
+              {isCurrent ? <span className="badge badge-good">Selected</span> : null}
+            </header>
+            <p className="plan-pitch">{m.pitch}</p>
+            <ul className="plan-features">
+              {m.points.map((p) => (
+                <li key={p}>
+                  <Check className="plan-feature-icon" aria-hidden="true" /> {p}
+                </li>
+              ))}
+            </ul>
+            {isCurrent ? (
+              <p className="muted small">
+                Current setup. You can change it here or from{' '}
+                <Link href="/settings/integrations">Integrations settings</Link>.
+              </p>
+            ) : (
+              <form action={chooseAction}>
+                <input type="hidden" name="mode" value={m.id} />
+                <button type="submit" className="primary-btn">
+                  {`Use ${m.name} setup`}
+                </button>
+              </form>
+            )}
+          </article>
+        );
+      })}
+    </div>
   );
 }
 
