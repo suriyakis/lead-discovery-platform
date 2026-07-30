@@ -15,9 +15,9 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Signal Works',
+  title: 'Leadsonar',
   description:
-    'Find the right opportunities for the products you sell. Multi-tenant B2B lead discovery, qualification, outreach, and intelligence.',
+    'Ping the market, keep the echoes that matter. B2B lead discovery, qualification, outreach, and intelligence — with evidence and a learning layer.',
 };
 
 export default function RootLayout({
