@@ -5,12 +5,16 @@
 // and any admin can run it; non-admins see a read-only view.
 //
 // Steps:
-//   1. plan          — pricing / subscription. Today: trial banner +
-//                      placeholder for Stripe checkout.
-//   2. ai            — AI provider selected + key reachable.
-//   3. mailbox       — at least one mailbox configured.
-//   4. product       — at least one active product profile.
-//   5. connector     — at least one connector configured.
+//   1. setup         — Simple (system keys, read-only integrations) or
+//                      Advanced (system defaults, everything editable).
+//   2. plan          — pricing / subscription (Stripe).
+//   3. ai            — active AI provider is real + key reachable.
+//   4. search        — real Web Search backend reachable.
+//   5. mailbox       — at least one mailbox configured.
+//   6. product       — at least one active product profile.
+//   7. connector     — at least one connector configured.
+//   8. run           — first discovery records exist.
+//   9. review        — first approve/reject decision made.
 //
 // Each step returns a boolean `done`. The wizard is "completed" once
 // every step is done OR the operator clicks Skip / Finish.
@@ -45,6 +49,7 @@ const denied = (op: string) =>
   new OnboardingError(`Permission denied: ${op}`, 'permission_denied');
 
 export type OnboardingStepKey =
+  | 'setup'
   | 'plan'
   | 'ai'
   | 'search'
@@ -53,6 +58,11 @@ export type OnboardingStepKey =
   | 'connector'
   | 'run'
   | 'review';
+
+/** How the workspace wants providers/keys managed. 'simple' = system
+ *  keys only, integrations page read-only; 'advanced' = same defaults
+ *  but everything editable (provider selection + BYOK). */
+export type SetupMode = 'simple' | 'advanced';
 
 export interface OnboardingStep {
   key: OnboardingStepKey;
@@ -90,6 +100,14 @@ export async function getOnboardingState(
   if (!ws) {
     throw new OnboardingError('workspace not found', 'not_found');
   }
+
+  // ─── Step 0: setup mode ────────────────────────────────────────────
+  // Simple = the workspace runs on the platform's system API keys and
+  // default providers, nothing to configure. Advanced = same defaults,
+  // but the integrations page unlocks provider selection + BYOK.
+  const setupMode = (ws.setupMode ?? null) as SetupMode | null;
+  const setupDone = setupMode !== null;
+  const simple = setupMode === 'simple';
 
   // ─── Step 1: plan ──────────────────────────────────────────────────
   // Today: 'trial' counts as done (the operator has acknowledged the
@@ -221,7 +239,28 @@ export async function getOnboardingState(
     );
   const reviewDone = Number(decisionRow?.c ?? 0) > 0;
 
+  // In simple mode a failing ai/search step is a PLATFORM problem (the
+  // system key is missing server-side) — the user can't fix it from the
+  // integrations page, so say so instead of sending them there.
+  if (simple && !aiDone) {
+    aiWhy =
+      'The platform’s system AI key is not configured — contact support.';
+  }
+  if (simple && !searchDone) {
+    searchWhy =
+      'The platform’s system web-search backend is not configured — contact support.';
+  }
+
   const steps: OnboardingStep[] = [
+    {
+      key: 'setup',
+      title: 'Choose your setup',
+      blurb:
+        'Simple: your workspace runs on the platform’s system API keys and default providers — nothing to configure, ready to work as soon as you have tokens or a subscription. Advanced: same system defaults out of the box, but you can change providers and bring your own API keys under Settings → Integrations at any time.',
+      done: setupDone,
+      href: '/onboarding#setup',
+      why: setupDone ? undefined : 'Pick Simple or Advanced to continue.',
+    },
     {
       key: 'plan',
       title: 'Pick a plan',
@@ -232,18 +271,22 @@ export async function getOnboardingState(
     },
     {
       key: 'ai',
-      title: 'Connect an AI provider',
-      blurb:
-        'Drafts, qualification, and reply assistance need a real LLM. The platform default works out of the box; bring your own OpenAI / Anthropic / Gemini key in Active providers to run on your own account instead (BYOK usage is token-free).',
+      title: simple ? 'AI provider — system default' : 'Connect an AI provider',
+      blurb: simple
+        ? 'Drafts, qualification, and reply assistance run on the platform’s system AI key — nothing to configure. Usage is billed from your token balance.'
+        : 'Drafts, qualification, and reply assistance need a real LLM. The system default works out of the box; bring your own OpenAI / Anthropic / Gemini key in Active providers to run on your own account instead (BYOK usage is token-free).',
       done: aiDone,
       href: '/settings/integrations',
       why: aiWhy,
     },
     {
       key: 'search',
-      title: 'Pick a Web Search backend',
-      blurb:
-        'Discovery finds companies via grounded web search. Gemini grounding is the recommended backend (used automatically when available); SerpAPI is the alternative. Without a real backend, discovery returns mock data.',
+      title: simple
+        ? 'Web Search — system default'
+        : 'Pick a Web Search backend',
+      blurb: simple
+        ? 'Discovery finds companies via the platform’s system web-search backend (grounded Gemini search) — nothing to configure. Usage is billed from your token balance.'
+        : 'Discovery finds companies via grounded web search. Gemini grounding is the recommended backend (used automatically when available); SerpAPI is the alternative.',
       done: searchDone,
       href: '/settings/integrations',
       why: searchWhy,
@@ -325,6 +368,50 @@ export async function markOnboardingComplete(
       entityId: ctx.workspaceId,
     });
   }
+}
+
+/**
+ * Choose (or later change) the workspace setup mode. Admin-only.
+ *
+ * Switching to 'simple' resets the workspace's provider-selection
+ * overrides to NULL so the workspace genuinely runs on the system
+ * defaults. Stored BYOK keys are NOT deleted — that would be
+ * destructive — but note they still take precedence for key
+ * resolution; the integrations summary shows the effective source so
+ * nothing is hidden.
+ */
+export async function setSetupMode(
+  ctx: WorkspaceContext,
+  mode: SetupMode,
+): Promise<void> {
+  if (!canAdminWorkspace(ctx)) throw denied('onboarding.setup_mode');
+  if (mode !== 'simple' && mode !== 'advanced') {
+    throw new OnboardingError(`unknown setup mode: ${mode}`, 'invalid_input');
+  }
+  await db
+    .update(workspaces)
+    .set({ setupMode: mode, updatedAt: new Date() })
+    .where(eq(workspaces.id, ctx.workspaceId));
+  if (mode === 'simple') {
+    const { updateProviderSettings } = await import('./provider-settings');
+    await updateProviderSettings(ctx, {
+      aiProvider: null,
+      aiModel: null,
+      embeddingProvider: null,
+      researchProvider: null,
+      researchModel: null,
+      searchProvider: null,
+      vectorStorageProvider: null,
+      qualificationProvider: null,
+      qualificationModel: null,
+    });
+  }
+  await recordAuditEvent(ctx, {
+    kind: 'onboarding.setup_mode',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: { mode },
+  });
 }
 
 /**

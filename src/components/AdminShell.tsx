@@ -10,6 +10,7 @@ import { usePathname } from 'next/navigation';
 import {
   ArrowLeft,
   Crown,
+  KeyRound,
   LayoutDashboard,
   LifeBuoy,
   Package,
@@ -21,6 +22,7 @@ const NAV = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard, exact: true },
   { href: '/admin/workspaces', label: 'Workspaces', icon: Package },
   { href: '/admin/users', label: 'Users', icon: Users },
+  { href: '/admin/providers', label: 'Providers', icon: KeyRound },
   { href: '/admin/support', label: 'Support', icon: LifeBuoy, badgeKey: 'support' as const },
   { href: '/admin/audit', label: 'Audit', icon: ShieldCheck },
 ];

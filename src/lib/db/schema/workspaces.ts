@@ -72,6 +72,12 @@ export const workspaces = pgTable('workspaces', {
   onboardingStatus: onboardingStatus('onboarding_status')
     .notNull()
     .default('completed'),
+  /** Setup mode chosen during onboarding. 'simple' = run entirely on the
+   *  platform's system keys and default providers (integrations page is
+   *  read-only); 'advanced' = same system defaults, but provider selection
+   *  and BYOK keys are editable. NULL = not chosen yet — legacy workspaces
+   *  behave as 'advanced' so nothing they configured gets locked away. */
+  setupMode: text('setup_mode'),
   /** Phase 47/48: current plan. 'trial' is the default until Stripe
    *  webhook flips it. Free-form text so adding new tiers later
    *  doesn't require a migration. */

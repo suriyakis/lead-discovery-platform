@@ -1012,6 +1012,20 @@ auto-translated into the native language. Languages: en, pl, de, it, ja, he
 - [x] **P63-12.** Curated language pickers (product form, recipe editor, new-recipe) + workspace Native-language card on Settings → Outreach. Commit `db28714`.
 - [ ] **P63-deploy.** Apply migrations `0047`/`0048` on prod, rebuild, smoke-test. **Not yet deployed** — branch not merged to `main`.
 
+## Setup modes + no-mock system defaults (2026-07-10)
+
+**Goal.** Kill silent mock providers and let onboarding offer a real choice:
+Simple (system keys, zero config, works as soon as tokens/subscription are
+purchased) vs Advanced (same system defaults, but provider selection + BYOK
+editable). Branch `feat/setup-mode-system-defaults`.
+
+- [x] **SM-01.** `systemDefaultProvider()` in `provider-settings.ts`: the ultimate fallback is no longer `'mock'` — it auto-detects the first vendor with a platform key (gemini → openai → anthropic for AI; gemini → perplexity for research; serpapi for search; pgvector always for vector storage). Production with no key resolves to the preferred real vendor so calls fail loudly instead of returning mock data (search excepted — grounded research is its real fallback).
+- [x] **SM-02.** `workspaces.setup_mode` column ('simple' | 'advanced' | NULL=legacy-advanced). Migration `0058_curly_mattie_franklin.sql`.
+- [x] **SM-03.** Onboarding step 1 "Choose your setup" (Simple/Advanced cards) + `setSetupMode()` (admin-only, audited; switching to simple resets provider-selection overrides, keeps BYOK secrets). Simple mode rewrites the ai/search steps as "system default" verification steps.
+- [x] **SM-04.** `/settings/integrations`: Setup-mode card with switch button; simple mode renders a read-only system-defaults summary instead of the edit forms; `mock` removed from all customer-facing dropdowns; "inherit env default" relabeled "platform default".
+- [x] **SM-05.** Tests: systemDefaultProvider auto-detect + prod loud-failure; setSetupMode suite; onboarding 9-step updates. vitest env now blanks ALL vendor keys for determinism.
+- [ ] **SM-deploy.** Verify prod `.env` on agregat has the system keys (`GEMINI_API_KEY` at minimum) and NO `*_PROVIDER=mock` selectors, apply migration `0058`, rebuild, smoke-test onboarding + integrations page.
+
 ## Discovered along the way
 
-(empty — add discoveries with `> 2026-MM-DD …` prefix when found)
+> 2026-07-10 `reply-classifier.test.ts > bounce auto-suppresses` failed once in a full-suite run with `PostgresError: deadlock detected`, passes in isolation — flaky test-infra race (likely truncateAll vs in-flight work from a previous file). Worth a look if it recurs.

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
@@ -11,6 +11,7 @@ import {
   ProviderSettingsError,
   getProviderSettings,
   resolveActiveProvider,
+  systemDefaultProvider,
   updateProviderSettings,
 } from '@/lib/services/provider-settings';
 import { setSecret } from '@/lib/services/secrets';
@@ -104,8 +105,9 @@ describe('resolveActiveProvider', () => {
     expect(out.source).toBe('env');
   });
 
-  it('returns mock as ultimate default', async () => {
+  it('returns mock as ultimate default in dev/test when no platform key exists', async () => {
     const s = await setup();
+    delete process.env.OPENAI_API_KEY;
     const out = await resolveActiveProvider(
       ctx(s.workspaceA, s.ownerA),
       'embedding',
@@ -113,6 +115,70 @@ describe('resolveActiveProvider', () => {
     );
     expect(out.id).toBe('mock');
     expect(out.source).toBe('default');
+  });
+
+  it('system default auto-detects the first vendor with a platform key', async () => {
+    const s = await setup();
+    delete process.env.GEMINI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-platform';
+    try {
+      const out = await resolveActiveProvider(
+        ctx(s.workspaceA, s.ownerA),
+        'ai',
+        undefined,
+      );
+      expect(out.id).toBe('openai');
+      expect(out.source).toBe('default');
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it('preferred vendor wins the auto-detect when its key exists', async () => {
+    const s = await setup();
+    process.env.GEMINI_API_KEY = 'gm-platform';
+    process.env.OPENAI_API_KEY = 'sk-platform';
+    try {
+      const out = await resolveActiveProvider(
+        ctx(s.workspaceA, s.ownerA),
+        'ai',
+        undefined,
+      );
+      expect(out.id).toBe('gemini');
+      expect(out.source).toBe('default');
+    } finally {
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it('vector storage defaults to pgvector (keyless), never mock', async () => {
+    const s = await setup();
+    const out = await resolveActiveProvider(
+      ctx(s.workspaceA, s.ownerA),
+      'vector_storage',
+      undefined,
+    );
+    expect(out.id).toBe('pgvector');
+    expect(out.source).toBe('default');
+  });
+
+  it('production with no keys surfaces the real vendor (loud failure) instead of mock', () => {
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      expect(systemDefaultProvider('ai')).toEqual({
+        id: 'gemini',
+        source: 'default',
+      });
+      // search is the exception: grounded research is its real fallback,
+      // so it stays mock rather than masking that path with a serpapi error.
+      expect(systemDefaultProvider('search').id).toBe('mock');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
