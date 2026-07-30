@@ -69,11 +69,11 @@ describe('platform settings service', () => {
 
     await setPlatformSettings(sa, {
       'ai.provider': 'deepseek',
-      'ai.model': 'deepseek-chat',
+      'ai.model': 'deepseek-v4-flash',
     });
     expect(await getPlatformSetting('ai.provider')).toBe('deepseek');
     const all = await getPlatformSettings();
-    expect(all['ai.model']).toBe('deepseek-chat');
+    expect(all['ai.model']).toBe('deepseek-v4-flash');
 
     // null clears
     await setPlatformSettings(sa, { 'ai.model': null });
@@ -105,9 +105,38 @@ describe('platform settings service', () => {
     const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
 
     expect(await resolvePlatformModel('ai', 'env-model')).toBe('env-model');
-    await setPlatformSettings(sa, { 'ai.model': 'deepseek-chat' });
-    expect(await resolvePlatformModel('ai', 'env-model')).toBe('deepseek-chat');
+    await setPlatformSettings(sa, { 'ai.model': 'deepseek-v4-flash' });
+    expect(await resolvePlatformModel('ai', 'env-model')).toBe('deepseek-v4-flash');
     expect(await resolvePlatformModel('research', undefined)).toBeUndefined();
+  });
+
+  it('auto-detect sees console keys, not just env vars', async () => {
+    const s = await setup();
+    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const owner = ctx(s.workspaceA, s.ownerA, 'owner');
+    const { setPlatformSecret, deletePlatformSecret } = await import(
+      '@/lib/services/secrets'
+    );
+    const { detectSystemDefaultProvider } = await import(
+      '@/lib/services/provider-settings'
+    );
+
+    // Nothing configured anywhere (vitest env blanks vendor keys) → mock.
+    expect((await detectSystemDefaultProvider('ai')).id).toBe('mock');
+
+    // ONLY an Anthropic key in the console: detection must pick anthropic,
+    // not blindly return gemini (the preference-order head).
+    await setPlatformSecret(sa, 'anthropic.apiKey', 'sk-ant-test');
+    expect((await detectSystemDefaultProvider('ai')).id).toBe('anthropic');
+    // resolveActiveProvider bottoms out in the same detection.
+    expect((await resolveActiveProvider(owner, 'ai', undefined)).id).toBe('anthropic');
+
+    // A gemini console key appears → preference order applies again.
+    await setPlatformSecret(sa, 'gemini.apiKey', 'AIza-test');
+    expect((await detectSystemDefaultProvider('ai')).id).toBe('gemini');
+
+    await deletePlatformSecret(sa, 'anthropic.apiKey');
+    await deletePlatformSecret(sa, 'gemini.apiKey');
   });
 });
 
@@ -115,21 +144,22 @@ describe('DeepSeekAIProvider', () => {
   it('is OpenAI-compatible with its own id, defaults and pricing', () => {
     const p = new DeepSeekAIProvider({ apiKey: 'sk-test' });
     expect(p.id).toBe('deepseek');
-    expect(p.model).toBe('deepseek-chat');
+    // deepseek-chat was RETIRED 2026-07-24; v4-flash is the default now.
+    expect(p.model).toBe('deepseek-v4-flash');
 
-    // ~$0.27/M in + $1.10/M out for chat
-    const chatCost = p.estimateCost({
-      model: 'deepseek-chat',
+    // $0.14/M in + $0.28/M out for v4-flash
+    const flashCost = p.estimateCost({
+      model: 'deepseek-v4-flash',
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,
     });
-    expect(chatCost).toBeCloseTo(0.27 + 1.1, 5);
+    expect(flashCost).toBeCloseTo(0.14 + 0.28, 5);
 
-    const reasonerCost = p.estimateCost({
-      model: 'deepseek-reasoner',
+    const proCost = p.estimateCost({
+      model: 'deepseek-v4-pro',
       inputTokens: 1_000_000,
       outputTokens: 1_000_000,
     });
-    expect(reasonerCost).toBeGreaterThan(chatCost);
+    expect(proCost).toBeGreaterThan(flashCost);
   });
 });

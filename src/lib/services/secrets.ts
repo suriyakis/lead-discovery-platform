@@ -209,6 +209,17 @@ export async function deletePlatformSecret(
   });
 }
 
+/** Existence check only — no decrypt, safe for resolution logic. */
+export async function hasPlatformSecretKey(key: string): Promise<boolean> {
+  parseScope(key);
+  const rows = await db
+    .select({ key: platformSecrets.key })
+    .from(platformSecrets)
+    .where(eq(platformSecrets.key, key))
+    .limit(1);
+  return rows.length > 0;
+}
+
 /** Internal — never expose the value to a client. */
 export async function getPlatformSecret(key: string): Promise<string | null> {
   parseScope(key);

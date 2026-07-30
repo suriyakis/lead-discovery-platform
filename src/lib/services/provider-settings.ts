@@ -76,40 +76,42 @@ export type VectorStorageProviderId =
 // are now comboboxes (typeable input + datalist), so the operator can
 // enter any model id the vendor ships without a code change. Keep these
 // lists current with what's worth pre-suggesting.
+// Catalogs refreshed 2026-07-30 against vendor docs. Note the traps:
+// DeepSeek RETIRED deepseek-chat/-reasoner on 2026-07-24 (v4 lineup now);
+// Gemini shut down the 2.0 models on 2026-06-01; Anthropic deprecated
+// claude-opus-4 / claude-sonnet-4 (Claude 5 family is current).
 export const AI_MODELS: Record<string, readonly string[]> = {
   openai: [
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
     'gpt-5.5',
-    'gpt-5.5-mini',
-    'gpt-5',
-    'gpt-5-mini',
-    'gpt-5-nano',
+    'gpt-5.4-nano',
     'gpt-4o',
     'gpt-4o-mini',
-    'o3',
-    'o3-mini',
   ],
   anthropic: [
-    'claude-opus-4-7',
-    'claude-opus-4',
-    'claude-sonnet-4-6',
-    'claude-sonnet-4',
+    'claude-opus-5',
+    'claude-sonnet-5',
     'claude-haiku-4-5',
+    'claude-opus-4-8',
+    'claude-sonnet-4-6',
+    'claude-opus-4-7',
   ],
   gemini: [
+    'gemini-3.6-flash',
     'gemini-3.5-flash',
-    'gemini-3.1-flash',
+    'gemini-3.1-flash-lite',
     'gemini-3.0-pro',
-    'gemini-3.0-flash',
-    'gemini-2.5-flash',
     'gemini-2.5-pro',
-    'gemini-2.0-flash',
+    'gemini-2.5-flash',
   ],
-  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+  deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro'],
   mock: ['mock-1'],
 };
 
 export const RESEARCH_MODELS: Record<string, readonly string[]> = {
-  gemini: ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  gemini: ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.0-pro', 'gemini-2.5-pro'],
   perplexity: ['sonar-pro', 'sonar', 'sonar-reasoning'],
   mock: ['mock-1'],
 };
@@ -208,21 +210,21 @@ export type ProviderCapability =
 // lists because it's the vendor the platform itself runs on.
 const SYSTEM_DEFAULT_CANDIDATES: Record<
   ProviderCapability,
-  ReadonlyArray<{ id: string; envKey: string | null }>
+  ReadonlyArray<{ id: string; envKey: string | null; secretKey: string | null }>
 > = {
   ai: [
-    { id: 'gemini', envKey: 'GEMINI_API_KEY' },
-    { id: 'openai', envKey: 'OPENAI_API_KEY' },
-    { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
-    { id: 'deepseek', envKey: 'DEEPSEEK_API_KEY' },
+    { id: 'gemini', envKey: 'GEMINI_API_KEY', secretKey: 'gemini.apiKey' },
+    { id: 'openai', envKey: 'OPENAI_API_KEY', secretKey: 'openai.apiKey' },
+    { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY', secretKey: 'anthropic.apiKey' },
+    { id: 'deepseek', envKey: 'DEEPSEEK_API_KEY', secretKey: 'deepseek.apiKey' },
   ],
-  embedding: [{ id: 'openai', envKey: 'OPENAI_API_KEY' }],
+  embedding: [{ id: 'openai', envKey: 'OPENAI_API_KEY', secretKey: 'openai.apiKey' }],
   research: [
-    { id: 'gemini', envKey: 'GEMINI_API_KEY' },
-    { id: 'perplexity', envKey: 'PERPLEXITY_API_KEY' },
+    { id: 'gemini', envKey: 'GEMINI_API_KEY', secretKey: 'gemini.apiKey' },
+    { id: 'perplexity', envKey: 'PERPLEXITY_API_KEY', secretKey: 'perplexity.apiKey' },
   ],
-  search: [{ id: 'serpapi', envKey: 'SERPAPI_KEY' }],
-  vector_storage: [{ id: 'pgvector', envKey: null }],
+  search: [{ id: 'serpapi', envKey: 'SERPAPI_KEY', secretKey: 'serpapi.apiKey' }],
+  vector_storage: [{ id: 'pgvector', envKey: null, secretKey: null }],
 };
 
 /**
@@ -245,6 +247,32 @@ export function systemDefaultProvider(
   const candidates = SYSTEM_DEFAULT_CANDIDATES[capability];
   for (const c of candidates) {
     if (c.envKey === null || process.env[c.envKey]?.trim()) {
+      return { id: c.id, source: 'default' };
+    }
+  }
+  if (process.env.NODE_ENV === 'production' && capability !== 'search') {
+    return { id: candidates[0]!.id, source: 'default' };
+  }
+  return { id: 'mock', source: 'default' };
+}
+
+/**
+ * Async auto-detect that ALSO sees keys saved on /admin/providers
+ * (platform_secrets), not just env vars. With env empty and only, say,
+ * an Anthropic key in the console, the sync detector would blindly pick
+ * gemini (preference order) and every call would fail "no key
+ * configured" — this one picks the first vendor that actually HAS a key
+ * anywhere. Falls back to the sync behavior when nothing is configured.
+ */
+export async function detectSystemDefaultProvider(
+  capability: ProviderCapability,
+): Promise<ResolvedProvider> {
+  const candidates = SYSTEM_DEFAULT_CANDIDATES[capability];
+  const { hasPlatformSecretKey } = await import('./secrets');
+  for (const c of candidates) {
+    if (c.envKey === null) return { id: c.id, source: 'default' };
+    if (process.env[c.envKey]?.trim()) return { id: c.id, source: 'default' };
+    if (c.secretKey && (await hasPlatformSecretKey(c.secretKey))) {
       return { id: c.id, source: 'default' };
     }
   }
@@ -280,7 +308,7 @@ export async function resolveActiveProvider(
   if (platformValue) return { id: platformValue, source: 'platform' };
   const envVal = envFallback?.trim();
   if (envVal) return { id: envVal, source: 'env' };
-  return systemDefaultProvider(capability);
+  return detectSystemDefaultProvider(capability);
 }
 
 /**
