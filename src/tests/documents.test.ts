@@ -120,6 +120,46 @@ describe('uploadDocument', () => {
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
+  it('byte-identical re-upload dedupes to the existing document', async () => {
+    const s = await setup();
+    const bytes = Buffer.from('the very same spec sheet');
+    const first = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'spec.txt',
+      body: bytes,
+    });
+    expect(first.deduplicated).toBe(false);
+    const second = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'renamed-copy.txt', // different filename, same bytes
+      body: Buffer.from(bytes),
+    });
+    expect(second.deduplicated).toBe(true);
+    expect(second.document.id).toBe(first.document.id);
+  });
+
+  it('dedup is per-workspace and ignores archived documents', async () => {
+    const s = await setup();
+    const bytes = Buffer.from('shared bytes across cases');
+    const inA = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'a.txt',
+      body: Buffer.from(bytes),
+    });
+    // Same bytes in ANOTHER workspace → its own row (no cross-tenant dedup).
+    const inB = await uploadDocument(ctx(s.workspaceB, s.ownerB), {
+      filename: 'b.txt',
+      body: Buffer.from(bytes),
+    });
+    expect(inB.deduplicated).toBe(false);
+    expect(inB.document.id).not.toBe(inA.document.id);
+    // Archive the original → a re-upload creates a fresh live row.
+    await archiveDocument(ctx(s.workspaceA, s.ownerA, 'owner'), inA.document.id);
+    const again = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'a-again.txt',
+      body: Buffer.from(bytes),
+    });
+    expect(again.deduplicated).toBe(false);
+    expect(again.document.id).not.toBe(inA.document.id);
+  });
+
   it('sanitizes tags (lowercase, dedup, hyphenate)', async () => {
     const s = await setup();
     const result = await uploadDocument(ctx(s.workspaceA, s.ownerA), {

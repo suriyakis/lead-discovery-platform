@@ -15,6 +15,7 @@ import {
 } from '@/lib/services/knowledge-sources';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import type { Document, KnowledgeSourceKind } from '@/lib/db/schema/documents';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function NewKnowledgeSourcePage({
   searchParams,
@@ -105,8 +106,25 @@ export default async function NewKnowledgeSourcePage({
         tags,
         productProfileIds: productIds,
       });
+      // Auto-index so the source is retrievable immediately — creating
+      // and then having to find the separate "Index" button was how
+      // sources ended up invisible to RAG. Best-effort: an indexing
+      // failure never loses the created source.
+      try {
+        const { indexKnowledgeSource } = await import('@/lib/services/rag');
+        await indexKnowledgeSource(c, created.id);
+      } catch (indexErr) {
+        if (isNextRedirectError(indexErr)) throw indexErr;
+        const m = indexErr instanceof Error ? indexErr.message : 'indexing failed';
+        redirect(
+          `/knowledge/${created.id}?error=${encodeURIComponent(
+            `Created, but indexing failed: ${m.slice(0, 300)}`,
+          )}`,
+        );
+      }
       redirect(`/knowledge/${created.id}`);
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       if (err instanceof KnowledgeSourceServiceError) {
         const params = new URLSearchParams({
           kind,
