@@ -16,6 +16,7 @@ import {
 const TENANT_TABLES = [
   'audit_log',
   'platform_secrets',
+  'platform_settings',
   'usage_log',
   'workspace_members',
   'workspace_settings',

@@ -15,6 +15,20 @@ import {
   setPlatformSecret,
 } from '@/lib/services/secrets';
 import { getAIProviderForCtx } from '@/lib/ai';
+import {
+  AI_MODELS,
+  ALLOWED_AI_PROVIDERS,
+  ALLOWED_EMBEDDING_PROVIDERS,
+  ALLOWED_RESEARCH_PROVIDERS,
+  ALLOWED_SEARCH_PROVIDERS,
+  ALLOWED_VECTOR_STORAGE_PROVIDERS,
+  RESEARCH_MODELS,
+} from '@/lib/services/provider-settings';
+import {
+  PlatformSettingsError,
+  getPlatformSettings,
+  setPlatformSettings,
+} from '@/lib/services/platform-settings';
 
 /** Catalogue of platform-level provider keys the console manages. The
  *  secretKey doubles as the workspace-BYOK key name, so the resolver's
@@ -37,6 +51,12 @@ const PROVIDERS = [
     envVar: 'GEMINI_API_KEY',
     name: 'Google Gemini',
     role: 'Grounded web search — the engine behind lead discovery — and research.',
+  },
+  {
+    secretKey: 'deepseek.apiKey',
+    envVar: 'DEEPSEEK_API_KEY',
+    name: 'DeepSeek',
+    role: 'Very cost-efficient AI (deepseek-chat / deepseek-reasoner) — great default for high-volume qualification.',
   },
   {
     secretKey: 'serpapi.apiKey',
@@ -80,6 +100,7 @@ export default async function AdminProvidersPage({
 
   const stored = await listPlatformSecretKeys(ctx);
   const storedByKey = new Map(stored.map((s) => [s.key, s]));
+  const defaults = await getPlatformSettings();
 
   async function saveKey(formData: FormData) {
     'use server';
@@ -116,6 +137,36 @@ export default async function AdminProvidersPage({
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof SecretsServiceError ? err.message : 'delete failed';
+      redirect(`/admin/providers?err=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function saveDefaults(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const patch: Record<string, string | null> = {};
+    for (const key of [
+      'ai.provider',
+      'ai.model',
+      'embedding.provider',
+      'research.provider',
+      'research.model',
+      'search.provider',
+      'vector_storage.provider',
+    ]) {
+      const raw = formData.get(key);
+      if (raw === null) continue;
+      const v = String(raw).trim();
+      patch[key] = v === '' || v === '__inherit' ? null : v;
+    }
+    try {
+      await setPlatformSettings(c, patch);
+      redirect(
+        `/admin/providers?msg=${encodeURIComponent('Platform defaults saved — live immediately for every workspace without its own selection.')}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof PlatformSettingsError ? err.message : 'save failed';
       redirect(`/admin/providers?err=${encodeURIComponent(m)}`);
     }
   }
@@ -217,6 +268,119 @@ export default async function AdminProvidersPage({
       </section>
 
       <section>
+        <h2>Platform default providers &amp; models</h2>
+        <p className="muted small">
+          What every workspace runs on unless it picks its own under
+          Settings → Integrations — same choices as the workspace
+          &ldquo;Active providers&rdquo;, but platform-wide. &ldquo;inherit&rdquo;
+          falls through to the env var, then auto-detection. Saved values are
+          live immediately.
+        </p>
+        <form action={saveDefaults} className="form-grid" style={{ maxWidth: '46rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+            <label>
+              <span>AI provider</span>
+              <select name="ai.provider" defaultValue={defaults['ai.provider'] ?? '__inherit'}>
+                <option value="__inherit">inherit (env / auto)</option>
+                {ALLOWED_AI_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>AI model</span>
+              <input
+                name="ai.model"
+                type="text"
+                list="ai-model-catalog"
+                defaultValue={defaults['ai.model'] ?? ''}
+                placeholder="vendor default"
+              />
+              <datalist id="ai-model-catalog">
+                {Object.entries(AI_MODELS)
+                  .filter(([vendor]) => vendor !== 'mock')
+                  .flatMap(([vendor, models]) =>
+                    models.map((m) => (
+                      <option key={`${vendor}:${m}`} value={m}>{`${vendor} — ${m}`}</option>
+                    )),
+                  )}
+              </datalist>
+            </label>
+            <label>
+              <span>Embeddings</span>
+              <select
+                name="embedding.provider"
+                defaultValue={defaults['embedding.provider'] ?? '__inherit'}
+              >
+                <option value="__inherit">inherit (env / auto)</option>
+                {ALLOWED_EMBEDDING_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Vector storage</span>
+              <select
+                name="vector_storage.provider"
+                defaultValue={defaults['vector_storage.provider'] ?? '__inherit'}
+              >
+                <option value="__inherit">inherit (env / auto)</option>
+                {ALLOWED_VECTOR_STORAGE_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Research provider</span>
+              <select
+                name="research.provider"
+                defaultValue={defaults['research.provider'] ?? '__inherit'}
+              >
+                <option value="__inherit">inherit (env / auto)</option>
+                {ALLOWED_RESEARCH_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Research model</span>
+              <input
+                name="research.model"
+                type="text"
+                list="research-model-catalog"
+                defaultValue={defaults['research.model'] ?? ''}
+                placeholder="vendor default"
+              />
+              <datalist id="research-model-catalog">
+                {Object.entries(RESEARCH_MODELS)
+                  .filter(([vendor]) => vendor !== 'mock')
+                  .flatMap(([vendor, models]) =>
+                    models.map((m) => (
+                      <option key={`${vendor}:${m}`} value={m}>{`${vendor} — ${m}`}</option>
+                    )),
+                  )}
+              </datalist>
+            </label>
+            <label>
+              <span>Web search</span>
+              <select
+                name="search.provider"
+                defaultValue={defaults['search.provider'] ?? '__inherit'}
+              >
+                <option value="__inherit">inherit (env / auto)</option>
+                {ALLOWED_SEARCH_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="action-row">
+            <button type="submit" className="primary-btn">Save platform defaults</button>
+          </div>
+        </form>
+      </section>
+
+      <section>
         <h2>
           <ShieldCheck className="lucide" aria-hidden="true" /> Health & defaults
         </h2>
@@ -245,9 +409,9 @@ export default async function AdminProvidersPage({
           </tbody>
         </table>
         <p className="muted small">
-          Env defaults pick WHICH provider runs each function; the keys above
-          authenticate it. A workspace can override providers per-function
-          under its own Settings → Integrations.
+          Env values are the LAST fallback — the platform defaults saved
+          above override them, and a workspace&apos;s own selection under
+          Settings → Integrations overrides both.
         </p>
       </section>
     </div>

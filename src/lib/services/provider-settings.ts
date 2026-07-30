@@ -41,6 +41,7 @@ export const ALLOWED_AI_PROVIDERS = [
   'openai',
   'anthropic',
   'gemini',
+  'deepseek',
 ] as const;
 export type AiProviderId = (typeof ALLOWED_AI_PROVIDERS)[number];
 
@@ -103,6 +104,7 @@ export const AI_MODELS: Record<string, readonly string[]> = {
     'gemini-2.5-pro',
     'gemini-2.0-flash',
   ],
+  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
   mock: ['mock-1'],
 };
 
@@ -190,7 +192,7 @@ export async function getProviderSettings(
  */
 export interface ResolvedProvider {
   id: string;
-  source: 'workspace' | 'env' | 'default';
+  source: 'workspace' | 'platform' | 'env' | 'default';
 }
 
 export type ProviderCapability =
@@ -212,6 +214,7 @@ const SYSTEM_DEFAULT_CANDIDATES: Record<
     { id: 'gemini', envKey: 'GEMINI_API_KEY' },
     { id: 'openai', envKey: 'OPENAI_API_KEY' },
     { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
+    { id: 'deepseek', envKey: 'DEEPSEEK_API_KEY' },
   ],
   embedding: [{ id: 'openai', envKey: 'OPENAI_API_KEY' }],
   research: [
@@ -270,9 +273,28 @@ export async function resolveActiveProvider(
   if (wsValue && wsValue.trim()) {
     return { id: wsValue.trim(), source: 'workspace' };
   }
+  // Platform default set from /admin/providers — beats the env var so the
+  // console is the live source of truth without a redeploy.
+  const { getPlatformSetting } = await import('./platform-settings');
+  const platformValue = await getPlatformSetting(`${capability}.provider`);
+  if (platformValue) return { id: platformValue, source: 'platform' };
   const envVal = envFallback?.trim();
   if (envVal) return { id: envVal, source: 'env' };
   return systemDefaultProvider(capability);
+}
+
+/**
+ * Model cascade shared by the AI/research factories: workspace-selected
+ * model → platform default model (console) → env var. Returns undefined
+ * when nothing is set so the provider's built-in default applies.
+ */
+export async function resolvePlatformModel(
+  capability: 'ai' | 'research',
+  envVar: string | undefined,
+): Promise<string | undefined> {
+  const { getPlatformSetting } = await import('./platform-settings');
+  const platformModel = await getPlatformSetting(`${capability}.model`);
+  return platformModel ?? envVar?.trim() ?? undefined;
 }
 
 // ─── Write ────────────────────────────────────────────────────────────
