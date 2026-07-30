@@ -185,6 +185,85 @@ export class OpenAIEmbeddingProvider implements IEmbeddingProvider {
   }
 }
 
+// ---- usage metering --------------------------------------------------
+
+/**
+ * Decorator that meters embed() calls into usage_log — the same choke
+ * point the AI providers bill through (see MeteredAIProvider in
+ * lib/ai/index.ts). Before this wrapper existed, embedding spend on the
+ * platform key was entirely untracked and undebited.
+ *
+ * Cost uses Math.round (not ceil): a typical single-lesson embed is a
+ * fraction of a hundredth of a cent, and a 1-cent floor per call would
+ * overbill high-frequency tiny calls ~1000×. Rounding means micro-calls
+ * record 0 cents (visible in usage_log, no debit) while real indexing
+ * batches record their true cents.
+ *
+ * Metering is best-effort — a usage-log failure never breaks the embed
+ * call that already succeeded.
+ */
+export class MeteredEmbeddingProvider implements IEmbeddingProvider {
+  constructor(
+    /** Exposed for unwrapEmbeddingProvider (test seam) — treat as private. */
+    public readonly inner: IEmbeddingProvider,
+    private readonly workspaceId: bigint,
+    private readonly keySource: 'workspace' | 'platform',
+  ) {}
+
+  get id(): string {
+    return this.inner.id;
+  }
+  get model(): string {
+    return this.inner.model;
+  }
+  get dim(): number {
+    return this.inner.dim;
+  }
+
+  async embed(input: EmbedInput): Promise<EmbedResult> {
+    const result = await this.inner.embed(input);
+    try {
+      const { recordUsage } = await import('@/lib/services/usage');
+      const costDollars = this.inner.estimateCost(result.inputTokens);
+      await recordUsage(
+        { workspaceId: this.workspaceId },
+        {
+          kind: 'embedding.embed',
+          provider: this.inner.id,
+          units: BigInt(result.inputTokens),
+          costEstimateCents: Math.round(costDollars * 100),
+          payload: {
+            model: result.model,
+            inputTokens: result.inputTokens,
+            batchSize: input.texts.length,
+            keySource: this.keySource,
+          },
+        },
+      );
+    } catch (err) {
+      console.error(
+        '[embedding-metering] usage record failed:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+    return result;
+  }
+
+  estimateCost(inputTokens: number): number {
+    return this.inner.estimateCost(inputTokens);
+  }
+
+  healthCheck(): Promise<{ ok: boolean; detail?: string }> {
+    return this.inner.healthCheck();
+  }
+}
+
+/** Test seam: peel the metering decorator off a provider so tests can
+ *  assert on the concrete vendor adapter underneath. */
+export function unwrapEmbeddingProvider(provider: IEmbeddingProvider): IEmbeddingProvider {
+  return provider instanceof MeteredEmbeddingProvider ? provider.inner : provider;
+}
+
 // ---- factory ---------------------------------------------------------
 
 let cached: IEmbeddingProvider | null = null;
@@ -244,11 +323,15 @@ export async function getEmbeddingProviderForCtx(
         'Embedding provider=openai but no key configured (workspace or platform).',
       );
     }
-    return new OpenAIEmbeddingProvider({
-      apiKey: resolved.key,
-      model: process.env.EMBEDDING_MODEL,
-      baseUrl: process.env.OPENAI_BASE_URL,
-    });
+    return new MeteredEmbeddingProvider(
+      new OpenAIEmbeddingProvider({
+        apiKey: resolved.key,
+        model: process.env.EMBEDDING_MODEL,
+        baseUrl: process.env.OPENAI_BASE_URL,
+      }),
+      ctx.workspaceId,
+      resolved.source,
+    );
   }
   throw new Error(`Unknown embedding provider id from cascade: ${id}`);
 }

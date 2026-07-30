@@ -163,17 +163,23 @@ export class GeminiAIProvider implements IAIProvider {
   }
 
   estimateCost(usage: AIUsage): number {
-    // Pricing from Google docs, early 2026:
-    //   gemini-2.5-flash: $0.30 / 1M input,  $2.50 / 1M output
-    //   gemini-2.5-pro:   $1.25 / 1M input, $10.00 / 1M output
-    //   gemini-2.0-flash: $0.10 / 1M input,  $0.40 / 1M output
+    // Returns DOLLARS — the IAIProvider.estimateCost contract shared with
+    // the OpenAI/Anthropic/DeepSeek adapters (MeteredAIProvider multiplies
+    // by 100 for cents). This adapter originally copied the research
+    // provider's computeCost, which works in CENTS per token — consumed
+    // as dollars, that overbilled every Gemini AI call by exactly 100×.
+    //
+    // Pricing from Google docs, $/1M in / out:
+    //   pro tiers (2.5/3.0-pro):        $1.25 / $10.00
+    //   lite + 2.0 flash:               $0.10 /  $0.40
+    //   flash tiers (2.5/3.x default):  $0.30 /  $2.50
     const m = usage.model.toLowerCase();
-    const rates = m.includes('pro')
-      ? { input: 0.000125, output: 0.001 }
-      : m.includes('2.0')
-        ? { input: 0.00001, output: 0.00004 }
-        : { input: 0.00003, output: 0.00025 };
-    return usage.inputTokens * rates.input + usage.outputTokens * rates.output;
+    const [inputRate, outputRate] = m.includes('pro')
+      ? [0.00125, 0.01]
+      : m.includes('lite') || m.includes('2.0')
+        ? [0.0001, 0.0004]
+        : [0.0003, 0.0025];
+    return (usage.inputTokens / 1000) * inputRate + (usage.outputTokens / 1000) * outputRate;
   }
 
   async healthCheck(): Promise<{ ok: boolean; detail?: string }> {

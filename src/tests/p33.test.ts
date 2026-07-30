@@ -8,6 +8,7 @@ import {
 import { setSecret } from '@/lib/services/secrets';
 import {
   AnthropicAIProvider,
+  DeepSeekAIProvider,
   MockAIProvider,
   OpenAIAIProvider,
   _setAIProviderForTests,
@@ -15,6 +16,7 @@ import {
   getAIProviderForCtx,
   unwrapAIProvider,
 } from '@/lib/ai';
+import { GeminiAIProvider } from '@/lib/ai/gemini';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 interface Setup {
@@ -178,6 +180,76 @@ describe('AnthropicAIProvider.estimateCost', () => {
       outputTokens: 1_000_000,
     });
     expect(cost).toBeCloseTo(18, 4);
+  });
+});
+
+// The estimateCost contract is DOLLARS for every vendor adapter —
+// MeteredAIProvider multiplies by 100 for cents. The Gemini adapter
+// once returned cents-scale values (copied from the research provider's
+// computeCost) and every Gemini AI call billed 100× too high in
+// production. These tests pin the unit for the two adapters that had
+// no cost coverage.
+describe('GeminiAIProvider.estimateCost', () => {
+  it('charges flash at $0.30 / 1M input + $2.50 / 1M output — DOLLARS, not cents', () => {
+    const p = new GeminiAIProvider({ apiKey: 'x' });
+    const cost = p.estimateCost({
+      model: 'gemini-2.5-flash',
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(2.8, 4);
+  });
+
+  it('charges 3.x flash at the flash tier', () => {
+    const p = new GeminiAIProvider({ apiKey: 'x' });
+    const cost = p.estimateCost({
+      model: 'gemini-3.6-flash',
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(2.8, 4);
+  });
+
+  it('charges pro at $1.25 / 1M input + $10 / 1M output', () => {
+    const p = new GeminiAIProvider({ apiKey: 'x' });
+    const cost = p.estimateCost({
+      model: 'gemini-3.0-pro',
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(11.25, 4);
+  });
+
+  it('charges lite at $0.10 / 1M input + $0.40 / 1M output', () => {
+    const p = new GeminiAIProvider({ apiKey: 'x' });
+    const cost = p.estimateCost({
+      model: 'gemini-3.1-flash-lite',
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(0.5, 4);
+  });
+});
+
+describe('DeepSeekAIProvider.estimateCost', () => {
+  it('charges v4-flash at $0.14 / 1M input + $0.28 / 1M output', () => {
+    const p = new DeepSeekAIProvider({ apiKey: 'x' });
+    const cost = p.estimateCost({
+      model: 'deepseek-v4-flash',
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(0.42, 4);
+  });
+
+  it('charges v4-pro at $0.435 / 1M input + $0.87 / 1M output', () => {
+    const p = new DeepSeekAIProvider({ apiKey: 'x' });
+    const cost = p.estimateCost({
+      model: 'deepseek-v4-pro',
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(1.305, 4);
   });
 });
 
