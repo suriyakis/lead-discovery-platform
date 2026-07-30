@@ -134,11 +134,13 @@ export async function getOnboardingState(
       aiActive.id === 'openai' ? 'openai.apiKey' :
       aiActive.id === 'anthropic' ? 'anthropic.apiKey' :
       aiActive.id === 'gemini' ? 'gemini.apiKey' :
+      aiActive.id === 'deepseek' ? 'deepseek.apiKey' :
       null;
     const envVar =
       aiActive.id === 'openai' ? 'OPENAI_API_KEY' :
       aiActive.id === 'anthropic' ? 'ANTHROPIC_API_KEY' :
       aiActive.id === 'gemini' ? 'GEMINI_API_KEY' :
+      aiActive.id === 'deepseek' ? 'DEEPSEEK_API_KEY' :
       null;
     if (!secretKey || !envVar) {
       aiWhy = `Unsupported AI provider id: ${aiActive.id}`;

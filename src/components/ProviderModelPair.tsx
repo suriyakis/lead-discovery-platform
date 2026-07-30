@@ -25,7 +25,7 @@ interface Props {
    *  the inherit option label. */
   envFallbackLabel: string;
   /** Resolved active provider — shown as the (active: X via Y) caption. */
-  resolved: { id: string; source: 'workspace' | 'env' | 'default' };
+  resolved: { id: string; source: 'workspace' | 'platform' | 'env' | 'default' };
 }
 
 const ENV_TOKEN = '__env__';

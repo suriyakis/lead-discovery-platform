@@ -203,7 +203,7 @@ export default async function IntegrationsPage({
   // both are set), else the search provider is the active backend.
   const webSearchActive: {
     id: string;
-    source: 'workspace' | 'env' | 'default';
+    source: 'workspace' | 'platform' | 'env' | 'default';
   } = providerSettings.researchProvider?.trim() &&
   providerSettings.researchProvider !== 'mock'
     ? { id: providerSettings.researchProvider.trim(), source: 'workspace' }
@@ -1401,7 +1401,7 @@ function ProviderSelect({
   name: string;
   workspaceValue: string | null;
   envFallback: string;
-  resolved: { id: string; source: 'workspace' | 'env' | 'default' };
+  resolved: { id: string; source: 'workspace' | 'platform' | 'env' | 'default' };
   options: ReadonlyArray<string>;
   /** When true, render without the outer card chrome — used when this
    *  select lives inside another grouping card. */

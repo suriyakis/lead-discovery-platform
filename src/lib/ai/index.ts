@@ -119,7 +119,9 @@ export interface OpenAIAIConfig {
  * (response_format=json_object) and validates the response with Zod.
  */
 export class OpenAIAIProvider implements IAIProvider {
-  public readonly id = 'openai';
+  /** Widened to string so OpenAI-compatible subclasses (DeepSeek) can
+   *  report their own id. */
+  public readonly id: string = 'openai';
   public readonly model: string;
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -196,7 +198,7 @@ export class OpenAIAIProvider implements IAIProvider {
     }
   }
 
-  private async callChat(
+  protected async callChat(
     input: AIGenInput,
     options: AIGenOptions,
     asJson: boolean,
@@ -247,6 +249,44 @@ export class OpenAIAIProvider implements IAIProvider {
       throw new Error(`openai chat ${res.status}: ${detail.slice(0, 400)}`);
     }
     return res.json();
+  }
+}
+
+// ---- DeepSeek implementation ------------------------------------------
+
+export interface DeepSeekAIConfig {
+  apiKey: string;
+  /** 'deepseek-chat' (default, cheap) or 'deepseek-reasoner'. */
+  model?: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * DeepSeek adapter. The API is OpenAI-Chat-Completions-compatible
+ * (including response_format=json_object), so this rides the OpenAI
+ * implementation with its own base URL, defaults and pricing. Very
+ * cost-efficient — roughly 10-20× cheaper than frontier models.
+ */
+export class DeepSeekAIProvider extends OpenAIAIProvider {
+  public override readonly id: string = 'deepseek';
+
+  constructor(config: DeepSeekAIConfig) {
+    super({
+      apiKey: config.apiKey,
+      model: config.model ?? 'deepseek-chat',
+      baseUrl: config.baseUrl ?? 'https://api.deepseek.com',
+      timeoutMs: config.timeoutMs,
+    });
+  }
+
+  override estimateCost(usage: AIUsage): number {
+    // deepseek-chat (2026): ~$0.27 / 1M input, $1.10 / 1M output.
+    // deepseek-reasoner:    ~$0.55 / 1M input, $2.19 / 1M output.
+    const isReasoner = usage.model.includes('reasoner');
+    const inputRate = isReasoner ? 0.00055 : 0.00027;
+    const outputRate = isReasoner ? 0.00219 : 0.0011;
+    return (usage.inputTokens / 1000) * inputRate + (usage.outputTokens / 1000) * outputRate;
   }
 }
 
@@ -553,11 +593,15 @@ export async function getAIProviderForCtx(
   const id = active.id;
   if (id === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
-  const { getProviderSettings } = await import('@/lib/services/provider-settings');
-  // Workspace-selected model wins; otherwise fall back to env AI_MODEL,
-  // otherwise the provider's built-in default kicks in.
+  const { getProviderSettings, resolvePlatformModel } = await import(
+    '@/lib/services/provider-settings'
+  );
+  // Model cascade: workspace-selected → platform default (console) →
+  // env AI_MODEL → the provider's built-in default.
   const settings = await getProviderSettings(ctx);
-  const wsModel = settings.aiModel?.trim() || undefined;
+  const wsModel =
+    settings.aiModel?.trim() ||
+    (await resolvePlatformModel('ai', process.env.AI_MODEL));
   if (id === 'openai') {
     const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
     if (!resolved) {
@@ -620,6 +664,28 @@ export async function getAIProviderForCtx(
       resolved.source,
     );
   }
+  if (id === 'deepseek') {
+    const resolved = await resolveProviderKey(
+      ctx,
+      'deepseek.apiKey',
+      'DEEPSEEK_API_KEY',
+    );
+    if (!resolved) {
+      throw new Error(
+        'AI provider=deepseek but no key configured (workspace or platform).',
+      );
+    }
+    return metered(
+      new DeepSeekAIProvider({
+        apiKey: resolved.key,
+        model: wsModel,
+        baseUrl: process.env.DEEPSEEK_BASE_URL,
+      }),
+      ctx,
+      usageKind,
+      resolved.source,
+    );
+  }
   throw new Error(`Unknown AI provider id from cascade: ${id}`);
 }
 
@@ -647,10 +713,11 @@ export async function getQualificationProviderForCtx(
   if (!qpId) return getAIProviderForCtx(ctx, 'ai.qualification');
   if (qpId === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
+  const { resolvePlatformModel } = await import('@/lib/services/provider-settings');
   const qModel =
     settings.qualificationModel?.trim() ||
     settings.aiModel?.trim() ||
-    process.env.AI_MODEL;
+    (await resolvePlatformModel('ai', process.env.AI_MODEL));
   if (qpId === 'openai') {
     const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
     if (!resolved) {
@@ -707,6 +774,28 @@ export async function getQualificationProviderForCtx(
         apiKey: resolved.key,
         model: qModel,
         baseUrl: process.env.GEMINI_BASE_URL,
+      }),
+      ctx,
+      'ai.qualification',
+      resolved.source,
+    );
+  }
+  if (qpId === 'deepseek') {
+    const resolved = await resolveProviderKey(
+      ctx,
+      'deepseek.apiKey',
+      'DEEPSEEK_API_KEY',
+    );
+    if (!resolved) {
+      throw new Error(
+        'Qualification provider=deepseek but no key configured (workspace or platform).',
+      );
+    }
+    return metered(
+      new DeepSeekAIProvider({
+        apiKey: resolved.key,
+        model: qModel,
+        baseUrl: process.env.DEEPSEEK_BASE_URL,
       }),
       ctx,
       'ai.qualification',
