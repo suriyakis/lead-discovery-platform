@@ -177,11 +177,22 @@ export class OpenAIAIProvider implements IAIProvider {
   }
 
   estimateCost(usage: AIUsage): number {
-    // gpt-4o-mini (Dec 2025): $0.15 / 1M input, $0.60 / 1M output.
-    // gpt-4o:                   $2.50 / 1M input, $10.00 / 1M output.
-    const isMini = usage.model.startsWith('gpt-4o-mini');
-    const inputRate = isMini ? 0.00015 : 0.0025;
-    const outputRate = isMini ? 0.0006 : 0.01;
+    // OpenAI pricing (July 2026), $/1M in / out:
+    //   gpt-5.6-sol / gpt-5.5: $5 / $30   gpt-5.6-terra: $2.50 / $15
+    //   gpt-5.6-luna: $1 / $6             *nano tiers: $0.20 / $1.25
+    //   gpt-4o-mini (legacy): $0.15 / $0.60   gpt-4o (legacy): $2.50 / $10
+    const m = usage.model.toLowerCase();
+    const [inputRate, outputRate] = m.includes('nano')
+      ? [0.0002, 0.00125]
+      : m.includes('luna') || m.includes('mini')
+        ? m.startsWith('gpt-4o-mini')
+          ? [0.00015, 0.0006]
+          : [0.001, 0.006]
+        : m.includes('terra')
+          ? [0.0025, 0.015]
+          : m.includes('sol') || m.startsWith('gpt-5')
+            ? [0.005, 0.03]
+            : [0.0025, 0.01];
     return (usage.inputTokens / 1000) * inputRate + (usage.outputTokens / 1000) * outputRate;
   }
 
@@ -256,7 +267,7 @@ export class OpenAIAIProvider implements IAIProvider {
 
 export interface DeepSeekAIConfig {
   apiKey: string;
-  /** 'deepseek-chat' (default, cheap) or 'deepseek-reasoner'. */
+  /** 'deepseek-v4-flash' (default, very cheap) or 'deepseek-v4-pro'. */
   model?: string;
   baseUrl?: string;
   timeoutMs?: number;
@@ -266,7 +277,11 @@ export interface DeepSeekAIConfig {
  * DeepSeek adapter. The API is OpenAI-Chat-Completions-compatible
  * (including response_format=json_object), so this rides the OpenAI
  * implementation with its own base URL, defaults and pricing. Very
- * cost-efficient — roughly 10-20× cheaper than frontier models.
+ * cost-efficient — 10-100× cheaper than frontier models.
+ *
+ * Model era note: the legacy ids deepseek-chat / deepseek-reasoner were
+ * RETIRED 2026-07-24; the current lineup is deepseek-v4-flash and
+ * deepseek-v4-pro.
  */
 export class DeepSeekAIProvider extends OpenAIAIProvider {
   public override readonly id: string = 'deepseek';
@@ -274,18 +289,20 @@ export class DeepSeekAIProvider extends OpenAIAIProvider {
   constructor(config: DeepSeekAIConfig) {
     super({
       apiKey: config.apiKey,
-      model: config.model ?? 'deepseek-chat',
+      model: config.model ?? 'deepseek-v4-flash',
       baseUrl: config.baseUrl ?? 'https://api.deepseek.com',
       timeoutMs: config.timeoutMs,
     });
   }
 
   override estimateCost(usage: AIUsage): number {
-    // deepseek-chat (2026): ~$0.27 / 1M input, $1.10 / 1M output.
-    // deepseek-reasoner:    ~$0.55 / 1M input, $2.19 / 1M output.
-    const isReasoner = usage.model.includes('reasoner');
-    const inputRate = isReasoner ? 0.00055 : 0.00027;
-    const outputRate = isReasoner ? 0.00219 : 0.0011;
+    // DeepSeek V4 (July 2026), cache-miss rates, $/1M in / out:
+    //   v4-flash: $0.14 / $0.28    v4-pro: $0.435 / $0.87
+    // 'pro' also matches the retired 'reasoner' tier conservatively.
+    const m = usage.model.toLowerCase();
+    const isPro = m.includes('pro') || m.includes('reasoner');
+    const inputRate = isPro ? 0.000435 : 0.00014;
+    const outputRate = isPro ? 0.00087 : 0.00028;
     return (usage.inputTokens / 1000) * inputRate + (usage.outputTokens / 1000) * outputRate;
   }
 }
@@ -365,11 +382,19 @@ export class AnthropicAIProvider implements IAIProvider {
   }
 
   estimateCost(usage: AIUsage): number {
-    // Claude Haiku 4.5 (Dec 2025): $1.00 / 1M input, $5.00 / 1M output.
-    // Claude Sonnet 4:              $3.00 / 1M input, $15.00 / 1M output.
-    const isHaiku = usage.model.toLowerCase().includes('haiku');
-    const inputRate = isHaiku ? 0.001 : 0.003;
-    const outputRate = isHaiku ? 0.005 : 0.015;
+    // Anthropic pricing (July 2026), $/1M in / out:
+    //   Haiku 4.5:  $1 / $5    Sonnet 5 & 4.6: $3 / $15
+    //   Opus 5/4.x: $5 / $25   Fable 5: $10 / $50
+    // Tier by model-name substring; unknown Claude models bill at
+    // Sonnet rates (the middle tier — least-wrong default).
+    const m = usage.model.toLowerCase();
+    const [inputRate, outputRate] = m.includes('haiku')
+      ? [0.001, 0.005]
+      : m.includes('opus')
+        ? [0.005, 0.025]
+        : m.includes('fable') || m.includes('mythos')
+          ? [0.01, 0.05]
+          : [0.003, 0.015];
     return (usage.inputTokens / 1000) * inputRate + (usage.outputTokens / 1000) * outputRate;
   }
 
@@ -394,16 +419,22 @@ export class AnthropicAIProvider implements IAIProvider {
     content?: Array<{ type: string; text?: string }>;
     usage?: { input_tokens?: number; output_tokens?: number };
   }> {
+    const model = String(options.model ?? this.model);
     const body: Record<string, unknown> = {
-      model: options.model ?? this.model,
+      model,
       messages: [{ role: 'user', content: input.prompt }],
       // Anthropic's Messages API requires max_tokens. 4096 is a safer
       // default than 1024 — most callers (drafts, translations,
       // autofill) want longer-than-1024 output and silent truncation
       // produces cryptic JSON-parse failures downstream.
       max_tokens: options.maxTokens ?? 4096,
-      temperature: options.temperature ?? 0.4,
     };
+    // Sampling params were REMOVED on Opus 4.7+ / Opus 5 / Sonnet 5 /
+    // Fable — sending temperature there returns a 400. Only include it
+    // for the older models that still accept it.
+    if (!/(opus-5|opus-4-7|opus-4-8|sonnet-5|fable|mythos)/.test(model)) {
+      body.temperature = options.temperature ?? 0.4;
+    }
     if (input.system) body.system = input.system;
 
     const controller = new AbortController();

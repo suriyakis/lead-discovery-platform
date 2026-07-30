@@ -26,6 +26,9 @@ interface Props {
   envFallbackLabel: string;
   /** Resolved active provider — shown as the (active: X via Y) caption. */
   resolved: { id: string; source: 'workspace' | 'platform' | 'env' | 'default' };
+  /** Override the inherit-option text (default: "platform default (…)").
+   *  The admin console uses "automatic — currently X". */
+  inheritLabel?: string;
 }
 
 const ENV_TOKEN = '__env__';
@@ -137,6 +140,7 @@ export function ProviderModelPair({
   initialModel,
   envFallbackLabel,
   resolved,
+  inheritLabel,
 }: Props) {
   const [providerValue, setProviderValue] = useState<string>(
     initialProvider ?? ENV_TOKEN,
@@ -179,7 +183,7 @@ export function ProviderModelPair({
           onChange={(e) => onProviderChange(e.target.value)}
         >
           <option value={ENV_TOKEN}>
-            platform default ({envFallbackLabel})
+            {inheritLabel ?? `platform default (${envFallbackLabel})`}
           </option>
           {providers.map((p) => (
             <option key={p} value={p}>

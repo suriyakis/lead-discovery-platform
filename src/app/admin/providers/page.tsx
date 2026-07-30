@@ -23,7 +23,11 @@ import {
   ALLOWED_SEARCH_PROVIDERS,
   ALLOWED_VECTOR_STORAGE_PROVIDERS,
   RESEARCH_MODELS,
+  detectSystemDefaultProvider,
+  type ProviderCapability,
+  type ResolvedProvider,
 } from '@/lib/services/provider-settings';
+import { ProviderModelPair } from '@/components/ProviderModelPair';
 import {
   PlatformSettingsError,
   getPlatformSettings,
@@ -56,7 +60,7 @@ const PROVIDERS = [
     secretKey: 'deepseek.apiKey',
     envVar: 'DEEPSEEK_API_KEY',
     name: 'DeepSeek',
-    role: 'Very cost-efficient AI (deepseek-chat / deepseek-reasoner) — great default for high-volume qualification.',
+    role: 'Very cost-efficient AI (deepseek-v4-flash / deepseek-v4-pro) — great default for high-volume qualification.',
   },
   {
     secretKey: 'serpapi.apiKey',
@@ -101,6 +105,33 @@ export default async function AdminProvidersPage({
   const stored = await listPlatformSecretKeys(ctx);
   const storedByKey = new Map(stored.map((s) => [s.key, s]));
   const defaults = await getPlatformSettings();
+
+  // What each capability EFFECTIVELY runs on platform-wide (before any
+  // workspace override): console setting → env selector → auto-detect
+  // (first vendor with a key — console keys count).
+  const ENV_SELECTORS: Record<ProviderCapability, string | undefined> = {
+    ai: process.env.AI_PROVIDER,
+    embedding: process.env.EMBEDDING_PROVIDER,
+    research: process.env.RESEARCH_PROVIDER,
+    search: process.env.SEARCH_PROVIDER,
+    vector_storage: process.env.VECTOR_STORAGE_PROVIDER,
+  };
+  const effective = {} as Record<ProviderCapability, ResolvedProvider>;
+  for (const cap of Object.keys(ENV_SELECTORS) as ProviderCapability[]) {
+    const dbVal = defaults[`${cap}.provider`];
+    const envVal = ENV_SELECTORS[cap]?.trim();
+    effective[cap] = dbVal
+      ? { id: dbVal, source: 'platform' }
+      : envVal
+        ? { id: envVal, source: 'env' }
+        : await detectSystemDefaultProvider(cap);
+  }
+  const sourceLabel = (r: ResolvedProvider) =>
+    r.source === 'platform'
+      ? 'set here in the console'
+      : r.source === 'env'
+        ? 'server env var'
+        : 'auto-detected (first vendor with a key)';
 
   async function saveKey(formData: FormData) {
     'use server';
@@ -157,7 +188,12 @@ export default async function AdminProvidersPage({
       const raw = formData.get(key);
       if (raw === null) continue;
       const v = String(raw).trim();
-      patch[key] = v === '' || v === '__inherit' ? null : v;
+      // '' / __inherit (plain selects) and __env__ / __default__
+      // (ProviderModelPair tokens) all mean "clear — fall through".
+      patch[key] =
+        v === '' || v === '__inherit' || v === '__env__' || v === '__default__'
+          ? null
+          : v;
     }
     try {
       await setPlatformSettings(c, patch);
@@ -271,108 +307,79 @@ export default async function AdminProvidersPage({
         <h2>Platform default providers &amp; models</h2>
         <p className="muted small">
           What every workspace runs on unless it picks its own under
-          Settings → Integrations — same choices as the workspace
-          &ldquo;Active providers&rdquo;, but platform-wide. &ldquo;inherit&rdquo;
-          falls through to the env var, then auto-detection. Saved values are
-          live immediately.
+          Settings → Integrations — same controls as the workspace
+          &ldquo;Active providers&rdquo;, but platform-wide.
+          &ldquo;Automatic&rdquo; means: use the server env var if one is
+          set, otherwise the first vendor that has a key (console keys
+          count). Each row shows what is effectively active RIGHT NOW.
+          Saved values apply immediately, no restart.
         </p>
         <form action={saveDefaults} className="form-grid" style={{ maxWidth: '46rem' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-            <label>
-              <span>AI provider</span>
-              <select name="ai.provider" defaultValue={defaults['ai.provider'] ?? '__inherit'}>
-                <option value="__inherit">inherit (env / auto)</option>
-                {ALLOWED_AI_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>AI model</span>
-              <input
-                name="ai.model"
-                type="text"
-                list="ai-model-catalog"
-                defaultValue={defaults['ai.model'] ?? ''}
-                placeholder="vendor default"
-              />
-              <datalist id="ai-model-catalog">
-                {Object.entries(AI_MODELS)
-                  .filter(([vendor]) => vendor !== 'mock')
-                  .flatMap(([vendor, models]) =>
-                    models.map((m) => (
-                      <option key={`${vendor}:${m}`} value={m}>{`${vendor} — ${m}`}</option>
-                    )),
-                  )}
-              </datalist>
-            </label>
-            <label>
-              <span>Embeddings</span>
-              <select
-                name="embedding.provider"
-                defaultValue={defaults['embedding.provider'] ?? '__inherit'}
-              >
-                <option value="__inherit">inherit (env / auto)</option>
-                {ALLOWED_EMBEDDING_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Vector storage</span>
-              <select
-                name="vector_storage.provider"
-                defaultValue={defaults['vector_storage.provider'] ?? '__inherit'}
-              >
-                <option value="__inherit">inherit (env / auto)</option>
-                {ALLOWED_VECTOR_STORAGE_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Research provider</span>
-              <select
-                name="research.provider"
-                defaultValue={defaults['research.provider'] ?? '__inherit'}
-              >
-                <option value="__inherit">inherit (env / auto)</option>
-                {ALLOWED_RESEARCH_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Research model</span>
-              <input
-                name="research.model"
-                type="text"
-                list="research-model-catalog"
-                defaultValue={defaults['research.model'] ?? ''}
-                placeholder="vendor default"
-              />
-              <datalist id="research-model-catalog">
-                {Object.entries(RESEARCH_MODELS)
-                  .filter(([vendor]) => vendor !== 'mock')
-                  .flatMap(([vendor, models]) =>
-                    models.map((m) => (
-                      <option key={`${vendor}:${m}`} value={m}>{`${vendor} — ${m}`}</option>
-                    )),
-                  )}
-              </datalist>
-            </label>
-            <label>
-              <span>Web search</span>
-              <select
-                name="search.provider"
-                defaultValue={defaults['search.provider'] ?? '__inherit'}
-              >
-                <option value="__inherit">inherit (env / auto)</option>
-                {ALLOWED_SEARCH_PROVIDERS.filter((p) => p !== 'mock').map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-            </label>
+          <fieldset className="provider-select">
+            <legend>
+              <strong>AI (drafting, qualification, conversation)</strong>{' '}
+              <span className="muted small">
+                — running on <code>{effective.ai.id}</code> ({sourceLabel(effective.ai)})
+              </span>
+            </legend>
+            <ProviderModelPair
+              providers={ALLOWED_AI_PROVIDERS.filter((p) => p !== 'mock')}
+              catalog={AI_MODELS}
+              providerName="ai.provider"
+              modelName="ai.model"
+              initialProvider={defaults['ai.provider'] ?? null}
+              initialModel={defaults['ai.model'] ?? null}
+              envFallbackLabel={effective.ai.id}
+              resolved={effective.ai}
+              inheritLabel={`Automatic — currently ${effective.ai.id}`}
+            />
+          </fieldset>
+
+          <fieldset className="provider-select">
+            <legend>
+              <strong>Research (company deep-dives)</strong>{' '}
+              <span className="muted small">
+                — running on <code>{effective.research.id}</code> ({sourceLabel(effective.research)})
+              </span>
+            </legend>
+            <ProviderModelPair
+              providers={ALLOWED_RESEARCH_PROVIDERS.filter((p) => p !== 'mock')}
+              catalog={RESEARCH_MODELS}
+              providerName="research.provider"
+              modelName="research.model"
+              initialProvider={defaults['research.provider'] ?? null}
+              initialModel={defaults['research.model'] ?? null}
+              envFallbackLabel={effective.research.id}
+              resolved={effective.research}
+              inheritLabel={`Automatic — currently ${effective.research.id}`}
+            />
+          </fieldset>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+            {(
+              [
+                ['embedding.provider', 'Embeddings', ALLOWED_EMBEDDING_PROVIDERS, 'embedding'],
+                ['search.provider', 'Web search', ALLOWED_SEARCH_PROVIDERS, 'search'],
+                ['vector_storage.provider', 'Vector storage', ALLOWED_VECTOR_STORAGE_PROVIDERS, 'vector_storage'],
+              ] as const
+            ).map(([field, label, allowed, cap]) => (
+              <label key={field}>
+                <span>
+                  {label}{' '}
+                  <span className="muted small">
+                    (now: <code>{effective[cap].id}</code>)
+                  </span>
+                </span>
+                <select name={field} defaultValue={defaults[field] ?? '__inherit'}>
+                  <option value="__inherit">
+                    Automatic — currently {effective[cap].id}
+                  </option>
+                  {allowed.filter((p) => p !== 'mock').map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
           </div>
           <div className="action-row">
             <button type="submit" className="primary-btn">Save platform defaults</button>
