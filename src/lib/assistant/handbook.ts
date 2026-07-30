@@ -80,6 +80,10 @@ new rules (badge "auto-learned", modest starting confidence). Admins
 can trigger "Synthesize now" and "Compact now" on /learning.
 Confidence self-adjusts from outcomes; persistently contradicted
 lessons retire automatically. Any lesson can be edited or disabled.
+Repeating the same feedback does NOT create duplicate rules — a repeat
+is detected (semantically, not just word-for-word) and strengthens the
+existing rule's confidence instead, with the new event added to its
+evidence chain.
 
 ## Settings that matter
 - /settings/integrations: AI provider (BYOK), Web Search backend
