@@ -185,14 +185,21 @@ export async function getResearchProviderForCtx(
   const id = active.id;
   if (id === 'mock') return new MockResearchProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
-  const { getProviderSettings, resolvePlatformModel } = await import(
+  const { getProviderSettings, resolveTieredModel } = await import(
     '@/lib/services/provider-settings'
   );
   const settings = await getProviderSettings(ctx);
-  // Model cascade: workspace → platform console default → env.
-  const wsModel =
-    settings.researchModel?.trim() ||
-    (await resolvePlatformModel('research', process.env.RESEARCH_MODEL));
+  // Model stays in the SAME tier as `active` — see resolveTieredModel's
+  // doc comment (src/lib/services/provider-settings.ts) for why
+  // independently chaining workspace/platform/env model lookups is
+  // unsafe: a stale model left over from a cleared platform provider
+  // can get reattached to a different auto-detected vendor.
+  const wsModel = await resolveTieredModel(
+    'research',
+    active.source,
+    settings.researchModel,
+    process.env.RESEARCH_MODEL,
+  );
   if (id === 'gemini') {
     const resolved = await resolveProviderKey(ctx, 'gemini.apiKey', 'GEMINI_API_KEY');
     if (!resolved) {

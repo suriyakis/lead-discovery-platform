@@ -624,15 +624,20 @@ export async function getAIProviderForCtx(
   const id = active.id;
   if (id === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
-  const { getProviderSettings, resolvePlatformModel } = await import(
+  const { getProviderSettings, resolveTieredModel } = await import(
     '@/lib/services/provider-settings'
   );
-  // Model cascade: workspace-selected → platform default (console) →
-  // env AI_MODEL → the provider's built-in default.
+  // Model stays in the SAME tier as `active` (workspace/platform/env) —
+  // see resolveTieredModel's doc comment for why chaining independent
+  // tiers is unsafe (a stale model for a different vendor can get
+  // reattached to whatever provider the cascade lands on).
   const settings = await getProviderSettings(ctx);
-  const wsModel =
-    settings.aiModel?.trim() ||
-    (await resolvePlatformModel('ai', process.env.AI_MODEL));
+  const wsModel = await resolveTieredModel(
+    'ai',
+    active.source,
+    settings.aiModel,
+    process.env.AI_MODEL,
+  );
   if (id === 'openai') {
     const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
     if (!resolved) {
@@ -749,15 +754,22 @@ export async function getQualificationProviderForCtx(
   const qpId = active.id;
   if (qpId === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
-  const { getProviderSettings, resolvePlatformModel } = await import(
+  const { getProviderSettings, resolveTieredModel } = await import(
     '@/lib/services/provider-settings'
   );
+  // Same tier-matched resolution as getAIProviderForCtx — see
+  // resolveTieredModel's doc comment. No fallback to the general `ai`
+  // capability's model here: qualification is a fully independent
+  // capability now, and borrowing a model string from a DIFFERENT
+  // capability (which may resolve to a different vendor) reproduces
+  // the exact class of bug this function exists to avoid.
   const settings = await getProviderSettings(ctx);
-  const qModel =
-    settings.qualificationModel?.trim() ||
-    (await resolvePlatformModel('qualification', undefined)) ||
-    settings.aiModel?.trim() ||
-    (await resolvePlatformModel('ai', process.env.AI_MODEL));
+  const qModel = await resolveTieredModel(
+    'qualification',
+    active.source,
+    settings.qualificationModel,
+    undefined,
+  );
   if (qpId === 'openai') {
     const resolved = await resolveProviderKey(ctx, 'openai.apiKey', 'OPENAI_API_KEY');
     if (!resolved) {

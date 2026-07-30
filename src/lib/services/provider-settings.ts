@@ -324,9 +324,9 @@ export async function resolveActiveProvider(
 }
 
 /**
- * Model cascade shared by the AI/research factories: workspace-selected
- * model → platform default model (console) → env var. Returns undefined
- * when nothing is set so the provider's built-in default applies.
+ * Platform-tier-only model lookup. Prefer `resolveTieredModel` at call
+ * sites — this is exported for the admin console, which needs the raw
+ * platform value regardless of what tier is currently active.
  */
 export async function resolvePlatformModel(
   capability: 'ai' | 'research' | 'qualification',
@@ -335,6 +335,43 @@ export async function resolvePlatformModel(
   const { getPlatformSetting } = await import('./platform-settings');
   const platformModel = await getPlatformSetting(`${capability}.model`);
   return platformModel ?? envVar?.trim() ?? undefined;
+}
+
+/**
+ * Model resolution that stays IN THE SAME TIER as the resolved provider
+ * id (see `ResolvedProvider.source`), instead of chaining independent
+ * workspace/platform/env model lookups. That independent chaining was a
+ * real bug: a super-admin clearing the platform provider back to
+ * "Automatic" (e.g. ai.provider) does NOT also clear the paired
+ * ai.model row, so a stale model string for one vendor (say
+ * gemini-3.6-flash, left over from when the platform default was
+ * Gemini) would get silently reattached to whatever DIFFERENT vendor
+ * the cascade landed on next (e.g. Anthropic via the env fallback) —
+ * producing `anthropic messages 404: model: gemini-3.6-flash`.
+ *
+ * Only trust a model value when it was set at the SAME tier that
+ * produced the active provider id:
+ *   - source 'workspace' → the workspace's own <capability>Model
+ *   - source 'platform'  → the platform console's <capability>.model
+ *   - source 'env'       → the paired env var (e.g. AI_MODEL)
+ *   - source 'default' (auto-detected) → undefined, always — never
+ *     guess a model for a vendor nobody explicitly chose; the
+ *     provider's own built-in default applies instead.
+ */
+export async function resolveTieredModel(
+  capability: 'ai' | 'research' | 'qualification',
+  source: ResolvedProvider['source'],
+  workspaceModel: string | null | undefined,
+  envVar: string | undefined,
+): Promise<string | undefined> {
+  if (source === 'workspace') return workspaceModel?.trim() || undefined;
+  if (source === 'platform') {
+    const { getPlatformSetting } = await import('./platform-settings');
+    const v = await getPlatformSetting(`${capability}.model`);
+    return v ?? undefined;
+  }
+  if (source === 'env') return envVar?.trim() || undefined;
+  return undefined;
 }
 
 // ─── Write ────────────────────────────────────────────────────────────
