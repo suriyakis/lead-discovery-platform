@@ -202,7 +202,8 @@ export type ProviderCapability =
   | 'embedding'
   | 'research'
   | 'search'
-  | 'vector_storage';
+  | 'vector_storage'
+  | 'qualification';
 
 // Vendor preference per capability for the system default, in order.
 // A vendor qualifies when its platform key env var is set (envKey null
@@ -217,6 +218,15 @@ const SYSTEM_DEFAULT_CANDIDATES: Record<
     { id: 'openai', envKey: 'OPENAI_API_KEY', secretKey: 'openai.apiKey' },
     { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY', secretKey: 'anthropic.apiKey' },
     { id: 'deepseek', envKey: 'DEEPSEEK_API_KEY', secretKey: 'deepseek.apiKey' },
+  ],
+  // Qualification runs at much higher volume than drafting (every
+  // sourced lead gets scored), so the auto-detect order is cheapest
+  // vendor first instead of ai's quality-first order.
+  qualification: [
+    { id: 'deepseek', envKey: 'DEEPSEEK_API_KEY', secretKey: 'deepseek.apiKey' },
+    { id: 'gemini', envKey: 'GEMINI_API_KEY', secretKey: 'gemini.apiKey' },
+    { id: 'openai', envKey: 'OPENAI_API_KEY', secretKey: 'openai.apiKey' },
+    { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY', secretKey: 'anthropic.apiKey' },
   ],
   embedding: [{ id: 'openai', envKey: 'OPENAI_API_KEY', secretKey: 'openai.apiKey' }],
   research: [
@@ -297,7 +307,9 @@ export async function resolveActiveProvider(
           ? settings.researchProvider
           : capability === 'search'
             ? settings.searchProvider
-            : settings.vectorStorageProvider;
+            : capability === 'qualification'
+              ? settings.qualificationProvider
+              : settings.vectorStorageProvider;
   if (wsValue && wsValue.trim()) {
     return { id: wsValue.trim(), source: 'workspace' };
   }
@@ -317,7 +329,7 @@ export async function resolveActiveProvider(
  * when nothing is set so the provider's built-in default applies.
  */
 export async function resolvePlatformModel(
-  capability: 'ai' | 'research',
+  capability: 'ai' | 'research' | 'qualification',
   envVar: string | undefined,
 ): Promise<string | undefined> {
   const { getPlatformSetting } = await import('./platform-settings');

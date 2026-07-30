@@ -721,11 +721,19 @@ export async function getAIProviderForCtx(
 }
 
 /**
- * P62-11: qualification-specific provider. Cascade:
+ * P62-11: qualification-specific provider. Qualification is its own
+ * capability with a full independent cascade, deliberately separate
+ * from the general `ai` capability (which drives drafting, replies,
+ * and everything conversation-facing) so the two can run on different
+ * vendors/models — cheap-and-fast for qualification's high-volume
+ * scoring, stronger for anything a lead actually reads:
  *   1. workspace.qualificationProvider + qualificationModel
- *   2. workspace.aiProvider + aiModel        (legacy fall-through)
- *   3. process.env.AI_PROVIDER + AI_MODEL
- *   4. 'mock'
+ *   2. platform 'qualification.provider' / 'qualification.model'
+ *      (set from /admin/providers)
+ *   3. auto-detect: first vendor with a key, cheapest-first
+ *      (deepseek → gemini → openai → anthropic — see
+ *      SYSTEM_DEFAULT_CANDIDATES.qualification)
+ *   4. 'mock' (dev/test only — production loud-fails instead)
  *
  * Same API-key cascade as the general AI provider (workspace BYOK
  * `<vendor>.apiKey` → platform env). Returns the same IAIProvider so
@@ -736,17 +744,18 @@ export async function getQualificationProviderForCtx(
 ): Promise<IAIProvider> {
   // Test injection wins (same as getAIProviderForCtx).
   if (cached) return cached;
-  const { getProviderSettings } = await import('@/lib/services/provider-settings');
-  const settings = await getProviderSettings(ctx);
-  const qpId = settings.qualificationProvider?.trim();
-  // If the workspace hasn't picked a qualification provider, defer
-  // entirely to the general AI provider (legacy behaviour preserved).
-  if (!qpId) return getAIProviderForCtx(ctx, 'ai.qualification');
+  const { resolveActiveProvider } = await import('@/lib/services/provider-settings');
+  const active = await resolveActiveProvider(ctx, 'qualification', undefined);
+  const qpId = active.id;
   if (qpId === 'mock') return new MockAIProvider();
   const { resolveProviderKey } = await import('@/lib/services/secrets');
-  const { resolvePlatformModel } = await import('@/lib/services/provider-settings');
+  const { getProviderSettings, resolvePlatformModel } = await import(
+    '@/lib/services/provider-settings'
+  );
+  const settings = await getProviderSettings(ctx);
   const qModel =
     settings.qualificationModel?.trim() ||
+    (await resolvePlatformModel('qualification', undefined)) ||
     settings.aiModel?.trim() ||
     (await resolvePlatformModel('ai', process.env.AI_MODEL));
   if (qpId === 'openai') {

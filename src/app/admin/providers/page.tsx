@@ -42,7 +42,7 @@ const PROVIDERS = [
     secretKey: 'anthropic.apiKey',
     envVar: 'ANTHROPIC_API_KEY',
     name: 'Anthropic (Claude)',
-    role: 'AI drafting, qualification, conversation review — the default AI provider.',
+    role: 'AI drafting, conversation review — the default AI provider.',
   },
   {
     secretKey: 'openai.apiKey',
@@ -60,7 +60,7 @@ const PROVIDERS = [
     secretKey: 'deepseek.apiKey',
     envVar: 'DEEPSEEK_API_KEY',
     name: 'DeepSeek',
-    role: 'Very cost-efficient AI (deepseek-v4-flash / deepseek-v4-pro) — great default for high-volume qualification.',
+    role: 'Very cost-efficient AI (deepseek-v4-flash / deepseek-v4-pro) — default for high-volume qualification.',
   },
   {
     secretKey: 'serpapi.apiKey',
@@ -115,6 +115,10 @@ export default async function AdminProvidersPage({
     research: process.env.RESEARCH_PROVIDER,
     search: process.env.SEARCH_PROVIDER,
     vector_storage: process.env.VECTOR_STORAGE_PROVIDER,
+    // No dedicated env var — qualification only has the console setting
+    // and the workspace override, falling through to the general `ai`
+    // provider when neither is set.
+    qualification: undefined,
   };
   const effective = {} as Record<ProviderCapability, ResolvedProvider>;
   for (const cap of Object.keys(ENV_SELECTORS) as ProviderCapability[]) {
@@ -179,6 +183,8 @@ export default async function AdminProvidersPage({
     for (const key of [
       'ai.provider',
       'ai.model',
+      'qualification.provider',
+      'qualification.model',
       'embedding.provider',
       'research.provider',
       'research.model',
@@ -317,11 +323,16 @@ export default async function AdminProvidersPage({
         <form action={saveDefaults} className="form-grid" style={{ maxWidth: '46rem' }}>
           <fieldset className="provider-select">
             <legend>
-              <strong>AI (drafting, qualification, conversation)</strong>{' '}
+              <strong>AI (drafting &amp; conversation)</strong>{' '}
               <span className="muted small">
                 — running on <code>{effective.ai.id}</code> ({sourceLabel(effective.ai)})
               </span>
             </legend>
+            <p className="muted small" style={{ margin: '0 0 0.5rem' }}>
+              Outreach drafts, follow-ups, reply suggestions, translation —
+              anything a lead actually reads. Worth spending on a stronger
+              model.
+            </p>
             <ProviderModelPair
               providers={ALLOWED_AI_PROVIDERS.filter((p) => p !== 'mock')}
               catalog={AI_MODELS}
@@ -332,6 +343,33 @@ export default async function AdminProvidersPage({
               envFallbackLabel={effective.ai.id}
               resolved={effective.ai}
               inheritLabel={`Automatic — currently ${effective.ai.id}`}
+            />
+          </fieldset>
+
+          <fieldset className="provider-select">
+            <legend>
+              <strong>Qualification</strong>{' '}
+              <span className="muted small">
+                — running on <code>{effective.qualification.id}</code> ({sourceLabel(effective.qualification)})
+              </span>
+            </legend>
+            <p className="muted small" style={{ margin: '0 0 0.5rem' }}>
+              Scores every sourced lead — much higher volume than drafting.
+              Kept separate from AI above so it can run on a cheaper/faster
+              model without touching draft quality. Falls back to the AI
+              provider above if left on Automatic and no vendor key is
+              found.
+            </p>
+            <ProviderModelPair
+              providers={ALLOWED_AI_PROVIDERS.filter((p) => p !== 'mock')}
+              catalog={AI_MODELS}
+              providerName="qualification.provider"
+              modelName="qualification.model"
+              initialProvider={defaults['qualification.provider'] ?? null}
+              initialModel={defaults['qualification.model'] ?? null}
+              envFallbackLabel={effective.qualification.id}
+              resolved={effective.qualification}
+              inheritLabel={`Automatic — currently ${effective.qualification.id}`}
             />
           </fieldset>
 

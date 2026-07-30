@@ -37,6 +37,9 @@ const KEY_VALIDATORS: Record<string, (v: string) => boolean> = {
   'ai.provider': (v) =>
     (ALLOWED_AI_PROVIDERS as readonly string[]).includes(v) && v !== 'mock',
   'ai.model': (v) => isValidAiModel('any', v),
+  'qualification.provider': (v) =>
+    (ALLOWED_AI_PROVIDERS as readonly string[]).includes(v) && v !== 'mock',
+  'qualification.model': (v) => isValidAiModel('any', v),
   'embedding.provider': (v) =>
     (ALLOWED_EMBEDDING_PROVIDERS as readonly string[]).includes(v) && v !== 'mock',
   'research.provider': (v) =>
