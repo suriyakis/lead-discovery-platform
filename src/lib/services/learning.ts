@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import {
@@ -109,6 +109,16 @@ export async function recordFeedback(
   // a transaction open. extractLesson never throws — it falls back to the
   // deterministic heuristic on any error.
   const draft = await extractLesson(ctx, input.originalComment ?? null);
+  // Dedup check also outside the tx (may make an embedding call). A
+  // repeat of an already-known rule reinforces the existing lesson
+  // instead of planting a near-identical sibling.
+  const duplicate = draft
+    ? await findNearDuplicateLesson(ctx, {
+        category: draft.category,
+        rule: draft.rule,
+        productProfileId: input.productProfileId ?? null,
+      })
+    : null;
 
   return db.transaction(async (tx) => {
     const eventRow: NewLearningEvent = {
@@ -126,7 +136,37 @@ export async function recordFeedback(
     if (!insertedEvent) throw invariant('learning_events insert returned no row');
 
     let lesson: LearningLesson | null = null;
-    if (draft) {
+    let dedupReinforced = false;
+    if (draft && duplicate) {
+      // Reinforce inside the tx so event-link + confidence bump are atomic.
+      const evidence = Array.from(
+        new Set<bigint>([...duplicate.evidenceEventIds, insertedEvent.id]),
+      );
+      const [updated] = await tx
+        .update(learningLessons)
+        .set({
+          confidence: sql`LEAST(${learningLessons.confidence} + 5, 95)`,
+          evidenceEventIds: evidence,
+          updatedAt: new Date(),
+          updatedBy: ctx.userId,
+        })
+        .where(
+          and(
+            eq(learningLessons.workspaceId, ctx.workspaceId),
+            eq(learningLessons.id, duplicate.id),
+          ),
+        )
+        .returning();
+      if (updated) {
+        lesson = updated;
+        dedupReinforced = true;
+        await tx
+          .update(learningEvents)
+          .set({ extractedLessonId: updated.id })
+          .where(eq(learningEvents.id, insertedEvent.id));
+        insertedEvent.extractedLessonId = updated.id;
+      }
+    } else if (draft) {
       const lessonRow: NewLearningLesson = {
         workspaceId: ctx.workspaceId,
         productProfileId: input.productProfileId ?? null,
@@ -158,15 +198,19 @@ export async function recordFeedback(
       payload: {
         actionType: input.actionType,
         extractedLessonId: lesson?.id.toString() ?? null,
+        dedupReinforced,
         productProfileId: input.productProfileId?.toString() ?? null,
       },
     });
 
-    return { event: insertedEvent, lesson };
+    return { event: insertedEvent, lesson, dedupReinforced };
   }).then((result) => {
-    // Outside the tx: make the new lesson semantically retrievable now.
-    if (result.lesson) scheduleLessonEmbedding(ctx, result.lesson.id);
-    return result;
+    // Outside the tx: embed only NEW lessons — a reinforced duplicate's
+    // rule text didn't change, so its stored embedding is still right.
+    if (result.lesson && !result.dedupReinforced) {
+      scheduleLessonEmbedding(ctx, result.lesson.id);
+    }
+    return { event: result.event, lesson: result.lesson };
   });
 }
 
@@ -323,6 +367,10 @@ export function extractLessonHeuristic(comment: string | null): LessonDraft | nu
 export interface ListLessonsFilter {
   category?: LessonCategory | readonly LessonCategory[];
   productProfileId?: bigint | null;
+  /** With a bigint productProfileId: widen the scope to (that product OR
+   *  workspace-wide). Lets qualification/outreach fetch both scopes in
+   *  ONE query + ONE embedding rerank instead of two of each. */
+  includeWorkspaceWide?: boolean;
   enabled?: boolean;
   limit?: number;
   offset?: number;
@@ -342,11 +390,21 @@ function buildLessonConditions(
     }
   }
   if (filter.productProfileId === null) {
-    // Drizzle has isNull but we keep the SQL identity simple — no explicit null filter unless requested.
-    // For "workspace-wide only" the caller passes productProfileId: null.
-    conds.push(eq(learningLessons.productProfileId, null as unknown as bigint));
+    // Workspace-wide only. NOTE: this MUST be isNull — an eq(col, null)
+    // compiles to SQL `= NULL`, which is never true; that exact bug made
+    // workspace-wide lessons silently unretrievable until 2026-07.
+    conds.push(isNull(learningLessons.productProfileId));
   } else if (filter.productProfileId !== undefined) {
-    conds.push(eq(learningLessons.productProfileId, filter.productProfileId));
+    if (filter.includeWorkspaceWide) {
+      conds.push(
+        or(
+          eq(learningLessons.productProfileId, filter.productProfileId),
+          isNull(learningLessons.productProfileId),
+        )!,
+      );
+    } else {
+      conds.push(eq(learningLessons.productProfileId, filter.productProfileId));
+    }
   }
   if (filter.enabled !== undefined) {
     conds.push(eq(learningLessons.enabled, filter.enabled));
@@ -442,6 +500,127 @@ export async function getLesson(
   return lesson;
 }
 
+// ---- create-time dedup -------------------------------------------------
+//
+// Before this existed, every repeated operator comment ("avoid
+// consultancies", written across 15 reviews) materialized 15 near-identical
+// lessons: 15 embeddings, 15 prompt-budget slots, and weekly AI merge calls
+// to clean up after the fact. Deduping at CREATE time turns repetition into
+// what it actually is — accumulating evidence for ONE rule: the existing
+// lesson gets a confidence bump and the new event unioned into its
+// evidence chain, and no duplicate row is born.
+
+/** Cosine similarity at/above which two rules in the same (category,
+ *  scope) cluster count as the same lesson. Conservative — compaction's
+ *  AI merge still catches paraphrases below this line. */
+const DEDUP_SIMILARITY_THRESHOLD = 0.92;
+/** Confidence bump when repeated evidence confirms an existing lesson.
+ *  Stronger than an outcome-reinforcement (+2): an operator writing the
+ *  same thing again is deliberate confirmation. */
+const DEDUP_REINFORCE_STEP = 5;
+const DEDUP_CONFIDENCE_CEILING = 95;
+
+/**
+ * Find an enabled lesson in the same (workspace, category, product scope)
+ * that says the same thing as `rule`. Exact (case-insensitive) text match
+ * is checked first — free; then embedding similarity when an embedding
+ * provider is available. Returns null on any failure — dedup is an
+ * optimization, never a gate.
+ */
+export async function findNearDuplicateLesson(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  input: {
+    category: LessonCategory;
+    rule: string;
+    productProfileId: bigint | null;
+  },
+): Promise<LearningLesson | null> {
+  try {
+    const conds: SQL[] = [
+      eq(learningLessons.workspaceId, ctx.workspaceId),
+      eq(learningLessons.category, input.category),
+      eq(learningLessons.enabled, true),
+      input.productProfileId === null
+        ? isNull(learningLessons.productProfileId)
+        : eq(learningLessons.productProfileId, input.productProfileId),
+    ];
+    const candidates = await db
+      .select()
+      .from(learningLessons)
+      .where(and(...conds))
+      .orderBy(desc(learningLessons.confidence))
+      .limit(200);
+    if (candidates.length === 0) return null;
+
+    const norm = input.rule.trim().toLowerCase();
+    const exact = candidates.find((c) => c.rule.trim().toLowerCase() === norm);
+    if (exact) return exact;
+
+    const embeddable = candidates.filter(
+      (c) => c.embedding && c.embedding.length > 0,
+    );
+    if (embeddable.length === 0) return null;
+    const { getEmbeddingProviderForCtx } = await import('@/lib/embeddings');
+    const embedder = await getEmbeddingProviderForCtx(ctx as WorkspaceContext);
+    const result = await embedder.embed({ texts: [input.rule.slice(0, 2000)] });
+    const vec = result.embeddings[0];
+    if (!vec) return null;
+
+    let best: { lesson: LearningLesson; sim: number } | null = null;
+    for (const c of embeddable) {
+      if (c.embedding!.length !== vec.length) continue;
+      const sim = cosineSimilarity(c.embedding!, vec);
+      if (!best || sim > best.sim) best = { lesson: c, sim };
+    }
+    return best && best.sim >= DEDUP_SIMILARITY_THRESHOLD ? best.lesson : null;
+  } catch (err) {
+    console.error(
+      '[learning.findNearDuplicateLesson] dedup check failed (creating anyway):',
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+/**
+ * Repeated-evidence reinforcement: bump the duplicate's confidence, union
+ * the new evidence event ids into its chain, and audit. Returns the
+ * refreshed lesson row.
+ */
+async function reinforceDuplicateLesson(
+  ctx: WorkspaceContext,
+  existing: LearningLesson,
+  newEvidenceEventIds: readonly bigint[],
+): Promise<LearningLesson> {
+  const evidence = Array.from(
+    new Set<bigint>([...existing.evidenceEventIds, ...newEvidenceEventIds]),
+  );
+  const [updated] = await db
+    .update(learningLessons)
+    .set({
+      confidence: sql`LEAST(${learningLessons.confidence} + ${DEDUP_REINFORCE_STEP}, ${DEDUP_CONFIDENCE_CEILING})`,
+      evidenceEventIds: evidence,
+      updatedAt: new Date(),
+      updatedBy: ctx.userId,
+    })
+    .where(
+      and(
+        eq(learningLessons.workspaceId, ctx.workspaceId),
+        eq(learningLessons.id, existing.id),
+      ),
+    )
+    .returning();
+  await recordAuditEvent(ctx, {
+    kind: 'learning.lesson.dedup_reinforce',
+    entityType: 'learning_lesson',
+    entityId: existing.id,
+    payload: {
+      addedEvidence: newEvidenceEventIds.map((id) => id.toString()),
+    },
+  });
+  return updated ?? existing;
+}
+
 // ---- mutations ---------------------------------------------------------
 
 export interface CreateLessonInput {
@@ -463,6 +642,17 @@ export async function createLesson(
   const rule = input.rule.trim();
   if (!rule) throw invalid('rule is required');
   if (rule.length > 1000) throw invalid('rule too long (1000 char max)');
+
+  // Same rule already known in this scope → reinforce it instead of
+  // planting a duplicate (see the dedup section above).
+  const duplicate = await findNearDuplicateLesson(ctx, {
+    category: input.category,
+    rule,
+    productProfileId: input.productProfileId ?? null,
+  });
+  if (duplicate) {
+    return reinforceDuplicateLesson(ctx, duplicate, input.evidenceEventIds ?? []);
+  }
 
   const row: NewLearningLesson = {
     workspaceId: ctx.workspaceId,
@@ -614,6 +804,10 @@ export async function bulkSetLessonsEnabled(
 
 export interface LessonQuery {
   productProfileId?: bigint | null;
+  /** With a bigint productProfileId: also include workspace-wide lessons
+   *  in the same query. Preferred over calling twice (once per scope) —
+   *  one DB fetch, one embedding call, one rerank over the union. */
+  includeWorkspaceLessons?: boolean;
   category?: LessonCategory | readonly LessonCategory[];
   taskType?: 'classification' | 'outreach' | 'reply';
   /** Free-text the caller is about to act on (subject, snippet, etc.). Phase 5 ignores; Phase 12 ranks by similarity. */
@@ -638,6 +832,7 @@ export async function getRelevantLessons(
   const filter: ListLessonsFilter = { enabled: true, limit };
   if (categories) filter.category = categories;
   if (query.productProfileId !== undefined) filter.productProfileId = query.productProfileId;
+  if (query.includeWorkspaceLessons) filter.includeWorkspaceWide = true;
 
   const contextText = query.contextText?.trim();
   if (contextText) {
@@ -645,6 +840,7 @@ export async function getRelevantLessons(
       const total = await countLessons(ctx, {
         category: filter.category,
         productProfileId: filter.productProfileId,
+        includeWorkspaceWide: filter.includeWorkspaceWide,
         enabled: true,
       });
       if (total > limit) {

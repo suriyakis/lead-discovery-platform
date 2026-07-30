@@ -48,6 +48,12 @@ const STALE_AGE_DAYS = 30;
 const CLUSTER_MAX = 12;
 /** Minimum cluster size for an AI merge attempt. */
 const CLUSTER_MIN = 2;
+/** Embedding pre-filter: when EVERY lesson in a chunk has a stored
+ *  embedding and no pair reaches this cosine similarity, the chunk is
+ *  clearly distinct — skip the AI merge call entirely. Deliberately
+ *  below the create-time dedup threshold (0.92) so paraphrases in the
+ *  0.75–0.92 band still get an AI look. */
+const MERGE_CANDIDATE_SIMILARITY = 0.75;
 
 // ---- public types ------------------------------------------------------
 
@@ -65,6 +71,12 @@ export interface CompactionSummary {
   mergedClusters: number;
   /** Count of lessons NOT examined (singleton clusters auto-skip). */
   skippedSingletons: number;
+  /** Chunks skipped without an AI call: nothing in them changed since
+   *  the previous compaction run (that run already reviewed them). */
+  skippedUnchangedClusters: number;
+  /** Chunks skipped without an AI call: stored embeddings show no pair
+   *  anywhere near merge similarity. */
+  skippedDistinctClusters: number;
 }
 
 // ---- entry point -------------------------------------------------------
@@ -81,34 +93,7 @@ export async function compactWorkspaceKnowledge(
   const startedAt = new Date();
 
   const retiredStaleCount = await retireStaleLessons(ctx);
-
-  const clusters = await loadClusters(ctx);
-  let retiredMergedCount = 0;
-  let keptClusters = 0;
-  let mergedClusters = 0;
-  let skippedSingletons = 0;
-
-  for (const cluster of clusters) {
-    if (cluster.length < CLUSTER_MIN) {
-      skippedSingletons += cluster.length;
-      continue;
-    }
-    // Chunk oversized clusters so the AI prompt stays bounded.
-    for (let i = 0; i < cluster.length; i += CLUSTER_MAX) {
-      const chunk = cluster.slice(i, i + CLUSTER_MAX);
-      if (chunk.length < CLUSTER_MIN) {
-        skippedSingletons += chunk.length;
-        continue;
-      }
-      const merge = await mergeClusterWithAI(ctx, chunk);
-      if (merge.action === 'merge') {
-        mergedClusters += 1;
-        retiredMergedCount += merge.retiredIds.length;
-      } else {
-        keptClusters += 1;
-      }
-    }
-  }
+  const pass = await runClusterPass(ctx, { swallowErrors: false });
 
   const finishedAt = new Date();
   const summary: CompactionSummary = {
@@ -116,10 +101,7 @@ export async function compactWorkspaceKnowledge(
     startedAt,
     finishedAt,
     retiredStaleCount,
-    retiredMergedCount,
-    keptClusters,
-    mergedClusters,
-    skippedSingletons,
+    ...pass,
   };
 
   await recordAuditEvent(ctx, {
@@ -151,40 +133,7 @@ export async function compactWorkspaceKnowledgeUnattended(
   const startedAt = new Date();
 
   const retiredStaleCount = await retireStaleLessons(ctx);
-
-  const clusters = await loadClusters(ctx);
-  let retiredMergedCount = 0;
-  let keptClusters = 0;
-  let mergedClusters = 0;
-  let skippedSingletons = 0;
-
-  for (const cluster of clusters) {
-    if (cluster.length < CLUSTER_MIN) {
-      skippedSingletons += cluster.length;
-      continue;
-    }
-    for (let i = 0; i < cluster.length; i += CLUSTER_MAX) {
-      const chunk = cluster.slice(i, i + CLUSTER_MAX);
-      if (chunk.length < CLUSTER_MIN) {
-        skippedSingletons += chunk.length;
-        continue;
-      }
-      try {
-        const merge = await mergeClusterWithAI(ctx, chunk);
-        if (merge.action === 'merge') {
-          mergedClusters += 1;
-          retiredMergedCount += merge.retiredIds.length;
-        } else {
-          keptClusters += 1;
-        }
-      } catch (err) {
-        console.error(
-          `[knowledge-compaction] cluster merge failed for workspace ${workspaceId}:`,
-          err,
-        );
-      }
-    }
-  }
+  const pass = await runClusterPass(ctx, { swallowErrors: true });
 
   const finishedAt = new Date();
   const summary: CompactionSummary = {
@@ -192,10 +141,7 @@ export async function compactWorkspaceKnowledgeUnattended(
     startedAt,
     finishedAt,
     retiredStaleCount,
-    retiredMergedCount,
-    keptClusters,
-    mergedClusters,
-    skippedSingletons,
+    ...pass,
   };
 
   await recordPlatformAuditEvent(null, {
@@ -211,6 +157,108 @@ export async function compactWorkspaceKnowledgeUnattended(
     },
   });
   return summary;
+}
+
+// ---- shared cluster pass (with AI-cost guards) -------------------------
+
+type ClusterPassResult = Omit<
+  CompactionSummary,
+  'workspaceId' | 'startedAt' | 'finishedAt' | 'retiredStaleCount'
+>;
+
+/**
+ * The merge loop shared by the attended and unattended entry points, with
+ * two guards that skip the (billable) AI merge call when it cannot
+ * possibly pay off:
+ *   1. UNCHANGED: no lesson in the chunk was created or touched since the
+ *      previous compaction run — that run already reviewed exactly this
+ *      material and chose to keep it.
+ *   2. DISTINCT: every lesson in the chunk has a stored embedding and no
+ *      pair reaches MERGE_CANDIDATE_SIMILARITY — nothing is close enough
+ *      to be a merge candidate. (Chunks with missing embeddings fall
+ *      through to the AI, never silently skip.)
+ */
+async function runClusterPass(
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId' | 'role'>,
+  options: { swallowErrors: boolean },
+): Promise<ClusterPassResult> {
+  const lastRun = await lastCompactionRun(ctx);
+  const clusters = await loadClusters(ctx);
+  const result: ClusterPassResult = {
+    retiredMergedCount: 0,
+    keptClusters: 0,
+    mergedClusters: 0,
+    skippedSingletons: 0,
+    skippedUnchangedClusters: 0,
+    skippedDistinctClusters: 0,
+  };
+
+  for (const cluster of clusters) {
+    if (cluster.length < CLUSTER_MIN) {
+      result.skippedSingletons += cluster.length;
+      continue;
+    }
+    // Chunk oversized clusters so the AI prompt stays bounded.
+    for (let i = 0; i < cluster.length; i += CLUSTER_MAX) {
+      const chunk = cluster.slice(i, i + CLUSTER_MAX);
+      if (chunk.length < CLUSTER_MIN) {
+        result.skippedSingletons += chunk.length;
+        continue;
+      }
+      if (lastRun && chunk.every((l) => l.updatedAt < lastRun.at)) {
+        result.skippedUnchangedClusters += 1;
+        continue;
+      }
+      if (chunkIsClearlyDistinct(chunk)) {
+        result.skippedDistinctClusters += 1;
+        continue;
+      }
+      try {
+        const merge = await mergeClusterWithAI(ctx, chunk);
+        if (merge.action === 'merge') {
+          result.mergedClusters += 1;
+          result.retiredMergedCount += merge.retiredIds.length;
+        } else {
+          result.keptClusters += 1;
+        }
+      } catch (err) {
+        if (!options.swallowErrors) throw err;
+        console.error(
+          `[knowledge-compaction] cluster merge failed for workspace ${ctx.workspaceId}:`,
+          err,
+        );
+      }
+    }
+  }
+  return result;
+}
+
+/** Guard 2: true only when every lesson has an embedding AND no pair is
+ *  anywhere near merge similarity. */
+function chunkIsClearlyDistinct(chunk: LearningLesson[]): boolean {
+  if (chunk.some((l) => !l.embedding || l.embedding.length === 0)) return false;
+  for (let a = 0; a < chunk.length; a++) {
+    for (let b = a + 1; b < chunk.length; b++) {
+      const va = chunk[a]!.embedding!;
+      const vb = chunk[b]!.embedding!;
+      if (va.length !== vb.length) return false;
+      if (pairCosine(va, vb) >= MERGE_CANDIDATE_SIMILARITY) return false;
+    }
+  }
+  return true;
+}
+
+function pairCosine(a: number[], b: number[]): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    na += a[i]! * a[i]!;
+    nb += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
 }
 
 // ---- stale retirement (no AI needed) ----------------------------------
@@ -245,15 +293,18 @@ async function retireStaleLessons(
         inArray(learningLessons.id, ids),
       ),
     );
-  // Record one audit row per retire so the trail is queryable per-lesson.
-  for (const id of ids) {
-    await recordPlatformAuditEvent(null, {
-      kind: 'knowledge.compaction.retire_stale',
-      entityType: 'learning_lesson',
-      entityId: id,
-      payload: { workspaceId: ctx.workspaceId.toString() },
-    });
-  }
+  // One audit row for the whole batch — the ids array keeps the trail
+  // queryable per-lesson without N sequential inserts.
+  await recordPlatformAuditEvent(null, {
+    kind: 'knowledge.compaction.retire_stale',
+    entityType: 'learning_lesson',
+    entityId: null,
+    payload: {
+      workspaceId: ctx.workspaceId.toString(),
+      ids: ids.map((id) => id.toString()),
+      count: ids.length,
+    },
+  });
   return ids.length;
 }
 

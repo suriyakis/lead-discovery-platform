@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
+import { _setEmbeddingProviderForTests, type IEmbeddingProvider } from '@/lib/embeddings';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { learningLessons } from '@/lib/db/schema/learning';
@@ -67,12 +68,33 @@ function stubAi(
   };
 }
 
+/** Embedding stub that always fails: the fire-and-forget auto-embed on
+ *  createLesson never stores an embedding, so the compaction embedding
+ *  pre-filter can't fire from a race — tests that want stored embeddings
+ *  set them explicitly on the rows. */
+const noEmbeddings: IEmbeddingProvider = {
+  id: 'mock',
+  model: 'none',
+  dim: 1536,
+  async embed() {
+    throw new Error('embeddings disabled in this test file');
+  },
+  estimateCost() {
+    return 0;
+  },
+  async healthCheck() {
+    return { ok: true };
+  },
+};
+
 beforeEach(async () => {
   await truncateAll();
+  _setEmbeddingProviderForTests(noEmbeddings);
 });
 
 afterAll(async () => {
   _setAIProviderForTests(null);
+  _setEmbeddingProviderForTests(null);
   await (db.$client as unknown as { end: () => Promise<void> }).end();
 });
 
@@ -243,5 +265,151 @@ describe('compactWorkspaceKnowledge', () => {
     );
     expect(called).toBe(false);
     expect(summary.skippedSingletons).toBe(1);
+  });
+});
+
+// ---- AI-cost guards ----------------------------------------------------
+
+describe('compaction cost guards', () => {
+  /** Unit vector along one axis of a 1536-dim space. */
+  const axisVec = (axis: number): number[] => {
+    const v = new Array(1536).fill(0);
+    v[axis] = 1;
+    return v;
+  };
+
+  async function seedPair(s: Setup) {
+    const a = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'Focus on manufacturing firms.',
+      confidence: 70,
+    });
+    const b = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'Skip pure consultancies.',
+      confidence: 60,
+    });
+    return { a, b };
+  }
+
+  it('skips the AI call when stored embeddings show the cluster is clearly distinct', async () => {
+    const s = await setup();
+    const { a, b } = await seedPair(s);
+    // Orthogonal embeddings → cosine 0 → nothing near merge similarity.
+    await db
+      .update(learningLessons)
+      .set({ embedding: axisVec(0) })
+      .where(eq(learningLessons.id, a.id));
+    await db
+      .update(learningLessons)
+      .set({ embedding: axisVec(1) })
+      .where(eq(learningLessons.id, b.id));
+
+    let called = false;
+    _setAIProviderForTests(
+      stubAi(() => {
+        called = true;
+        return { action: 'keep_all' };
+      }),
+    );
+    const summary = await compactWorkspaceKnowledge(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+    );
+    expect(called).toBe(false);
+    expect(summary.skippedDistinctClusters).toBe(1);
+    expect(summary.keptClusters).toBe(0);
+  });
+
+  it('still calls the AI when embeddings are similar', async () => {
+    const s = await setup();
+    const { a, b } = await seedPair(s);
+    // Identical embeddings → cosine 1 → must be reviewed by the AI.
+    await db
+      .update(learningLessons)
+      .set({ embedding: axisVec(3) })
+      .where(eq(learningLessons.id, a.id));
+    await db
+      .update(learningLessons)
+      .set({ embedding: axisVec(3) })
+      .where(eq(learningLessons.id, b.id));
+
+    let called = false;
+    _setAIProviderForTests(
+      stubAi(() => {
+        called = true;
+        return { action: 'keep_all' };
+      }),
+    );
+    const summary = await compactWorkspaceKnowledge(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+    );
+    expect(called).toBe(true);
+    expect(summary.keptClusters).toBe(1);
+  });
+
+  it('still calls the AI when embeddings are missing (no silent skip)', async () => {
+    const s = await setup();
+    await seedPair(s); // noEmbeddings stub → nothing stored
+    let called = false;
+    _setAIProviderForTests(
+      stubAi(() => {
+        called = true;
+        return { action: 'keep_all' };
+      }),
+    );
+    const summary = await compactWorkspaceKnowledge(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+    );
+    expect(called).toBe(true);
+    expect(summary.keptClusters).toBe(1);
+  });
+
+  it('skips clusters untouched since the previous run', async () => {
+    const s = await setup();
+    await seedPair(s);
+    _setAIProviderForTests(stubAi(() => ({ action: 'keep_all' })));
+    const first = await compactWorkspaceKnowledge(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+    );
+    expect(first.keptClusters).toBe(1);
+
+    // Second run: nothing changed since the first — the AI must not run.
+    _setAIProviderForTests(
+      stubAi(() => {
+        throw new Error('AI must not be called for an unchanged cluster');
+      }),
+    );
+    const second = await compactWorkspaceKnowledge(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+    );
+    expect(second.skippedUnchangedClusters).toBe(1);
+    expect(second.keptClusters).toBe(0);
+  });
+
+  it('re-reviews a cluster when a lesson in it changed after the last run', async () => {
+    const s = await setup();
+    const { a } = await seedPair(s);
+    _setAIProviderForTests(stubAi(() => ({ action: 'keep_all' })));
+    await compactWorkspaceKnowledge(ctx(s.workspaceA, s.ownerA, 'owner'));
+
+    // Touch one lesson (as reinforcement or an edit would).
+    await db
+      .update(learningLessons)
+      .set({ updatedAt: new Date(Date.now() + 1000) })
+      .where(eq(learningLessons.id, a.id));
+
+    let called = false;
+    _setAIProviderForTests(
+      stubAi(() => {
+        called = true;
+        return { action: 'keep_all' };
+      }),
+    );
+    const second = await compactWorkspaceKnowledge(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+    );
+    expect(called).toBe(true);
+    expect(second.keptClusters).toBe(1);
+    expect(second.skippedUnchangedClusters).toBe(0);
   });
 });

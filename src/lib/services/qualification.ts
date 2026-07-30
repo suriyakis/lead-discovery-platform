@@ -139,16 +139,15 @@ export async function classifySourceRecord(
     .slice(0, 500);
 
   for (const product of products) {
-    // Per-product lesson scope: workspace-wide + this product's lessons.
-    const lessons = await getRelevantLessons(
-      makeReadCtx(ctx),
-      { productProfileId: product.id, taskType: 'classification', contextText: lessonContext },
-    );
-    const wsLessons = await getRelevantLessons(
-      makeReadCtx(ctx),
-      { productProfileId: null, taskType: 'classification', contextText: lessonContext },
-    );
-    const allLessons = [...lessons, ...wsLessons];
+    // Per-product lesson scope: this product's lessons + workspace-wide,
+    // in ONE combined-scope call (one query, one embedding rerank) instead
+    // of two of each per product.
+    const allLessons = await getRelevantLessons(makeReadCtx(ctx), {
+      productProfileId: product.id,
+      includeWorkspaceLessons: true,
+      taskType: 'classification',
+      contextText: lessonContext,
+    });
 
     // P62-08: try AI-based qualification first (Wandizz-style). Fall back
     // to the deterministic rules engine on any AI failure (provider down,

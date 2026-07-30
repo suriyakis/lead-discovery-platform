@@ -99,17 +99,14 @@ export async function generateOutreachDraft(
     .filter((v): v is string => typeof v === 'string')
     .join(' — ')
     .slice(0, 500);
-  const lessons = await getRelevantLessons(ctx, {
+  // Product-scoped + workspace-wide lessons in ONE combined-scope call
+  // (one query, one embedding rerank) instead of two of each.
+  const allLessons = await getRelevantLessons(ctx, {
     productProfileId: product.id,
+    includeWorkspaceLessons: true,
     taskType: 'outreach',
     contextText: lessonContext,
   });
-  const wsLessons = await getRelevantLessons(ctx, {
-    productProfileId: null,
-    taskType: 'outreach',
-    contextText: lessonContext,
-  });
-  const allLessons = [...lessons, ...wsLessons];
   if (allLessons.length > 0) {
     await recordLessonsApplied(
       ctx,

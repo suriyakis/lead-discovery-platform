@@ -153,6 +153,32 @@ describe('recordFeedback', () => {
     expect(inA).toHaveLength(1);
     expect(inB).toHaveLength(0);
   });
+
+  it('repeated identical feedback reinforces the existing lesson instead of duplicating', async () => {
+    const s = await setup();
+    const comment = "don't target councils for this product";
+    const first = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      actionType: 'general_instruction',
+      originalComment: comment,
+    });
+    const second = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      actionType: 'general_instruction',
+      originalComment: comment,
+    });
+    // One lesson row, not two.
+    const rows = await db
+      .select()
+      .from(learningLessons)
+      .where(eq(learningLessons.workspaceId, s.workspaceA));
+    expect(rows).toHaveLength(1);
+    // Second feedback linked its event to the SAME lesson and bumped it.
+    expect(second.lesson?.id).toBe(first.lesson?.id);
+    expect(second.event.extractedLessonId).toBe(first.lesson?.id ?? null);
+    expect(second.lesson!.confidence).toBe(first.lesson!.confidence + 5);
+    // Evidence chain unions both events.
+    expect(second.lesson!.evidenceEventIds).toContain(first.event.id);
+    expect(second.lesson!.evidenceEventIds).toContain(second.event.id);
+  });
 });
 
 // ---- createLesson + listLessons --------------------------------------
@@ -458,6 +484,112 @@ describe('retrieval + prompt application', () => {
 
   it('applyLessonsToPrompt is a no-op for empty lessons', () => {
     expect(applyLessonsToPrompt('Base.', [])).toBe('Base.');
+  });
+
+  it('productProfileId: null returns workspace-wide lessons (regression: eq-null matched nothing)', async () => {
+    const s = await setup();
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      name: 'Scoped',
+    });
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'product-scoped rule',
+      productProfileId: product.id,
+    });
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'workspace-wide rule',
+    });
+    const wsOnly = await getRelevantLessons(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      productProfileId: null,
+    });
+    expect(wsOnly.map((l) => l.rule)).toEqual(['workspace-wide rule']);
+  });
+
+  it('includeWorkspaceLessons returns product-scoped + workspace-wide in one call', async () => {
+    const s = await setup();
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      name: 'Combined',
+    });
+    const other = await createProductProfile(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      name: 'Other',
+    });
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'for this product',
+      productProfileId: product.id,
+    });
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'for everyone',
+    });
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'for a different product',
+      productProfileId: other.id,
+    });
+    const combined = await getRelevantLessons(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      productProfileId: product.id,
+      includeWorkspaceLessons: true,
+    });
+    expect(combined.map((l) => l.rule).sort()).toEqual([
+      'for everyone',
+      'for this product',
+    ]);
+  });
+});
+
+// ---- create-time dedup ------------------------------------------------
+
+describe('createLesson dedup', () => {
+  it('identical rule in the same scope reinforces instead of duplicating', async () => {
+    const s = await setup();
+    const first = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'Avoid consultancies',
+      confidence: 65,
+    });
+    const second = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'avoid consultancies', // case-insensitive match
+    });
+    expect(second.id).toBe(first.id);
+    expect(second.confidence).toBe(70); // 65 + 5
+    const rows = await db
+      .select()
+      .from(learningLessons)
+      .where(eq(learningLessons.workspaceId, s.workspaceA));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('same rule in a different product scope creates a separate lesson', async () => {
+    const s = await setup();
+    const product = await createProductProfile(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      name: 'ScopeSplit',
+    });
+    const wsWide = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'Avoid consultancies',
+    });
+    const scoped = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'Avoid consultancies',
+      productProfileId: product.id,
+    });
+    expect(scoped.id).not.toBe(wsWide.id);
+  });
+
+  it('same rule in a different category creates a separate lesson', async () => {
+    const s = await setup();
+    const neg = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'qualification_negative',
+      rule: 'Councils never buy',
+    });
+    const sector = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'Councils never buy',
+    });
+    expect(sector.id).not.toBe(neg.id);
   });
 });
 
