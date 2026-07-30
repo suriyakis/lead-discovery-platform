@@ -333,53 +333,47 @@ export default async function BillingPage({
           ) : null}
         </section>
 
-        {allPlans.length > 0 ? (
+        {/* Plan cards are the SUBSCRIBE entry point only. Once a
+            subscription exists, switching/canceling lives in the Stripe
+            portal ("Manage subscription" above) — repeating the cards
+            here was redundant. Billing-exempt workspaces never need
+            them at all. */}
+        {allPlans.length > 0 && !ws.stripeSubscriptionId && !ws.billingExempt ? (
           <section>
             <h2>Available plans</h2>
             <p className="muted small">
-              {ws.stripeSubscriptionId
-                ? 'To switch or cancel your plan, open the billing portal above.'
-                : 'Subscribe below — payment and invoicing are handled by Stripe.'}
+              Subscribe below — payment and invoicing are handled by Stripe.
             </p>
             <div className="plan-picker">
-              {allPlans.map((p) => {
-                const isCurrent =
-                  Boolean(ws.stripeSubscriptionId) && ws.plan === p.id;
-                return (
-                  <article
-                    key={p.id}
-                    className={isCurrent ? 'plan-card plan-card-current' : 'plan-card'}
-                  >
-                    <header className="plan-card-head">
-                      <h3>{p.name}</h3>
-                      <span className="plan-price">{p.displayPrice}</span>
-                    </header>
-                    {p.trialDays > 0 ? (
-                      <p className="plan-trial-banner">
-                        {p.trialDays}-day free trial · card required
-                      </p>
-                    ) : null}
-                    <p className="plan-pitch">{p.pitch}</p>
-                    <ul className="plan-features">
-                      {p.features.map((f) => (
-                        <li key={f}>{f}</li>
-                      ))}
-                    </ul>
-                    {isCurrent ? (
-                      <p className="muted small">Your current plan.</p>
-                    ) : !ws.stripeSubscriptionId && isAdmin && stripeConfigured ? (
-                      <form action={subscribeToPlan}>
-                        <input type="hidden" name="planId" value={p.id} />
-                        <button type="submit" className="primary-btn">
-                          {p.trialDays > 0
-                            ? `Start ${p.trialDays}-day trial`
-                            : 'Subscribe'}
-                        </button>
-                      </form>
-                    ) : null}
-                  </article>
-                );
-              })}
+              {allPlans.map((p) => (
+                <article key={p.id} className="plan-card">
+                  <header className="plan-card-head">
+                    <h3>{p.name}</h3>
+                    <span className="plan-price">{p.displayPrice}</span>
+                  </header>
+                  {p.trialDays > 0 ? (
+                    <p className="plan-trial-banner">
+                      {p.trialDays}-day free trial · card required
+                    </p>
+                  ) : null}
+                  <p className="plan-pitch">{p.pitch}</p>
+                  <ul className="plan-features">
+                    {p.features.map((f) => (
+                      <li key={f}>{f}</li>
+                    ))}
+                  </ul>
+                  {isAdmin && stripeConfigured ? (
+                    <form action={subscribeToPlan}>
+                      <input type="hidden" name="planId" value={p.id} />
+                      <button type="submit" className="primary-btn">
+                        {p.trialDays > 0
+                          ? `Start ${p.trialDays}-day trial`
+                          : 'Subscribe'}
+                      </button>
+                    </form>
+                  ) : null}
+                </article>
+              ))}
             </div>
           </section>
         ) : null}
