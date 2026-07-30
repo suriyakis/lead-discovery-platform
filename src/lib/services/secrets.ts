@@ -5,12 +5,13 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
+  platformSecrets,
   workspaceSecrets,
   type NewWorkspaceSecret,
   type WorkspaceSecret,
 } from '@/lib/db/schema/secrets';
-import { recordAuditEvent } from './audit';
-import { canAdminWorkspace, type WorkspaceContext } from './context';
+import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
+import { canAdminWorkspace, isSuperAdmin, type WorkspaceContext } from './context';
 import { decryptValue, encryptValue } from './crypto';
 
 export class SecretsServiceError extends Error {
@@ -153,6 +154,95 @@ export async function listSecretKeys(ctx: WorkspaceContext): Promise<SecretListi
   return rows;
 }
 
+// ---- Platform-wide secrets (super-admin, /admin/providers) -------------
+
+export async function setPlatformSecret(
+  ctx: WorkspaceContext,
+  key: string,
+  value: string,
+): Promise<void> {
+  if (!isSuperAdmin(ctx)) throw permissionDenied('set platform secret');
+  const trimmed = value.trim();
+  if (!trimmed) throw invalid('secret value cannot be empty');
+  if (trimmed.length > 4096) throw invalid('secret value too long (4096 char max)');
+  const scope = parseScope(key);
+  const encrypted = encryptValue(trimmed);
+
+  await db
+    .insert(platformSecrets)
+    .values({
+      key,
+      encryptedValue: encrypted,
+      scope,
+      updatedByUserId: ctx.userId,
+    })
+    .onConflictDoUpdate({
+      target: [platformSecrets.key],
+      set: {
+        encryptedValue: encrypted,
+        scope,
+        updatedByUserId: ctx.userId,
+        updatedAt: new Date(),
+      },
+    });
+
+  await recordPlatformAuditEvent(ctx.userId, {
+    kind: 'platform_secret.set',
+    entityType: 'platform_secret',
+    entityId: key,
+    payload: { scope },
+  });
+}
+
+export async function deletePlatformSecret(
+  ctx: WorkspaceContext,
+  key: string,
+): Promise<void> {
+  if (!isSuperAdmin(ctx)) throw permissionDenied('delete platform secret');
+  parseScope(key);
+  await db.delete(platformSecrets).where(eq(platformSecrets.key, key));
+  await recordPlatformAuditEvent(ctx.userId, {
+    kind: 'platform_secret.delete',
+    entityType: 'platform_secret',
+    entityId: key,
+    payload: {},
+  });
+}
+
+/** Internal — never expose the value to a client. */
+export async function getPlatformSecret(key: string): Promise<string | null> {
+  parseScope(key);
+  const rows = await db
+    .select()
+    .from(platformSecrets)
+    .where(eq(platformSecrets.key, key))
+    .limit(1);
+  if (!rows[0]) return null;
+  return decryptValue(rows[0].encryptedValue);
+}
+
+export interface PlatformSecretListing {
+  key: string;
+  scope: string;
+  updatedAt: Date;
+  updatedByUserId: string | null;
+}
+
+export async function listPlatformSecretKeys(
+  ctx: WorkspaceContext,
+): Promise<PlatformSecretListing[]> {
+  if (!isSuperAdmin(ctx)) throw permissionDenied('list platform secrets');
+  return db
+    .select({
+      key: platformSecrets.key,
+      scope: platformSecrets.scope,
+      updatedAt: platformSecrets.updatedAt,
+      updatedByUserId: platformSecrets.updatedByUserId,
+    })
+    .from(platformSecrets)
+    .orderBy(asc(platformSecrets.key));
+}
+
 // ---- Provider key resolver --------------------------------------------
 
 export interface ResolvedProviderKey {
@@ -161,12 +251,12 @@ export interface ResolvedProviderKey {
 }
 
 /**
- * Resolve a provider API key. Workspace-supplied takes precedence;
- * if none, falls back to the platform default at `process.env[envVarName]`.
- * Returns null when neither is configured.
- *
- * Used by SerpAPI / OpenAI / etc. providers to support both BYOK and
- * platform-provided keys.
+ * Resolve a provider API key. Order:
+ *   1. workspace secret (BYOK — usage is token-free for the workspace)
+ *   2. platform secret set via /admin/providers (DB, survives .env edits)
+ *   3. `process.env[envVarName]` (legacy platform default)
+ * Both 2 and 3 report source='platform' — billing only cares whether the
+ * key is the WORKSPACE's own. Returns null when nothing is configured.
  */
 export async function resolveProviderKey(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -175,6 +265,8 @@ export async function resolveProviderKey(
 ): Promise<ResolvedProviderKey | null> {
   const workspaceVal = await getSecret(ctx, secretKey);
   if (workspaceVal) return { key: workspaceVal, source: 'workspace' };
+  const platformDbVal = await getPlatformSecret(secretKey);
+  if (platformDbVal) return { key: platformDbVal, source: 'platform' };
   const platformVal = process.env[envVarName];
   if (platformVal && platformVal.trim().length > 0) {
     return { key: platformVal.trim(), source: 'platform' };

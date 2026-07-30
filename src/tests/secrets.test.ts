@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db } from '@/lib/db/client';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import { decryptValue, encryptValue } from '@/lib/services/crypto';
@@ -246,5 +246,75 @@ describe('error shape', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(SecretsServiceError);
     }
+  });
+});
+
+// ---- platform secrets (/admin/providers) ------------------------------
+
+describe('platform secrets', () => {
+  const K = 'anthropic.apiKey';
+  const ENV = 'TEST_FAKE_VENDOR_KEY';
+
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  it('only super-admins can set/list/delete', async () => {
+    const s = await setup();
+    const { setPlatformSecret, listPlatformSecretKeys, deletePlatformSecret } =
+      await import('@/lib/services/secrets');
+    const ownerCtx = ctx(s.workspaceA, s.ownerA, 'owner');
+    await expect(setPlatformSecret(ownerCtx, K, 'sk-x')).rejects.toThrow(/Permission denied/);
+    await expect(listPlatformSecretKeys(ownerCtx)).rejects.toThrow(/Permission denied/);
+    await expect(deletePlatformSecret(ownerCtx, K)).rejects.toThrow(/Permission denied/);
+
+    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    await setPlatformSecret(sa, K, 'sk-platform-123');
+    const listed = await listPlatformSecretKeys(sa);
+    expect(listed.map((l) => l.key)).toContain(K);
+  });
+
+  it('resolution order: workspace BYOK > platform db > env', async () => {
+    const s = await setup();
+    const { setPlatformSecret, getPlatformSecret } = await import('@/lib/services/secrets');
+    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const wsCtx = ctx(s.workspaceA, s.ownerA, 'owner');
+
+    // env only
+    process.env[ENV] = 'sk-env';
+    let r = await resolveProviderKey(wsCtx, K, ENV);
+    expect(r).toEqual({ key: 'sk-env', source: 'platform' });
+
+    // platform db beats env
+    await setPlatformSecret(sa, K, 'sk-platform');
+    r = await resolveProviderKey(wsCtx, K, ENV);
+    expect(r).toEqual({ key: 'sk-platform', source: 'platform' });
+    expect(await getPlatformSecret(K)).toBe('sk-platform');
+
+    // workspace BYOK beats both, and reports source=workspace (billing!)
+    await setSecret(wsCtx, K, 'sk-byok');
+    r = await resolveProviderKey(wsCtx, K, ENV);
+    expect(r).toEqual({ key: 'sk-byok', source: 'workspace' });
+
+    // other workspaces still get the platform key
+    const rB = await resolveProviderKey(ctx(s.workspaceB, s.ownerB, 'owner'), K, ENV);
+    expect(rB).toEqual({ key: 'sk-platform', source: 'platform' });
+  });
+
+  it('delete falls back to env; nothing configured resolves null', async () => {
+    const s = await setup();
+    const { setPlatformSecret, deletePlatformSecret } = await import('@/lib/services/secrets');
+    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const wsCtx = ctx(s.workspaceA, s.ownerA, 'owner');
+
+    await setPlatformSecret(sa, K, 'sk-platform');
+    process.env[ENV] = 'sk-env';
+    await deletePlatformSecret(sa, K);
+    expect(await resolveProviderKey(wsCtx, K, ENV)).toEqual({
+      key: 'sk-env',
+      source: 'platform',
+    });
+    delete process.env[ENV];
+    expect(await resolveProviderKey(wsCtx, K, ENV)).toBeNull();
   });
 });

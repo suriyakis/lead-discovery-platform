@@ -46,3 +46,26 @@ export const workspaceSecrets = pgTable(
 
 export type WorkspaceSecret = typeof workspaceSecrets.$inferSelect;
 export type NewWorkspaceSecret = typeof workspaceSecrets.$inferInsert;
+
+/**
+ * Platform-wide provider secrets — the keys the PLATFORM runs on when a
+ * workspace hasn't brought its own. Managed by super-admins from the
+ * /admin/providers console page. Same encryption scheme as workspace
+ * secrets (AES-256-GCM under MASTER_KEY). Resolution order everywhere:
+ * workspace secret → platform secret (this table) → env var.
+ */
+export const platformSecrets = pgTable('platform_secrets', {
+  key: text('key').primaryKey(),
+  encryptedValue: bytea('encrypted_value').notNull(),
+  scope: text('scope').notNull(),
+  updatedByUserId: text('updated_by_user_id'),
+  createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type PlatformSecret = typeof platformSecrets.$inferSelect;
+export type NewPlatformSecret = typeof platformSecrets.$inferInsert;
