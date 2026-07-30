@@ -14,10 +14,17 @@ import {
   platformWorkspaceStats,
   recentAuditAcrossWorkspaces,
 } from '@/lib/services/admin';
+import { TokenError, adjustTokens } from '@/lib/services/token-ledger';
+import { isNextRedirectError } from '@/lib/server-redirect';
 
-export default async function AdminPage() {
+export default async function AdminPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ msg?: string; err?: string }>;
+}) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
+  const sp = await searchParams;
 
   let ctx;
   try {
@@ -57,6 +64,33 @@ export default async function AdminPage() {
     platformTotals(ctx),
   ]);
 
+  async function quickGrantTokens(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const wsIdRaw = String(formData.get('workspaceId') ?? '');
+    const raw = String(formData.get('tokens') ?? '').trim();
+    const reason = String(formData.get('reason') ?? '').trim() || 'manual grant (console overview)';
+    if (!/^\d+$/.test(wsIdRaw)) redirect('/admin?err=bad+workspace');
+    const tokens = Number(raw);
+    if (!Number.isFinite(tokens) || !Number.isInteger(tokens) || tokens === 0) {
+      redirect(
+        `/admin?err=${encodeURIComponent('Tokens must be a non-zero integer (negative = deduct).')}`,
+      );
+    }
+    try {
+      const tx = await adjustTokens(c, BigInt(wsIdRaw), tokens, reason);
+      redirect(
+        `/admin?msg=${encodeURIComponent(
+          `${tokens > 0 ? '+' : ''}${tokens.toLocaleString()} tokens applied — new balance ${tx.balanceAfter.toLocaleString()}.`,
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof TokenError ? err.message : 'token adjustment failed';
+      redirect(`/admin?err=${encodeURIComponent(m)}`);
+    }
+  }
+
   return (
     <div className="dashboard-wrap">
         <h1>Platform overview</h1>
@@ -64,6 +98,9 @@ export default async function AdminPage() {
           Platform-wide views. Every action you take here is audit-logged
           with your user id, regardless of which workspace it lands in.
         </p>
+
+        {sp.msg ? <p className="form-info">{sp.msg}</p> : null}
+        {sp.err ? <p className="form-error">{sp.err}</p> : null}
 
         <div className="admin-totals">
           <div className="admin-total-card">
@@ -135,6 +172,7 @@ export default async function AdminPage() {
                 <th>Spent</th>
                 <th>Cost 30d</th>
                 <th>Events 30d</th>
+                <th>Grant tokens</th>
               </tr>
             </thead>
             <tbody>
@@ -157,13 +195,43 @@ export default async function AdminPage() {
                   <td>{s.tokensSpent.toLocaleString()}</td>
                   <td>€{(s.usageCostCents30d / 100).toFixed(2)}</td>
                   <td>{s.usageEvents30d}</td>
+                  <td>
+                    <form
+                      action={quickGrantTokens}
+                      style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}
+                    >
+                      <input type="hidden" name="workspaceId" value={s.workspaceId.toString()} />
+                      <input
+                        type="number"
+                        name="tokens"
+                        step={1}
+                        required
+                        placeholder="±tokens"
+                        style={{ width: '6.5rem' }}
+                        aria-label={`Tokens to grant to ${s.name}`}
+                      />
+                      <input
+                        type="text"
+                        name="reason"
+                        placeholder="reason"
+                        maxLength={200}
+                        style={{ width: '8rem' }}
+                        aria-label="Reason"
+                      />
+                      <button type="submit" className="ghost-btn">
+                        Apply
+                      </button>
+                    </form>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
           <p className="muted small">
-            Token grants, deductions and billing exemption live on each
-            workspace&apos;s admin page. User blocking is under{' '}
+            Positive adds, negative deducts; every adjustment lands in the
+            workspace&apos;s token ledger with your user id and the reason.
+            Full billing controls (exemption, ledger, usage breakdown) are on
+            each workspace&apos;s page. User blocking is under{' '}
             <Link href="/admin/users">Users</Link> (set status to
             &ldquo;suspended&rdquo;).
           </p>
