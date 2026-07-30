@@ -116,7 +116,7 @@ export default async function Home({
               Find the right opportunities for the products you sell.
             </h1>
             <p className="hero-lede">
-              signal/works connects search, directories, tenders, company
+              lead/sonar connects search, directories, tenders, company
               websites, documents, and team feedback into a single workspace
               for discovering and qualifying B2B leads — with evidence,
               traceability, and a learning layer.

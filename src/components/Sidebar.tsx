@@ -205,8 +205,8 @@ function SidebarBrand() {
   return (
     <div className="sidebar-brand">
       <Link href="/dashboard">
-        <span className="sw-mark">signal</span>
-        <span className="sw-mark sw-mark-accent">/works</span>
+        <span className="sw-mark">lead</span>
+        <span className="sw-mark sw-mark-accent">/sonar</span>
       </Link>
     </div>
   );
