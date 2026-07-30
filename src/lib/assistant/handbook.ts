@@ -55,8 +55,8 @@ export const PLATFORM_HANDBOOK = `
   tokens).
 - Without a subscription: 1 product, 1 mailbox, no autopilot, no BYOK —
   but token packs still work for metered usage.
-- One-time top-up packs for bursts: Starter €10 → 1,000, Growth €49 →
-  5,500, Scale €199 → 24,000 tokens.
+- One-time top-up packs for bursts: Small €10 → 1,000, Medium €49 →
+  5,500, Large €199 → 24,000 tokens.
 - When the wallet is empty, discovery, drafting and translation PAUSE
   until tokens arrive (pack purchase or the next allowance).
 - Pro only: actions running on your own API keys (BYOK, set under
