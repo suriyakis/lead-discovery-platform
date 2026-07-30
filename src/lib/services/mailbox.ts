@@ -71,6 +71,16 @@ export async function createMailbox(
   input: CreateMailboxInput,
 ): Promise<Mailbox> {
   if (!canWrite(ctx)) throw permissionDenied('mailbox.create');
+
+  // Plan ceiling — count-then-insert, same non-transactional tradeoff
+  // as product profiles.
+  const existingRows = await db
+    .select({ id: mailboxes.id })
+    .from(mailboxes)
+    .where(eq(mailboxes.workspaceId, ctx.workspaceId));
+  const { assertCanAddMailbox } = await import('./plan-limits');
+  await assertCanAddMailbox(ctx, existingRows.length);
+
   const fromAddress = normalizeAddress(input.fromAddress);
   if (!isValidEmail(fromAddress)) throw invalid('invalid fromAddress');
   if (!input.smtpHost.trim() || !input.smtpUser.trim() || !input.smtpPassword) {
