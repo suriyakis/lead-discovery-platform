@@ -23,6 +23,7 @@ import {
   embedLesson,
   indexDocument,
   indexKnowledgeSource,
+  isIndexableDocument,
   listChunksForDocument,
   listIndexingJobs,
   retrieve,
@@ -105,6 +106,42 @@ describe('chunkText (pure)', () => {
   it('skips empty input', () => {
     expect(chunkText('')).toEqual([]);
     expect(chunkText('   \n\n  ')).toEqual([]);
+  });
+});
+
+// ============ isIndexableDocument (pure) ==========================
+
+describe('isIndexableDocument', () => {
+  it('accepts text, json, html, pdf and docx', () => {
+    expect(isIndexableDocument({ mimeType: 'text/plain', filename: 'a.txt' })).toBe(true);
+    expect(isIndexableDocument({ mimeType: 'application/json', filename: 'a.json' })).toBe(true);
+    expect(isIndexableDocument({ mimeType: 'text/html', filename: 'a.html' })).toBe(true);
+    expect(isIndexableDocument({ mimeType: 'application/pdf', filename: 'spec.pdf' })).toBe(true);
+    expect(
+      isIndexableDocument({
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        filename: 'doc.docx',
+      }),
+    ).toBe(true);
+  });
+
+  it('falls back to the filename when the mime type is generic', () => {
+    expect(
+      isIndexableDocument({ mimeType: 'application/octet-stream', filename: 'notes.md' }),
+    ).toBe(true);
+    expect(isIndexableDocument({ mimeType: null, filename: 'report.pdf' })).toBe(true);
+    expect(isIndexableDocument({ mimeType: null, filename: 'letter.docx' })).toBe(true);
+  });
+
+  it('rejects images and unknown binaries', () => {
+    expect(isIndexableDocument({ mimeType: 'image/png', filename: 'logo.png' })).toBe(false);
+    expect(
+      isIndexableDocument({ mimeType: 'application/zip', filename: 'bundle.zip' }),
+    ).toBe(false);
+    expect(
+      isIndexableDocument({ mimeType: 'application/octet-stream', filename: 'blob.bin' }),
+    ).toBe(false);
   });
 });
 

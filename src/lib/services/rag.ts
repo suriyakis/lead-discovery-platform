@@ -110,6 +110,31 @@ export function chunkText(input: string): Chunk[] {
 
 // ---- text extraction ------------------------------------------------
 
+/**
+ * Whether auto-indexing should even be attempted for a document, judged
+ * from metadata alone (no bytes needed). Mirrors the extractable branches
+ * of extractDocumentText, minus the looks-like-UTF-8 byte heuristic —
+ * unknown binary types are stored fine but skipped by AUTO indexing; the
+ * manual "Index now" button still runs the full byte-sniffing path.
+ */
+export function isIndexableDocument(input: {
+  mimeType: string | null;
+  filename: string;
+}): boolean {
+  const mime = (input.mimeType ?? '').toLowerCase();
+  const filename = input.filename.toLowerCase();
+  if (mime.startsWith('text/') || mime === 'application/json') return true;
+  if (mime === 'application/xhtml+xml') return true;
+  if (mime === 'application/pdf' || filename.endsWith('.pdf')) return true;
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    filename.endsWith('.docx')
+  ) {
+    return true;
+  }
+  return /\.(md|txt|csv|json|html?|xml)$/.test(filename);
+}
+
 interface ExtractDeps {
   storage?: IStorage;
 }

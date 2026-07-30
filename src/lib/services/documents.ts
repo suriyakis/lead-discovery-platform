@@ -58,6 +58,9 @@ export interface UploadDocumentResult {
   document: Document;
   /** Pre-signed URL or file:// URL the caller can offer for download. */
   url: string;
+  /** True when the exact same bytes already existed in the workspace —
+   *  `document` is then the EXISTING row and nothing new was stored. */
+  deduplicated: boolean;
 }
 
 export async function uploadDocument(
@@ -77,6 +80,29 @@ export async function uploadDocument(
 
   const sha256 = createHash('sha256').update(buffer).digest('hex');
   const storage = storageOverride ?? getStorage();
+
+  // Byte-identical dedup — the sha256 has been captured since Phase 20
+  // but nothing ever CHECKED it: re-uploading the same file stored a
+  // second blob and produced a confusing twin library entry (and, once
+  // indexed, duplicate retrieval chunks). Return the existing row
+  // instead; the caller surfaces "already in your library".
+  const existing = await db
+    .select()
+    .from(documents)
+    .where(
+      and(
+        eq(documents.workspaceId, ctx.workspaceId),
+        eq(documents.sha256, sha256),
+        ne(documents.status, 'archived'),
+      ),
+    )
+    .orderBy(desc(documents.createdAt))
+    .limit(1);
+  if (existing[0]) {
+    const url = await storage.signedUrl(existing[0].storageKey);
+    return { document: existing[0], url, deduplicated: true };
+  }
+
   const ext = extractExtension(filename);
   const storageKey = `workspaces/${ctx.workspaceId}/documents/${randomUUID()}${ext}`;
 
@@ -116,7 +142,7 @@ export async function uploadDocument(
   });
 
   const url = await storage.signedUrl(storageKey);
-  return { document: created, url };
+  return { document: created, url, deduplicated: false };
 }
 
 // ---- read -----------------------------------------------------------

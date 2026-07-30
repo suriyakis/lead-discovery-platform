@@ -64,9 +64,14 @@ export const PLATFORM_HANDBOOK = `
 - Subscriptions are managed via Stripe from the same page.
 
 ## Knowledge base (/documents, /knowledge)
-Upload product docs (text, PDF, DOCX) and index them — the reply
-assistant and pitch composer ground their answers in these. Re-index
-after replacing a file.
+Upload product docs (text, PDF, DOCX) on /documents — they are chunked
+and indexed for retrieval AUTOMATICALLY on upload; the reply assistant
+and pitch composer ground their answers in these. Ticking products on
+the upload form scopes the knowledge to those products (a knowledge
+source is created and indexed for you); uploads without products are
+available workspace-wide. Byte-identical re-uploads are detected and
+skipped. Knowledge sources created on /knowledge/new are also indexed
+automatically. Re-index manually only after replacing a file's bytes.
 
 ## Learning memory (/learning) — the platform teaches itself
 Lessons are rules qualification and outreach follow. They come from
