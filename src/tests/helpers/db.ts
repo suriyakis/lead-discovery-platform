@@ -84,7 +84,15 @@ export async function seedWorkspace(input: {
   slug?: string;
   ownerUserId: string;
   extraMembers?: ReadonlyArray<{ userId: string; role: WorkspaceMemberRole }>;
+  /** Plan tier for the seeded workspace. Defaults to an ACTIVE Pro
+   *  subscription so the plan-limit gates (products, mailboxes,
+   *  autopilot, BYOK) never interfere with tests that aren't about
+   *  them. Pass 'free' to seed an unsubscribed workspace when testing
+   *  the limits themselves. Token debits are unaffected either way
+   *  (billing_exempt stays false). */
+  plan?: 'free' | 'starter' | 'pro';
 }): Promise<bigint> {
+  const plan = input.plan ?? 'pro';
   return db.transaction(async (tx) => {
     const ws = await tx
       .insert(workspaces)
@@ -92,6 +100,9 @@ export async function seedWorkspace(input: {
         name: input.name,
         slug: input.slug ?? `${input.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
         ownerUserId: input.ownerUserId,
+        ...(plan === 'free'
+          ? {}
+          : { plan, subscriptionStatus: 'active' as const }),
       })
       .returning();
     const workspaceId = ws[0]?.id;

@@ -450,6 +450,7 @@ interface ApplyResult {
  *   - customer.subscription.created    — alias / belt-and-braces
  *   - customer.subscription.updated    — plan change, renewal, etc.
  *   - customer.subscription.deleted    — canceled
+ *   - invoice.paid                     — monthly token allowance grant
  *   - invoice.payment_failed           — past_due
  *
  * Other event types are quietly ignored (Stripe sends a lot we don't
@@ -602,6 +603,72 @@ export async function applyStripeEvent(event: Stripe.Event): Promise<ApplyResult
         })
         .where(eq(workspaces.id, workspaceId));
       return { workspaceId, action: 'updated', detail: 'subscription.deleted' };
+    }
+
+    case 'invoice.paid': {
+      // Monthly token allowance: every PAID subscription invoice
+      // credits the plan's monthlyTokens into the wallet. Idempotent
+      // per invoice id (Stripe retries + the subscription.updated
+      // renewal event can race this — creditTokens' externalRef guard
+      // makes the grant exactly-once). €0 invoices (trials, 100%-off
+      // coupons) grant nothing: trials run on the welcome tokens.
+      const invoice = event.data.object as Stripe.Invoice;
+      if (!invoice.id) return { workspaceId: null, action: 'ignored', detail: 'invoice without id' };
+      if ((invoice.amount_paid ?? 0) <= 0) {
+        return { workspaceId: null, action: 'ignored', detail: 'zero-amount invoice (trial/coupon)' };
+      }
+      const customerId =
+        typeof invoice.customer === 'string'
+          ? invoice.customer
+          : invoice.customer?.id ?? null;
+      if (!customerId) return { workspaceId: null, action: 'no_workspace' };
+      const [ws] = await db
+        .select({ id: workspaces.id, plan: workspaces.plan })
+        .from(workspaces)
+        .where(eq(workspaces.stripeCustomerId, customerId))
+        .limit(1);
+      if (!ws) return { workspaceId: null, action: 'no_workspace' };
+      const plan = getPlanById(ws.plan);
+      if (!plan || plan.monthlyTokens <= 0) {
+        return {
+          workspaceId: ws.id,
+          action: 'ignored',
+          detail: `no allowance for plan '${ws.plan}'`,
+        };
+      }
+      // Only subscription invoices carry the allowance — a future
+      // one-off invoice on the same customer must not trigger a grant.
+      const isSubscriptionInvoice = Boolean(
+        invoice.parent?.subscription_details ??
+          (invoice as unknown as { subscription?: unknown }).subscription,
+      );
+      if (!isSubscriptionInvoice) {
+        return { workspaceId: ws.id, action: 'ignored', detail: 'non-subscription invoice' };
+      }
+      const { alreadyApplied } = await creditTokens(ws.id, {
+        tokens: plan.monthlyTokens,
+        kind: 'purchase',
+        reason: `subscription.allowance:${plan.id}`,
+        externalRef: `invoice:${invoice.id}`,
+        payload: {
+          stripeInvoiceId: invoice.id,
+          plan: plan.id,
+          amountPaid: invoice.amount_paid,
+          currency: invoice.currency,
+        },
+      });
+      // Restore feature access if the workspace had lapsed to past_due.
+      await db
+        .update(workspaces)
+        .set({ subscriptionStatus: 'active', updatedAt: new Date() })
+        .where(eq(workspaces.id, ws.id));
+      return {
+        workspaceId: ws.id,
+        action: 'updated',
+        detail: alreadyApplied
+          ? 'allowance replay (already credited)'
+          : `allowance credited: ${plan.monthlyTokens} (${plan.id})`,
+      };
     }
 
     case 'invoice.payment_failed': {

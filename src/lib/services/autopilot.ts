@@ -102,6 +102,21 @@ export async function updateAutopilotSettings(
   input: UpdateAutopilotSettingsInput,
 ): Promise<AutopilotSettings> {
   if (!canAdminWorkspace(ctx)) throw denied('autopilot.settings.update');
+  // Autopilot is a subscription feature. Only ENABLING is gated —
+  // turning things off (incl. emergencyPause) must always work, so a
+  // lapsed subscription can still stop automation.
+  const enabling =
+    input.autopilotEnabled === true ||
+    input.enableAutoApproveProjects === true ||
+    input.enableAutoEnqueueOutreach === true ||
+    input.enableAutoDrainQueue === true ||
+    input.enableAutoSyncInbound === true ||
+    input.enableAutoCrmContactSync === true ||
+    input.enableAutoCrmDealOnQualified === true;
+  if (enabling) {
+    const { assertAutopilotAllowed } = await import('./plan-limits');
+    await assertAutopilotAllowed(ctx);
+  }
   await getAutopilotSettings(ctx);
   const updates: Partial<AutopilotSettings> & { updatedAt: Date } = {
     updatedAt: new Date(),
@@ -397,6 +412,20 @@ export async function runOnce(
       detail: settings.emergencyPause ? 'emergency_pause' : 'autopilot_disabled',
     });
     return { runId, ranAt, steps };
+  }
+
+  // Plan guard: autopilot is a subscription feature. The toggle gate in
+  // updateAutopilotSettings stops NEW enables, but a workspace that
+  // enabled autopilot while subscribed and then lapsed would keep
+  // running forever without this runtime check.
+  {
+    const { getEffectivePlan } = await import('./plan-limits');
+    const plan = await getEffectivePlan(ctx);
+    if (!plan.limits.autopilot) {
+      await recordStep(ctx, runId, 'guard', 'skipped', 'plan_no_autopilot');
+      steps.push({ step: 'guard', outcome: 'skipped', detail: 'plan_no_autopilot' });
+      return { runId, ranAt, steps };
+    }
   }
 
   if (settings.enableAutoSyncInbound) {

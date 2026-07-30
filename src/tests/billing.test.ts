@@ -261,3 +261,96 @@ describe('applyStripeEvent', () => {
     expect(ws!.subscriptionStatus).toBe('past_due');
   });
 });
+
+// ─── invoice.paid — monthly token allowance ─────────────────────────
+
+describe('invoice.paid allowance', () => {
+  function invoicePaid(overrides: Partial<Record<string, unknown>> = {}): Stripe.Event {
+    return {
+      id: 'evt_inv_1',
+      type: 'invoice.paid',
+      data: {
+        object: {
+          id: 'in_test_1',
+          customer: 'cus_allow_1',
+          amount_paid: 9900,
+          currency: 'eur',
+          parent: { subscription_details: { subscription: 'sub_test_1' } },
+          ...overrides,
+        } as unknown as Stripe.Invoice,
+      },
+    } as unknown as Stripe.Event;
+  }
+
+  async function subscribedWorkspace(plan: 'starter' | 'pro'): Promise<bigint> {
+    const s = await setup();
+    await db
+      .update(workspaces)
+      .set({ plan, subscriptionStatus: 'active', stripeCustomerId: 'cus_allow_1' })
+      .where(eq(workspaces.id, s.workspaceA));
+    return s.workspaceA;
+  }
+
+  it('credits the plan monthlyTokens on a paid subscription invoice', async () => {
+    const wsId = await subscribedWorkspace('pro');
+    const result = await applyStripeEvent(invoicePaid());
+    expect(result.action).toBe('updated');
+    const { getTokenWallet } = await import('@/lib/services/token-ledger');
+    const wallet = await getTokenWallet({ workspaceId: wsId });
+    // 500 welcome + 13,000 pro allowance.
+    expect(wallet.balance).toBe(13_500n);
+  });
+
+  it('is idempotent per invoice id (webhook replay does not double-credit)', async () => {
+    const wsId = await subscribedWorkspace('starter');
+    await applyStripeEvent(invoicePaid());
+    const replay = await applyStripeEvent(invoicePaid());
+    expect(replay.detail).toContain('replay');
+    const { getTokenWallet } = await import('@/lib/services/token-ledger');
+    const wallet = await getTokenWallet({ workspaceId: wsId });
+    // 500 welcome + 3,500 starter allowance, exactly once.
+    expect(wallet.balance).toBe(4_000n);
+  });
+
+  it('ignores zero-amount invoices (trials / 100% coupons)', async () => {
+    const wsId = await subscribedWorkspace('pro');
+    const result = await applyStripeEvent(invoicePaid({ amount_paid: 0 }));
+    expect(result.action).toBe('ignored');
+    const { getTokenWallet } = await import('@/lib/services/token-ledger');
+    const wallet = await getTokenWallet({ workspaceId: wsId });
+    expect(wallet.balance).toBe(500n); // welcome tokens only
+  });
+
+  it('ignores non-subscription invoices', async () => {
+    const wsId = await subscribedWorkspace('pro');
+    const result = await applyStripeEvent(
+      invoicePaid({ parent: null, subscription: undefined }),
+    );
+    expect(result.action).toBe('ignored');
+    const { getTokenWallet } = await import('@/lib/services/token-ledger');
+    const wallet = await getTokenWallet({ workspaceId: wsId });
+    expect(wallet.balance).toBe(500n);
+  });
+
+  it('restores past_due workspaces to active on payment', async () => {
+    const wsId = await subscribedWorkspace('pro');
+    await db
+      .update(workspaces)
+      .set({ subscriptionStatus: 'past_due' })
+      .where(eq(workspaces.id, wsId));
+    await applyStripeEvent(invoicePaid());
+    const [ws] = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, wsId));
+    expect(ws!.subscriptionStatus).toBe('active');
+  });
+
+  it('returns no_workspace for an unknown customer', async () => {
+    await setup();
+    const result = await applyStripeEvent(
+      invoicePaid({ customer: 'cus_unknown' }),
+    );
+    expect(result.action).toBe('no_workspace');
+  });
+});

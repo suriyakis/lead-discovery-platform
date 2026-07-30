@@ -267,7 +267,7 @@ export async function getOnboardingState(
       key: 'plan',
       title: 'Pick a plan',
       blurb:
-        'Subscriptions are live (Starter / Pro via Stripe), and every new workspace starts with 500 free tokens — the prepaid currency that metered work (discovery, AI qualification, drafting, translation) spends. Top up anytime under Settings → Billing.',
+        'A subscription refills your token wallet every month — Starter (€29, 3,500 tokens) or Pro (€99, 13,000 tokens + BYOK and more mailboxes). Tokens are the prepaid currency all metered work (discovery, AI qualification, drafting, translation) spends; every new workspace starts with 500 free ones, and one-time top-up packs are available under Settings → Billing.',
       done: planDone,
       href: '/onboarding#plan',
     },
@@ -276,7 +276,7 @@ export async function getOnboardingState(
       title: simple ? 'AI provider — system default' : 'Connect an AI provider',
       blurb: simple
         ? 'Drafts, qualification, and reply assistance run on the platform’s system AI key — nothing to configure. Usage is billed from your token balance.'
-        : 'Drafts, qualification, and reply assistance need a real LLM. The system default works out of the box; bring your own OpenAI / Anthropic / Gemini key in Active providers to run on your own account instead (BYOK usage is token-free).',
+        : 'Drafts, qualification, and reply assistance need a real LLM. The system default works out of the box; on the Pro plan you can bring your own OpenAI / Anthropic / Gemini key in Active providers to run on your own account instead (BYOK usage is token-free).',
       done: aiDone,
       href: '/settings/integrations',
       why: aiWhy,

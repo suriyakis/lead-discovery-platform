@@ -44,14 +44,24 @@ export const PLATFORM_HANDBOOK = `
    sending. The edited translation is exactly what is sent.
 
 ## Tokens & billing (/settings/billing)
-- Tokens are the prepaid currency for metered work: discovery search,
-  AI qualification, drafting, reply suggestions, translation.
+- Tokens are the prepaid currency for ALL metered work: discovery
+  search, AI qualification, drafting, reply suggestions, translation.
   1 token ≈ €0.01. New workspaces start with 500 free tokens.
+- SUBSCRIPTIONS refill the wallet monthly: Starter €29/mo includes
+  3,500 tokens + up to 3 products, 2 mailboxes, autopilot. Pro €99/mo
+  includes 13,000 tokens + unlimited products, 10 mailboxes, BYOK,
+  priority support. Unused tokens roll over while subscribed. The
+  allowance lands when each invoice is PAID (trials run on the welcome
+  tokens).
+- Without a subscription: 1 product, 1 mailbox, no autopilot, no BYOK —
+  but token packs still work for metered usage.
+- One-time top-up packs for bursts: Starter €10 → 1,000, Growth €49 →
+  5,500, Scale €199 → 24,000 tokens.
 - When the wallet is empty, discovery, drafting and translation PAUSE
-  until a pack is bought (Starter €10 / Growth €49 / Scale €199).
-- Actions running on your own API keys (BYOK, set under
+  until tokens arrive (pack purchase or the next allowance).
+- Pro only: actions running on your own API keys (BYOK, set under
   /settings/integrations) are token-free.
-- Subscriptions (Starter/Pro) are managed via Stripe from the same page.
+- Subscriptions are managed via Stripe from the same page.
 
 ## Knowledge base (/documents, /knowledge)
 Upload product docs (text, PDF, DOCX) and index them — the reply

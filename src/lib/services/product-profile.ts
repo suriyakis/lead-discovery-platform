@@ -54,6 +54,15 @@ export async function createProductProfile(
 ): Promise<ProductProfile> {
   if (!canWrite(ctx)) throw permissionDenied('create product profile');
 
+  // Plan ceiling — count-then-insert (no transaction needed: worst case
+  // a race lets one extra profile through, which the next create blocks).
+  const [countRow] = await db
+    .select({ existing: sql<number>`count(*)::int` })
+    .from(productProfiles)
+    .where(eq(productProfiles.workspaceId, ctx.workspaceId));
+  const { assertCanCreateProduct } = await import('./plan-limits');
+  await assertCanCreateProduct(ctx, Number(countRow?.existing ?? 0));
+
   const name = input.name.trim();
   if (!name) throw invalid('name is required');
   const threshold = input.relevanceThreshold ?? 50;

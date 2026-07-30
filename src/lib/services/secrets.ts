@@ -38,6 +38,18 @@ function parseScope(key: string): string {
   return key.split('.', 1)[0]!;
 }
 
+/** Vendor-key scopes that count as BYOK (Pro feature). Mailbox
+ *  SMTP/IMAP credentials and other integration secrets are NOT BYOK —
+ *  only the AI/search vendor keys that make usage token-free. */
+const BYOK_VENDOR_SCOPES = new Set([
+  'openai',
+  'anthropic',
+  'gemini',
+  'deepseek',
+  'serpapi',
+  'perplexity',
+]);
+
 export async function setSecret(
   ctx: WorkspaceContext,
   key: string,
@@ -48,6 +60,13 @@ export async function setSecret(
   if (!trimmed) throw invalid('secret value cannot be empty');
   if (trimmed.length > 4096) throw invalid('secret value too long (4096 char max)');
   const scope = parseScope(key);
+  // BYOK is a plan feature: storing your own vendor key makes that
+  // vendor's usage token-free, so it's reserved for the Pro tier.
+  // Deleting a key is always allowed (deleteSecret is ungated).
+  if (BYOK_VENDOR_SCOPES.has(scope)) {
+    const { assertByokAllowed } = await import('./plan-limits');
+    await assertByokAllowed(ctx);
+  }
   const encrypted = encryptValue(trimmed);
 
   const row: NewWorkspaceSecret = {
