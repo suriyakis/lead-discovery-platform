@@ -35,28 +35,28 @@ export interface TokenPack {
 
 /** Purchasable packs. Price ids come from Stripe (one-time prices); the
  *  token amounts live here and travel to the webhook via metadata.
- *  Named by SIZE (not Starter/Growth/Scale) so they can't be confused
- *  with the Starter/Pro subscription plans — packs are one-time
- *  top-ups, plans are the monthly allowance. */
+ *  Sonar-themed names (Leadsonar brand) — deliberately nothing like
+ *  the Starter/Pro subscription plans, so the one-time-top-up vs
+ *  monthly-allowance split stays unmistakable. */
 export function tokenPacks(): TokenPack[] {
   return [
     {
       id: 'pack_s',
-      name: 'Small top-up',
+      name: 'Ping',
       tokens: 1_000,
       priceId: process.env.STRIPE_PRICE_TOKENS_S ?? null,
       display: process.env.STRIPE_PRICE_TOKENS_S_DISPLAY ?? '€10',
     },
     {
       id: 'pack_m',
-      name: 'Medium top-up',
+      name: 'Pulse',
       tokens: 5_500,
       priceId: process.env.STRIPE_PRICE_TOKENS_M ?? null,
       display: process.env.STRIPE_PRICE_TOKENS_M_DISPLAY ?? '€49',
     },
     {
       id: 'pack_l',
-      name: 'Large top-up',
+      name: 'Deep Dive',
       tokens: 24_000,
       priceId: process.env.STRIPE_PRICE_TOKENS_L ?? null,
       display: process.env.STRIPE_PRICE_TOKENS_L_DISPLAY ?? '€199',
