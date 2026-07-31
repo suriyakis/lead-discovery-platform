@@ -126,6 +126,35 @@ describe('deleteWorkspace', () => {
     ).rejects.toMatchObject({ code: 'conflict' });
   });
 
+  it('refuses while a Stripe subscription is still attached and live', async () => {
+    const s = await setup();
+    await archiveWorkspace(
+      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      s.workspaceA,
+    );
+    await db
+      .update(workspaces)
+      .set({ stripeSubscriptionId: 'sub_live_1', subscriptionStatus: 'active' })
+      .where(eq(workspaces.id, s.workspaceA));
+    await expect(
+      deleteWorkspace(ctx(s.workspaceA, s.superAdmin, 'super_admin'), s.workspaceA),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    // Canceled subscription → delete proceeds.
+    await db
+      .update(workspaces)
+      .set({ subscriptionStatus: 'canceled' })
+      .where(eq(workspaces.id, s.workspaceA));
+    await deleteWorkspace(
+      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      s.workspaceA,
+    );
+    const left = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, s.workspaceA));
+    expect(left).toHaveLength(0);
+  });
+
   it('deletes after archive (cascade sweeps members)', async () => {
     const s = await setup();
     await archiveWorkspace(

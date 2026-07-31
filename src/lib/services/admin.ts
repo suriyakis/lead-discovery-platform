@@ -23,7 +23,7 @@ import {
   type NewFeatureFlag,
   type NewImpersonationSession,
 } from '@/lib/db/schema/admin';
-import { recordAuditEvent } from './audit';
+import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
 import { isSuperAdmin, type WorkspaceContext } from './context';
 
 export class AdminServiceError extends Error {
@@ -488,18 +488,58 @@ export async function deleteWorkspace(
   if (rows[0].status !== 'archived') {
     throw conflict('archive the workspace before deleting');
   }
-  // Audit BEFORE delete so the trail still references the doomed id.
-  await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
-    {
-      kind: 'admin.workspace.delete',
-      entityType: 'workspace',
-      entityId: workspaceId,
-      payload: { name: rows[0].name, slug: rows[0].slug },
+  // A live Stripe subscription would keep billing a workspace that no
+  // longer exists — force an explicit cancel first.
+  if (
+    rows[0].stripeSubscriptionId &&
+    (rows[0].subscriptionStatus === 'active' ||
+      rows[0].subscriptionStatus === 'trial' ||
+      rows[0].subscriptionStatus === 'past_due')
+  ) {
+    throw conflict(
+      'the workspace still has a Stripe subscription — cancel it (billing portal) before deleting',
+    );
+  }
+  // Storage blobs are OUTSIDE the FK graph — the DB cascade removes the
+  // document rows but would orphan their bytes on S3/local disk forever.
+  // Best-effort per-file: a storage hiccup must not block the delete
+  // (an orphaned blob is recoverable garbage; a half-deleted workspace
+  // is not).
+  const { documents: documentsTable } = await import('@/lib/db/schema/documents');
+  const { getStorage } = await import('@/lib/storage');
+  const docs = await db
+    .select({ storageKey: documentsTable.storageKey })
+    .from(documentsTable)
+    .where(eq(documentsTable.workspaceId, workspaceId));
+  if (docs.length > 0) {
+    const storage = getStorage();
+    for (const d of docs) {
+      try {
+        await storage.delete(d.storageKey);
+      } catch (err) {
+        console.error(
+          `[admin.deleteWorkspace] storage cleanup failed for ${d.storageKey}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+  // Platform-level audit BEFORE delete — the workspace-scoped audit rows
+  // (onDelete 'set null') survive but lose their workspace pointer, so
+  // the platform trail carries the identifying details.
+  await recordPlatformAuditEvent(ctx.userId, {
+    kind: 'admin.workspace.delete',
+    entityType: 'workspace',
+    entityId: workspaceId,
+    payload: {
+      name: rows[0].name,
+      slug: rows[0].slug,
+      documentBlobsCleaned: docs.length,
     },
-  );
+  });
   await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
 }
+
 
 export async function restoreWorkspace(
   ctx: WorkspaceContext,
