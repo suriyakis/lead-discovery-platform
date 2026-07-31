@@ -82,12 +82,33 @@ const PROVIDERS = [
   },
 ] as const;
 
-const ENV_DEFAULTS = [
-  ['AI_PROVIDER', process.env.AI_PROVIDER],
-  ['EMBEDDING_PROVIDER', process.env.EMBEDDING_PROVIDER],
-  ['SEARCH_PROVIDER', process.env.SEARCH_PROVIDER],
-  ['RESEARCH_PROVIDER', process.env.RESEARCH_PROVIDER],
-] as const;
+/** Complete capability → env-fallback map for the Health table. Rows
+ *  with a null envVar are capabilities that deliberately have NO env
+ *  selector — shown with an explanation instead of being omitted
+ *  (omission reads as an oversight). Key VALUES are never printed. */
+const ENV_DEFAULTS: ReadonlyArray<{
+  label: string;
+  value: string | undefined | null;
+  note?: string;
+}> = [
+  { label: 'AI_PROVIDER', value: process.env.AI_PROVIDER },
+  { label: 'AI_MODEL', value: process.env.AI_MODEL },
+  {
+    label: 'QUALIFICATION',
+    value: null,
+    note: 'no env selector — workspace → console default → cheapest vendor with a key (deepseek → gemini → openai → anthropic)',
+  },
+  { label: 'EMBEDDING_PROVIDER', value: process.env.EMBEDDING_PROVIDER },
+  { label: 'SEARCH_PROVIDER', value: process.env.SEARCH_PROVIDER },
+  { label: 'RESEARCH_PROVIDER', value: process.env.RESEARCH_PROVIDER },
+  { label: 'RESEARCH_MODEL', value: process.env.RESEARCH_MODEL },
+  { label: 'VECTOR_STORAGE_PROVIDER', value: process.env.VECTOR_STORAGE_PROVIDER },
+  {
+    label: 'OCR (scanned PDFs)',
+    value: null,
+    note: `no env selector — always mistral; MISTRAL_API_KEY env is ${process.env.MISTRAL_API_KEY?.trim() ? 'set (value hidden)' : 'unset'}`,
+  },
+];
 
 export default async function AdminProvidersPage({
   searchParams,
@@ -570,10 +591,18 @@ export default async function AdminProvidersPage({
             </tr>
           </thead>
           <tbody>
-            {ENV_DEFAULTS.map(([k, v]) => (
-              <tr key={k}>
-                <td><code>{k}</code></td>
-                <td>{v?.trim() ? <code>{v}</code> : <span className="muted">unset</span>}</td>
+            {ENV_DEFAULTS.map((row) => (
+              <tr key={row.label}>
+                <td><code>{row.label}</code></td>
+                <td>
+                  {row.value === null ? (
+                    <span className="muted small">{row.note}</span>
+                  ) : row.value?.trim() ? (
+                    <code>{row.value}</code>
+                  ) : (
+                    <span className="muted">unset</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
