@@ -48,6 +48,7 @@ const BYOK_VENDOR_SCOPES = new Set([
   'deepseek',
   'serpapi',
   'perplexity',
+  'mistral',
 ]);
 
 export async function setSecret(
