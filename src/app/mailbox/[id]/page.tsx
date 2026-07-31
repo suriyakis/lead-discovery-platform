@@ -70,7 +70,7 @@ export default async function MailboxDetail({
     throw err;
   }
 
-  let mailbox;
+  let mailbox: Awaited<ReturnType<typeof getMailbox>>;
   try {
     mailbox = await getMailbox(ctx, id);
   } catch (err) {
@@ -153,6 +153,28 @@ export default async function MailboxDetail({
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'reactivate failed';
+      redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function destroy(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const confirm = String(formData.get('confirm') ?? '').trim().toLowerCase();
+    if (confirm !== mailbox.fromAddress.toLowerCase()) {
+      redirect(
+        `/mailbox/${id}?error=${encodeURIComponent(
+          `Type the mailbox address "${mailbox.fromAddress}" to confirm permanent deletion`,
+        )}`,
+      );
+    }
+    try {
+      const { deleteMailbox } = await import('@/lib/services/mailbox');
+      await deleteMailbox(c, id);
+      redirect('/mailbox?message=Mailbox+permanently+deleted');
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'delete failed';
       redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
     }
   }
@@ -728,6 +750,31 @@ export default async function MailboxDetail({
             <form action={archive}>
               <button type="submit" className="ghost-btn">
                 Archive mailbox
+              </button>
+            </form>
+          </section>
+        ) : null}
+
+        {canAdminWorkspace(ctx) && mailbox.status === 'archived' ? (
+          <section>
+            <h2>Danger zone</h2>
+            <p className="muted small">
+              Permanently delete this mailbox, its stored SMTP/IMAP
+              credentials, and its ENTIRE send/receive history (messages,
+              threads, sync state). This cannot be undone. Type the mailbox
+              address to confirm.
+            </p>
+            <form action={destroy} className="action-row">
+              <input
+                type="text"
+                name="confirm"
+                placeholder={mailbox.fromAddress}
+                autoComplete="off"
+                required
+                style={{ minWidth: '18rem' }}
+              />
+              <button type="submit" className="ghost-btn">
+                Delete permanently
               </button>
             </form>
           </section>

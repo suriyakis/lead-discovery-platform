@@ -17,7 +17,7 @@ import {
   canWrite,
   type WorkspaceContext,
 } from './context';
-import { getSecret, setSecret } from './secrets';
+import { deleteSecret, getSecret, setSecret } from './secrets';
 import {
   createMailProvider,
   type ConnectionTestResult,
@@ -279,6 +279,51 @@ export async function archiveMailbox(
     entityId: id,
   });
   return updated;
+}
+
+/**
+ * Permanent delete. Archived-first so the operator has had a chance to
+ * back out (mirrors the workspace delete flow). Cascading FKs sweep the
+ * mailbox's mail history (messages, threads, sync state) with it, and
+ * the SMTP/IMAP credential secrets are removed from workspace_secrets.
+ * The audit event is written BEFORE the delete so the trail still
+ * carries the doomed id and address.
+ */
+export async function deleteMailbox(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<void> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('mailbox.delete');
+  const existing = await loadMailbox(ctx, id);
+  if (existing.status !== 'archived') {
+    throw new MailboxServiceError(
+      'archive the mailbox before deleting it permanently',
+      'invalid_state',
+    );
+  }
+  // Credentials first — best-effort, a missing secret row must never
+  // block the delete.
+  try {
+    await deleteSecret(ctx, existing.smtpPasswordSecretKey);
+  } catch (err) {
+    console.error('[mailbox.delete] smtp secret cleanup failed:', err);
+  }
+  if (existing.imapPasswordSecretKey) {
+    try {
+      await deleteSecret(ctx, existing.imapPasswordSecretKey);
+    } catch (err) {
+      console.error('[mailbox.delete] imap secret cleanup failed:', err);
+    }
+  }
+  await recordAuditEvent(ctx, {
+    kind: 'mailbox.delete',
+    entityType: 'mailbox',
+    entityId: id,
+    payload: { fromAddress: existing.fromAddress },
+  });
+  await db
+    .delete(mailboxes)
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, id)));
 }
 
 /**

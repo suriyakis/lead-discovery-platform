@@ -243,6 +243,43 @@ describe('mailbox', () => {
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
+  it('deleteMailbox requires archived-first, then removes row + credential secrets', async () => {
+    const s = await setup();
+    const { deleteMailbox } = await import('@/lib/services/mailbox');
+    const { getSecret } = await import('@/lib/services/secrets');
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+
+    // Not archived yet → refused.
+    await expect(
+      deleteMailbox(ctx(s.workspaceA, s.ownerA), mb.id),
+    ).rejects.toMatchObject({ code: 'invalid_state' });
+
+    await archiveMailbox(ctx(s.workspaceA, s.ownerA), mb.id);
+    await deleteMailbox(ctx(s.workspaceA, s.ownerA), mb.id);
+
+    // Row gone…
+    await expect(
+      getMailbox(ctx(s.workspaceA, s.ownerA), mb.id),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    // …and the SMTP/IMAP secrets with it.
+    expect(
+      await getSecret(ctx(s.workspaceA, s.ownerA), mb.smtpPasswordSecretKey),
+    ).toBeNull();
+    expect(
+      await getSecret(ctx(s.workspaceA, s.ownerA), mb.imapPasswordSecretKey!),
+    ).toBeNull();
+  });
+
+  it('deleteMailbox denied for non-admin members', async () => {
+    const s = await setup();
+    const { deleteMailbox } = await import('@/lib/services/mailbox');
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    await archiveMailbox(ctx(s.workspaceA, s.ownerA), mb.id);
+    await expect(
+      deleteMailbox(ctx(s.workspaceA, s.ownerA, 'member'), mb.id),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+
   it('list scopes to workspace', async () => {
     const s = await setup();
     const a = await makeMailbox(s, s.workspaceA, s.ownerA);
