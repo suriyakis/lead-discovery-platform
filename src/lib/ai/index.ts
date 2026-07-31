@@ -627,14 +627,14 @@ export async function getAIProviderForCtx(
   const { getProviderSettings, resolveTieredModel } = await import(
     '@/lib/services/provider-settings'
   );
-  // Model stays in the SAME tier as `active` (workspace/platform/env) —
-  // see resolveTieredModel's doc comment for why chaining independent
-  // tiers is unsafe (a stale model for a different vendor can get
-  // reattached to whatever provider the cascade lands on).
+  // Vendor-compatible model resolution — a saved model applies whenever
+  // it belongs to the resolved vendor (see resolveTieredModel's doc
+  // comment); mismatched-vendor models are skipped, never shipped to
+  // the wrong API.
   const settings = await getProviderSettings(ctx);
   const wsModel = await resolveTieredModel(
     'ai',
-    active.source,
+    id,
     settings.aiModel,
     process.env.AI_MODEL,
   );
@@ -757,16 +757,16 @@ export async function getQualificationProviderForCtx(
   const { getProviderSettings, resolveTieredModel } = await import(
     '@/lib/services/provider-settings'
   );
-  // Same tier-matched resolution as getAIProviderForCtx — see
+  // Same vendor-compatible resolution as getAIProviderForCtx — see
   // resolveTieredModel's doc comment. No fallback to the general `ai`
   // capability's model here: qualification is a fully independent
-  // capability now, and borrowing a model string from a DIFFERENT
+  // capability, and borrowing a model string from a DIFFERENT
   // capability (which may resolve to a different vendor) reproduces
   // the exact class of bug this function exists to avoid.
   const settings = await getProviderSettings(ctx);
   const qModel = await resolveTieredModel(
     'qualification',
-    active.source,
+    qpId,
     settings.qualificationModel,
     undefined,
   );

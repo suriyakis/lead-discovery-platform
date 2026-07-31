@@ -337,40 +337,61 @@ export async function resolvePlatformModel(
   return platformModel ?? envVar?.trim() ?? undefined;
 }
 
+/** Recognizable vendor prefixes for model ids. Used to stop a saved
+ *  model from one vendor being sent to a different vendor's API — the
+ *  bug class behind `anthropic messages 404: model: gemini-3.6-flash`. */
+const VENDOR_MODEL_PREFIXES: ReadonlyArray<{ vendor: string; re: RegExp }> = [
+  { vendor: 'anthropic', re: /^claude/i },
+  { vendor: 'openai', re: /^(gpt|o\d|chatgpt|text-embedding)/i },
+  { vendor: 'gemini', re: /^gemini/i },
+  { vendor: 'deepseek', re: /^deepseek/i },
+  { vendor: 'perplexity', re: /^sonar/i },
+];
+
 /**
- * Model resolution that stays IN THE SAME TIER as the resolved provider
- * id (see `ResolvedProvider.source`), instead of chaining independent
- * workspace/platform/env model lookups. That independent chaining was a
- * real bug: a super-admin clearing the platform provider back to
- * "Automatic" (e.g. ai.provider) does NOT also clear the paired
- * ai.model row, so a stale model string for one vendor (say
- * gemini-3.6-flash, left over from when the platform default was
- * Gemini) would get silently reattached to whatever DIFFERENT vendor
- * the cascade landed on next (e.g. Anthropic via the env fallback) —
- * producing `anthropic messages 404: model: gemini-3.6-flash`.
+ * Whether `model` plausibly belongs to `vendor`. Models with a
+ * recognizable prefix must match their vendor; unrecognized ids
+ * (custom fine-tunes, brand-new families) are allowed through — the
+ * operator typed them deliberately and the vendor API is the real
+ * validator.
+ */
+export function modelMatchesVendor(vendor: string, model: string): boolean {
+  for (const p of VENDOR_MODEL_PREFIXES) {
+    if (p.re.test(model)) return p.vendor === vendor;
+  }
+  return true;
+}
+
+/**
+ * Model resolution for an already-resolved provider id. Walks the model
+ * tiers in priority order (workspace → platform console → env var) and
+ * returns the FIRST one that plausibly belongs to the resolved vendor.
  *
- * Only trust a model value when it was set at the SAME tier that
- * produced the active provider id:
- *   - source 'workspace' → the workspace's own <capability>Model
- *   - source 'platform'  → the platform console's <capability>.model
- *   - source 'env'       → the paired env var (e.g. AI_MODEL)
- *   - source 'default' (auto-detected) → undefined, always — never
- *     guess a model for a vendor nobody explicitly chose; the
- *     provider's own built-in default applies instead.
+ * History: v1 of this fix required the model to come from the SAME tier
+ * that chose the provider. That killed the cross-vendor 404 bug (a
+ * stale gemini model reattached to anthropic) but over-shot: an
+ * operator picking a model in the console while leaving the provider on
+ * "Automatic" (provider resolves via env) had their model silently
+ * ignored. The real invariant is vendor compatibility, not tier
+ * equality — so each tier's model now applies whenever it matches the
+ * resolved vendor, and mismatched-vendor models are skipped instead of
+ * shipped to the wrong API.
  */
 export async function resolveTieredModel(
   capability: 'ai' | 'research' | 'qualification',
-  source: ResolvedProvider['source'],
+  providerId: string,
   workspaceModel: string | null | undefined,
   envVar: string | undefined,
 ): Promise<string | undefined> {
-  if (source === 'workspace') return workspaceModel?.trim() || undefined;
-  if (source === 'platform') {
-    const { getPlatformSetting } = await import('./platform-settings');
-    const v = await getPlatformSetting(`${capability}.model`);
-    return v ?? undefined;
+  const candidates: Array<string | undefined> = [];
+  candidates.push(workspaceModel?.trim() || undefined);
+  const { getPlatformSetting } = await import('./platform-settings');
+  candidates.push((await getPlatformSetting(`${capability}.model`)) ?? undefined);
+  candidates.push(envVar?.trim() || undefined);
+  for (const model of candidates) {
+    if (!model) continue;
+    if (modelMatchesVendor(providerId, model)) return model;
   }
-  if (source === 'env') return envVar?.trim() || undefined;
   return undefined;
 }
 
