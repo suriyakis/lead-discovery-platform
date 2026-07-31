@@ -60,13 +60,13 @@ const PROVIDERS = [
     secretKey: 'deepseek.apiKey',
     envVar: 'DEEPSEEK_API_KEY',
     name: 'DeepSeek',
-    role: 'Very cost-efficient AI (deepseek-v4-flash / deepseek-v4-pro) — default for high-volume qualification.',
+    role: 'Cost-efficient AI — the default for high-volume qualification.',
   },
   {
     secretKey: 'mistral.apiKey',
     envVar: 'MISTRAL_API_KEY',
     name: 'Mistral (OCR)',
-    role: 'OCR for image-based / scanned PDFs — auto-selected whenever an uploaded PDF has no text layer (~$1 per 1000 pages).',
+    role: 'OCR for scanned PDFs — auto-selected when a PDF has no text layer.',
   },
   {
     secretKey: 'serpapi.apiKey',
@@ -403,13 +403,17 @@ export default async function AdminProvidersPage({
           const active = row ? 'console key' : envSet ? 'env var' : 'none';
           return (
             <article key={p.secretKey} className="provider-select" style={{ marginBottom: '0.85rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
-                <div>
+              {/* nowrap header + shrink-guarded badge column: long role
+                  text (DeepSeek, Mistral) must truncate/wrap INSIDE the
+                  left column, never push the badge onto its own line —
+                  that made those two cards look misaligned vs the rest. */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'nowrap' }}>
+                <div style={{ flex: '1 1 auto', minWidth: 0 }}>
                   <strong>{p.name}</strong>{' '}
                   <code className="muted small">{p.secretKey}</code>
-                  <p className="muted small" style={{ margin: '0.2rem 0 0' }}>{p.role}</p>
+                  <p className="muted small" style={{ margin: '0.2rem 0 0', maxWidth: '42rem' }}>{p.role}</p>
                 </div>
-                <div className="meta">
+                <div className="meta" style={{ flex: '0 0 auto', textAlign: 'right', whiteSpace: 'nowrap' }}>
                   <span
                     className={
                       active === 'none' ? 'badge badge-bad' : 'badge badge-good'
@@ -419,7 +423,7 @@ export default async function AdminProvidersPage({
                     active: {active}
                   </span>
                   {row ? (
-                    <span className="muted small">
+                    <span className="muted small" style={{ display: 'block', marginTop: '0.2rem' }}>
                       saved {row.updatedAt.toLocaleString()}
                     </span>
                   ) : null}
