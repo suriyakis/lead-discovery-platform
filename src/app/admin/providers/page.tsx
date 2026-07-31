@@ -143,6 +143,13 @@ export default async function AdminProvidersPage({
         ? 'server env var'
         : 'auto-detected (first vendor with a key)';
 
+  // OCR isn't a selectable capability (image-based PDFs always route to
+  // Mistral) — its "effective state" is simply whether a key exists.
+  const { hasPlatformSecretKey } = await import('@/lib/services/secrets');
+  const ocrKeyConfigured =
+    Boolean(process.env.MISTRAL_API_KEY?.trim()) ||
+    (await hasPlatformSecretKey('mistral.apiKey'));
+
   async function saveKey(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -237,6 +244,92 @@ export default async function AdminProvidersPage({
     }
   }
 
+  // Per-vendor key check: a cheap live call with the key the cascade
+  // resolves for THIS vendor — independent of which capability is
+  // currently pointed at it. "Test active AI provider" alone left
+  // non-active vendors (DeepSeek on qualification, Mistral on OCR,
+  // search backends) undetectable until a production call failed.
+  async function testVendorKey(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    if (!isSuperAdmin(c)) redirect('/dashboard');
+    const secretKey = String(formData.get('secretKey') ?? '');
+    const spec = PROVIDERS.find((p) => p.secretKey === secretKey);
+    if (!spec) redirect('/admin/providers?err=Unknown+provider');
+    try {
+      const { resolveProviderKey } = await import('@/lib/services/secrets');
+      const resolved = await resolveProviderKey(c, spec!.secretKey, spec!.envVar);
+      if (!resolved) {
+        redirect(
+          `/admin/providers?err=${encodeURIComponent(`${spec!.name}: no key configured (console or env).`)}`,
+        );
+      }
+      const key = resolved!.key;
+      let ok = false;
+      let detail = '';
+      if (secretKey === 'anthropic.apiKey') {
+        const { AnthropicAIProvider } = await import('@/lib/ai');
+        const h = await new AnthropicAIProvider({ apiKey: key, model: 'claude-haiku-4-5' }).healthCheck();
+        ok = h.ok;
+        detail = h.detail ?? '';
+      } else if (secretKey === 'openai.apiKey') {
+        const { OpenAIAIProvider } = await import('@/lib/ai');
+        const h = await new OpenAIAIProvider({ apiKey: key, model: 'gpt-4o-mini' }).healthCheck();
+        ok = h.ok;
+        detail = h.detail ?? '';
+      } else if (secretKey === 'deepseek.apiKey') {
+        const { DeepSeekAIProvider } = await import('@/lib/ai');
+        const h = await new DeepSeekAIProvider({ apiKey: key }).healthCheck();
+        ok = h.ok;
+        detail = h.detail ?? '';
+      } else if (secretKey === 'gemini.apiKey') {
+        const { GeminiAIProvider } = await import('@/lib/ai/gemini');
+        const h = await new GeminiAIProvider({ apiKey: key }).healthCheck();
+        ok = h.ok;
+        detail = h.detail ?? '';
+      } else if (secretKey === 'mistral.apiKey') {
+        // Free key validation — the models listing needs auth but bills nothing.
+        const res = await fetch('https://api.mistral.ai/v1/models', {
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        ok = res.ok;
+        if (!res.ok) detail = `HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`;
+      } else if (secretKey === 'serpapi.apiKey') {
+        const res = await fetch(
+          `https://serpapi.com/account.json?api_key=${encodeURIComponent(key)}`,
+        );
+        ok = res.ok;
+        if (!res.ok) detail = `HTTP ${res.status}`;
+      } else if (secretKey === 'perplexity.apiKey') {
+        const res = await fetch('https://api.perplexity.ai/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify({
+            model: 'sonar',
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 1,
+          }),
+        });
+        ok = res.ok;
+        if (!res.ok) detail = `HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`;
+      }
+      const src = resolved!.source === 'workspace' ? 'workspace BYOK' : 'console/env';
+      const m = ok
+        ? `${spec!.name} key OK (${src}).`
+        : `${spec!.name} key FAILED (${src}) — ${detail || 'no detail'}`;
+      redirect(`/admin/providers?${ok ? 'msg' : 'err'}=${encodeURIComponent(m)}`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof Error ? err.message : 'test failed';
+      redirect(
+        `/admin/providers?err=${encodeURIComponent(`${spec!.name}: ${m.slice(0, 300)}`)}`,
+      );
+    }
+  }
+
   return (
     <div className="dashboard-wrap">
       <header className="page-intro">
@@ -307,6 +400,18 @@ export default async function AdminProvidersPage({
                   <form action={removeKey}>
                     <input type="hidden" name="secretKey" value={p.secretKey} />
                     <button type="submit" className="ghost-btn">Remove console key</button>
+                  </form>
+                ) : null}
+                {active !== 'none' ? (
+                  <form action={testVendorKey}>
+                    <input type="hidden" name="secretKey" value={p.secretKey} />
+                    <button
+                      type="submit"
+                      className="ghost-btn"
+                      title="Runs a minimal live call against this vendor with the currently-resolved key"
+                    >
+                      Test key
+                    </button>
                   </form>
                 ) : null}
               </div>
@@ -440,9 +545,23 @@ export default async function AdminProvidersPage({
             Test active AI provider
           </button>
           <span className="muted small" style={{ alignSelf: 'center' }}>
-            Runs a live health check with the currently-resolved key.
+            Runs a live health check with the currently-resolved key. Every
+            vendor card above also has its own &ldquo;Test key&rdquo; — use
+            those to verify keys for vendors that aren&apos;t the active AI
+            provider (DeepSeek qualification, Mistral OCR, search backends).
           </span>
         </form>
+        <p className="muted small" style={{ marginTop: '0.75rem' }}>
+          <strong>OCR (scanned PDFs)</strong> — always Mistral, auto-selected
+          whenever an uploaded PDF has no text layer:{' '}
+          {ocrKeyConfigured ? (
+            <span className="badge badge-good">key configured</span>
+          ) : (
+            <span className="badge badge-bad">
+              no key — scanned PDFs will fail until one is added above
+            </span>
+          )}
+        </p>
         <table className="data-table" style={{ marginTop: '0.75rem', maxWidth: '32rem' }}>
           <thead>
             <tr>
