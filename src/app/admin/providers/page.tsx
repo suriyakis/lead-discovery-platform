@@ -63,6 +63,12 @@ const PROVIDERS = [
     role: 'Very cost-efficient AI (deepseek-v4-flash / deepseek-v4-pro) — default for high-volume qualification.',
   },
   {
+    secretKey: 'mistral.apiKey',
+    envVar: 'MISTRAL_API_KEY',
+    name: 'Mistral (OCR)',
+    role: 'OCR for image-based / scanned PDFs — auto-selected whenever an uploaded PDF has no text layer (~$1 per 1000 pages).',
+  },
+  {
     secretKey: 'serpapi.apiKey',
     envVar: 'SERPAPI_KEY',
     name: 'SerpAPI',

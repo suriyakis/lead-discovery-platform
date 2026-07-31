@@ -140,6 +140,7 @@ interface ExtractDeps {
 }
 
 async function extractDocumentText(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
   document: Document,
   deps: ExtractDeps = {},
 ): Promise<string> {
@@ -161,7 +162,7 @@ async function extractDocumentText(
   // matter for spec sheets / TDS docs and are the most common
   // operator-uploaded format after plain text.
   if (mime === 'application/pdf' || filename.endsWith('.pdf')) {
-    return extractPdfText(buffer, document.filename);
+    return extractPdfText(ctx, buffer, document.filename);
   }
   // DOCX via mammoth (`.docx` only — old `.doc` binary format is rare
   // and would need a separate path). Mammoth strips formatting and
@@ -178,7 +179,15 @@ async function extractDocumentText(
   throw invalid(`unsupported mime type for indexing: ${mime}`);
 }
 
-async function extractPdfText(buffer: Buffer, filename: string): Promise<string> {
+/** Below this many extracted chars a "parsed" PDF counts as image-based
+ *  (scanned pages parse fine — they just contain no text operators). */
+const PDF_TEXT_MIN_CHARS = 20;
+
+async function extractPdfText(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  buffer: Buffer,
+  filename: string,
+): Promise<string> {
   // @ts-expect-error pdf-parse v1 has no .d.ts for the inner path; we
   // hand-type the surface we use.
   const mod = (await import('pdf-parse/lib/pdf-parse.js')) as unknown as {
@@ -197,12 +206,52 @@ async function extractPdfText(buffer: Buffer, filename: string): Promise<string>
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  if (cleaned.length < 20) {
+  if (cleaned.length >= PDF_TEXT_MIN_CHARS) return cleaned;
+
+  // Image-based (scanned) PDF — no text layer. Auto-route to the OCR
+  // provider (Mistral) when a key is configured anywhere in the
+  // cascade; otherwise fail with instructions instead of silently
+  // producing an empty index.
+  const { getOcrProviderForCtx, estimateOcrCostCents } = await import('@/lib/ocr');
+  const ocr = await getOcrProviderForCtx(ctx);
+  if (!ocr) {
     throw invalid(
-      `${filename} contains no extractable text (likely a scanned image — OCR is not supported on the pgvector rail; switch the workspace's Vector Storage to openai for OCR-on-upload, or re-save the PDF with a text layer).`,
+      `${filename} contains no extractable text (image-based / scanned PDF). Add a Mistral API key (Admin → Providers, or workspace BYOK 'mistral.apiKey') to enable automatic OCR, or re-save the PDF with a text layer.`,
     );
   }
-  return cleaned;
+  const result = await ocr.provider.extractPdfText(buffer, filename);
+  // Meter the OCR pages — same choke point as every other billable call.
+  // Best-effort: a usage-log failure never breaks the extraction.
+  try {
+    const { recordUsage } = await import('./usage');
+    await recordUsage(ctx, {
+      kind: 'ocr.pdf',
+      provider: ocr.provider.id,
+      units: BigInt(Math.max(result.pages, 1)),
+      costEstimateCents: estimateOcrCostCents(result.pages),
+      payload: {
+        model: result.model,
+        filename,
+        pages: result.pages,
+        keySource: ocr.keySource,
+      },
+    });
+  } catch (err) {
+    console.error(
+      '[rag.extractPdfText] OCR usage record failed:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+  const ocrCleaned = result.text
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (ocrCleaned.length < PDF_TEXT_MIN_CHARS) {
+    throw invalid(
+      `${filename}: OCR (${result.model}) found no readable text across ${result.pages} page${result.pages === 1 ? '' : 's'} — the scan may be blank or illegible.`,
+    );
+  }
+  return ocrCleaned;
 }
 
 async function extractDocxText(buffer: Buffer, filename: string): Promise<string> {
@@ -295,7 +344,7 @@ export async function indexDocument(
 
   const job = await startJob(ctx, { documentId, knowledgeSourceId: null });
   try {
-    const text = await extractDocumentText(doc, deps);
+    const text = await extractDocumentText(ctx, doc, deps);
     const chunks = chunkText(text);
     const embedder = deps.embedder ?? (await getEmbeddingProviderForCtx(ctx));
     const inserted = await embedAndPersist(ctx, embedder, chunks, {
@@ -361,7 +410,7 @@ export async function indexKnowledgeSource(
         .where(eq(documents.id, ks.documentId))
         .limit(1);
       if (docRows[0]) {
-        text = await extractDocumentText(docRows[0], deps);
+        text = await extractDocumentText(ctx, docRows[0], deps);
       }
     }
     if (!text.trim()) {

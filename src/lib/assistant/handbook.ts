@@ -72,6 +72,10 @@ source is created and indexed for you); uploads without products are
 available workspace-wide. Byte-identical re-uploads are detected and
 skipped. Knowledge sources created on /knowledge/new are also indexed
 automatically. Re-index manually only after replacing a file's bytes.
+Scanned / image-based PDFs (no text layer) are OCR'd automatically via
+Mistral when a Mistral API key is configured (platform-wide by the
+admin, or the workspace's own under BYOK) — without a key they fail
+with a clear message instead of indexing empty.
 
 ## Learning memory (/learning) — the platform teaches itself
 Lessons are rules qualification and outreach follow. They come from
