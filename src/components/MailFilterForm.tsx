@@ -138,35 +138,18 @@ export function MailFilterForm({
         />
       </label>
 
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.4rem',
-          flex: '1 1 220px',
-          minWidth: 200,
-        }}
-      >
-        <Search className="lucide" style={{ opacity: 0.6 }} />
+      <div className="mail-filters-search">
+        <Search className="lucide" />
         <input
           type="search"
           name="q"
           defaultValue={search}
           placeholder={`Search ${folderLabel}…`}
           onInput={onSearchInput}
-          style={{
-            flex: 1,
-            padding: '0.35rem 0.55rem',
-            borderRadius: '0.35rem',
-            background: 'var(--brand-input)',
-            border: '1px solid var(--brand-border)',
-            color: 'var(--brand-fg)',
-            fontSize: '0.82rem',
-          }}
         />
       </div>
 
-      <div style={{ display: 'flex', gap: '0.35rem' }}>
+      <div className="mail-filters-buttons">
         <button type="submit" className="primary-btn">
           Search
         </button>
