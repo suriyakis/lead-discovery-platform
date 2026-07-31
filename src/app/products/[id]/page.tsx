@@ -198,11 +198,6 @@ export default async function EditProductPage({
         <h1>{profile.name}</h1>
         {!profile.active ? <p className="badge">Archived</p> : null}
 
-        <KnowledgeSection
-          workspaceId={ctx.workspaceId}
-          productProfileId={id}
-        />
-
         {sp.autofill === 'ok' ? (
           <div
             className={
@@ -256,6 +251,11 @@ export default async function EditProductPage({
             suggesterAction={suggestAngle}
           />
         </form>
+
+        <KnowledgeSection
+          workspaceId={ctx.workspaceId}
+          productProfileId={id}
+        />
 
         {canAdminWorkspace(ctx) && deps ? (
           <section>
@@ -367,86 +367,45 @@ async function KnowledgeSection({
   ]);
   const hasAny = coverage.docs > 0 || coverage.chunks > 0;
   return (
-    <section
-      style={{
-        marginTop: '0.5rem',
-        marginBottom: '1.25rem',
-        padding: '0.75rem 1rem',
-        borderRadius: '0.6rem',
-        background: 'oklch(0.99 0 0 / 0.5)',
-        border: '1px solid oklch(0.9 0 0)',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '0.5rem',
-          marginBottom: hasAny ? '0.5rem' : 0,
-        }}
-      >
-        <strong style={{ fontSize: '0.95em' }}>Knowledge for this product</strong>
+    <section>
+      <h2>
+        Knowledge{' '}
         {hasAny ? (
-          <span
-            className="badge"
-            style={{
-              background: 'oklch(0.85 0.14 145)',
-              color: 'oklch(0.2 0 0)',
-            }}
-          >
-            {coverage.docs} source{coverage.docs === 1 ? '' : 's'} · {coverage.chunks} chunk{coverage.chunks === 1 ? '' : 's'} indexed
+          <span className="badge badge-good">
+            {coverage.docs} source{coverage.docs === 1 ? '' : 's'} ·{' '}
+            {coverage.chunks} chunk{coverage.chunks === 1 ? '' : 's'} indexed
           </span>
         ) : (
-          <span className="badge">no knowledge yet</span>
+          <span className="badge">none yet</span>
         )}
-        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: '0.35rem' }}>
-          <Link
-            href={`/knowledge/new?product=${productProfileId}&kind=document`}
-            className="primary-btn"
-            style={{ fontSize: '0.85em', padding: '0.3rem 0.7rem' }}
-          >
-            Upload document
-          </Link>
-          <Link
-            href={`/knowledge/new?product=${productProfileId}&kind=url`}
-            className="ghost-btn"
-            style={{ fontSize: '0.85em', padding: '0.3rem 0.7rem' }}
-          >
-            Add URL
-          </Link>
-          <Link
-            href={`/knowledge/new?product=${productProfileId}&kind=text`}
-            className="ghost-btn"
-            style={{ fontSize: '0.85em', padding: '0.3rem 0.7rem' }}
-          >
-            Paste text
-          </Link>
-        </span>
-      </div>
-      {hasAny ? (
-        <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.85em' }}>
-          Engagement + pitch drafts retrieve the top-k matching passages from
-          these sources on every draft.
-        </p>
-      ) : (
-        <p className="muted" style={{ margin: 0, fontSize: '0.85em' }}>
-          Upload datasheets, case studies, or paste FAQ text — engagement +
-          pitch drafts will then quote the most relevant facts on every
-          conversation.
-        </p>
-      )}
-      {sources.length > 0 ? (
-        <ul
-          style={{
-            listStyle: 'none',
-            padding: 0,
-            margin: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.25rem',
-          }}
+      </h2>
+      <p className="muted">
+        {hasAny
+          ? 'Engagement and pitch drafts quote the most relevant passages from these sources on every conversation.'
+          : 'Upload datasheets, case studies, or paste FAQ text — engagement and pitch drafts will then quote the most relevant facts on every conversation.'}
+      </p>
+      <div className="action-row">
+        <Link
+          href={`/knowledge/new?product=${productProfileId}&kind=document`}
+          className="primary-btn"
         >
+          Upload document
+        </Link>
+        <Link
+          href={`/knowledge/new?product=${productProfileId}&kind=url`}
+          className="ghost-btn"
+        >
+          Add URL
+        </Link>
+        <Link
+          href={`/knowledge/new?product=${productProfileId}&kind=text`}
+          className="ghost-btn"
+        >
+          Paste text
+        </Link>
+      </div>
+      {sources.length > 0 ? (
+        <ul className="profile-list" style={{ marginTop: '0.75rem' }}>
           {sources.map(({ source }) => {
             const status = source.externalStatus;
             const statusBadgeClass =
@@ -456,27 +415,12 @@ async function KnowledgeSection({
                   ? 'badge badge-bad'
                   : 'badge';
             return (
-              <li
-                key={source.id.toString()}
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  borderRadius: '0.3rem',
-                  background: 'oklch(0.97 0 0)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  fontSize: '0.88em',
-                }}
-              >
-                <span className="badge" style={{ fontSize: '0.75em' }}>{source.kind}</span>
-                <Link href={`/knowledge/${source.id}`} style={{ flex: 1 }}>
-                  {source.title}
-                </Link>
-                <span className={statusBadgeClass} style={{ fontSize: '0.75em' }}>
-                  {status}
-                </span>
-                <span className="muted" style={{ fontSize: '0.78em' }}>
-                  {source.purposeCategory}
+              <li key={source.id.toString()}>
+                <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
+                <span className="meta">
+                  <span className="badge">{source.kind}</span>{' '}
+                  <span className={statusBadgeClass}>{status}</span>{' '}
+                  <span className="muted small">{source.purposeCategory}</span>
                 </span>
               </li>
             );
