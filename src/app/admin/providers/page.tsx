@@ -104,9 +104,23 @@ const STATUS_CAPABILITIES: ReadonlyArray<{
   { cap: 'qualification', label: 'Qualification — lead scoring', hasModel: true },
   { cap: 'research', label: 'Research — company deep-dives', hasModel: true },
   { cap: 'search', label: 'Web search — discovery', hasModel: false },
-  { cap: 'embedding', label: 'Embeddings — semantic retrieval', hasModel: false },
+  { cap: 'embedding', label: 'Embeddings — semantic retrieval', hasModel: true },
   { cap: 'vector_storage', label: 'Vector storage', hasModel: false },
 ];
+
+/** What each vendor adapter actually runs when no model is configured
+ *  anywhere — shown concretely instead of a vague "provider default".
+ *  Keep in sync with the adapters' built-in defaults. */
+const VENDOR_BUILTIN_MODELS: Record<string, string> = {
+  anthropic: 'claude-haiku-4-5',
+  openai: 'gpt-4o-mini',
+  gemini: 'gemini-2.5-flash',
+  deepseek: 'deepseek-v4-flash',
+  perplexity: 'sonar-pro',
+};
+
+/** Built-in default for the embeddings capability (OpenAI adapter). */
+const EMBEDDING_BUILTIN_MODEL = 'text-embedding-3-small';
 
 export default async function AdminProvidersPage({
   searchParams,
@@ -161,6 +175,26 @@ export default async function AdminProvidersPage({
       : r.source === 'env'
         ? 'server env var'
         : 'auto-detected (first vendor with a key)';
+
+  // Effective models via the SAME resolver the runtime uses (console →
+  // env, vendor-compatibility enforced; no workspace tier at platform
+  // level). Whatever this shows is what a fresh workspace actually gets.
+  const { resolveTieredModel } = await import('@/lib/services/provider-settings');
+  const effectiveModels: Partial<Record<ProviderCapability, string | undefined>> = {
+    ai: await resolveTieredModel('ai', effective.ai.id, null, process.env.AI_MODEL),
+    qualification: await resolveTieredModel(
+      'qualification',
+      effective.qualification.id,
+      null,
+      undefined,
+    ),
+    research: await resolveTieredModel(
+      'research',
+      effective.research.id,
+      null,
+      process.env.RESEARCH_MODEL,
+    ),
+  };
 
 
   async function saveKey(formData: FormData) {
@@ -572,7 +606,24 @@ export default async function AdminProvidersPage({
           <tbody>
             {STATUS_CAPABILITIES.map(({ cap, label, hasModel }) => {
               const resolved = effective[cap];
-              const model = hasModel ? defaults[`${cap}.model`] : undefined;
+              // EFFECTIVE model, exactly as the runtime resolves it:
+              // configured value (console/env, vendor-compatible) or the
+              // vendor adapter's concrete built-in — never a vague
+              // "provider default".
+              let model: { id: string; builtin: boolean } | null = null;
+              if (hasModel) {
+                if (cap === 'embedding') {
+                  model = { id: EMBEDDING_BUILTIN_MODEL, builtin: true };
+                } else {
+                  const configured = effectiveModels[cap];
+                  model = configured
+                    ? { id: configured, builtin: false }
+                    : {
+                        id: VENDOR_BUILTIN_MODELS[resolved.id] ?? 'vendor default',
+                        builtin: true,
+                      };
+                }
+              }
               const keyMeta = VENDOR_KEY_META[resolved.id];
               const keyState = !keyMeta
                 ? { text: 'no key needed', ok: true }
@@ -586,12 +637,13 @@ export default async function AdminProvidersPage({
                   <td>{label}</td>
                   <td><code>{resolved.id}</code></td>
                   <td>
-                    {hasModel ? (
-                      model ? (
-                        <code>{model}</code>
-                      ) : (
-                        <span className="muted small">provider default</span>
-                      )
+                    {model ? (
+                      <>
+                        <code>{model.id}</code>
+                        {model.builtin ? (
+                          <span className="muted small"> (built-in)</span>
+                        ) : null}
+                      </>
                     ) : (
                       <span className="muted">—</span>
                     )}

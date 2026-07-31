@@ -10,10 +10,13 @@ import {
 import {
   ProviderSettingsError,
   getProviderSettings,
+  modelMatchesVendor,
   resolveActiveProvider,
+  resolveTieredModel,
   systemDefaultProvider,
   updateProviderSettings,
 } from '@/lib/services/provider-settings';
+import { platformSettings } from '@/lib/db/schema/platform-settings';
 import { setSecret } from '@/lib/services/secrets';
 import {
   AnthropicAIProvider,
@@ -61,6 +64,75 @@ afterEach(() => {
 
 afterAll(async () => {
   await (db.$client as unknown as { end: () => Promise<void> }).end();
+});
+
+// ─── vendor-compatible model resolution ───────────────────────────────
+
+describe('modelMatchesVendor', () => {
+  it('matches recognizable prefixes to their vendor only', () => {
+    expect(modelMatchesVendor('anthropic', 'claude-sonnet-5')).toBe(true);
+    expect(modelMatchesVendor('anthropic', 'gemini-3.6-flash')).toBe(false);
+    expect(modelMatchesVendor('gemini', 'gemini-3.6-flash')).toBe(true);
+    expect(modelMatchesVendor('openai', 'gpt-5.6-luna')).toBe(true);
+    expect(modelMatchesVendor('deepseek', 'deepseek-v4-pro')).toBe(true);
+    expect(modelMatchesVendor('openai', 'claude-sonnet-5')).toBe(false);
+  });
+
+  it('lets unrecognized custom model ids through for any vendor', () => {
+    expect(modelMatchesVendor('anthropic', 'my-custom-finetune-7')).toBe(true);
+    expect(modelMatchesVendor('deepseek', 'my-custom-finetune-7')).toBe(true);
+  });
+});
+
+describe('resolveTieredModel', () => {
+  async function setPlatformModel(capability: string, value: string) {
+    await db
+      .insert(platformSettings)
+      .values({ key: `${capability}.model`, value })
+      .onConflictDoUpdate({
+        target: platformSettings.key,
+        set: { value },
+      });
+  }
+
+  it('applies a console model even when the provider came from a DIFFERENT tier (env/auto), as long as the vendor matches', async () => {
+    // The regression Jacol hit: ai.model=claude-sonnet-5 saved in the
+    // console, ai.provider left on Automatic (resolves via env to
+    // anthropic) — the model must apply, not silently fall to Haiku.
+    await setPlatformModel('ai', 'claude-sonnet-5');
+    const model = await resolveTieredModel('ai', 'anthropic', null, undefined);
+    expect(model).toBe('claude-sonnet-5');
+  });
+
+  it('skips a saved model belonging to a different vendor (the original 404 bug)', async () => {
+    // Stale gemini model left in the console while the provider
+    // resolves to anthropic → must NOT ship gemini-3.6-flash to the
+    // Anthropic API; falls through to undefined (adapter default).
+    await setPlatformModel('ai', 'gemini-3.6-flash');
+    const model = await resolveTieredModel('ai', 'anthropic', null, undefined);
+    expect(model).toBeUndefined();
+  });
+
+  it('workspace model wins over console model; mismatched workspace model falls through to a matching console model', async () => {
+    await setPlatformModel('ai', 'claude-sonnet-5');
+    expect(
+      await resolveTieredModel('ai', 'anthropic', 'claude-haiku-4-5', undefined),
+    ).toBe('claude-haiku-4-5');
+    // Workspace saved a gemini model but the vendor is anthropic —
+    // skip it, use the vendor-compatible console model instead.
+    expect(
+      await resolveTieredModel('ai', 'anthropic', 'gemini-3.6-flash', undefined),
+    ).toBe('claude-sonnet-5');
+  });
+
+  it('falls back to the env model var when nothing else matches', async () => {
+    expect(
+      await resolveTieredModel('ai', 'openai', null, 'gpt-5.6-luna'),
+    ).toBe('gpt-5.6-luna');
+    expect(
+      await resolveTieredModel('ai', 'anthropic', null, 'gpt-5.6-luna'),
+    ).toBeUndefined();
+  });
 });
 
 // ─── resolveActiveProvider cascade ────────────────────────────────────

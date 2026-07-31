@@ -189,14 +189,13 @@ export async function getResearchProviderForCtx(
     '@/lib/services/provider-settings'
   );
   const settings = await getProviderSettings(ctx);
-  // Model stays in the SAME tier as `active` — see resolveTieredModel's
-  // doc comment (src/lib/services/provider-settings.ts) for why
-  // independently chaining workspace/platform/env model lookups is
-  // unsafe: a stale model left over from a cleared platform provider
-  // can get reattached to a different auto-detected vendor.
+  // Vendor-compatible model resolution — see resolveTieredModel's doc
+  // comment (src/lib/services/provider-settings.ts): a saved model
+  // applies whenever it belongs to the resolved vendor; models for a
+  // different vendor are skipped, never shipped to the wrong API.
   const wsModel = await resolveTieredModel(
     'research',
-    active.source,
+    id,
     settings.researchModel,
     process.env.RESEARCH_MODEL,
   );
