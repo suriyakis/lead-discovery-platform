@@ -83,31 +83,29 @@ const PROVIDERS = [
 ] as const;
 
 /** Complete capability → env-fallback map for the Health table. Rows
- *  with a null envVar are capabilities that deliberately have NO env
- *  selector — shown with an explanation instead of being omitted
- *  (omission reads as an oversight). Key VALUES are never printed. */
-const ENV_DEFAULTS: ReadonlyArray<{
+ *  Vendor → key-location metadata for the platform-status table. */
+const VENDOR_KEY_META: Record<string, { secretKey: string; envVar: string }> = {
+  anthropic: { secretKey: 'anthropic.apiKey', envVar: 'ANTHROPIC_API_KEY' },
+  openai: { secretKey: 'openai.apiKey', envVar: 'OPENAI_API_KEY' },
+  gemini: { secretKey: 'gemini.apiKey', envVar: 'GEMINI_API_KEY' },
+  deepseek: { secretKey: 'deepseek.apiKey', envVar: 'DEEPSEEK_API_KEY' },
+  mistral: { secretKey: 'mistral.apiKey', envVar: 'MISTRAL_API_KEY' },
+  serpapi: { secretKey: 'serpapi.apiKey', envVar: 'SERPAPI_KEY' },
+  perplexity: { secretKey: 'perplexity.apiKey', envVar: 'PERPLEXITY_API_KEY' },
+};
+
+/** Capabilities shown in the platform-status table, in display order. */
+const STATUS_CAPABILITIES: ReadonlyArray<{
+  cap: ProviderCapability;
   label: string;
-  value: string | undefined | null;
-  note?: string;
+  hasModel: boolean;
 }> = [
-  { label: 'AI_PROVIDER', value: process.env.AI_PROVIDER },
-  { label: 'AI_MODEL', value: process.env.AI_MODEL },
-  {
-    label: 'QUALIFICATION',
-    value: null,
-    note: 'no env selector — workspace → console default → cheapest vendor with a key (deepseek → gemini → openai → anthropic)',
-  },
-  { label: 'EMBEDDING_PROVIDER', value: process.env.EMBEDDING_PROVIDER },
-  { label: 'SEARCH_PROVIDER', value: process.env.SEARCH_PROVIDER },
-  { label: 'RESEARCH_PROVIDER', value: process.env.RESEARCH_PROVIDER },
-  { label: 'RESEARCH_MODEL', value: process.env.RESEARCH_MODEL },
-  { label: 'VECTOR_STORAGE_PROVIDER', value: process.env.VECTOR_STORAGE_PROVIDER },
-  {
-    label: 'OCR (scanned PDFs)',
-    value: null,
-    note: `no env selector — always mistral; MISTRAL_API_KEY env is ${process.env.MISTRAL_API_KEY?.trim() ? 'set (value hidden)' : 'unset'}`,
-  },
+  { cap: 'ai', label: 'AI — drafting & conversation', hasModel: true },
+  { cap: 'qualification', label: 'Qualification — lead scoring', hasModel: true },
+  { cap: 'research', label: 'Research — company deep-dives', hasModel: true },
+  { cap: 'search', label: 'Web search — discovery', hasModel: false },
+  { cap: 'embedding', label: 'Embeddings — semantic retrieval', hasModel: false },
+  { cap: 'vector_storage', label: 'Vector storage', hasModel: false },
 ];
 
 export default async function AdminProvidersPage({
@@ -164,12 +162,6 @@ export default async function AdminProvidersPage({
         ? 'server env var'
         : 'auto-detected (first vendor with a key)';
 
-  // OCR isn't a selectable capability (image-based PDFs always route to
-  // Mistral) — its "effective state" is simply whether a key exists.
-  const { hasPlatformSecretKey } = await import('@/lib/services/secrets');
-  const ocrKeyConfigured =
-    Boolean(process.env.MISTRAL_API_KEY?.trim()) ||
-    (await hasPlatformSecretKey('mistral.apiKey'));
 
   async function saveKey(formData: FormData) {
     'use server';
@@ -559,58 +551,96 @@ export default async function AdminProvidersPage({
 
       <section>
         <h2>
-          <ShieldCheck className="lucide" aria-hidden="true" /> Health & defaults
+          <ShieldCheck className="lucide" aria-hidden="true" /> Platform status
         </h2>
-        <form action={testAI} className="action-row">
+        <p className="muted small">
+          What every capability effectively runs on RIGHT NOW, platform-wide
+          (before any workspace&apos;s own override), and whether the vendor
+          it resolved to has a key. Use each vendor card&apos;s
+          &ldquo;Test key&rdquo; above for a live check.
+        </p>
+        <table className="data-table" style={{ marginTop: '0.75rem', maxWidth: '52rem' }}>
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>Provider</th>
+              <th>Model</th>
+              <th>Chosen via</th>
+              <th>Key</th>
+            </tr>
+          </thead>
+          <tbody>
+            {STATUS_CAPABILITIES.map(({ cap, label, hasModel }) => {
+              const resolved = effective[cap];
+              const model = hasModel ? defaults[`${cap}.model`] : undefined;
+              const keyMeta = VENDOR_KEY_META[resolved.id];
+              const keyState = !keyMeta
+                ? { text: 'no key needed', ok: true }
+                : storedByKey.has(keyMeta.secretKey)
+                  ? { text: 'console', ok: true }
+                  : process.env[keyMeta.envVar]?.trim()
+                    ? { text: 'env var', ok: true }
+                    : { text: 'MISSING', ok: false };
+              return (
+                <tr key={cap}>
+                  <td>{label}</td>
+                  <td><code>{resolved.id}</code></td>
+                  <td>
+                    {hasModel ? (
+                      model ? (
+                        <code>{model}</code>
+                      ) : (
+                        <span className="muted small">provider default</span>
+                      )
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td className="muted small">{sourceLabel(resolved)}</td>
+                  <td>
+                    <span className={keyState.ok ? 'badge badge-good' : 'badge badge-bad'}>
+                      {keyState.text}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+            {(() => {
+              const keyState = storedByKey.has('mistral.apiKey')
+                ? { text: 'console', ok: true }
+                : process.env.MISTRAL_API_KEY?.trim()
+                  ? { text: 'env var', ok: true }
+                  : { text: 'MISSING', ok: false };
+              return (
+                <tr>
+                  <td>OCR — scanned PDFs</td>
+                  <td><code>mistral</code></td>
+                  <td><code>{process.env.MISTRAL_OCR_MODEL?.trim() || 'mistral-ocr-latest'}</code></td>
+                  <td className="muted small">
+                    fixed — auto-routes whenever a PDF has no text layer
+                  </td>
+                  <td>
+                    <span className={keyState.ok ? 'badge badge-good' : 'badge badge-bad'}>
+                      {keyState.text}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })()}
+          </tbody>
+        </table>
+        <form action={testAI} className="action-row" style={{ marginTop: '0.75rem' }}>
           <button type="submit" className="ghost-btn">
             Test active AI provider
           </button>
           <span className="muted small" style={{ alignSelf: 'center' }}>
-            Runs a live health check with the currently-resolved key. Every
-            vendor card above also has its own &ldquo;Test key&rdquo; — use
-            those to verify keys for vendors that aren&apos;t the active AI
-            provider (DeepSeek qualification, Mistral OCR, search backends).
+            Live 1-token call with the key the AI capability resolves to.
           </span>
         </form>
-        <p className="muted small" style={{ marginTop: '0.75rem' }}>
-          <strong>OCR (scanned PDFs)</strong> — always Mistral, auto-selected
-          whenever an uploaded PDF has no text layer:{' '}
-          {ocrKeyConfigured ? (
-            <span className="badge badge-good">key configured</span>
-          ) : (
-            <span className="badge badge-bad">
-              no key — scanned PDFs will fail until one is added above
-            </span>
-          )}
-        </p>
-        <table className="data-table" style={{ marginTop: '0.75rem', maxWidth: '32rem' }}>
-          <thead>
-            <tr>
-              <th>Env default</th>
-              <th>Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ENV_DEFAULTS.map((row) => (
-              <tr key={row.label}>
-                <td><code>{row.label}</code></td>
-                <td>
-                  {row.value === null ? (
-                    <span className="muted small">{row.note}</span>
-                  ) : row.value?.trim() ? (
-                    <code>{row.value}</code>
-                  ) : (
-                    <span className="muted">unset</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
         <p className="muted small">
-          Env values are the LAST fallback — the platform defaults saved
-          above override them, and a workspace&apos;s own selection under
-          Settings → Integrations overrides both.
+          Resolution order everywhere: a workspace&apos;s own selection
+          (Settings → Integrations) → the platform defaults saved above →
+          server env vars → auto-detect (first vendor with a key).
         </p>
       </section>
     </div>
