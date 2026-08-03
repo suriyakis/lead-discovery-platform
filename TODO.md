@@ -1010,7 +1010,9 @@ auto-translated into the native language. Languages: en, pl, de, it, ja, he
 - [x] **P63-10.** Operator thread replies (`POST /api/communication/reply`) resolve the lead via `currentThreadId` and go dual-language. Commit `a63c544`.
 - [x] **P63-11.** Thread view shows native↔target side by side (outbound: Sent·target | Your copy·native; inbound: Original·source | Translation·native). Commit `55d5d69`.
 - [x] **P63-12.** Curated language pickers (product form, recipe editor, new-recipe) + workspace Native-language card on Settings → Outreach. Commit `db28714`.
-- [ ] **P63-deploy.** Apply migrations `0047`/`0048` on prod, rebuild, smoke-test. **Not yet deployed** — branch not merged to `main`.
+- [x] **P63-deploy.** Deployed 2026-06-20. Merge `624bfe6` on `main`. Prod (agregat `195.201.16.169:/opt/lead-discovery-platform`) fast-forwarded `7f303fc..624bfe6`; migrations `0047`+`0048` applied host-side BEFORE the container swap (additive nullable columns, drizzle-tracked); app image rebuilt, `lead-discovery-platform-app-1` recreated. `https://discover.nulife.pl/api/health` → `{"ok":true}` (200). Phase 63 live.
+
+**Phase 63 complete.**
 
 ## Setup modes + no-mock system defaults (2026-07-10)
 
