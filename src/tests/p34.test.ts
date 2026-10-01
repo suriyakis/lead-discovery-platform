@@ -80,8 +80,11 @@ describe('registerRepeatableJobs', () => {
       q.enqueue('outreach.drain.tick', {}),
       q.enqueue('mail.imap.tick', {}),
     ]);
-    // Yield twice — handlers run on microtask + DB hits.
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait for every chained handler instead of a fixed sleep: under load
+    // the three ticks' DB work can take longer than any fixed window. A
+    // type with no handler is never chained, so its job stays 'pending'
+    // and the assertion below still fails.
+    await q.drain();
     for (const id of ids) {
       const status = await q.status(id);
       expect(status.state === 'succeeded' || status.state === 'failed').toBe(true);
