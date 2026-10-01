@@ -72,6 +72,29 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 // ---- rule findings --------------------------------------------------
 
 /** "2026-05-08 14:03 UTC" — findings are stored text, read later. */
+/**
+ * flow:F-04: what "no active mailbox" means depends on why. Only a
+ * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
+ * follow-up processOne check); sends through a PAUSED one are refused
+ * and the queue entries / follow-ups that come due are marked failed.
+ */
+export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean): string {
+  const why = anyFailing && anyPaused ? 'failing or paused' : anyFailing ? 'failing' : 'paused';
+  const parts = [`No mailbox is active (each one is ${why}) — no replies are read.`];
+  if (anyFailing) {
+    parts.push(
+      'Outreach and follow-ups queued on a failing mailbox are held until it works again.',
+    );
+  }
+  if (anyPaused) {
+    parts.push(
+      'Outreach and follow-ups that come due on a paused mailbox are marked failed, not held — ' +
+        're-enable it before they are due.',
+    );
+  }
+  return parts.join(' ');
+}
+
 export async function collectRuleFindings(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<HealthFinding[]> {
@@ -147,9 +170,10 @@ export async function collectRuleFindings(
         : {
             severity: 'warning',
             code: 'mailbox.none',
-            message:
-              'No mailbox is active (each one is failing or paused) — queued outreach and ' +
-              'follow-ups are held and no replies are read until one is fixed or re-enabled.',
+            message: noActiveMailboxMessage(
+              mbs.some((m) => m.status === 'failing'),
+              mbs.some((m) => m.status === 'paused'),
+            ),
             href: '/mailbox',
           },
     );

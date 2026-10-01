@@ -627,8 +627,30 @@ describe('health check: failing mailboxes (F-04)', () => {
 
     const none = findings.find((f) => f.code === 'mailbox.none');
     expect(none?.message).toContain('failing or paused');
+    expect(none?.message).toContain('queued on a failing mailbox are held');
+    expect(none?.message).toContain('on a paused mailbox are marked failed, not held');
     expect(none?.message).not.toContain('approved drafts cannot be sent');
     expect(none?.href).toBe('/mailbox');
+  });
+
+  it('only paused mailboxes: never claims the queue is held', async () => {
+    const s = await setup();
+    const p = await makeMailbox(s, 'resting');
+    await pauseMailbox(s.c, p.id);
+    const none = (await collectRuleFindings(s.c)).find((f) => f.code === 'mailbox.none');
+    expect(none?.message).toContain('(each one is paused)');
+    expect(none?.message).toContain('marked failed, not held');
+    expect(none?.message).not.toContain('are held until');
+  });
+
+  it('only failing mailboxes: the queue is held', async () => {
+    const s = await setup();
+    const a = await makeMailbox(s, 'broken');
+    await markMailboxFailing(s.c, a.id, { protocol: 'imap', message: 'Socket timed out' });
+    const none = (await collectRuleFindings(s.c)).find((f) => f.code === 'mailbox.none');
+    expect(none?.message).toContain('(each one is failing)');
+    expect(none?.message).toContain('held until it works again');
+    expect(none?.message).not.toContain('paused');
   });
 
   it('one failing mailbox among active ones is still reported, with no mailbox.none', async () => {
