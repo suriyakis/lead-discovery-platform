@@ -47,4 +47,10 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // tsconfig has "jsx": "preserve" (Next compiles JSX itself), which leaves
+  // esbuild on the classic React.createElement runtime. Use the automatic
+  // runtime so tests can render server components with react-dom/server.
+  esbuild: {
+    jsx: 'automatic',
+  },
 });

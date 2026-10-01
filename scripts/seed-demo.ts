@@ -3350,7 +3350,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     { workspaceId: A, userId: ADMIN_ID, kind: 'secret.set', entityType: 'workspace_secret', entityId: 'mailbox.smtpPassword', payload: { scope: 'mailbox' }, createdAt: ago(34) },
     { workspaceId: A, userId: ADMIN_ID, kind: 'provider_settings.update', entityType: 'workspace', entityId: A.toString(), payload: { aiProvider: 'openai', qualificationProvider: 'gemini' }, createdAt: ago(18) },
     { workspaceId: A, userId: ADMIN_ID, kind: 'outreach.send_settings.update', entityType: 'workspace', entityId: A.toString(), payload: { dailyEmailLimit: 60, domainCooldownHours: 48 }, createdAt: ago(12) },
-    { workspaceId: A, userId: ADMIN_ID, kind: 'reply.auto_actions.update', entityType: 'workspace', entityId: A.toString(), payload: { autoCloseNegative: true }, createdAt: ago(15) },
+    { workspaceId: A, userId: ADMIN_ID, kind: 'reply_auto_actions.changed', entityType: 'workspace', entityId: A.toString(), payload: { changes: { autoSuppressUnsubscribe: { from: false, to: true }, autoSuppressBounce: { from: false, to: true }, autoCloseNegative: { from: false, to: true } }, after: { autoSuppressUnsubscribe: true, autoSuppressBounce: true, autoCloseNegative: true, autoExtractRedirects: true } }, createdAt: ago(15) },
     ...(goodwill !== null
       ? [{ workspaceId: A, userId: ADMIN_ID, kind: 'tokens.adjust', entityType: 'workspace', entityId: A.toString(), payload: { delta: goodwill.toString(), reason: 'Goodwill credit — failed PL crawl (rate limit)' }, createdAt: ago(9, 2) }]
       : []),

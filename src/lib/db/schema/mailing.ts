@@ -505,15 +505,19 @@ export type SuppressionSource = (typeof suppressionSource.enumValues)[number];
 
 /**
  * Phase 20: per-workspace auto-action toggles for classified inbound mail.
+ * Edited by workspace admins on /settings/outreach (ia:F-03); see
+ * services/reply-auto-actions.ts. The suppression/close switches default
+ * to OFF since migration 0062 (X1: the classifier also runs on mail that
+ * is not a reply to our outreach).
  */
 export const replyAutoActions = pgTable('reply_auto_actions', {
   workspaceId: bigint('workspace_id', { mode: 'bigint' })
     .primaryKey()
     .references(() => workspaces.id, { onDelete: 'cascade' }),
   /** auto-suppress + close the lead on bounce. */
-  autoSuppressBounce: boolean('auto_suppress_bounce').notNull().default(true),
+  autoSuppressBounce: boolean('auto_suppress_bounce').notNull().default(false),
   /** auto-suppress + close the lead on unsubscribe. */
-  autoSuppressUnsubscribe: boolean('auto_suppress_unsubscribe').notNull().default(true),
+  autoSuppressUnsubscribe: boolean('auto_suppress_unsubscribe').notNull().default(false),
   /** auto-close lead on a negative classification. */
   autoCloseNegative: boolean('auto_close_negative').notNull().default(false),
   /** auto-create new contacts from extracted emails on redirect replies. */
