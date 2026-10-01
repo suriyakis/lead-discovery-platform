@@ -10,7 +10,7 @@
 // including one that loses the merge, writes a 'suppression.add' audit
 // event carrying its source, source_ref, the outcome and the prior state.
 
-import { and, desc, eq, gt, isNull, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNotNull, isNull, lte, or, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import {
@@ -575,26 +575,78 @@ export async function revokeSuppression(
 
 // ---- read ------------------------------------------------------------
 
+/**
+ * F-03: where an entry stands.
+ *   active  — not revoked and not expired: isSuppressed() matches it;
+ *   expired — not revoked, but its expires_at (a soft bounce's window) has
+ *             passed: no longer matched, kept for the record;
+ *   revoked — lifted by an admin: history only.
+ */
+export type SuppressionState = 'active' | 'expired' | 'revoked';
+
+function stateCondition(state: SuppressionState, now: Date): SQL {
+  switch (state) {
+    case 'active':
+      return and(
+        isNull(suppressionList.revokedAt),
+        or(isNull(suppressionList.expiresAt), gt(suppressionList.expiresAt, now)),
+      )!;
+    case 'expired':
+      return and(isNull(suppressionList.revokedAt), lte(suppressionList.expiresAt, now))!;
+    case 'revoked':
+      return isNotNull(suppressionList.revokedAt);
+  }
+}
+
 export async function listSuppressions(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   filter: {
     reason?: SuppressionReason;
     kind?: SuppressionKind;
-    /** F-03: revoked rows are history; include them only when asked. */
+    /** F-03: revoked rows are history; include them only when asked.
+     *  Ignored when `state` is given. */
     includeRevoked?: boolean;
+    /** Only entries in this state (newest first; revoked ones by when
+     *  they were revoked). */
+    state?: SuppressionState;
     limit?: number;
   } = {},
 ): Promise<SuppressionEntry[]> {
   const conditions: SQL[] = [eq(suppressionList.workspaceId, ctx.workspaceId)];
   if (filter.reason) conditions.push(eq(suppressionList.reason, filter.reason));
   if (filter.kind) conditions.push(eq(suppressionList.kind, filter.kind));
-  if (!filter.includeRevoked) conditions.push(isNull(suppressionList.revokedAt));
+  if (filter.state) conditions.push(stateCondition(filter.state, new Date()));
+  else if (!filter.includeRevoked) conditions.push(isNull(suppressionList.revokedAt));
   return db
     .select()
     .from(suppressionList)
     .where(and(...conditions))
-    .orderBy(desc(suppressionList.createdAt), desc(suppressionList.id))
+    .orderBy(
+      ...(filter.state === 'revoked' ? [desc(suppressionList.revokedAt)] : []),
+      desc(suppressionList.createdAt),
+      desc(suppressionList.id),
+    )
     .limit(Math.min(filter.limit ?? 500, 5000));
+}
+
+/** F-03: how many entries are in each state — uncapped, unlike the lists. */
+export async function countSuppressions(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<Record<SuppressionState, number>> {
+  const now = new Date();
+  const states: SuppressionState[] = ['active', 'expired', 'revoked'];
+  const counts = await Promise.all(
+    states.map(async (state) => {
+      const [row] = await db
+        .select({ n: count() })
+        .from(suppressionList)
+        .where(
+          and(eq(suppressionList.workspaceId, ctx.workspaceId), stateCondition(state, now)),
+        );
+      return Number(row?.n ?? 0);
+    }),
+  );
+  return { active: counts[0]!, expired: counts[1]!, revoked: counts[2]! };
 }
 
 /**
@@ -609,13 +661,7 @@ export async function isSuppressed(
 ): Promise<boolean> {
   const normalized = normalizeFor('email', email);
   const domain = deriveDomain(normalized);
-  const active = and(
-    isNull(suppressionList.revokedAt),
-    or(
-      isNull(suppressionList.expiresAt),
-      gt(suppressionList.expiresAt, new Date()),
-    ),
-  );
+  const active = stateCondition('active', new Date());
 
   // 1) email-direct match.
   const emailRows = await db

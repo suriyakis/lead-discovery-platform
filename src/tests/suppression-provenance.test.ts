@@ -11,6 +11,7 @@ import { suppressionList, type SuppressionEntry } from '@/lib/db/schema/mailing'
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import {
   addSuppression,
+  countSuppressions,
   isSuppressed,
   listSuppressions,
   mergeSuppression,
@@ -554,6 +555,55 @@ describe('revokeSuppression', () => {
       .from(suppressionList)
       .where(eq(suppressionList.id, entry.id));
     expect(row!.revokeReason).toBe('first');
+  });
+});
+
+// ============ list by state (the /mailbox/suppression sections) =====
+
+describe('listSuppressions / countSuppressions by state', () => {
+  it('separates active, expired and revoked entries; counts are uncapped', async () => {
+    const s = await setup();
+    const owner = ctx(s.workspaceA, s.ownerA);
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    const inADay = new Date(Date.now() + 86_400_000);
+
+    const manual = await addSuppression(owner, { address: 'a@x.example', reason: 'manual', source: 'manual' });
+    const softLive = await addSuppression(owner, {
+      address: 'b@x.example',
+      reason: 'bounce_soft',
+      source: 'smtp',
+      expiresAt: inADay,
+    });
+    const softExpired = await addSuppression(owner, {
+      address: 'c@x.example',
+      reason: 'bounce_soft',
+      source: 'smtp',
+      expiresAt: hourAgo,
+    });
+    const gone = await addSuppression(owner, { address: 'd@x.example', reason: 'manual', source: 'manual' });
+    await revokeSuppression(owner, gone.id, 'asked to be contacted again');
+    // Another workspace's rows never count.
+    await addSuppression(ctx(s.workspaceB, s.ownerB), {
+      address: 'a@x.example',
+      reason: 'manual',
+      source: 'manual',
+    });
+
+    const ids = (rows: SuppressionEntry[]) => rows.map((r) => r.id).sort();
+    expect(ids(await listSuppressions(owner, { state: 'active' }))).toEqual(
+      [manual.id, softLive.id].sort(),
+    );
+    expect(ids(await listSuppressions(owner, { state: 'expired' }))).toEqual([softExpired.id]);
+    expect(ids(await listSuppressions(owner, { state: 'revoked' }))).toEqual([gone.id]);
+    expect(await countSuppressions(owner)).toEqual({ active: 2, expired: 1, revoked: 1 });
+
+    // 'expired' is exactly what isSuppressed ignores.
+    expect(await isSuppressed(owner, 'c@x.example')).toBe(false);
+    expect(await isSuppressed(owner, 'b@x.example')).toBe(true);
+
+    // Capped lists, uncapped counts.
+    expect(await listSuppressions(owner, { state: 'active', limit: 1 })).toHaveLength(1);
+    expect((await countSuppressions(owner)).active).toBe(2);
   });
 });
 

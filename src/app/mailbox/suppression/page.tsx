@@ -17,11 +17,14 @@ import {
   SUPPRESSION_SOURCE_LABELS,
   SuppressionServiceError,
   addSuppression,
+  countSuppressions,
   listSuppressions,
   revokeSuppression,
+  type SuppressionState,
 } from '@/lib/services/suppression';
 import { listMembers } from '@/lib/services/workspace';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { formatUtc } from '@/lib/format-utc';
 import {
   suppressionKind,
   suppressionReason,
@@ -33,6 +36,13 @@ import {
 // The DS Settings pass restyles this page later.
 
 const PAGE = '/mailbox/suppression';
+
+/** Rows loaded per section; the headings show the uncapped counts. */
+const SECTION_CAP: Record<SuppressionState, number> = {
+  active: 500,
+  expired: 100,
+  revoked: 200,
+};
 
 const REASONS: ReadonlyArray<{ key: SuppressionReason; label: string }> = [
   { key: 'manual', label: 'Manual' },
@@ -149,7 +159,11 @@ function redirectWith(params: { message?: string; error?: string }): never {
 }
 
 function formatWhen(d: Date): string {
-  return d.toLocaleString();
+  return formatUtc(d);
+}
+
+function shownOf(shown: number, total: number): string | null {
+  return total > shown ? `Showing the newest ${shown} of ${total}.` : null;
 }
 
 function formatSourceRef(ref: string): string {
@@ -167,11 +181,20 @@ export default async function SuppressionPage({
   const sp = await searchParams;
 
   let ctx: WorkspaceContext;
-  let entries: SuppressionEntry[] = [];
+  let active: SuppressionEntry[] = [];
+  let expired: SuppressionEntry[] = [];
+  let revoked: SuppressionEntry[] = [];
+  let counts: Record<SuppressionState, number> = { active: 0, expired: 0, revoked: 0 };
   const names = new Map<string, string>();
   try {
     ctx = await getWorkspaceContext();
-    entries = await listSuppressions(ctx, { includeRevoked: true });
+    const c = ctx;
+    [active, expired, revoked, counts] = await Promise.all([
+      listSuppressions(c, { state: 'active', limit: SECTION_CAP.active }),
+      listSuppressions(c, { state: 'expired', limit: SECTION_CAP.expired }),
+      listSuppressions(c, { state: 'revoked', limit: SECTION_CAP.revoked }),
+      countSuppressions(c),
+    ]);
     for (const m of await listMembers(ctx)) {
       names.set(m.user.id, m.user.name || m.user.email);
     }
@@ -191,8 +214,6 @@ export default async function SuppressionPage({
 
   const isAdmin = canAdminWorkspace(ctx);
   const mayAdd = canWrite(ctx);
-  const active = entries.filter((e) => !e.revokedAt);
-  const revoked = entries.filter((e) => e.revokedAt);
   const who = (id: string | null) => (id ? names.get(id) ?? 'a former member' : null);
 
   return (
@@ -255,7 +276,10 @@ export default async function SuppressionPage({
         ) : null}
 
         <section>
-          <h2>Active ({active.length})</h2>
+          <h2>Active ({counts.active})</h2>
+          {shownOf(active.length, counts.active) ? (
+            <p className="muted">{shownOf(active.length, counts.active)}</p>
+          ) : null}
           {!isAdmin && active.length > 0 ? (
             <p className="muted">Only workspace admins can revoke entries.</p>
           ) : null}
@@ -306,12 +330,48 @@ export default async function SuppressionPage({
           )}
         </section>
 
-        {revoked.length > 0 ? (
+        {counts.expired > 0 ? (
           <section>
-            <h2>Revoked ({revoked.length})</h2>
+            <h2>Expired ({counts.expired})</h2>
+            <p className="muted">
+              Temporary entries (soft bounces) whose window has passed. They no
+              longer block sends; adding the same entry again re-activates it.
+              {shownOf(expired.length, counts.expired)
+                ? ` ${shownOf(expired.length, counts.expired)}`
+                : ''}
+            </p>
+            <ul className="profile-list">
+              {expired.map((e) => (
+                <li key={e.id.toString()}>
+                  <div className="lead-row">
+                    <span className="badge">{e.kind}</span>
+                    <code>{e.value || e.address}</code>
+                    <span className="muted">{REASON_LABELS[e.reason]}</span>
+                    <span className="muted">
+                      Source: {SUPPRESSION_SOURCE_LABELS[e.source]}
+                      {e.sourceRef ? ` · ${formatSourceRef(e.sourceRef)}` : ''}
+                    </span>
+                  </div>
+                  <p className="muted">
+                    Added {formatWhen(e.createdAt)}
+                    {who(e.createdBy) ? ` by ${who(e.createdBy)}` : ''}
+                    {e.expiresAt ? ` · expired ${formatWhen(e.expiresAt)}` : ''}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {counts.revoked > 0 ? (
+          <section>
+            <h2>Revoked ({counts.revoked})</h2>
             <p className="muted">
               No longer suppressed. Kept for the record; adding the same entry
               again re-activates it.
+              {shownOf(revoked.length, counts.revoked)
+                ? ` ${shownOf(revoked.length, counts.revoked)}`
+                : ''}
             </p>
             <ul className="profile-list">
               {revoked.map((e) => (
