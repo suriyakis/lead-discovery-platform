@@ -6,6 +6,7 @@ import '@/lib/connectors/mock';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
+import { mailboxes } from '@/lib/db/schema/mailing';
 import {
   AIOutputError,
   _setAIProviderForTests,
@@ -126,12 +127,35 @@ describe('askAssistant', () => {
     // The dead "EMPTY" marker is gone: an empty wallet never reaches here.
     expect(prompt).not.toContain('EMPTY');
     expect(prompt).toContain('Active products: 1');
+    expect(prompt).toContain(
+      'Mailboxes: 0 active, 0 failing (still sending, not read), 0 paused (not sending, not read)',
+    );
     expect(prompt).toContain('why am I getting no leads?');
     expect(stub.lastInput!.system).toContain(`guide of ${BRAND_NAME}`);
     expect(stub.lastInput!.system).not.toContain('Lead Discovery Platform');
     // The model reads the handbook without its claim tags.
     expect(prompt).toContain('Known limitations right now');
     expect(prompt).not.toMatch(/\{H-\d{2}\}/);
+  });
+
+  it('tells the model which mailboxes are failing or paused, not just how many are active', async () => {
+    const s = await setup();
+    const stub = new CapturingProvider();
+    _setAIProviderForTests(stub);
+    const base = {
+      workspaceId: s.workspaceA,
+      smtpHost: 'smtp.x',
+      imapFolder: 'INBOX',
+    };
+    await db.insert(mailboxes).values([
+      { ...base, name: 'a', fromAddress: 'a@x.test', smtpUser: 'a', smtpPasswordSecretKey: 'k.a', status: 'failing' },
+      { ...base, name: 'b', fromAddress: 'b@x.test', smtpUser: 'b', smtpPasswordSecretKey: 'k.b', status: 'paused' },
+      { ...base, name: 'c', fromAddress: 'c@x.test', smtpUser: 'c', smtpPasswordSecretKey: 'k.c', status: 'archived' },
+    ]);
+    await askAssistant(ctx(s.workspaceA, s.ownerA), 'why are replies not showing up?');
+    expect(stub.lastInput!.prompt).toContain(
+      'Mailboxes: 0 active, 1 failing (still sending, not read), 1 paused (not sending, not read)',
+    );
   });
 
   it('carries short conversation history', async () => {

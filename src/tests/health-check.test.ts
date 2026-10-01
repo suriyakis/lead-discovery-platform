@@ -13,7 +13,12 @@ import {
   type AIGenResult,
   type IAIProvider,
 } from '@/lib/ai';
-import { mailMessages, mailThreads, mailboxes } from '@/lib/db/schema/mailing';
+import {
+  mailMessages,
+  mailThreads,
+  mailboxes,
+  type MailboxStatus,
+} from '@/lib/db/schema/mailing';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import {
   type WorkspaceContext,
@@ -22,6 +27,7 @@ import {
 import {
   collectRuleFindings,
   listHealthReports,
+  mailboxFindings,
   processDueHealthChecks,
   runWorkspaceHealthCheck,
   type HealthFinding,
@@ -141,6 +147,80 @@ describe('collectRuleFindings', () => {
     // the old copy only mentioned approved drafts.
     const mailbox = findings.find((f) => f.code === 'mailbox.none')!;
     expect(mailbox.message).toBe('No active mailbox — nothing can be sent or received.');
+  });
+
+  describe('mailboxes by status (failing still sends; paused does not)', () => {
+    async function addMailbox(s: Setup, address: string, status: MailboxStatus) {
+      await db.insert(mailboxes).values({
+        workspaceId: s.workspaceA,
+        name: address,
+        fromAddress: address,
+        smtpHost: 'smtp.x',
+        smtpUser: address,
+        smtpPasswordSecretKey: `mailbox.smtp_${address}`,
+        imapFolder: 'INBOX',
+        status,
+      });
+    }
+    async function mailboxCodes(s: Setup) {
+      const findings = await collectRuleFindings(ctx(s.workspaceA, s.ownerA));
+      return findings.filter((f) => f.code.startsWith('mailbox.'));
+    }
+
+    it('a workspace whose only mailbox is failing is told it still sends, not that nothing can be sent', async () => {
+      const s = await setup();
+      await addMailbox(s, 'sales@test.local', 'failing');
+      const found = await mailboxCodes(s);
+      expect(found.map((f) => f.code)).toEqual(['mailbox.failing']);
+      expect(found[0]!.message).toBe(
+        'Mailbox sales@test.local is failing — it still sends queued emails and follow-ups, but replies, bounces and unsubscribes sent to it are not read. Fix its settings, then click Reactivate on its page.',
+      );
+      expect(found[0]!.href).toBe('/mailbox');
+    });
+
+    it('a failing mailbox is reported even when another one is active', async () => {
+      const s = await setup();
+      await addMailbox(s, 'sales@test.local', 'active');
+      await addMailbox(s, 'info@test.local', 'failing');
+      expect((await mailboxCodes(s)).map((f) => f.code)).toEqual(['mailbox.failing']);
+    });
+
+    it('only paused mailboxes: says nothing is sent or synced', async () => {
+      const s = await setup();
+      await addMailbox(s, 'sales@test.local', 'paused');
+      const found = await mailboxCodes(s);
+      expect(found.map((f) => f.code)).toEqual(['mailbox.paused']);
+      expect(found[0]!.message).toContain('sends nothing (its queued emails fail instead of waiting)');
+      expect(found[0]!.href).toBe('/mailbox');
+    });
+
+    it('a paused mailbox next to an active one is not a problem', async () => {
+      const s = await setup();
+      await addMailbox(s, 'sales@test.local', 'active');
+      await addMailbox(s, 'info@test.local', 'paused');
+      expect(await mailboxCodes(s)).toEqual([]);
+    });
+
+    it('only archived mailboxes count as none', async () => {
+      const s = await setup();
+      await addMailbox(s, 'old@test.local', 'archived');
+      const found = await mailboxCodes(s);
+      expect(found.map((f) => f.code)).toEqual(['mailbox.none']);
+      expect(found[0]!.href).toBe('/mailbox/new');
+    });
+
+    it('names at most three mailboxes and pluralises', () => {
+      const rows = ['a', 'b', 'c', 'd'].map((x) => ({
+        fromAddress: `${x}@test.local`,
+        status: 'failing' as const,
+      }));
+      const [f] = mailboxFindings(rows);
+      expect(f!.message).toContain(
+        '4 mailboxes are failing (a@test.local, b@test.local, c@test.local and 1 more) — they still send',
+      );
+      const [p] = mailboxFindings(rows.slice(0, 2).map((r) => ({ ...r, status: 'paused' as const })));
+      expect(p!.message).toContain('2 mailboxes are paused (a@test.local, b@test.local) and none is active');
+    });
   });
 
   it('recipes without a target country: says the geography gate is off, not "held for review"', async () => {

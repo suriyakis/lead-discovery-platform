@@ -279,10 +279,11 @@ evidence chain.
   provider over a chosen range; owners and admins also see the tokens
   charged for them (as on [/settings/billing]). [/settings/audit]: who
   changed what (admins). [/settings/account]: your name and password.
-- [/health]: the weekly health report — empty wallet, missing product
-  or mailbox, recipes without a target country, failed runs, review
-  backlog, stale drafts, follow-ups awaiting approval, plus an AI review
-  of recent conversations. Admins can run it now.
+- [/health]: the weekly health report — empty wallet, missing product,
+  no mailbox, a failing mailbox, only paused mailboxes, recipes without
+  a target country, failed runs, review backlog, stale drafts,
+  follow-ups awaiting approval, plus an AI review of recent
+  conversations. Admins can run it now.
 
 ## Contacting a human (/support)
 When the assistant can't solve it, [/support] (sidebar → Account →
@@ -339,7 +340,7 @@ ${KNOWN_LIMITATIONS_HEADING}
 - I020: The per-product "Autopilot enabled" and "Emergency pause" overrides on [/autopilot] are saved but not applied.
 - I062: Saving the autopilot form on [/connectors/engine] while the Emergency pause is on also switches the autopilot master off; use [/autopilot] instead.
 - I063: After a plan lapses, ticking the Emergency pause on [/autopilot] fails unless every other switch is unticked in the same save; the send-queue pause on [/mailbox/queue] always works.
-- I095: A failing mailbox keeps sending but is no longer read, and nobody is notified; only its page shows the failing badge.
+- I095: A failing mailbox keeps sending but is no longer read, and there is no alert when it starts failing: only the failing badge on its page and the next weekly health report on [/health] show it.
 - I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), and a class cannot be corrected.
 - I019: "Auto-send replies" does nothing yet, and autopilot's "Auto-drain" and "Sync inbound" switches do not control the background drain and sync.
 `.trim();

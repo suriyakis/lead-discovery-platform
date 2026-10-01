@@ -20,7 +20,7 @@
 import { and, count, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { connectorRecipes, connectors } from '@/lib/db/schema/connectors';
-import { mailboxes } from '@/lib/db/schema/mailing';
+import { mailboxes, type MailboxStatus } from '@/lib/db/schema/mailing';
 import { productProfiles } from '@/lib/db/schema/products';
 import { reviewItems } from '@/lib/db/schema/review';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
@@ -79,7 +79,7 @@ async function workspaceSnapshot(
   wallet: TokenWallet,
 ): Promise<string> {
   const wsId = ctx.workspaceId;
-  const [products, activeConnectors, recipes, reviewPending, draftsPending, activeMailboxes] =
+  const [products, activeConnectors, recipes, reviewPending, draftsPending, mailboxesByStatus] =
     await Promise.all([
       db
         .select({ c: count() })
@@ -115,12 +115,15 @@ async function workspaceSnapshot(
           ),
         ),
       db
-        .select({ c: count() })
+        .select({ status: mailboxes.status, c: count() })
         .from(mailboxes)
-        .where(and(eq(mailboxes.workspaceId, wsId), eq(mailboxes.status, 'active'))),
+        .where(eq(mailboxes.workspaceId, wsId))
+        .groupBy(mailboxes.status),
     ]);
 
   const recipeRow = recipes[0] ?? { total: 0, withCountry: 0 };
+  const mailboxCount = (status: MailboxStatus) =>
+    Number(mailboxesByStatus.find((r) => r.status === status)?.c ?? 0);
   // No "empty wallet" marker: a non-exempt empty wallet never reaches the
   // model (askAssistant answers deterministically first).
   return [
@@ -130,7 +133,9 @@ async function workspaceSnapshot(
     `Recipes: ${Number(recipeRow.total)} (${Number(recipeRow.withCountry)} with a target country set)`,
     `Review queue (new + needs_review): ${Number(reviewPending[0]?.c ?? 0)}`,
     `Unapproved drafts: ${Number(draftsPending[0]?.c ?? 0)}`,
-    `Active mailboxes: ${Number(activeMailboxes[0]?.c ?? 0)}`,
+    // A failing mailbox still sends but is not read; a paused one does
+    // neither (I095) — the model needs the split to diagnose either.
+    `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (still sending, not read), ${mailboxCount('paused')} paused (not sending, not read)`,
   ].join('\n');
 }
 
@@ -177,9 +182,9 @@ export async function askAssistant(
     '- Be concise and concrete. Prefer numbered steps.',
     '- Reference in-app paths in [square brackets], e.g. [/settings/billing],',
     '  exactly as they appear in the handbook — the UI turns them into links.',
-    '- When the snapshot explains the problem (no active mailbox, no active',
-    '  product, recipes without a target country), SAY SO first — that is',
-    '  the actual answer.',
+    '- When the snapshot explains the problem (no active mailbox, a failing',
+    '  or paused mailbox, no active product, recipes without a target',
+    '  country), SAY SO first — that is the actual answer.',
     '- The handbook\'s "Known limitations right now" section lists what does',
     '  not work yet. If the question touches one, say so plainly and give the',
     '  workaround it names; never claim that part works.',
