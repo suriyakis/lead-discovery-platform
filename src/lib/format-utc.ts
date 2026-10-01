@@ -7,3 +7,8 @@
 export function formatUtc(d: Date): string {
   return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
+
+/** Value for a datetime-local input, in UTC to match formatUtc. */
+export function toUtcInputValue(d: Date): string {
+  return d.toISOString().slice(0, 16);
+}

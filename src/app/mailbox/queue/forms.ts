@@ -15,6 +15,7 @@ import {
   OutreachQueueError,
   type UpdateSendSettingsInput,
 } from '@/lib/services/outreach-queue';
+import { withFlash } from '@/lib/action-errors';
 
 // ---- views ----------------------------------------------------------
 
@@ -29,13 +30,11 @@ export function parseQueueView(raw: unknown): QueueView {
   return (QUEUE_VIEWS as readonly string[]).includes(s) ? (s as QueueView) : 'queued';
 }
 
-/** /mailbox/queue on `view`, optionally carrying a flash message or error. */
+/** /mailbox/queue on `view`, optionally carrying a flash message or error
+ *  (the shared withFlash builder of src/lib/action-errors.ts). */
 export function queueHref(view: QueueView, flash?: { kind: 'message' | 'error'; text: string }): string {
-  const params = new URLSearchParams();
-  if (view !== 'queued') params.set('status', view);
-  if (flash) params.set(flash.kind, flash.text);
-  const qs = params.toString();
-  return qs ? `/mailbox/queue?${qs}` : '/mailbox/queue';
+  const path = view === 'queued' ? '/mailbox/queue' : `/mailbox/queue?status=${view}`;
+  return flash ? withFlash(path, { [flash.kind]: flash.text }) : path;
 }
 
 // ---- send settings --------------------------------------------------
@@ -157,15 +156,9 @@ export function parseUtcDateTimeLocal(raw: unknown): Date | null {
   return d;
 }
 
-/** "2026-10-01 14:30 UTC" */
-export function formatUtc(d: Date): string {
-  return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
-
-/** Value for a datetime-local input, in UTC to match formatUtc. */
-export function toUtcInputValue(d: Date): string {
-  return d.toISOString().slice(0, 16);
-}
+// One UTC formatter for the app (src/lib/format-utc.ts, shared with the
+// mailbox page and the health check); re-exported for the queue page.
+export { formatUtc, toUtcInputValue } from '@/lib/format-utc';
 
 // ---- errors ---------------------------------------------------------
 
