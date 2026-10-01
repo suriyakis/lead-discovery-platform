@@ -1,10 +1,6 @@
 import { redirect } from 'next/navigation';
 import { KeyRound, ShieldCheck } from 'lucide-react';
-import {
-  getWorkspaceContext,
-  requirePlatformAdmin,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   SecretsServiceError,

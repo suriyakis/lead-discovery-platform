@@ -20,8 +20,8 @@ const ADMIN_DIR = path.join(ROOT, 'src', 'app', 'admin');
  * an entry cannot outlive its reason — delete the entry when that happens.
  */
 const PENDING_EXCEPTIONS: Record<string, string> = {
-  'src/app/admin/providers/page.tsx':
-    'PC-02 makes "Test active AI provider" and the per-vendor key test platform-only; those two actions are the last users',
+  // Empty since the Phase 0 integration: PC-02 made the /admin/providers
+  // live checks platform-only, so no console file needs the old guard.
 };
 
 function walk(dir: string): string[] {

@@ -14,7 +14,6 @@ import { reviewComments, reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
-import { makePlatformContext } from '@/lib/services/platform-context';
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { archiveReviewItem } from '@/lib/services/review';
 import { preauthorizeEmail } from '@/lib/services/users';
@@ -24,6 +23,7 @@ import * as reviewActions from '@/app/review/[id]/actions';
 import * as recipeActions from '@/app/connectors/[id]/recipes/[recipeId]/actions';
 import * as adminUserActions from '@/app/admin/users/actions';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx } from './helpers/platform';
 
 // ---- session stub ----------------------------------------------------------
 
@@ -48,7 +48,7 @@ vi.mock('@/lib/services/auth-context', () => {
       const { redirect } = await import('next/navigation');
       if (!session.ctx) return redirect('/');
       if (session.ctx.role !== 'super_admin') return redirect('/dashboard');
-      return makePlatformContext(session.ctx.userId);
+      return platformCtx(session.ctx.userId);
     },
   };
 });
@@ -417,7 +417,7 @@ describe('admin pre-authorisation Revoke', () => {
 
   it('revokes, and a second submit says "Already revoked." as a notice', async () => {
     const s = await adminSetup();
-    const entry = await preauthorizeEmail(makePlatformContext(s.root.userId), {
+    const entry = await preauthorizeEmail(platformCtx(s.root.userId), {
       email: 'new@backstop.test',
       workspaceId: s.ws,
       role: 'member',
@@ -437,7 +437,7 @@ describe('admin pre-authorisation Revoke', () => {
 
   it('an invite that was already used is a notice, and the row is kept', async () => {
     const s = await adminSetup();
-    const used = await preauthorizeEmail(makePlatformContext(s.root.userId), {
+    const used = await preauthorizeEmail(platformCtx(s.root.userId), {
       email: 'used@backstop.test',
       workspaceId: s.ws,
       role: 'member',
@@ -455,7 +455,7 @@ describe('admin pre-authorisation Revoke', () => {
 
   it('a missing id is an error and a non-super-admin is sent away; nothing is deleted', async () => {
     const s = await adminSetup();
-    const entry = await preauthorizeEmail(makePlatformContext(s.root.userId), {
+    const entry = await preauthorizeEmail(platformCtx(s.root.userId), {
       email: 'keep@backstop.test',
       workspaceId: s.ws,
       role: 'member',
