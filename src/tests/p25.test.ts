@@ -12,6 +12,7 @@ import {
   deleteWorkspace,
 } from '@/lib/services/admin';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -49,7 +50,7 @@ describe('adminCreateWorkspace', () => {
   it('creates workspace + owner member + workspace_settings', async () => {
     const s = await setup();
     const ws = await adminCreateWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { name: 'New Co', slug: 'new-co', ownerUserId: s.ownerA },
     );
     expect(ws.name).toBe('New Co');
@@ -66,7 +67,7 @@ describe('adminCreateWorkspace', () => {
   it('lowercases the slug', async () => {
     const s = await setup();
     const ws = await adminCreateWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { name: 'X', slug: 'X-CO', ownerUserId: s.ownerA },
     );
     expect(ws.slug).toBe('x-co');
@@ -75,12 +76,12 @@ describe('adminCreateWorkspace', () => {
   it('rejects duplicate slug', async () => {
     const s = await setup();
     await adminCreateWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { name: 'A2', slug: 'taken', ownerUserId: s.ownerA },
     );
     await expect(
       adminCreateWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         { name: 'B', slug: 'taken', ownerUserId: s.ownerA },
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -90,7 +91,7 @@ describe('adminCreateWorkspace', () => {
     const s = await setup();
     await expect(
       adminCreateWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         { name: 'X', slug: 'Bad Slug!', ownerUserId: s.ownerA },
       ),
     ).rejects.toMatchObject({ code: 'invalid_input' });
@@ -100,7 +101,7 @@ describe('adminCreateWorkspace', () => {
     const s = await setup();
     await expect(
       adminCreateWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         { name: 'X', slug: 'x', ownerUserId: 'no-such-user' },
       ),
     ).rejects.toMatchObject({ code: 'not_found' });
@@ -109,7 +110,7 @@ describe('adminCreateWorkspace', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      adminCreateWorkspace(ctx(s.workspaceA, s.ownerA), {
+      adminCreateWorkspace(smuggled(ctx(s.workspaceA, s.ownerA)), {
         name: 'X',
         slug: 'x',
         ownerUserId: s.ownerA,
@@ -122,14 +123,14 @@ describe('deleteWorkspace', () => {
   it('refuses to delete an active workspace', async () => {
     const s = await setup();
     await expect(
-      deleteWorkspace(ctx(s.workspaceA, s.superAdmin, 'super_admin'), s.workspaceA),
+      deleteWorkspace(platformCtx(s.superAdmin), s.workspaceA),
     ).rejects.toMatchObject({ code: 'conflict' });
   });
 
   it('refuses while a Stripe subscription is still attached and live', async () => {
     const s = await setup();
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     await db
@@ -137,7 +138,7 @@ describe('deleteWorkspace', () => {
       .set({ stripeSubscriptionId: 'sub_live_1', subscriptionStatus: 'active' })
       .where(eq(workspaces.id, s.workspaceA));
     await expect(
-      deleteWorkspace(ctx(s.workspaceA, s.superAdmin, 'super_admin'), s.workspaceA),
+      deleteWorkspace(platformCtx(s.superAdmin), s.workspaceA),
     ).rejects.toMatchObject({ code: 'conflict' });
     // Canceled subscription → delete proceeds.
     await db
@@ -145,7 +146,7 @@ describe('deleteWorkspace', () => {
       .set({ subscriptionStatus: 'canceled' })
       .where(eq(workspaces.id, s.workspaceA));
     await deleteWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     const left = await db
@@ -158,11 +159,11 @@ describe('deleteWorkspace', () => {
   it('deletes after archive (cascade sweeps members)', async () => {
     const s = await setup();
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     await deleteWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     const left = await db
@@ -181,7 +182,7 @@ describe('deleteWorkspace', () => {
     const s = await setup();
     await expect(
       deleteWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         9_999_999n,
       ),
     ).rejects.toMatchObject({ code: 'not_found' });
@@ -190,7 +191,7 @@ describe('deleteWorkspace', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      deleteWorkspace(ctx(s.workspaceA, s.ownerA), s.workspaceA),
+      deleteWorkspace(smuggled(ctx(s.workspaceA, s.ownerA)), s.workspaceA),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });

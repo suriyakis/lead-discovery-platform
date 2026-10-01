@@ -147,7 +147,7 @@ const MODULES: ReadonlyArray<ModuleTile> = [
   {
     href: '/admin',
     title: 'God mode',
-    blurb: 'Platform-wide views, impersonation, super-admin controls.',
+    blurb: 'Platform-wide views: workspaces, users, billing, support, audit.',
     icon: Crown,
     tone: 'violet',
     superAdminOnly: true,

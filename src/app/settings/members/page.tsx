@@ -17,6 +17,8 @@ import {
 } from '@/lib/services/users';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { addMemberAction, changeMemberRoleAction, removeMemberAction } from './actions';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { removeMemberConfirm } from '@/lib/confirm-copy';
 
 export default async function MembersPage({
   searchParams,
@@ -134,9 +136,9 @@ export default async function MembersPage({
                   </form>
                   <form action={removeMemberAction}>
                     <input type="hidden" name="userId" value={user.id} />
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton className="ghost-btn" message={removeMemberConfirm(user)}>
                       Remove
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 </div>
               )}

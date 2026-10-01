@@ -28,7 +28,7 @@ import { auditLog } from '@/lib/db/schema/audit';
 import { preauthorizedEmails, users } from '@/lib/db/schema/auth';
 import { workspaceMembers, workspaceSettings, workspaces } from '@/lib/db/schema/workspaces';
 import { archiveWorkspace } from '@/lib/services/admin';
-import { makeWorkspaceContext, type WorkspaceContext } from '@/lib/services/context';
+import type { PlatformContext } from '@/lib/services/platform-context';
 import { preauthorizeEmail } from '@/lib/services/users';
 import { resolveWorkspaceContextForUser } from '@/lib/services/workspace-resolution';
 import {
@@ -49,6 +49,7 @@ import MembersPage from '@/app/settings/members/page';
 import OutreachSettingsPage from '@/app/settings/outreach/page';
 import UsagePage from '@/app/settings/usage/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx } from './helpers/platform';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 
 // Pages and actions read the signed-in user through Auth.js; tests drive
@@ -126,11 +127,12 @@ async function auditRows(workspaceId: bigint, kind: string) {
     .where(and(eq(auditLog.workspaceId, workspaceId), eq(auditLog.kind, kind)));
 }
 
-/** A super-admin and the workspace their context points at. */
-async function seedPlatformAdmin(): Promise<{ id: string; ctx: WorkspaceContext }> {
+/** A super-admin (who also owns a workspace of their own) and the
+ *  PlatformContext requirePlatformAdmin() gives them in the console. */
+async function seedPlatformAdmin(): Promise<{ id: string; home: bigint; ctx: PlatformContext }> {
   const id = await seedUser({ email: 'root@test.local', role: 'super_admin' });
   const home = await seedWorkspace({ name: 'Platform', ownerUserId: id });
-  return { id, ctx: makeWorkspaceContext({ workspaceId: home, userId: id, role: 'super_admin' }) };
+  return { id, home, ctx: platformCtx(id) };
 }
 
 /** What the Auth.js adapter leaves behind for a first-time Google user. */
@@ -306,6 +308,14 @@ describe('preauthorizeEmail for an account that already exists', () => {
     const [consumed] = await auditRows(team, 'user.preauthorize_consumed');
     expect(consumed?.userId).toBe(admin.id);
     expect(consumed?.entityId).toBe(waiting);
+    // The pre-authorisation itself is a platform event (I051): filed in
+    // no workspace, never in the admin's own.
+    const preauthRows = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.kind, 'user.preauthorize'));
+    expect(preauthRows.map((r) => r.workspaceId)).toEqual([null]);
+    expect(await auditRows(admin.home, 'user.preauthorize')).toHaveLength(0);
   });
 
   it("'their own new workspace' gives an existing user without one exactly one owned workspace", async () => {

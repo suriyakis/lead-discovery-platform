@@ -25,12 +25,12 @@ import {
   type Workspace,
   type WorkspaceMemberRole,
 } from '@/lib/db/schema/workspaces';
-import { makeWorkspaceContext } from '@/lib/services/context';
 import { archiveWorkspace } from '@/lib/services/admin';
 import { resolveWorkspaceContextForUser } from '@/lib/services/workspace-resolution';
 import { listMyWorkspaces, setActiveWorkspace } from '@/lib/services/workspace';
 import Dashboard from '@/app/dashboard/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx } from './helpers/platform';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 
 type OnboardingStatus = Workspace['onboardingStatus'];
@@ -343,10 +343,7 @@ describe('archived workspaces in the switcher (I174)', () => {
     const gone = await seedWorkspace({ name: 'Gone', ownerUserId: user });
     await seedPendingReviews(live, 1);
     await seedPendingReviews(gone, 2);
-    await archiveWorkspace(
-      makeWorkspaceContext({ workspaceId: gone, userId: admin, role: 'super_admin' }),
-      gone,
-    );
+    await archiveWorkspace(platformCtx(admin), gone);
     return { admin, user, live, gone };
   }
 

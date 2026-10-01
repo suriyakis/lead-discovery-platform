@@ -22,6 +22,7 @@ import {
   saveCrmConnectionAction,
   testCrmConnectionAction,
 } from './actions';
+import { archiveCrmConnectionConfirm } from '@/lib/confirm-copy';
 
 export default async function CrmConnectionDetail({
   params,
@@ -168,7 +169,7 @@ export default async function CrmConnectionDetail({
               <form action={archive}>
                 <ConfirmFormButton
                   className="ghost-btn"
-                  message={`Archive the ${conn.system} connection "${conn.name}"? Leads are not pushed to it until it is restored.`}
+                  message={archiveCrmConnectionConfirm({ name: conn.name, system: conn.system })}
                 >
                   Archive connection
                 </ConfirmFormButton>

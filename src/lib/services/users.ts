@@ -1,6 +1,12 @@
 // User & membership management. Covers super-admin platform-wide ops
 // (account lifecycle, pre-authorize) and workspace-admin per-workspace
 // ops (add/remove member, change role). Every mutation is audit-logged.
+//
+// The platform-wide ops take a PlatformContext and audit at platform
+// scope (workspace_id NULL): a user is not owned by any one workspace, and
+// these payloads carry emails, names and free-text reasons. Filing them
+// into the admin's current workspace leaked them to that tenant's
+// /settings/audit (I051).
 
 import bcrypt from 'bcryptjs';
 import { and, count, eq, isNull, sql } from 'drizzle-orm';
@@ -21,13 +27,9 @@ import {
   type WorkspaceMember,
   type WorkspaceMemberRole,
 } from '@/lib/db/schema/workspaces';
-import { recordAuditEvent } from './audit';
-import {
-  canAdminWorkspace,
-  canOwnWorkspace,
-  isSuperAdmin,
-  type WorkspaceContext,
-} from './context';
+import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
+import { canAdminWorkspace, canOwnWorkspace, type WorkspaceContext } from './context';
+import { isPlatformContext, type PlatformContext } from './platform-context';
 import { applyPreauthorization } from './workspace-provisioning';
 
 export class UserServiceError extends Error {
@@ -53,17 +55,24 @@ function normalizeEmail(input: string): string {
   return input.trim().toLowerCase();
 }
 
+/** Platform ops accept only a PlatformContext — a WorkspaceContext with
+ *  role super_admin is rejected, so nothing can fall back to filing the
+ *  audit row into an ambient workspace. */
+function assertPlatform(pctx: PlatformContext, op: string): void {
+  if (!isPlatformContext(pctx)) throw denied(op);
+}
+
 // ---- account lifecycle (super_admin) -------------------------------
 
 export async function setAccountStatus(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   status: AccountStatus,
   reason: string | null = null,
 ): Promise<User> {
-  if (!isSuperAdmin(ctx)) throw denied('users.set_account_status');
+  assertPlatform(pctx, 'users.set_account_status');
   const target = await loadUser(targetUserId);
-  if (target.id === ctx.userId && status !== 'active') {
+  if (target.id === pctx.actorUserId && status !== 'active') {
     // Don't let a super-admin lock themselves out.
     throw conflict('cannot change your own account status');
   }
@@ -73,7 +82,7 @@ export async function setAccountStatus(
       accountStatus: status,
       accountStatusReason: reason?.trim() || null,
       accountStatusUpdatedAt: new Date(),
-      accountStatusUpdatedBy: ctx.userId,
+      accountStatusUpdatedBy: pctx.actorUserId,
     })
     .where(eq(users.id, targetUserId))
     .returning();
@@ -83,23 +92,20 @@ export async function setAccountStatus(
       'invariant_violation',
     );
   }
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.set_account_status',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { status, reason: reason ?? null, prior: target.accountStatus },
-    },
-  );
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.set_account_status',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { status, reason: reason ?? null, prior: target.accountStatus },
+  });
   return updated;
 }
 
 export async function listAllUsers(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   filter: { status?: AccountStatus; limit?: number } = {},
 ): Promise<User[]> {
-  if (!isSuperAdmin(ctx)) throw denied('users.list_all');
+  assertPlatform(pctx, 'users.list_all');
   const rows = filter.status
     ? await db
         .select()
@@ -134,10 +140,10 @@ export interface PreauthorizeInput {
  * activated the account, and the entry stayed unconsumed for good.
  */
 export async function preauthorizeEmail(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   input: PreauthorizeInput,
 ): Promise<PreauthorizedEmail> {
-  if (!isSuperAdmin(ctx)) throw denied('users.preauthorize');
+  assertPlatform(pctx, 'users.preauthorize');
   const email = normalizeEmail(input.email);
   if (!EMAIL_RE.test(email)) throw invalid('invalid email');
   const workspaceId = input.workspaceId ?? null;
@@ -165,7 +171,7 @@ export async function preauthorizeEmail(
         email,
         workspaceId: workspaceId?.toString() ?? null,
         role,
-        createdBy: ctx.userId,
+        createdBy: pctx.actorUserId,
       })
       .returning();
     if (!created) {
@@ -192,7 +198,7 @@ export async function preauthorizeEmail(
         .set({
           accountStatus: 'active',
           accountStatusUpdatedAt: new Date(),
-          accountStatusUpdatedBy: ctx.userId,
+          accountStatusUpdatedBy: pctx.actorUserId,
         })
         .where(eq(users.id, existing.id));
     }
@@ -200,7 +206,7 @@ export async function preauthorizeEmail(
       userId: existing.id,
       email,
       entry: created,
-      actorUserId: ctx.userId,
+      actorUserId: pctx.actorUserId,
     });
     const [consumed] = await tx
       .select()
@@ -210,29 +216,29 @@ export async function preauthorizeEmail(
     return { entry: consumed ?? created, existingUserId: existing.id };
   });
 
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.preauthorize',
-      entityType: 'preauthorized_email',
-      entityId: entry.id,
-      payload: {
-        email,
-        workspaceId: workspaceId?.toString() ?? null,
-        role,
-        appliedToExistingUser: existingUserId,
-      },
+  // Platform scope (I051): the payload names an email, and the entry is
+  // not owned by any one workspace. The membership it grants is audited
+  // in the target workspace by applyPreauthorization.
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.preauthorize',
+    entityType: 'preauthorized_email',
+    entityId: entry.id,
+    payload: {
+      email,
+      workspaceId: workspaceId?.toString() ?? null,
+      role,
+      appliedToExistingUser: existingUserId,
     },
-  );
+  });
 
   return entry;
 }
 
 export async function listPreauthorizedEmails(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   filter: { activeOnly?: boolean } = {},
 ): Promise<PreauthorizedEmail[]> {
-  if (!isSuperAdmin(ctx)) throw denied('users.list_preauthorized');
+  assertPlatform(pctx, 'users.list_preauthorized');
   if (filter.activeOnly) {
     return db
       .select()
@@ -243,10 +249,10 @@ export async function listPreauthorizedEmails(
 }
 
 export async function revokePreauthorize(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   id: string,
 ): Promise<void> {
-  if (!isSuperAdmin(ctx)) throw denied('users.revoke_preauthorize');
+  assertPlatform(pctx, 'users.revoke_preauthorize');
   const existing = await db
     .select()
     .from(preauthorizedEmails)
@@ -257,14 +263,11 @@ export async function revokePreauthorize(
     throw conflict('already consumed');
   }
   await db.delete(preauthorizedEmails).where(eq(preauthorizedEmails.id, id));
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.revoke_preauthorize',
-      entityType: 'preauthorized_email',
-      entityId: id,
-    },
-  );
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.revoke_preauthorize',
+    entityType: 'preauthorized_email',
+    entityId: id,
+  });
 }
 
 // ---- workspace membership (workspace-admin) ------------------------
@@ -543,10 +546,10 @@ export interface CreatePasswordUserInput {
  * a workspace at the given role. Mirrors the Wandizz "team user" flow.
  */
 export async function createPasswordUser(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   input: CreatePasswordUserInput,
 ): Promise<User> {
-  if (!isSuperAdmin(ctx)) throw denied('users.create_password_user');
+  assertPlatform(pctx, 'users.create_password_user');
   const email = normalizeEmail(input.email);
   if (!EMAIL_RE.test(email)) throw invalid('invalid email');
   if (input.password.length < MIN_PASSWORD_LEN) {
@@ -576,7 +579,7 @@ export async function createPasswordUser(
       role: 'member',
       accountStatus: input.accountStatus ?? 'active',
       accountStatusUpdatedAt: new Date(),
-      accountStatusUpdatedBy: ctx.userId,
+      accountStatusUpdatedBy: pctx.actorUserId,
       passwordHash,
     })
     .returning();
@@ -596,20 +599,17 @@ export async function createPasswordUser(
     });
   }
 
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.create_password_user',
-      entityType: 'user',
-      entityId: created.id,
-      payload: {
-        email,
-        platformRole: 'member',
-        workspaceId: input.workspaceId?.toString() ?? null,
-        workspaceRole: input.workspaceRole ?? null,
-      },
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.create_password_user',
+    entityType: 'user',
+    entityId: created.id,
+    payload: {
+      email,
+      platformRole: 'member',
+      workspaceId: input.workspaceId?.toString() ?? null,
+      workspaceRole: input.workspaceRole ?? null,
     },
-  );
+  });
 
   return created;
 }
@@ -625,12 +625,12 @@ export async function createPasswordUser(
  * Both transitions are audit-logged with the prior + new role.
  */
 export async function setUserPlatformRole(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   role: 'member' | 'super_admin',
 ): Promise<User> {
-  if (!isSuperAdmin(ctx)) throw denied('users.set_platform_role');
-  if (targetUserId === ctx.userId) {
+  assertPlatform(pctx, 'users.set_platform_role');
+  if (targetUserId === pctx.actorUserId) {
     throw conflict('cannot change your own platform role');
   }
   const target = await loadUser(targetUserId);
@@ -659,38 +659,35 @@ export async function setUserPlatformRole(
       'invariant_violation',
     );
   }
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.set_platform_role',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { role, prior: target.role },
-    },
-  );
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.set_platform_role',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { role, prior: target.role },
+  });
   return updated;
 }
 
 /**
- * Set or rotate a user's password. Super-admin can change anyone's;
- * a user can change their own (caller should pre-verify the existing
- * password if that's the policy). Rotating logs the user out of every
- * existing session as a side effect.
+ * Super-admin password reset (the /admin/users/[id] console). Rotating
+ * logs the user out of every existing session as a side effect.
+ *
+ * Platform-only: users changing their OWN password go through
+ * changeOwnPassword, which verifies the current password first.
  */
 export async function setUserPassword(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   newPassword: string,
   options: { invalidateExistingSessions?: boolean } = {},
 ): Promise<void> {
-  const isSelf = targetUserId === ctx.userId;
-  if (!isSelf && !isSuperAdmin(ctx)) {
-    throw denied('users.set_password');
-  }
+  assertPlatform(pctx, 'users.set_password');
+  const isSelf = targetUserId === pctx.actorUserId;
   if (newPassword.length < MIN_PASSWORD_LEN) {
     throw invalid(`password must be at least ${MIN_PASSWORD_LEN} characters`);
   }
-  const target = await loadUser(targetUserId);
+  // Throws not_found before anything is written.
+  await loadUser(targetUserId);
   const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
   await db
     .update(users)
@@ -698,22 +695,18 @@ export async function setUserPassword(
     .where(eq(users.id, targetUserId));
 
   // Invalidate every existing session by default — the safer option for
-  // password resets. Skip via opts when called from a self-flow that
-  // wants to keep the current session.
+  // password resets. Skip via opts when the caller wants to keep the
+  // current session.
   if (options.invalidateExistingSessions !== false) {
     await db.delete(sessions).where(eq(sessions.userId, targetUserId));
   }
 
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.set_password',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { wasSelf: isSelf },
-    },
-  );
-  void target;
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.set_password',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { wasSelf: isSelf },
+  });
 }
 
 /**
@@ -753,11 +746,11 @@ export async function verifyUserPassword(
  * (lock-out protection — demote them first).
  */
 export async function deleteUserGlobally(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
 ): Promise<void> {
-  if (!isSuperAdmin(ctx)) throw denied('users.delete');
-  if (targetUserId === ctx.userId) {
+  assertPlatform(pctx, 'users.delete');
+  if (targetUserId === pctx.actorUserId) {
     throw conflict('cannot delete yourself');
   }
   const target = await loadUser(targetUserId);
@@ -765,25 +758,7 @@ export async function deleteUserGlobally(
     throw conflict('cannot delete a super-admin — demote first');
   }
 
-  // Audit BEFORE delete so the trail still references the doomed id.
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.delete',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { email: target.email, name: target.name ?? null },
-    },
-  );
-
   // Sessions + accounts cascade via FK. workspace_members cascades.
-  // workspaces.owner_user_id has no ON DELETE so we'd hit a constraint
-  // if this user owns any workspace — guard upfront.
-  const ownedRows = await db
-    .select()
-    .from(workspaceMembers)
-    .where(eq(workspaceMembers.userId, targetUserId));
-  void ownedRows;
   // workspaces.ownerUserId references users.id without ON DELETE. If the
   // target owns any workspace, the delete would FK-fail. We pre-check
   // and refuse with a useful message rather than letting Postgres throw.
@@ -796,6 +771,17 @@ export async function deleteUserGlobally(
       `user owns ${ownsRows.length} workspace(s) — transfer ownership before delete`,
     );
   }
+
+  // Audit BEFORE delete so the trail still references the doomed id —
+  // but after every refusal, so a blocked delete leaves no "deleted" row.
+  // Platform scope: the payload names the user, and no single tenant
+  // owns that record.
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.delete',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { email: target.email, name: target.name ?? null },
+  });
 
   await db.delete(users).where(eq(users.id, targetUserId));
 }

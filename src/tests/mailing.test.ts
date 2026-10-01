@@ -758,7 +758,11 @@ describe('syncInbound', () => {
       references: ['<m1@example.com>'],
       subject: 'Re: New tender',
       textBody: 'reply text',
-      receivedAt: new Date(now.getTime() + 1000),
+      // Well after the first sync's lastSyncedAt, however slow that sync
+      // is: the second sync fetches `receivedAt > lastSyncedAt`, and the
+      // dedup check below needs inbound2 (both copies) to pass that
+      // filter. At +1 s it flaked whenever the first sync took over 1 s.
+      receivedAt: new Date(now.getTime() + 60_000),
     };
     provider.enqueueInbound(inbound1, inbound2);
 

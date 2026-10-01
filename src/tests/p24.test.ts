@@ -11,6 +11,7 @@ import {
 } from '@/lib/services/admin';
 import { recordAuditEvent } from '@/lib/services/audit';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -58,7 +59,7 @@ describe('listAuditAcrossWorkspaces', () => {
       { kind: 'test.thing', entityType: 'thing', entityId: '2' },
     );
     const all = await listAuditAcrossWorkspaces(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
     );
     expect(all.length).toBeGreaterThanOrEqual(2);
     // Newest first.
@@ -78,7 +79,7 @@ describe('listAuditAcrossWorkspaces', () => {
       { kind: 'test.b' },
     );
     const onlyA = await listAuditAcrossWorkspaces(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { workspaceId: s.workspaceA },
     );
     expect(onlyA.every((e) => e.workspaceId === s.workspaceA)).toBe(true);
@@ -95,7 +96,7 @@ describe('listAuditAcrossWorkspaces', () => {
       { kind: 'kind.beta' },
     );
     const filtered = await listAuditAcrossWorkspaces(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { kind: 'kind.alpha' },
     );
     expect(filtered.every((e) => e.kind === 'kind.alpha')).toBe(true);
@@ -105,7 +106,7 @@ describe('listAuditAcrossWorkspaces', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      listAuditAcrossWorkspaces(ctx(s.workspaceA, s.ownerA)),
+      listAuditAcrossWorkspaces(smuggled(ctx(s.workspaceA, s.ownerA))),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });
@@ -142,7 +143,7 @@ describe('listAuditAcrossWorkspaces date window', () => {
   }
 
   async function ids(s: Setup, filter: Parameters<typeof listAuditAcrossWorkspaces>[1]) {
-    const rows = await listAuditAcrossWorkspaces(ctx(s.workspaceA, s.superAdmin, 'super_admin'), {
+    const rows = await listAuditAcrossWorkspaces(platformCtx(s.superAdmin), {
       kind: 'window.probe',
       ...filter,
     });
@@ -193,7 +194,7 @@ describe('distinctAuditKindsAcross', () => {
       { kind: 'alpha.event' },
     );
     const kinds = await distinctAuditKindsAcross(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
     );
     const filtered = kinds.filter(
       (k) => k === 'alpha.event' || k === 'zeta.event',
@@ -204,7 +205,7 @@ describe('distinctAuditKindsAcross', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      distinctAuditKindsAcross(ctx(s.workspaceA, s.ownerA)),
+      distinctAuditKindsAcross(smuggled(ctx(s.workspaceA, s.ownerA))),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });

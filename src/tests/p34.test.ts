@@ -97,10 +97,15 @@ describe('registerRepeatableJobs', () => {
       q.enqueue('outreach.drain.tick', {}),
       q.enqueue('mail.imap.tick', {}),
     ]);
-    // Handlers run on microtasks + DB hits; mail.imap.tick does a full
-    // adoption + sync pass over every active workspace (flow:F-04), so
-    // poll until all three settle instead of guessing a fixed delay.
-    for (const id of ids) await settled(q, id);
+    // Wait for every chained handler instead of a fixed sleep: under load
+    // the three ticks' DB work can take longer than any fixed window. A
+    // type with no handler is never chained, so its job stays 'pending'
+    // and the assertion below still fails.
+    await q.drain();
+    for (const id of ids) {
+      const status = await q.status(id);
+      expect(status.state === 'succeeded' || status.state === 'failed').toBe(true);
+    }
   });
 
   it('autopilot.tick fans out: returns workspaces count', async () => {

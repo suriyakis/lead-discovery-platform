@@ -5,14 +5,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
 import { UserAvatar } from '@/components/UserAvatar';
-import { auth } from '@/lib/auth';
-import {
-  AccountInactiveError,
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   AdminServiceError,
   adminAddUserToWorkspace,
@@ -32,6 +25,13 @@ import { db } from '@/lib/db/client';
 import { users, type AccountStatus } from '@/lib/db/schema/auth';
 import { workspaces, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import {
+  accountStatusConfirms,
+  demoteSuperAdminConfirm,
+  promoteSuperAdminConfirm,
+  removeMemberConfirm,
+} from '@/lib/confirm-copy';
 
 export default async function AdminUserDetail({
   params,
@@ -40,36 +40,16 @@ export default async function AdminUserDetail({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ message?: string; error?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const { id: targetUserId } = await params;
   const sp = await searchParams;
-
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (isNextRedirectError(err)) throw err;
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) {
-    return (
-      <div className="dashboard-wrap">
-        <h1>Users</h1>
-        <p className="form-error">Super-admin only.</p>
-      </div>
-    );
-  }
 
   const userRows = await db.select().from(users).where(eq(users.id, targetUserId)).limit(1);
   if (!userRows[0]) redirect('/admin/users');
   const user = userRows[0];
 
   const [memberships, allWorkspaces] = await Promise.all([
-    listMembershipsForUser(ctx, targetUserId),
+    listMembershipsForUser(pctx, targetUserId),
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
 
@@ -78,11 +58,11 @@ export default async function AdminUserDetail({
     (w) => !memberWsIds.has(w.id.toString()),
   );
 
-  const isSelf = user.id === session.user.id;
+  const isSelf = user.id === pctx.actorUserId;
 
   async function saveProfile(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const name = String(formData.get('name') ?? '').trim() || null;
     const email = String(formData.get('email') ?? '').trim();
     try {
@@ -100,7 +80,7 @@ export default async function AdminUserDetail({
 
   async function changeStatus(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const status = String(formData.get('status') ?? '') as AccountStatus;
     const reason = String(formData.get('reason') ?? '').trim() || null;
     try {
@@ -115,7 +95,7 @@ export default async function AdminUserDetail({
 
   async function addToWorkspace(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const workspaceId = BigInt(String(formData.get('workspaceId')));
     const role = String(formData.get('role') ?? 'member') as WorkspaceMemberRole;
     try {
@@ -130,7 +110,7 @@ export default async function AdminUserDetail({
 
   async function resetPassword(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const password = String(formData.get('password') ?? '');
     try {
       await setUserPassword(c, targetUserId, password);
@@ -146,7 +126,7 @@ export default async function AdminUserDetail({
 
   async function changePlatformRole(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const role = String(formData.get('role') ?? '') as 'member' | 'super_admin';
     if (role !== 'member' && role !== 'super_admin') {
       redirect(`/admin/users/${targetUserId}?error=Invalid+role`);
@@ -165,7 +145,7 @@ export default async function AdminUserDetail({
 
   async function destroyUser(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const confirm = String(formData.get('confirm') ?? '').trim();
     if (confirm !== user.email) {
       redirect(
@@ -186,7 +166,7 @@ export default async function AdminUserDetail({
 
   async function removeFromWorkspace(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const workspaceId = BigInt(String(formData.get('workspaceId')));
     try {
       await adminRemoveUserFromWorkspace(c, targetUserId, workspaceId);
@@ -200,7 +180,7 @@ export default async function AdminUserDetail({
 
   async function moveBetween(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const fromWorkspaceId = BigInt(String(formData.get('fromWorkspaceId')));
     const toWorkspaceId = BigInt(String(formData.get('toWorkspaceId')));
     const role = String(formData.get('role') ?? 'member') as WorkspaceMemberRole;
@@ -304,7 +284,11 @@ export default async function AdminUserDetail({
               <span>Reason</span>
               <input type="text" name="reason" maxLength={200} />
             </label>
-            <button type="submit">Apply</button>
+            <ConfirmFormButton
+              messageByValue={{ field: 'status', messages: accountStatusConfirms(user) }}
+            >
+              Apply
+            </ConfirmFormButton>
           </form>
         )}
       </section>
@@ -330,14 +314,19 @@ export default async function AdminUserDetail({
               name="role"
               value={user.role === 'super_admin' ? 'member' : 'super_admin'}
             />
-            <button
-              type="submit"
-              className={user.role === 'super_admin' ? 'ghost-btn' : 'primary-btn'}
-            >
-              {user.role === 'super_admin'
-                ? 'Demote to member'
-                : 'Promote to super-admin'}
-            </button>
+            {user.role === 'super_admin' ? (
+              <ConfirmFormButton className="ghost-btn" message={demoteSuperAdminConfirm(user)}>
+                Demote to member
+              </ConfirmFormButton>
+            ) : (
+              <ConfirmFormButton
+                className="primary-btn"
+                message={promoteSuperAdminConfirm(user)}
+                confirmPhrase={user.email}
+              >
+                Promote to super-admin
+              </ConfirmFormButton>
+            )}
           </form>
         )}
       </section>
@@ -366,9 +355,15 @@ export default async function AdminUserDetail({
                     name="workspaceId"
                     value={m.workspace.id.toString()}
                   />
-                  <button type="submit" className="ghost-btn">
+                  <ConfirmFormButton
+                    className="ghost-btn"
+                    message={removeMemberConfirm(user, {
+                      name: m.workspace.name,
+                      slug: m.workspace.slug,
+                    })}
+                  >
                     Remove from this workspace
-                  </button>
+                  </ConfirmFormButton>
                 </form>
               </li>
             ))}

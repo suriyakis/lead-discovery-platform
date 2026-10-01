@@ -18,6 +18,7 @@ import {
   updateWorkspaceProfile,
 } from '@/lib/services/admin';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -61,7 +62,7 @@ describe('archiveWorkspace', () => {
   it('marks the workspace archived + audit-logs', async () => {
     const s = await setup();
     const ws = await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
       'sunset',
     );
@@ -74,19 +75,19 @@ describe('archiveWorkspace', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      archiveWorkspace(ctx(s.workspaceA, s.ownerA), s.workspaceA),
+      archiveWorkspace(smuggled(ctx(s.workspaceA, s.ownerA)), s.workspaceA),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
   it('rejects double-archive', async () => {
     const s = await setup();
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     await expect(
       archiveWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -97,11 +98,11 @@ describe('restoreWorkspace', () => {
   it('restores an archived workspace', async () => {
     const s = await setup();
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     const ws = await restoreWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     expect(ws.status).toBe('active');
@@ -112,7 +113,7 @@ describe('restoreWorkspace', () => {
     const s = await setup();
     await expect(
       restoreWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -123,14 +124,14 @@ describe('listAllWorkspaces', () => {
   it('hides archived by default, shows them with includeArchived', async () => {
     const s = await setup();
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
-    const visible = await listAllWorkspaces(ctx(s.workspaceB, s.superAdmin, 'super_admin'));
+    const visible = await listAllWorkspaces(platformCtx(s.superAdmin));
     expect(visible.find((w) => w.workspaceId === s.workspaceA)).toBeUndefined();
     expect(visible.find((w) => w.workspaceId === s.workspaceB)).toBeDefined();
     const all = await listAllWorkspaces(
-      ctx(s.workspaceB, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { includeArchived: true },
     );
     expect(all.find((w) => w.workspaceId === s.workspaceA)?.status).toBe('archived');
@@ -141,7 +142,7 @@ describe('updateWorkspaceProfile', () => {
   it('updates name + slug', async () => {
     const s = await setup();
     const ws = await updateWorkspaceProfile(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
       { name: 'Renamed', slug: 'renamed-ws' },
     );
@@ -158,7 +159,7 @@ describe('updateWorkspaceProfile', () => {
       .limit(1);
     await expect(
       updateWorkspaceProfile(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
         { slug: ws[0]!.slug },
       ),
@@ -169,7 +170,7 @@ describe('updateWorkspaceProfile', () => {
     const s = await setup();
     await expect(
       updateWorkspaceProfile(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
         { slug: 'Invalid Slug!' },
       ),
@@ -183,7 +184,7 @@ describe('updateUserProfile', () => {
   it('updates name + email', async () => {
     const s = await setup();
     const u = await updateUserProfile(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       { name: 'New Name', email: 'new@test.local' },
     );
@@ -194,7 +195,7 @@ describe('updateUserProfile', () => {
   it('lowercases email', async () => {
     const s = await setup();
     const u = await updateUserProfile(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       { email: 'MixedCASE@example.com' },
     );
@@ -205,7 +206,7 @@ describe('updateUserProfile', () => {
     const s = await setup();
     await expect(
       updateUserProfile(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.member,
         { email: 'ownerA@test.local' },
       ),
@@ -216,7 +217,7 @@ describe('updateUserProfile', () => {
     const s = await setup();
     await expect(
       updateUserProfile(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.member,
         { email: 'not-an-email' },
       ),
@@ -226,7 +227,7 @@ describe('updateUserProfile', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      updateUserProfile(ctx(s.workspaceA, s.ownerA), s.member, { name: 'x' }),
+      updateUserProfile(smuggled(ctx(s.workspaceA, s.ownerA)), s.member, { name: 'x' }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });
@@ -235,7 +236,7 @@ describe('adminAddUserToWorkspace', () => {
   it('adds a user to a workspace at the given role', async () => {
     const s = await setup();
     const m = await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceB,
       'admin',
@@ -247,7 +248,7 @@ describe('adminAddUserToWorkspace', () => {
   it('allows owner role', async () => {
     const s = await setup();
     const m = await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceB,
       'owner',
@@ -258,13 +259,13 @@ describe('adminAddUserToWorkspace', () => {
   it('refuses duplicate membership', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceB,
     );
     await expect(
       adminAddUserToWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.member,
         s.workspaceB,
       ),
@@ -275,7 +276,7 @@ describe('adminAddUserToWorkspace', () => {
     const s = await setup();
     await expect(
       adminAddUserToWorkspace(
-        ctx(s.workspaceA, s.ownerA),
+        smuggled(ctx(s.workspaceA, s.ownerA)),
         s.member,
         s.workspaceB,
       ),
@@ -287,13 +288,13 @@ describe('adminRemoveUserFromWorkspace', () => {
   it('removes a non-owner member', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
       'member',
     );
     await adminRemoveUserFromWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
     );
@@ -308,7 +309,7 @@ describe('adminRemoveUserFromWorkspace', () => {
     const s = await setup();
     await expect(
       adminRemoveUserFromWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.ownerA,
         s.workspaceA,
       ),
@@ -320,19 +321,19 @@ describe('listMembershipsForUser', () => {
   it('returns every workspace the user belongs to', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
       'member',
     );
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceB,
       'admin',
     );
     const memberships = await listMembershipsForUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
     );
     expect(memberships).toHaveLength(2);
@@ -348,12 +349,12 @@ describe('archived workspace gating', () => {
   it('archived workspaces still appear for super-admin in users list', async () => {
     const s = await setup();
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     // Super-admin still sees the row.
     const all = await listAllWorkspaces(
-      ctx(s.workspaceB, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { includeArchived: true },
     );
     const archived = all.find((w) => w.workspaceId === s.workspaceA);

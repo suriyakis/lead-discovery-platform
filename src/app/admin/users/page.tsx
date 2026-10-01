@@ -6,14 +6,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { UserAvatar } from '@/components/UserAvatar';
-import { auth } from '@/lib/auth';
-import {
-  AccountInactiveError,
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   UserServiceError,
   createPasswordUser,
@@ -28,45 +21,27 @@ import { workspaces } from '@/lib/db/schema/workspaces';
 import type { AccountStatus } from '@/lib/db/schema/auth';
 import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { accountStatusConfirms, revokePreauthConfirm } from '@/lib/confirm-copy';
 
 export default async function AdminUsersPage({
   searchParams,
 }: {
   searchParams: Promise<{ message?: string; error?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (isNextRedirectError(err)) throw err;
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) {
-    return (
-      <div className="dashboard-wrap">
-        <h1>Users</h1>
-        <p className="form-error">Super-admin only.</p>
-      </div>
-    );
-  }
-
   const [allUsers, preauths, allWorkspaces] = await Promise.all([
-    listAllUsers(ctx, { limit: 500 }),
-    listPreauthorizedEmails(ctx),
+    listAllUsers(pctx, { limit: 500 }),
+    listPreauthorizedEmails(pctx),
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
-  const workspaceNames = new Map(allWorkspaces.map((w) => [w.id.toString(), w.name]));
+  const workspaceById = new Map(allWorkspaces.map((w) => [w.id.toString(), w]));
 
   async function setStatus(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const targetUserId = String(formData.get('userId') ?? '');
     const status = String(formData.get('status') ?? '') as AccountStatus;
     const reason = String(formData.get('reason') ?? '').trim() || null;
@@ -83,7 +58,7 @@ export default async function AdminUsersPage({
 
   async function preauth(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const email = String(formData.get('email') ?? '').trim();
     // An explicit choice (audit I117): 'own' = their own new workspace,
     // or the id of an existing one. A blank choice used to mean "no
@@ -108,7 +83,7 @@ export default async function AdminUsersPage({
 
   async function revoke(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const id = String(formData.get('id') ?? '');
     await revokePreauthorize(c, id);
     redirect('/admin/users?message=Revoked');
@@ -116,7 +91,7 @@ export default async function AdminUsersPage({
 
   async function createPwUser(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const email = String(formData.get('email') ?? '').trim();
     const password = String(formData.get('password') ?? '');
     const name = String(formData.get('name') ?? '').trim() || null;
@@ -250,7 +225,7 @@ export default async function AdminUsersPage({
                   <span className="muted">
                     {p.workspaceId === null
                       ? 'own new workspace'
-                      : (workspaceNames.get(p.workspaceId) ?? 'a deleted workspace')}
+                      : (workspaceById.get(p.workspaceId)?.name ?? 'a deleted workspace')}
                   </span>
                   <span className="badge">{p.role}</span>
                   {p.consumedAt ? (
@@ -262,9 +237,21 @@ export default async function AdminUsersPage({
                 {!p.consumedAt ? (
                   <form action={revoke} style={{ marginTop: '0.5rem' }}>
                     <input type="hidden" name="id" value={p.id} />
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={revokePreauthConfirm({
+                        email: p.email,
+                        role: p.role,
+                        workspaceName: p.workspaceId
+                          ? (workspaceById.get(p.workspaceId)?.name ?? `workspace #${p.workspaceId}`)
+                          : null,
+                        workspaceSlug: p.workspaceId
+                          ? workspaceById.get(p.workspaceId)?.slug
+                          : null,
+                      })}
+                    >
                       Revoke
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
               </li>
@@ -277,7 +264,7 @@ export default async function AdminUsersPage({
         title="Pending review"
         emphasize
         users={allUsers.filter((u) => u.accountStatus === 'pending')}
-        sessionUserId={session.user.id}
+        sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No pending users."
       />
@@ -285,7 +272,7 @@ export default async function AdminUsersPage({
       <UserSection
         title="Active"
         users={allUsers.filter((u) => u.accountStatus === 'active')}
-        sessionUserId={session.user.id}
+        sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No active users."
       />
@@ -295,7 +282,7 @@ export default async function AdminUsersPage({
         users={allUsers.filter(
           (u) => u.accountStatus === 'suspended' || u.accountStatus === 'rejected',
         )}
-        sessionUserId={session.user.id}
+        sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No suspended or rejected users."
       />
@@ -393,7 +380,11 @@ function UserSection({
                     <span>Reason</span>
                     <input type="text" name="reason" maxLength={200} />
                   </label>
-                  <button type="submit">Apply</button>
+                  <ConfirmFormButton
+                    messageByValue={{ field: 'status', messages: accountStatusConfirms(u) }}
+                  >
+                    Apply
+                  </ConfirmFormButton>
                   <Link href={`/admin/users/${u.id}`} className="ghost-btn">
                     Edit profile + memberships →
                   </Link>

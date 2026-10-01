@@ -4,6 +4,8 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 import { AppShell } from '@/components/AppShell';
 import { SettingsNav } from '@/components/SettingsNav';
 import { ProviderModelPair } from '@/components/ProviderModelPair';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { clearWorkspaceKeyConfirm, switchToSimpleSetupConfirm } from '@/lib/confirm-copy';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -677,9 +679,16 @@ export default async function IntegrationsPage({
                 name="mode"
                 value={isSimple ? 'advanced' : 'simple'}
               />
-              <button type="submit" className="ghost-btn">
+              {/* Only Simple asks first: it wipes the provider choices below. */}
+              <ConfirmFormButton
+                className="ghost-btn"
+                messageByValue={{
+                  field: 'mode',
+                  messages: { simple: switchToSimpleSetupConfirm(workspaceRow) },
+                }}
+              >
                 {isSimple ? 'Switch to Advanced setup' : 'Switch to Simple setup'}
-              </button>
+              </ConfirmFormButton>
               {!isSimple ? (
                 <p className="muted small" style={{ marginTop: '0.5rem' }}>
                   Switching to Simple resets any provider overrides back to
@@ -983,9 +992,16 @@ export default async function IntegrationsPage({
               <div className="action-row">
                 {workspaceHasKey ? (
                   <form action={clearKey}>
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={clearWorkspaceKeyConfirm({
+                        vendorName: 'SerpAPI',
+                        workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
+                      })}
+                    >
                       Clear workspace key
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
                 <form action={testSearchConnection}>
@@ -1063,9 +1079,16 @@ export default async function IntegrationsPage({
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasOpenai ? (
                   <form action={clearOpenai}>
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={clearWorkspaceKeyConfirm({
+                        vendorName: 'OpenAI',
+                        workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
+                      })}
+                    >
                       Clear workspace OpenAI key
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
                 <form action={testEmbeddingConnection}>
@@ -1164,9 +1187,16 @@ export default async function IntegrationsPage({
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasAnthropic ? (
                   <form action={clearAnthropic}>
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={clearWorkspaceKeyConfirm({
+                        vendorName: 'Anthropic',
+                        workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
+                      })}
+                    >
                       Clear workspace Anthropic key
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
                 <form action={testAIConnection}>
@@ -1263,9 +1293,16 @@ export default async function IntegrationsPage({
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasGemini ? (
                   <form action={clearGemini}>
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={clearWorkspaceKeyConfirm({
+                        vendorName: 'Gemini',
+                        workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
+                      })}
+                    >
                       Clear workspace Gemini key
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
                 <form action={testResearchConnection}>
@@ -1349,9 +1386,16 @@ export default async function IntegrationsPage({
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasPerplexity ? (
                   <form action={clearPerplexity}>
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={clearWorkspaceKeyConfirm({
+                        vendorName: 'Perplexity',
+                        workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
+                      })}
+                    >
                       Clear workspace Perplexity key
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
                 <form action={testResearchConnection}>

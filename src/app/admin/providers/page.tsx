@@ -1,9 +1,6 @@
 import { redirect } from 'next/navigation';
 import { KeyRound, ShieldCheck } from 'lucide-react';
-import { auth } from '@/lib/auth';
 import {
-  AuthRequiredError,
-  NoWorkspaceError,
   getWorkspaceContext,
   requirePlatformAdmin,
 } from '@/lib/services/auth-context';
@@ -28,6 +25,8 @@ import {
   type ResolvedProvider,
 } from '@/lib/services/provider-settings';
 import { ProviderModelPair } from '@/components/ProviderModelPair';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { removeConsoleKeyConfirm, savePlatformDefaultsConfirm } from '@/lib/confirm-copy';
 import {
   PlatformSettingsError,
   getPlatformSettings,
@@ -81,21 +80,10 @@ export default async function AdminProvidersPage({
 }: {
   searchParams: Promise<{ msg?: string; err?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) redirect('/dashboard');
-
-  const stored = await listPlatformSecretKeys(ctx);
+  const stored = await listPlatformSecretKeys(pctx);
   const storedByKey = new Map(stored.map((s) => [s.key, s]));
   const defaults = await getPlatformSettings();
 
@@ -149,7 +137,7 @@ export default async function AdminProvidersPage({
 
   async function saveKey(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const secretKey = String(formData.get('secretKey') ?? '');
     const value = String(formData.get('value') ?? '');
     if (!PROVIDERS.some((p) => p.secretKey === secretKey)) {
@@ -169,7 +157,7 @@ export default async function AdminProvidersPage({
 
   async function removeKey(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const secretKey = String(formData.get('secretKey') ?? '');
     if (!PROVIDERS.some((p) => p.secretKey === secretKey)) {
       redirect('/admin/providers?err=Unknown+provider');
@@ -188,7 +176,7 @@ export default async function AdminProvidersPage({
 
   async function saveDefaults(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const patch: Record<string, string | null> = {};
     for (const key of [
       'ai.provider',
@@ -336,7 +324,16 @@ export default async function AdminProvidersPage({
                 {row ? (
                   <form action={removeKey}>
                     <input type="hidden" name="secretKey" value={p.secretKey} />
-                    <button type="submit" className="ghost-btn">Remove console key</button>
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={removeConsoleKeyConfirm({
+                        vendorName: p.name,
+                        envVar: p.envVar,
+                        envSet,
+                      })}
+                    >
+                      Remove console key
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
                 {active !== 'none' ? (
@@ -468,7 +465,9 @@ export default async function AdminProvidersPage({
             ))}
           </div>
           <div className="action-row">
-            <button type="submit" className="primary-btn">Save platform defaults</button>
+            <ConfirmFormButton className="primary-btn" message={savePlatformDefaultsConfirm()}>
+              Save platform defaults
+            </ConfirmFormButton>
           </div>
         </form>
       </section>

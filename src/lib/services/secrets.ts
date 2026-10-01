@@ -11,8 +11,9 @@ import {
   type WorkspaceSecret,
 } from '@/lib/db/schema/secrets';
 import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
-import { canAdminWorkspace, isSuperAdmin, type WorkspaceContext } from './context';
+import { canAdminWorkspace, type WorkspaceContext } from './context';
 import { decryptValue, encryptValue } from './crypto';
+import { isPlatformContext, type PlatformContext } from './platform-context';
 
 export class SecretsServiceError extends Error {
   public readonly code: string;
@@ -177,11 +178,11 @@ export async function listSecretKeys(ctx: WorkspaceContext): Promise<SecretListi
 // ---- Platform-wide secrets (super-admin, /admin/providers) -------------
 
 export async function setPlatformSecret(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   key: string,
   value: string,
 ): Promise<void> {
-  if (!isSuperAdmin(ctx)) throw permissionDenied('set platform secret');
+  if (!isPlatformContext(pctx)) throw permissionDenied('set platform secret');
   const trimmed = value.trim();
   if (!trimmed) throw invalid('secret value cannot be empty');
   if (trimmed.length > 4096) throw invalid('secret value too long (4096 char max)');
@@ -194,19 +195,19 @@ export async function setPlatformSecret(
       key,
       encryptedValue: encrypted,
       scope,
-      updatedByUserId: ctx.userId,
+      updatedByUserId: pctx.actorUserId,
     })
     .onConflictDoUpdate({
       target: [platformSecrets.key],
       set: {
         encryptedValue: encrypted,
         scope,
-        updatedByUserId: ctx.userId,
+        updatedByUserId: pctx.actorUserId,
         updatedAt: new Date(),
       },
     });
 
-  await recordPlatformAuditEvent(ctx.userId, {
+  await recordPlatformAuditEvent(pctx.actorUserId, {
     kind: 'platform_secret.set',
     entityType: 'platform_secret',
     entityId: key,
@@ -215,13 +216,13 @@ export async function setPlatformSecret(
 }
 
 export async function deletePlatformSecret(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   key: string,
 ): Promise<void> {
-  if (!isSuperAdmin(ctx)) throw permissionDenied('delete platform secret');
+  if (!isPlatformContext(pctx)) throw permissionDenied('delete platform secret');
   parseScope(key);
   await db.delete(platformSecrets).where(eq(platformSecrets.key, key));
-  await recordPlatformAuditEvent(ctx.userId, {
+  await recordPlatformAuditEvent(pctx.actorUserId, {
     kind: 'platform_secret.delete',
     entityType: 'platform_secret',
     entityId: key,
@@ -260,9 +261,9 @@ export interface PlatformSecretListing {
 }
 
 export async function listPlatformSecretKeys(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
 ): Promise<PlatformSecretListing[]> {
-  if (!isSuperAdmin(ctx)) throw permissionDenied('list platform secrets');
+  if (!isPlatformContext(pctx)) throw permissionDenied('list platform secrets');
   return db
     .select({
       key: platformSecrets.key,
