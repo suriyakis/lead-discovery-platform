@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db } from '@/lib/db/client';
 import {
   InMemoryJobQueue,
@@ -64,23 +64,6 @@ describe('InMemoryJobQueue.enqueueRepeatable', () => {
 
 // ============ registerRepeatableJobs ===============================
 
-/** Poll until a one-shot job has run (succeeded or failed) and return its
- *  status. The tick handlers hit the database (mail.imap.tick runs an
- *  adoption + sync pass over every active workspace), so a fixed sleep
- *  is flaky under load. */
-async function settled(q: InMemoryJobQueue, id: string) {
-  return vi.waitFor(
-    async () => {
-      const status = await q.status(id);
-      if (status.state !== 'succeeded' && status.state !== 'failed') {
-        throw new Error(`job ${id} still ${status.state}`);
-      }
-      return status;
-    },
-    { timeout: 5000, interval: 25 },
-  );
-}
-
 describe('registerRepeatableJobs', () => {
   it('registers all three tick handlers without scheduling when skipSchedule', async () => {
     const q = new InMemoryJobQueue();
@@ -97,10 +80,15 @@ describe('registerRepeatableJobs', () => {
       q.enqueue('outreach.drain.tick', {}),
       q.enqueue('mail.imap.tick', {}),
     ]);
-    // Handlers run on microtasks + DB hits; mail.imap.tick does a full
-    // adoption + sync pass over every active workspace (flow:F-04), so
-    // poll until all three settle instead of guessing a fixed delay.
-    for (const id of ids) await settled(q, id);
+    // Wait for the registered handlers to finish (they hit the DB, which
+    // can take well over 100 ms on a loaded machine). A job whose handler
+    // is missing never joins the queue's chain, so drain() does not wait
+    // for it and it is still reported as pending below.
+    await q.drain();
+    for (const id of ids) {
+      const status = await q.status(id);
+      expect(status.state === 'succeeded' || status.state === 'failed').toBe(true);
+    }
   });
 
   it('autopilot.tick fans out: returns workspaces count', async () => {
@@ -114,7 +102,8 @@ describe('registerRepeatableJobs', () => {
     await seedWorkspace({ name: 'W2', ownerUserId: owner2 });
 
     const id = await q.enqueue('autopilot.tick', {});
-    const status = await settled(q, id);
+    await q.drain();
+    const status = await q.status(id);
     expect(status.state).toBe('succeeded');
     if (status.state === 'succeeded') {
       const result = status.result as { workspaces: number };
@@ -133,7 +122,8 @@ describe('registerRepeatableJobs', () => {
     await seedWorkspace({ name: 'A', ownerUserId: ownerA });
 
     const id = await q.enqueue('outreach.drain.tick', {});
-    const status = await settled(q, id);
+    await q.drain();
+    const status = await q.status(id);
     expect(status.state).toBe('succeeded');
   });
 
@@ -146,7 +136,8 @@ describe('registerRepeatableJobs', () => {
     await seedWorkspace({ name: 'A', ownerUserId: ownerA });
 
     const id = await q.enqueue('mail.imap.tick', {});
-    const status = await settled(q, id);
+    await q.drain();
+    const status = await q.status(id);
     expect(status.state).toBe('succeeded');
     if (status.state === 'succeeded') {
       const result = status.result as { mailboxesSynced: number };
