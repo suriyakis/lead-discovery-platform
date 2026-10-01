@@ -128,6 +128,22 @@ export function parseDateTimeLocal(raw: unknown, timeZone: string): Date | null 
 }
 
 /**
+ * The exclusive end of an "until" filter: the first instant after the
+ * minute a datetime-local value names (after the second, when it has
+ * seconds). Lists show seconds while the input only takes HH:MM, so
+ * "until 13:00" has to keep an event stamped 13:00:40; filter with
+ * `createdAt < untilExclusiveEnd(...)`. A minute is always 60 s of real
+ * time (clock changes fall on whole hours), so the end is start + 60 s.
+ * Null when the value does not parse (see parseDateTimeLocal).
+ */
+export function untilExclusiveEnd(raw: unknown, timeZone: string): Date | null {
+  const start = parseDateTimeLocal(raw, timeZone);
+  if (!start) return null;
+  const hasSeconds = WALL_CLOCK.exec(String(raw).trim())?.[6] !== undefined;
+  return new Date(start.getTime() + (hasSeconds ? 1_000 : 60_000));
+}
+
+/**
  * The value a datetime-local input needs to show `d` as wall-clock time
  * in `timeZone` ("2026-03-10T11:00"). Minute precision, matching the
  * input's default step, so re-submitting the form is not blocked.

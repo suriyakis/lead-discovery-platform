@@ -54,8 +54,9 @@ function renderWorkspacePage(sp: SearchParams): Promise<string> {
 }
 
 /**
- * One event on each side of each bound of 10:00Z..12:00Z, which is
- * 11:00..13:00 for a viewer in Warsaw (CET, UTC+1, on 10 March). The
+ * One event on each side of each bound of 10:00Z..12:00:59Z, which is
+ * 11:00..13:00 (to the end of that minute) for a viewer in Warsaw (CET,
+ * UTC+1, on 10 March). The
  * entity id names the event, so it shows in the timeline as
  * `probe#<name>` (kinds would also match the Kind dropdown).
  */
@@ -65,7 +66,10 @@ async function seedProbes(workspaceId: bigint, userId: string): Promise<void> {
     ['at-since', '2026-03-10T10:00:00Z'],
     ['inside', '2026-03-10T11:30:00Z'],
     ['at-until', '2026-03-10T12:00:00Z'],
-    ['after-until', '2026-03-10T12:00:01Z'],
+    // Until covers its whole minute: the list shows this one as 13:00:59,
+    // and the viewer could only have typed 13:00.
+    ['end-of-until-minute', '2026-03-10T12:00:59.999Z'],
+    ['after-until', '2026-03-10T12:01:00Z'],
   ];
   await db.insert(auditLog).values(
     probes.map(([name, at]) => ({
@@ -86,6 +90,7 @@ function expectWarsawWindow(html: string): void {
   expect(html).toContain('probe#at-since');
   expect(html).toContain('probe#inside');
   expect(html).toContain('probe#at-until');
+  expect(html).toContain('probe#end-of-until-minute');
   expect(html).not.toContain('probe#before-since');
   expect(html).not.toContain('probe#after-until');
   // Timestamps, the echoed inputs and the hidden field all use the

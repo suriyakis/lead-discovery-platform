@@ -7,6 +7,7 @@ import {
   parseDateTimeLocal,
   resolveTimeZone,
   toDateTimeLocalValue,
+  untilExclusiveEnd,
 } from '@/lib/time-zone';
 
 describe('resolveTimeZone', () => {
@@ -75,6 +76,37 @@ describe('parseDateTimeLocal', () => {
       '2026-03-10T10:60',
     ]) {
       expect(parseDateTimeLocal(raw, 'UTC'), String(raw)).toBeNull();
+    }
+  });
+});
+
+describe('untilExclusiveEnd', () => {
+  it('ends after the whole minute an HH:MM value names', () => {
+    expect(untilExclusiveEnd('2026-03-10T13:00', 'Europe/Warsaw')?.toISOString()).toBe(
+      '2026-03-10T12:01:00.000Z',
+    );
+    expect(untilExclusiveEnd('2026-07-01T10:15', 'UTC')?.toISOString()).toBe(
+      '2026-07-01T10:16:00.000Z',
+    );
+  });
+
+  it('ends after the second when the value has seconds', () => {
+    expect(untilExclusiveEnd('2026-07-01T10:15:30', 'UTC')?.toISOString()).toBe(
+      '2026-07-01T10:15:31.000Z',
+    );
+  });
+
+  it('is 60 s after the start across a clock change', () => {
+    // 01:59 on the Warsaw spring-forward night is followed by 03:00 CEST.
+    const start = parseDateTimeLocal('2026-03-29T01:59', 'Europe/Warsaw')!;
+    const end = untilExclusiveEnd('2026-03-29T01:59', 'Europe/Warsaw')!;
+    expect(end.getTime() - start.getTime()).toBe(60_000);
+    expect(toDateTimeLocalValue(end, 'Europe/Warsaw')).toBe('2026-03-29T03:00');
+  });
+
+  it('is null whenever parseDateTimeLocal is', () => {
+    for (const raw of ['', 'yesterday', '2026-06-31T10:00', undefined]) {
+      expect(untilExclusiveEnd(raw, 'UTC')).toBeNull();
     }
   });
 });

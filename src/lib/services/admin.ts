@@ -2,7 +2,7 @@
 // canSuperAdmin(ctx) before doing anything; failure to do so is the same
 // security mistake as forgetting workspace_id in a query.
 
-import { and, count, desc, eq, gte, isNull, lte, sql, sum, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNull, lt, lte, sql, sum, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users, type User } from '@/lib/db/schema/auth';
 import {
@@ -1209,7 +1209,10 @@ export interface AuditAcrossWorkspacesFilter {
   workspaceId?: bigint;
   kind?: string;
   since?: Date;
+  /** Inclusive upper bound. */
   until?: Date;
+  /** Exclusive upper bound: what a minute-precision "Until" input needs. */
+  before?: Date;
   limit?: number;
 }
 
@@ -1228,6 +1231,7 @@ export async function listAuditAcrossWorkspaces(
   // (src/tests/sql-date-binding.test.ts guards against that).
   if (filter.since) conds.push(gte(auditLog.createdAt, filter.since));
   if (filter.until) conds.push(lte(auditLog.createdAt, filter.until));
+  if (filter.before) conds.push(lt(auditLog.createdAt, filter.before));
   const limit = Math.min(filter.limit ?? 100, 1000);
   return db
     .select()

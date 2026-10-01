@@ -29,6 +29,7 @@ import {
   parseDateTimeLocal,
   resolveTimeZone,
   toDateTimeLocalValue,
+  untilExclusiveEnd,
 } from '@/lib/time-zone';
 
 const ALLOWED_LIMITS = [25, 50, 100, 250, 500] as const;
@@ -71,6 +72,9 @@ export default async function WorkspaceAuditPage({
   const timeZone = requestedZone ?? 'UTC';
   const since = parseDateTimeLocal(sp.since, timeZone) ?? undefined;
   const until = parseDateTimeLocal(sp.until, timeZone) ?? undefined;
+  // Until covers its whole minute: the list shows seconds, so "until
+  // 13:00" must keep an event stamped 13:00:40.
+  const before = untilExclusiveEnd(sp.until, timeZone) ?? undefined;
   const limit =
     sp.limit && /^\d+$/.test(sp.limit)
       ? Number(sp.limit)
@@ -82,7 +86,7 @@ export default async function WorkspaceAuditPage({
     listAuditEvents(ctx, {
       kind: kindFilter,
       since,
-      until,
+      before,
       limit: safeLimit,
     }),
     db

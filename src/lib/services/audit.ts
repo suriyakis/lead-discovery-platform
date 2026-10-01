@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lte, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, lte, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog, type AuditLogEntry, type NewAuditLogEntry } from '@/lib/db/schema/audit';
 import type { WorkspaceContext } from './context';
@@ -70,7 +70,10 @@ export async function recordPlatformAuditEvent(
 export interface ListAuditFilter {
   kind?: string | readonly string[];
   since?: Date;
+  /** Inclusive upper bound. */
   until?: Date;
+  /** Exclusive upper bound: what a minute-precision "Until" input needs. */
+  before?: Date;
   limit?: number;
 }
 
@@ -93,6 +96,7 @@ export async function listAuditEvents(
   }
   if (filter.since) conds.push(gte(auditLog.createdAt, filter.since));
   if (filter.until) conds.push(lte(auditLog.createdAt, filter.until));
+  if (filter.before) conds.push(lt(auditLog.createdAt, filter.before));
 
   return db
     .select()
