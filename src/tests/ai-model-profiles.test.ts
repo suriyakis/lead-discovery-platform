@@ -447,3 +447,29 @@ describe('Anthropic cost estimates (rate table — owner sign-off)', () => {
     expect(anthropic.estimateCost({ model: 'claude-sonnet-5', ...MILLION })).toBe(12);
   });
 });
+
+describe('Gemini thinking-token metering (I179 — owner sign-off)', () => {
+  it('meters thinking tokens as output', async () => {
+    stubFetch({
+      candidates: [{ content: { parts: [{ text: 'hello' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 20, thoughtsTokenCount: 700 },
+    });
+    const r = await new GeminiAIProvider({ apiKey: 'k', model: 'gemini-3.5-flash' }).generateText(
+      INPUT,
+      OPTS,
+    );
+    expect(r.usage).toEqual({ inputTokens: 100, outputTokens: 720 });
+  });
+
+  it('meters only candidate tokens when the response reports no thoughts', async () => {
+    stubFetch({
+      candidates: [{ content: { parts: [{ text: 'hello' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 20 },
+    });
+    const r = await new GeminiAIProvider({ apiKey: 'k', model: 'gemini-2.0-flash' }).generateText(
+      INPUT,
+      OPTS,
+    );
+    expect(r.usage).toEqual({ inputTokens: 100, outputTokens: 20 });
+  });
+});

@@ -25,6 +25,9 @@ interface GeminiResponseShape {
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
+    /** Thinking tokens (2.5+ / 3.x). Billed by Google at the output rate
+     *  but NOT included in candidatesTokenCount. */
+    thoughtsTokenCount?: number;
   };
   promptFeedback?: {
     blockReason?: string;
@@ -115,9 +118,13 @@ export class GeminiAIProvider implements IAIProvider {
     const text = (json.candidates?.[0]?.content?.parts ?? [])
       .map((p) => p.text ?? '')
       .join('');
+    // Thinking tokens are billed as output, so they are metered as output
+    // too (I179) — before, every Gemini 2.5+/3.x answer under-recovered.
     const usage = {
       inputTokens: json.usageMetadata?.promptTokenCount ?? 0,
-      outputTokens: json.usageMetadata?.candidatesTokenCount ?? 0,
+      outputTokens:
+        (json.usageMetadata?.candidatesTokenCount ?? 0) +
+        (json.usageMetadata?.thoughtsTokenCount ?? 0),
     };
     if (!text) {
       // Typed (AP-02) so callers can tell "no answer" from a transport
