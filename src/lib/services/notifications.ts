@@ -56,6 +56,39 @@ export async function notify(
   }
 }
 
+/**
+ * flow:F-04: the condition a dedupeKey'd notification announced is over
+ * (e.g. a failing mailbox recovered). Marks its unread rows read so the
+ * bell stops showing a stale alarm, and so the NEXT occurrence notifies
+ * again instead of being swallowed by the dedupe index. Best-effort like
+ * notify(): returns the number of rows resolved, 0 on failure.
+ */
+export async function resolveNotifications(
+  workspaceId: bigint,
+  dedupeKey: string,
+): Promise<number> {
+  try {
+    const rows = await db
+      .update(notifications)
+      .set({ readAt: new Date() })
+      .where(
+        and(
+          eq(notifications.workspaceId, workspaceId),
+          eq(notifications.dedupeKey, dedupeKey),
+          isNull(notifications.readAt),
+        ),
+      )
+      .returning({ id: notifications.id });
+    return rows.length;
+  } catch (err) {
+    console.error(
+      '[notifications] resolve failed:',
+      err instanceof Error ? err.message : err,
+    );
+    return 0;
+  }
+}
+
 /** Rows visible to this user: workspace-wide + targeted at them. */
 function visibleTo(ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>): SQL {
   return and(

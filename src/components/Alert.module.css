@@ -1,0 +1,83 @@
+/* Alert primitive (DS plan Phase 4, landed early by flow:F-04).
+ * Grid [icon 16][content][action]; tone sets one accent token that tints
+ * the border, background, icon and title. Brand tokens only. */
+
+.alert {
+  --alert-accent: var(--brand-primary);
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 0.5rem 0.75rem;
+  align-items: start;
+  padding: 12px 16px;
+  border-radius: var(--brand-radius);
+  border: 1px solid color-mix(in oklch, var(--alert-accent) 40%, var(--brand-border));
+  background: color-mix(in oklch, var(--alert-accent) 8%, var(--brand-card));
+  color: var(--brand-fg);
+  min-width: 0;
+}
+
+.info {
+  --alert-accent: var(--brand-primary);
+}
+
+.success {
+  --alert-accent: var(--brand-status-approved);
+}
+
+.warning {
+  --alert-accent: var(--brand-accent-amber);
+}
+
+.danger {
+  --alert-accent: var(--brand-status-rejected);
+}
+
+.icon {
+  color: var(--alert-accent);
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.content p {
+  margin: 0;
+}
+
+.content code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.title {
+  font-weight: 600;
+  color: var(--alert-accent);
+}
+
+.action {
+  align-self: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.action form {
+  margin: 0;
+}
+
+@media (max-width: 600px) {
+  .alert {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
+  .action {
+    grid-column: 2;
+    align-self: start;
+  }
+}

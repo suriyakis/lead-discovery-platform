@@ -24,6 +24,7 @@ import {
   mailMessages,
   mailThreads,
   mailboxes,
+  type Mailbox,
   type MailMessage,
   type MailThread,
   type NewMailMessage,
@@ -38,7 +39,13 @@ import {
 } from './imap-backoff';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
-import { buildProviderFor, markMailboxFailing } from './mailbox';
+import {
+  buildProviderFor,
+  markMailboxFailing,
+  recordMailboxConnectionCheck,
+  runConnectionTest,
+  type MailboxCheckOutcome,
+} from './mailbox';
 import { attachContact, upsertContact } from './contacts';
 import { isSuppressed, recordBounce } from './suppression';
 import {
@@ -61,6 +68,7 @@ import {
 } from '@/lib/mail/relevance';
 import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
+import { describeConnectionError } from '@/lib/mail/connection-errors';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -367,6 +375,7 @@ export async function sendMessage(
         await markMailboxFailing(ctx, mailbox.id, {
           protocol: 'smtp',
           message: e?.message ?? String(err),
+          auth: true,
         });
       } catch (markErr) {
         console.error('[mail.send] could not mark the mailbox failing:', markErr);
@@ -1396,31 +1405,88 @@ export async function permanentlyDelete(
   return { affected: deletedIds.length, ids: deletedIds };
 }
 
-// ---- safe-sync (P61-25) --------------------------------------------
+// ---- safe-sync (P61-25, flow:F-04) ---------------------------------
 
 export type SafeSyncOutcome =
-  | { kind: 'synced'; fetched: number; inserted: number; duplicates: number }
-  | { kind: 'auth_failed'; message: string }
-  | { kind: 'transient_failed'; message: string; consecutiveFailures: number; pausedAt: boolean };
+  | {
+      kind: 'synced';
+      fetched: number;
+      inserted: number;
+      duplicates: number;
+      /** A failing mailbox passed its re-check and is active again. */
+      recovered: boolean;
+    }
+  /** The mailbox is failing and nothing was synced: it was just paused
+   *  (a refused login, or TRANSIENT_FAILURE_PAUSE_THRESHOLD failures in a
+   *  row), or it was already failing and its re-check failed again. */
+  | {
+      kind: 'failing';
+      message: string;
+      /** A new mailbox.failing notification was raised (deduped while unread). */
+      notified: boolean;
+      /** When the tick may re-check it (null when it was not marked). */
+      nextSyncAfter: Date | null;
+    }
+  | {
+      kind: 'transient_failed';
+      message: string;
+      consecutiveFailures: number;
+      nextSyncAfter: Date;
+    };
 
 /** Wraps syncInbound + the cron's post-result mailbox bookkeeping into
  *  one helper so both the IMAP tick (mail.imap.tick) AND the manual
- *  Sync button apply the same auth/backoff/auto-pause logic. Without
+ *  Sync buttons apply the same auth/backoff/auto-pause logic. Without
  *  this, manual clicks bypass the fail2ban defense and a broken
  *  mailbox can rack up failed LOGINs from operator impatience.
+ *
+ *  flow:F-04 — every failure leaves a non-null imap_next_sync_after:
+ *    - transient (below the threshold): 2 min doubling to 60 min, status
+ *      stays active;
+ *    - a refused login or the threshold: markMailboxFailing (status
+ *      'failing', a 1 h / 6 h re-check gate growing to 24 h, one deduped
+ *      mailbox.failing notification);
+ *    - a mailbox that is already failing is NOT synced: it gets a full
+ *      SMTP + IMAP re-check first (recordMailboxConnectionCheck). A pass
+ *      makes it active and the sync runs; a failure refreshes the error,
+ *      the gate and the (deduped) notification.
  *
  *  Caller passes the resolved mailbox row — this helper does NOT
  *  enforce the imap_next_sync_after cooldown gate; that's the cron's
  *  job. Manual sync is explicitly "do it now". */
 export async function safeSyncOne(
   ctx: WorkspaceContext,
-  mailbox: { id: bigint; imapConsecutiveFailures: number; imapEmptySyncs: number },
+  mailbox: Pick<Mailbox, 'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'>,
 ): Promise<SafeSyncOutcome> {
+  // Outside the try: a permission error is the caller's, not the server's,
+  // and must not count as a mailbox failure.
+  if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
+
+  let recovered = false;
+  if (mailbox.status === 'failing') {
+    const check = await recheckFailingMailbox(ctx, mailbox);
+    if (!check.ok) {
+      return {
+        kind: 'failing',
+        message: check.lastError ?? 'failed',
+        notified: check.notified,
+        nextSyncAfter: check.nextSyncAfter,
+      };
+    }
+    recovered = check.recovered;
+    // Outbound-only mailbox: the re-check was the whole job.
+    if (!mailbox.imapHost) {
+      return { kind: 'synced', fetched: 0, inserted: 0, duplicates: 0, recovered };
+    }
+  }
+  const priorFailures = recovered ? 0 : mailbox.imapConsecutiveFailures;
+  const priorEmpty = recovered ? 0 : mailbox.imapEmptySyncs;
+  const scope = and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id));
+
   try {
     const result = await syncInbound(ctx, mailbox.id);
     // Success — reset failure counters, apply adaptive empty-sync delay.
-    const nextEmpty =
-      result.fetched === 0 ? mailbox.imapEmptySyncs + 1 : 0;
+    const nextEmpty = result.fetched === 0 ? priorEmpty + 1 : 0;
     const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);
     await db
       .update(mailboxes)
@@ -1429,58 +1495,99 @@ export async function safeSyncOne(
         imapNextSyncAfter: adaptiveNext,
         imapEmptySyncs: nextEmpty,
         lastError: null,
+        lastErrorAt: null,
         updatedAt: new Date(),
       })
-      .where(eq(mailboxes.id, mailbox.id));
+      .where(scope);
     return {
       kind: 'synced',
       fetched: result.fetched,
       inserted: result.inserted,
       duplicates: result.duplicates,
+      recovered,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    // describeConnectionError keeps imapflow's response code and text —
+    // its refused LOGIN is otherwise a bare "Command failed".
+    const msg = describeConnectionError(err);
     const cls = classifyImapError(err);
-    const nextCount = mailbox.imapConsecutiveFailures + 1;
+    const nextCount = priorFailures + 1;
 
     // Auto-pause when:
     //   - error signature matches an auth failure, OR
     //   - we've crossed the transient-failure threshold without ever
     //     getting a clean sync (slow-burn fail2ban defense).
-    const shouldPause =
-      cls === 'auth' || nextCount >= TRANSIENT_FAILURE_PAUSE_THRESHOLD;
-
-    if (shouldPause) {
-      await db
-        .update(mailboxes)
-        .set({
-          status: 'failing',
-          lastError: msg.slice(0, 2000),
-          imapConsecutiveFailures: nextCount,
-          imapNextSyncAfter: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(mailboxes.id, mailbox.id));
-      return { kind: 'auth_failed', message: msg };
+    if (cls === 'auth' || nextCount >= TRANSIENT_FAILURE_PAUSE_THRESHOLD) {
+      const marked = await markMailboxFailing(ctx, mailbox.id, {
+        protocol: 'imap',
+        message: msg,
+        auth: cls === 'auth',
+        consecutiveFailures: nextCount,
+      });
+      if (marked.marked) {
+        return {
+          kind: 'failing',
+          message: msg,
+          notified: marked.notified,
+          nextSyncAfter: marked.nextSyncAfter,
+        };
+      }
+      // Paused / archived (a manual Sync): keep the operator's status and
+      // record the failure like a transient one below.
     }
 
-    const cooldown = computeBackoffMs(nextCount);
+    const now = new Date();
+    const nextSyncAfter = new Date(now.getTime() + computeBackoffMs(nextCount));
     await db
       .update(mailboxes)
       .set({
         imapConsecutiveFailures: nextCount,
-        imapNextSyncAfter: new Date(Date.now() + cooldown),
-        lastError: msg.slice(0, 2000),
-        updatedAt: new Date(),
+        imapNextSyncAfter: nextSyncAfter,
+        lastError: `IMAP: ${msg}`.slice(0, 2000),
+        lastErrorAt: now,
+        updatedAt: now,
       })
-      .where(eq(mailboxes.id, mailbox.id));
+      .where(scope);
     return {
       kind: 'transient_failed',
       message: msg,
       consecutiveFailures: nextCount,
-      pausedAt: false,
+      nextSyncAfter,
     };
   }
+}
+
+/** A failing mailbox is re-checked (SMTP + IMAP), never just synced: an
+ *  IMAP sync passing says nothing about the SMTP login that may be what
+ *  failed. Counts as one more consecutive failed check when it fails. */
+async function recheckFailingMailbox(
+  ctx: WorkspaceContext,
+  mailbox: Pick<Mailbox, 'id' | 'imapConsecutiveFailures'>,
+): Promise<MailboxCheckOutcome> {
+  const consecutiveFailures = mailbox.imapConsecutiveFailures + 1;
+  let built: Awaited<ReturnType<typeof buildProviderFor>>;
+  try {
+    built = await buildProviderFor(ctx, mailbox.id);
+  } catch (err) {
+    // E.g. a password secret went missing — as much a failure as a
+    // refused login, and the operator fixes it the same way.
+    const message = describeConnectionError(err);
+    const protocol = /\bSMTP\b/.test(message) ? 'smtp' : 'imap';
+    const marked = await markMailboxFailing(ctx, mailbox.id, {
+      protocol,
+      message,
+      consecutiveFailures,
+    });
+    return {
+      ok: false,
+      recovered: false,
+      lastError: `${protocol === 'smtp' ? 'SMTP' : 'IMAP'}: ${message}`.slice(0, 2000),
+      notified: marked.notified,
+      nextSyncAfter: marked.nextSyncAfter,
+    };
+  }
+  const result = await runConnectionTest(built.provider);
+  return recordMailboxConnectionCheck(ctx, built.mailbox, result, { consecutiveFailures });
 }
 
 // ---- trash purge (P61-09) ------------------------------------------

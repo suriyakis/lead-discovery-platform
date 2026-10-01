@@ -1,9 +1,11 @@
 // nodemailer (SMTP) + imapflow (IMAP) implementation of IMailProvider.
 
 import nodemailer, { type Transporter } from 'nodemailer';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import { simpleParser, type MailParserOptions } from 'mailparser';
 import type {
+  ConnectionCheck,
   ConnectionTestResult,
   FetchInboundOptions,
   IMailProvider,
@@ -18,6 +20,7 @@ import {
   extractRelevanceSignals,
   unfoldHeaderValue,
 } from './relevance';
+import { describeConnectionError, isAuthFailure } from './connection-errors';
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -37,7 +40,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  *   587: STARTTLS
  *   25:  STARTTLS (no auth, mostly legacy)
  */
-function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
+export function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
   if (port === 465) return true;
   if (port === 587 || port === 25) return false;
   return operatorChoice;
@@ -51,10 +54,33 @@ function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
  *   993: implicit SSL
  *   143: STARTTLS
  */
-function resolveImapSecure(port: number, operatorChoice: boolean): boolean {
+export function resolveImapSecure(port: number, operatorChoice: boolean): boolean {
   if (port === 993) return true;
   if (port === 143) return false;
   return operatorChoice;
+}
+
+/**
+ * The nodemailer transport options for a mailbox. Port 465 always gets
+ * implicit TLS (`secure: true`, TLS before the greeting); 587 / 25 get a
+ * plain connect that nodemailer upgrades with STARTTLS whenever the server
+ * offers it. flow:F-04: hosts that refuse 587 (the Plesk host behind
+ * workspace 1's mailbox listens on 25 / 465 / 993 only) work by switching
+ * the mailbox to 465 — exported so that stays pinned by a test.
+ */
+export function smtpTransportOptions(config: MailboxConfig): SMTPTransport.Options {
+  return {
+    host: config.smtpHost,
+    port: config.smtpPort,
+    secure: resolveSmtpSecure(config.smtpPort, config.smtpSecure),
+    auth: {
+      user: config.smtpUser,
+      pass: config.smtpPassword,
+    },
+    tls: { rejectUnauthorized: false },
+    connectionTimeout: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    socketTimeout: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  };
 }
 
 export class SmtpImapMailProvider implements IMailProvider {
@@ -146,33 +172,22 @@ export class SmtpImapMailProvider implements IMailProvider {
   // ---- helpers --------------------------------------------------------
 
   private buildTransporter(): Transporter {
-    return nodemailer.createTransport({
-      host: this.config.smtpHost,
-      port: this.config.smtpPort,
-      secure: resolveSmtpSecure(this.config.smtpPort, this.config.smtpSecure),
-      auth: {
-        user: this.config.smtpUser,
-        pass: this.config.smtpPassword,
-      },
-      tls: { rejectUnauthorized: false },
-      connectionTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      socketTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    });
+    return nodemailer.createTransport(smtpTransportOptions(this.config));
   }
 
-  private async testSmtp(): Promise<{ ok: boolean; detail?: string }> {
+  private async testSmtp(): Promise<ConnectionCheck> {
     const transporter = this.buildTransporter();
     try {
       await transporter.verify();
       return { ok: true };
     } catch (err) {
-      return { ok: false, detail: explain(err) };
+      return { ok: false, detail: explain(err), authFailed: isAuthFailure(err) };
     } finally {
       transporter.close();
     }
   }
 
-  private async testImap(): Promise<{ ok: boolean; detail?: string }> {
+  private async testImap(): Promise<ConnectionCheck> {
     if (!this.config.imap) return { ok: false, detail: 'imap not configured' };
     const client = new ImapFlow({
       host: this.config.imap.host,
@@ -188,7 +203,7 @@ export class SmtpImapMailProvider implements IMailProvider {
       await client.mailboxOpen(this.config.imap.folder);
       return { ok: true };
     } catch (err) {
-      return { ok: false, detail: explain(err) };
+      return { ok: false, detail: explain(err), authFailed: isAuthFailure(err) };
     } finally {
       await client.logout().catch(() => undefined);
     }
@@ -363,9 +378,8 @@ function partialRejections(info: unknown): SendResult['rejected'] {
   return out.length > 0 ? out : undefined;
 }
 
+/** flow:F-04: keep the server's response code / text (imapflow's refused
+ *  LOGIN is a bare "Command failed" otherwise). */
 function explain(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
+  return describeConnectionError(err);
 }

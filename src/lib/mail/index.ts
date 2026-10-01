@@ -81,9 +81,18 @@ export interface FetchInboundOptions {
   limit?: number;
 }
 
+/** One side of a connection test. `authFailed` (flow:F-04) is set when the
+ *  server refused the login, so callers can back off harder without
+ *  re-parsing the text. */
+export interface ConnectionCheck {
+  ok: boolean;
+  detail?: string;
+  authFailed?: boolean;
+}
+
 export interface ConnectionTestResult {
-  smtp: { ok: boolean; detail?: string };
-  imap: { ok: boolean; detail?: string } | null;
+  smtp: ConnectionCheck;
+  imap: ConnectionCheck | null;
 }
 
 export interface MailboxConfig {

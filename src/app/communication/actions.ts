@@ -207,18 +207,28 @@ export async function syncMailbox(formData: FormData): Promise<void> {
   }
 
   let synced = 0;
+  let syncedName = '';
   let totalFetched = 0;
   let totalInserted = 0;
   const failures: string[] = [];
-  const paused: string[] = [];
+  const failing: string[] = [];
   for (const mb of targets) {
-    const outcome = await safeSyncOne(c, mb);
+    let outcome: Awaited<ReturnType<typeof safeSyncOne>>;
+    try {
+      outcome = await safeSyncOne(c, mb);
+    } catch (err) {
+      failures.push(`${mb.name} (${truncate(err instanceof Error ? err.message : 'sync failed')})`);
+      continue;
+    }
     if (outcome.kind === 'synced') {
       synced++;
+      syncedName = mb.name;
       totalFetched += outcome.fetched;
       totalInserted += outcome.inserted;
-    } else if (outcome.kind === 'auth_failed') {
-      paused.push(`${mb.name} (paused: ${truncate(outcome.message)})`);
+    } else if (outcome.kind === 'failing') {
+      // flow:F-04: a failing mailbox is re-checked, not just synced; the
+      // mailbox page explains the error and how to fix it.
+      failing.push(`${mb.name} (failing: ${truncate(outcome.message)})`);
     } else {
       failures.push(
         `${mb.name} (will back off: ${truncate(outcome.message)})`,
@@ -232,11 +242,13 @@ export async function syncMailbox(formData: FormData): Promise<void> {
   if (synced > 0) {
     parts.push(
       synced === 1
-        ? `Synced ${targets.find((t) => true)?.name ?? '1 mailbox'} — fetched ${totalFetched}, new ${totalInserted}`
+        ? `Synced ${syncedName || '1 mailbox'} — fetched ${totalFetched}, new ${totalInserted}`
         : `Synced ${synced} mailbox(es) — fetched ${totalFetched}, new ${totalInserted}`,
     );
   }
-  if (paused.length > 0) parts.push(`auto-paused: ${paused.join('; ')}`);
+  if (failing.length > 0) {
+    parts.push(`failing, open the mailbox to fix: ${failing.join('; ')}`);
+  }
   if (failures.length > 0) parts.push(`failed: ${failures.join('; ')}`);
 
   if (synced === 0) {

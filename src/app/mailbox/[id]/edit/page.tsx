@@ -186,7 +186,13 @@ export default async function EditMailboxPage({
             </label>
             <label className="checkbox-row">
               <input type="checkbox" name="smtpSecure" defaultChecked={mailbox.smtpSecure} />
-              <span>SSL/TLS on connect</span>
+              <span>
+                SSL/TLS on connect{' '}
+                <em className="muted">
+                  — port 465 always uses it and 587 / 25 always use STARTTLS; this box only
+                  matters for other ports
+                </em>
+              </span>
             </label>
             <label>
               <span>User</span>

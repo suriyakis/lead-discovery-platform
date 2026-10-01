@@ -71,6 +71,15 @@ export const mailboxes = pgTable(
     lastSyncedAt: timestamp('last_synced_at', { mode: 'date', withTimezone: true }),
     /** Last error message from a failing send/receive. Cleared on success. */
     lastError: text('last_error'),
+    /** flow:F-04: when lastError happened (updatedAt moves on any edit, so
+     *  it cannot date the error). Cleared with lastError. */
+    lastErrorAt: timestamp('last_error_at', { mode: 'date', withTimezone: true }),
+    /** flow:F-04: when the current 'failing' episode began. Set on the
+     *  transition into 'failing', kept while it stays failing, cleared on
+     *  recovery / reactivation. Drives the re-check backoff (the longer a
+     *  mailbox has been failing, the longer the wait, capped) and the
+     *  "failing since" copy. Meaningless unless status = 'failing'. */
+    failingSince: timestamp('failing_since', { mode: 'date', withTimezone: true }),
     /** Phase 51: consecutive IMAP tick failures since the last success.
      *  Drives exponential backoff so a stale-password mailbox doesn't
      *  pound the upstream server every 2 minutes (fail2ban bait). */
@@ -78,7 +87,9 @@ export const mailboxes = pgTable(
       .notNull()
       .default(0),
     /** Phase 51: when the next IMAP tick is allowed. Set to now + 2^n*2min
-     *  on transient failure (cap 60 min); cleared on success. */
+     *  on transient failure (cap 60 min); cleared on success. flow:F-04:
+     *  never NULL while 'failing' — it is when the tick may re-check the
+     *  connection (1 h, or 6 h after a refused login, growing to 24 h). */
     imapNextSyncAfter: timestamp('imap_next_sync_after', {
       mode: 'date',
       withTimezone: true,
