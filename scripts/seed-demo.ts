@@ -100,16 +100,16 @@ const COUNTRY_NAME: Record<Country, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// truncate (lead_demo only — guarded above)
+// truncate (lead_demo / lead_e2e only — guarded above)
 // ---------------------------------------------------------------------------
 
 async function truncateAll(): Promise<void> {
   const rows = await client<{ tablename: string }[]>`
     select tablename from pg_tables where schemaname = 'public' order by tablename`;
-  if (rows.length === 0) throw new Error('no tables in lead_demo — run migrations first');
+  if (rows.length === 0) throw new Error(`no tables in ${dbName} — run migrations first`);
   const list = rows.map((r) => `"public"."${r.tablename}"`).join(', ');
   await client.unsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`);
-  console.log(`truncated ${rows.length} tables in lead_demo`);
+  console.log(`truncated ${rows.length} tables in ${dbName}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +434,7 @@ const LEAD_PLANS: Record<LeadKey, LeadPlan> = {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  console.log(`seeding lead_demo — now = ${NOW.toISOString()}`);
+  console.log(`seeding ${dbName} — now = ${NOW.toISOString()}`);
   await truncateAll();
 
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
