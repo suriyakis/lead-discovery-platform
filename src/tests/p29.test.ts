@@ -88,16 +88,14 @@ describe('listMyWorkspaces (super-admin god mode)', () => {
 
   it('non-super-admin opting in still sees only memberships', async () => {
     const s = await setup();
-    // ownerA is a member of just workspaceA. Even with the flag they
-    // shouldn't see B/C — but the function trusts the caller; the gate
-    // lives at the AppShell layer, not here. Confirm the function does
-    // include all when asked.
+    // ownerA is a member of just workspaceA. listMyWorkspaces reads
+    // users.role itself (ia:F-05), so the god-mode listing cannot leak
+    // to a normal user even if a caller passes the flag by mistake.
     const rows = await listMyWorkspaces(s.ownerA, {
       includeAllForSuperAdmin: true,
     });
-    // Note: this is the documented contract — function does not check
-    // role. Caller is responsible.
-    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.map((r) => r.workspace.id)).toEqual([s.workspaceA]);
+    expect(rows[0]?.isGodMode).toBe(false);
   });
 });
 

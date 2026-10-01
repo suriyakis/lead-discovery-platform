@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { eq } from 'drizzle-orm';
 import {
   AlertOctagon,
   ArrowRight,
@@ -25,10 +24,16 @@ import {
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db/client';
-import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
-import { users } from '@/lib/db/schema/auth';
+import {
+  AccountInactiveError,
+  AuthRequiredError,
+  NoWorkspaceError,
+  getWorkspaceContext,
+} from '@/lib/services/auth-context';
+import { canAdminWorkspace, type WorkspaceContext } from '@/lib/services/context';
 import { getDashboardSignals } from '@/lib/services/dashboard-signals';
+import { claimOnboardingStart } from '@/lib/services/onboarding';
+import { getActiveWorkspaceSummary } from '@/lib/services/workspace';
 import type { PipelineState } from '@/lib/db/schema/pipeline';
 
 interface ModuleTile {
@@ -147,6 +152,21 @@ const MODULES: ReadonlyArray<ModuleTile> = [
   },
 ];
 
+/**
+ * The signed-in user's active workspace context, or null when they have
+ * no workspace yet (the page then shows the "No workspace yet" card).
+ */
+async function resolveDashboardContext(): Promise<WorkspaceContext | null> {
+  try {
+    return await getWorkspaceContext();
+  } catch (err) {
+    if (err instanceof NoWorkspaceError) return null;
+    if (err instanceof AuthRequiredError) redirect('/');
+    if (err instanceof AccountInactiveError) redirect('/pending');
+    throw err;
+  }
+}
+
 export default async function Dashboard() {
   const session = await auth();
   if (!session?.user?.id) {
@@ -160,49 +180,35 @@ export default async function Dashboard() {
     redirect('/pending');
   }
 
-  const userId = session.user.id;
   const isSuperAdmin = session.user.role === 'super_admin';
 
-  const memberships = await db
-    .select({
-      workspace: workspaces,
-      role: workspaceMembers.role,
-    })
-    .from(workspaceMembers)
-    .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
-    .where(eq(workspaceMembers.userId, userId));
+  // One workspace for the whole page: the context every other page and
+  // the header switcher resolve (god mode included), not an unordered
+  // memberships[0]. The onboarding gate, the card and the signals all
+  // read it (audit I042, deliverables ia:F-05 / PC-04).
+  const ctx = await resolveDashboardContext();
+  const active = ctx ? await getActiveWorkspaceSummary(ctx) : null;
 
-  // Phase 47: bounce to /onboarding when the active workspace hasn't
-  // been set up yet. The wizard itself sets `in_progress` on first
-  // visit so a stuck-pending workspace doesn't loop on every reload.
-  // Workspaces created before P47 default to `completed` so legacy
-  // setups are unaffected.
-  const primaryForOnboarding = memberships[0];
+  // Phase 47 first-run redirect, at most once per workspace: only while
+  // the active workspace is still 'pending', only for someone who can
+  // run the wizard, and claiming the redirect moves it to 'in_progress'.
+  // Non-admins and god-mode visits are never redirected; a non-admin
+  // used to bounce between here and /onboarding indefinitely.
   if (
-    primaryForOnboarding &&
-    primaryForOnboarding.workspace.onboardingStatus !== 'completed'
+    ctx &&
+    active?.workspace.onboardingStatus === 'pending' &&
+    (await claimOnboardingStart(ctx))
   ) {
     redirect('/onboarding');
   }
 
-  // Pick the user's active workspace (matches AppShell logic). Used to
-  // scope the cockpit widgets.
-  const userRows = await db
-    .select({ activeWorkspaceId: users.activeWorkspaceId })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-  const activeWsId = userRows[0]?.activeWorkspaceId ?? null;
-  const activeMembership =
-    (activeWsId !== null
-      ? memberships.find((m) => m.workspace.id === BigInt(activeWsId))
-      : null) ?? memberships[0];
-
-  const signals = activeMembership
-    ? await getDashboardSignals({ workspaceId: activeMembership.workspace.id })
-    : null;
-
-  const primary = memberships[0];
+  const signals = ctx ? await getDashboardSignals(ctx) : null;
+  const showSetupLink =
+    ctx !== null &&
+    active !== null &&
+    !active.isGodMode &&
+    active.workspace.onboardingStatus !== 'completed' &&
+    canAdminWorkspace(ctx);
   const visibleModules = MODULES.filter((m) => !m.superAdminOnly || isSuperAdmin);
 
   return (
@@ -231,24 +237,34 @@ export default async function Dashboard() {
             <p className="profile-card-meta">{session.user.email}</p>
           </article>
 
-          {primary ? (
+          {active ? (
             <article className="profile-card">
               <div className="profile-card-header">
                 <span className="profile-card-eyebrow">Active workspace</span>
-                <span className={`role-pill role-pill-${primary.role}`}>
-                  {primary.role}
-                </span>
+                {active.isGodMode ? (
+                  <span className="role-pill role-pill-super_admin">god mode</span>
+                ) : (
+                  <span className={`role-pill role-pill-${active.memberRole}`}>
+                    {active.memberRole}
+                  </span>
+                )}
               </div>
-              <h2 className="profile-card-title">{primary.workspace.name}</h2>
+              <h2 className="profile-card-title">{active.workspace.name}</h2>
               <p className="profile-card-meta">
-                <code>{primary.workspace.slug}</code>
-                {memberships.length > 1 ? (
+                <code>{active.workspace.slug}</code>
+                {active.workspace.status === 'archived' ? ' · archived' : null}
+                {active.membershipCount > 1 ? (
                   <>
                     {' · '}
-                    member of {memberships.length} workspaces
+                    member of {active.membershipCount} workspaces
                   </>
                 ) : null}
               </p>
+              {showSetupLink ? (
+                <p className="profile-card-meta">
+                  <Link href="/onboarding">Continue workspace setup</Link>
+                </p>
+              ) : null}
             </article>
           ) : (
             <article className="profile-card profile-card-empty">
@@ -263,7 +279,7 @@ export default async function Dashboard() {
 
         {signals ? <CockpitGrid signals={signals} /> : null}
 
-        {primary ? (
+        {active ? (
           <section className="dashboard-modules">
             <div className="section-header">
               <h2 className="section-title">Modules</h2>

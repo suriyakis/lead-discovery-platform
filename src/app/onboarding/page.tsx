@@ -30,9 +30,9 @@ import {
 import { canAdminWorkspace } from '@/lib/services/context';
 import {
   OnboardingError,
+  claimOnboardingStart,
   getOnboardingState,
   markOnboardingComplete,
-  markOnboardingStarted,
   setSetupMode,
   type OnboardingStepKey,
   type SetupMode,
@@ -69,9 +69,11 @@ export default async function OnboardingPage({
     throw err;
   }
 
-  // Bump 'pending' → 'in_progress' so the dashboard stops nagging once
-  // the operator has at least seen the wizard.
-  await markOnboardingStarted(ctx);
+  // Bump 'pending' → 'in_progress' when an admin of this workspace opens
+  // the wizard directly, so the dashboard does not send them here again.
+  // Non-admins and god-mode visits leave the status alone: they must not
+  // use up the owner's one first-run redirect.
+  await claimOnboardingStart(ctx);
 
   const state = await getOnboardingState(ctx);
   const isAdmin = canAdminWorkspace(ctx);
