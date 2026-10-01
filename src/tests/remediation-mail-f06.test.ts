@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { and, asc, eq, sql } from 'drizzle-orm';
+import { auditRowOrigin } from '@/lib/audit-scope';
 import { db } from '@/lib/db/client';
 import { featureFlags } from '@/lib/db/schema/admin';
 import { auditLog, usageLog } from '@/lib/db/schema/audit';
@@ -1129,6 +1130,9 @@ describe('mail remediation: apply and revert', { timeout: 90000 }, () => {
       .select()
       .from(auditLog)
       .where(and(eq(auditLog.kind, 'remediation.apply'), sql`${auditLog.workspaceId} IS NULL`));
+    // /admin/audit files them under ?workspace=platform, not as rows of a
+    // deleted workspace (PC-03).
+    expect(platform.every((a) => auditRowOrigin(a) === 'platform')).toBe(true);
     expect(platform.map((a) => (a.payload as { category: string }).category).sort()).toEqual([
       'R0',
       'R1',
@@ -1204,6 +1208,7 @@ describe('mail remediation: apply and revert', { timeout: 90000 }, () => {
       .from(auditLog)
       .where(and(eq(auditLog.kind, 'remediation.revert'), sql`${auditLog.workspaceId} IS NULL`));
     expect(platform).toHaveLength(1);
+    expect(auditRowOrigin(platform[0]!)).toBe('platform');
   });
 
   it('honours per-row and per-category decisions; R8 credits and reverts through the ledger', async () => {

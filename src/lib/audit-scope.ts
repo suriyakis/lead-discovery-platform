@@ -1,17 +1,20 @@
 // Where an audit row is filed, as the super-admin console shows it (PC-03).
 //
 // audit_log.workspace_id is NULL for two different reasons:
-//   1. platform-scope events: recordPlatformAuditEvent() and the refile
-//      remediation write them with no workspace on purpose (users,
+//   1. platform-scope events: recordPlatformAuditEvent() and the
+//      remediation scripts (the PC-03 refile, the F-06 mail repair's
+//      auditInTx) write them with no workspace on purpose (users,
 //      pre-authorisations, platform roles, keys, settings, background
-//      jobs);
+//      jobs, remediation runs);
 //   2. tenant events whose workspace was deleted later: the FK is
 //      ON DELETE SET NULL, so those rows survive but lose their pointer
 //      (see admin.deleteWorkspace, which files an admin.workspace.delete
 //      row with the workspace's name and slug first).
 // The two are told apart by kind. Every kind written at platform scope
 // must be listed here; src/tests/admin-console-static.test.ts fails when
-// a recordPlatformAuditEvent() call uses a kind that is missing. Keep the
+// a recordPlatformAuditEvent() call, or any object literal with
+// `workspaceId: null` and a literal `kind` (an insert(auditLog) row, an
+// auditInTx() event, a seeded row), uses a kind that is missing. Keep the
 // list append-only: rows of a kind the code no longer writes still exist
 // and must keep reading as platform events.
 //
@@ -42,6 +45,12 @@ export const PLATFORM_AUDIT_KINDS = [
   // PC-03 remediation runs (src/lib/remediation/refile-platform-audit.ts)
   'admin.audit.refile',
   'admin.audit.refile_revert',
+  // flow:F-06 mail remediation runs: the platform-scope row of each
+  // --apply category and of each --revert (scripts/remediation/lib/
+  // engine.ts auditInTx). Their per-workspace summary rows of the same
+  // kinds carry a workspace and read as workspace rows.
+  'remediation.apply',
+  'remediation.revert',
 ] as const;
 
 export type PlatformAuditKind = (typeof PLATFORM_AUDIT_KINDS)[number];

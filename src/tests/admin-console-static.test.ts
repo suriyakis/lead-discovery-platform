@@ -132,7 +132,10 @@ describe('platform audit kinds are registered (audit-scope.ts)', () => {
   // kind is in PLATFORM_AUDIT_KINDS; anything else reads as a row orphaned
   // by a workspace delete. So every kind written at platform scope must be
   // listed — and written as a literal, so this check can see it. The list
-  // is append-only: rows of a kind no longer written still exist.
+  // is append-only: rows of a kind no longer written still exist. (The
+  // first version only saw recordPlatformAuditEvent() and a literal
+  // insert(auditLog) call, so the F-06 remediation's auditInTx rows
+  // slipped past it and read as 'no workspace' in /admin/audit.)
   const SOURCE_DIRS = [path.join(ROOT, 'src'), path.join(ROOT, 'scripts')];
   const sources = SOURCE_DIRS.flatMap((d) => walk(d))
     .map((full) => ({
@@ -143,6 +146,38 @@ describe('platform audit kinds are registered (audit-scope.ts)', () => {
         .replace(/^\s*\/\/.*$/gm, ''),
     }))
     .filter((f) => !f.rel.startsWith('src/tests/'));
+
+  /**
+   * The keys of the object literal around `at`, at that object's own
+   * nesting level: nested objects (a payload) are cut out, so their keys
+   * never count. null when `at` is not inside braces.
+   */
+  function enclosingObjectOwnText(src: string, at: number): string | null {
+    let depth = 0;
+    let start = -1;
+    for (let i = at - 1; i >= 0; i--) {
+      if (src[i] === '}') depth++;
+      else if (src[i] === '{') {
+        if (depth === 0) {
+          start = i;
+          break;
+        }
+        depth--;
+      }
+    }
+    if (start < 0) return null;
+    let own = '';
+    depth = 0;
+    for (let i = start + 1; i < src.length; i++) {
+      const ch = src[i]!;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        if (depth === 0) return own;
+        depth--;
+      } else if (depth === 0) own += ch;
+    }
+    return null;
+  }
 
   function writtenPlatformKinds(): { kinds: string[]; nonLiteral: string[] } {
     const kinds: string[] = [];
@@ -156,10 +191,19 @@ describe('platform audit kinds are registered (audit-scope.ts)', () => {
         if (k) kinds.push(k[1]!);
         else nonLiteral.push(`${f.rel}@${m.index}`);
       }
-      // Direct inserts at platform scope: insert(auditLog).values({ workspaceId: null, ... kind: '...' })
-      const insertRe =
-        /insert\(auditLog\)\s*\.values\(\{\s*workspaceId:\s*null,[^}]*?kind:\s*'([^']+)'/g;
-      for (const m of f.src.matchAll(insertRe)) kinds.push(m[1]!);
+      // Any other row filed at platform scope: an object literal with
+      // `workspaceId: null` and a kind — insert(auditLog).values({ ... }),
+      // the remediation engine's auditInTx(tx, { ... }) (flow:F-06), a
+      // seeded row. The helpers that only forward a caller's kind are
+      // checked at their call sites instead.
+      for (const m of f.src.matchAll(/\bworkspaceId:\s*null\b/g)) {
+        const own = enclosingObjectOwnText(f.src, m.index!);
+        if (own === null || !/\bkind:/.test(own)) continue;
+        const k = /\bkind:\s*'([^']+)'/.exec(own);
+        if (k) kinds.push(k[1]!);
+        else if (!(f.rel === 'src/lib/services/audit.ts' && /\bkind:\s*event\.kind\b/.test(own)))
+          nonLiteral.push(`${f.rel}@${m.index}`);
+      }
     }
     return { kinds, nonLiteral };
   }
@@ -171,13 +215,17 @@ describe('platform audit kinds are registered (audit-scope.ts)', () => {
         'user.set_account_status',
         'admin.workspace.delete',
         'admin.audit.refile',
+        'admin.audit.refile_revert',
+        // auditInTx(tx, { workspaceId: null, ... }) in the F-06 scripts
+        'remediation.apply',
+        'remediation.revert',
       ]),
     );
   });
 
   it('every kind written at platform scope is in PLATFORM_AUDIT_KINDS', () => {
     const { kinds, nonLiteral } = writtenPlatformKinds();
-    expect(nonLiteral, 'recordPlatformAuditEvent needs a literal kind').toEqual([]);
+    expect(nonLiteral, 'a platform-scope audit write needs a literal kind').toEqual([]);
     const known = new Set<string>(PLATFORM_AUDIT_KINDS);
     const missing = [...new Set(kinds)].filter((k) => !known.has(k)).sort();
     expect(missing, 'add these to PLATFORM_AUDIT_KINDS in src/lib/audit-scope.ts').toEqual([]);

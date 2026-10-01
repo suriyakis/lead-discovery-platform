@@ -367,4 +367,15 @@ describe('rows with no workspace: platform events vs deleted workspaces', () => 
     const all = PLATFORM_AUDIT_KINDS as readonly string[];
     for (const k of PLATFORM_SCOPE_KINDS) expect(all).toContain(k);
   });
+
+  it('the F-06 mail remediation run rows read as platform events, not deleted workspaces', () => {
+    for (const kind of ['remediation.apply', 'remediation.revert']) {
+      const row = { workspaceId: null, kind };
+      expect(auditRowOrigin(row)).toBe('platform');
+      expect(auditRowScopeLabel(row)).toBe('platform');
+      expect(auditRowScopeHint(row)).not.toMatch(/workspace was deleted/);
+      // Their per-workspace summary rows stay workspace rows.
+      expect(auditRowOrigin({ workspaceId: 7n, kind })).toBe('workspace');
+    }
+  });
 });

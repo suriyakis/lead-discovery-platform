@@ -64,8 +64,9 @@ Own-domain rows are listed first.
   (migration 0065); the run itself in `remediation_runs` (id = batch id, so a
   report can be applied once; re-applying it reports "already applied" and
   changes nothing). Platform-scoped `remediation.apply` / `remediation.revert`
-  audit events, a workspace summary event, and a `suppression.revoke` event
-  per lifted suppression.
+  audit events (listed in `PLATFORM_AUDIT_KINDS`, so `/admin/audit` shows
+  them under `?workspace=platform`), a workspace summary event, and a
+  `suppression.revoke` event per lifted suppression.
 - **Revert** restores every logged row in one transaction. A row someone
   changed after the apply is a conflict: the revert aborts and lists them,
   or with `--skip-conflicts` reverts everything else (status
