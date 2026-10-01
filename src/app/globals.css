@@ -98,6 +98,7 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.75rem;
   height: var(--header-h);
   padding: 0 1.5rem;
   border-bottom: 1px solid oklch(0.3 0.025 250 / 0.6);
@@ -108,6 +109,7 @@ a:hover {
 
 .brand-link {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 0.625rem;
   text-decoration: none;
@@ -139,10 +141,33 @@ a:hover {
   letter-spacing: -0.01em;
 }
 
+/* min-width: 0 lets the right slot shrink (the workspace select gives
+   way first) instead of pushing the header wider than a phone (I144). */
 .brand-header-right {
   display: inline-flex;
   align-items: center;
   gap: 0.75rem;
+  min-width: 0;
+}
+
+/* Account controls: inline email + Sign out on desktop; on a phone they
+   fold into a small <details> menu (no JS) — see the DS-03 block. */
+.header-account-menu {
+  display: none;
+}
+
+/* Form controls never outgrow their column (DS-03). */
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
+/* Browsers give <fieldset> min-width: min-content, so one select with a
+   long option label made the whole fieldset (and page) wider than a
+   phone — autopilot, knowledge/new, products/autofill. */
+fieldset {
+  min-width: 0;
 }
 
 main {
@@ -156,16 +181,20 @@ main {
   min-height: 100vh;
 }
 
+/* The content column is minmax(0, 1fr), not 1fr: a bare 1fr track has an
+   `auto` minimum, so one wide table or long URL grew the column — and the
+   page — past the viewport. With a 0 minimum the column stays at the
+   viewport width and wide content scrolls inside its own box (DS-03). */
 .app-body {
   display: grid;
-  grid-template-columns: 16rem 1fr;
+  grid-template-columns: 16rem minmax(0, 1fr);
   align-items: start;
   min-height: calc(100vh - 4.5rem);
 }
 
 @media (max-width: 800px) {
   .app-body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -555,6 +584,7 @@ select option {
    to 72rem — the grid already constrains the column. Override that. */
 .app-main {
   width: 100%;
+  min-width: 0;
   padding: 2rem 1.5rem 4rem;
   max-width: none;
 }
@@ -570,6 +600,8 @@ main h1 {
   font-size: 1.875rem;
   font-weight: 500;
   letter-spacing: -0.02em;
+  /* A long subject or company name breaks instead of widening the page. */
+  overflow-wrap: anywhere;
 }
 
 /* Default section card + section heading — for BARE elements only (I149).
@@ -611,8 +643,18 @@ main dt {
   font-size: 0.875rem;
 }
 
+/* Values are often URLs, e-mail addresses or message ids with no break
+   opportunity. break-word only splits a word that would overflow its
+   line, so desktop layout is untouched; on a phone the DS-03 block makes
+   the column shrinkable and switches to `anywhere`. */
 main dd {
   margin: 0;
+  overflow-wrap: break-word;
+}
+
+/* Same for addresses and links shown as text anywhere in the content. */
+:where(main) :is(a[href^='mailto:'], a[href^='http://'], a[href^='https://']) {
+  overflow-wrap: break-word;
 }
 
 button {
@@ -1130,7 +1172,7 @@ code {
 /* Follow-up step grid */
 .followup-step-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
   gap: 0.75rem;
   margin: 0.25rem 0;
 }
@@ -1427,7 +1469,7 @@ code {
 .cockpit-grid-inner {
   display: grid;
   gap: 0.85rem;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   margin-bottom: 2rem;
 }
 
@@ -1925,14 +1967,10 @@ code {
   line-height: 1.45;
 }
 
-.inline-form {
-  display: inline-flex;
-}
-
 /* ---- Active-providers grid (Phase 45) -------------------------- */
 .active-providers-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   gap: 1rem;
   margin-top: 1rem;
 }
@@ -2058,7 +2096,7 @@ code {
 /* ---- Plan picker (Phase 48) -------------------------------- */
 .plan-picker {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 1rem;
   margin-top: 0.5rem;
 }
@@ -2194,10 +2232,16 @@ code {
    comes only from a modifier: -good, -bad, -warn (amber — what the bare
    badge used to be) or -info. I151: amber-by-default made every status
    read as a warning, and .badge-warn was used on six pages but never
-   defined. flex-shrink: 0 so a badge in a flex row never squashes. */
+   defined. flex-shrink: 0 so a badge in a flex row never squashes.
+   max-width + overflow-wrap (DS-03): a long badge ("mailbox: Sales ·
+   sales@…") wraps inside its row instead of running off a phone screen.
+   break-word, not anywhere: it leaves the badge's min-content alone, so
+   desktop table columns keep their widths ("CANCELED" must not split). */
 .badge {
   display: inline-block;
   flex-shrink: 0;
+  max-width: 100%;
+  overflow-wrap: break-word;
   font-family: var(--brand-mono);
   font-size: 0.8rem;
   text-transform: uppercase;
@@ -2233,21 +2277,38 @@ code {
   color: var(--brand-status-rejected);
 }
 
-/* ---- Settings nav ---- */
+/* ---- Settings nav ----
+   A horizontal scroll-snap strip: on a phone the ~560px of tabs scroll
+   inside the strip instead of widening the page (I145). The baseline is
+   an inset shadow rather than border-bottom + a -1px tab margin, which a
+   scroll container would clip; the active tab's 2px underline still
+   covers it, so desktop looks the same. */
 .settings-nav {
   display: flex;
   gap: 0.5rem;
   margin: 1.5rem 0 1rem;
-  border-bottom: 1px solid var(--brand-border);
   padding-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--brand-border);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+/* The strip clips anything outside it, so draw the focus ring inside. */
+.settings-nav a:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: -2px;
 }
 
 .settings-nav a {
+  flex: 0 0 auto;
   padding: 0.5rem 1rem;
   color: var(--brand-muted);
   text-decoration: none;
+  white-space: nowrap;
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  scroll-snap-align: start;
   transition: color 0.15s ease, border-color 0.15s ease;
 }
 
@@ -2261,9 +2322,13 @@ code {
   border-bottom-color: var(--brand-primary);
 }
 
-/* ---- Inline forms (settings) ---- */
+/* ---- Inline forms (settings, admin) ----
+   The one definition (an earlier `display: inline-flex` duplicate was
+   dead — this later rule always won). Fields wrap onto a new line when
+   they no longer fit, instead of pushing the page sideways (I146). */
 .inline-form {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 0.75rem;
   margin: 1rem 0 0.5rem;
@@ -2687,10 +2752,14 @@ code {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+  max-width: 100%;
   font-size: 0.875rem;
 }
 
+/* A select with long option labels (workspace names) shrinks inside its
+   label rather than pushing the filter bar off a phone screen. */
 .leads-controls select {
+  min-width: 0;
   font: inherit;
   padding: 0.375rem 0.5rem;
   border: 1px solid var(--brand-border);
@@ -2759,6 +2828,7 @@ code {
 
 .generate-draft-form {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.375rem;
 }
@@ -2941,7 +3011,7 @@ code {
 /* ---- Pipeline kanban ---- */
 .kanban {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 0.75rem;
   margin-top: 1rem;
 }
@@ -3146,7 +3216,7 @@ code {
 
 .modules-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 1rem;
 }
 
@@ -3378,7 +3448,7 @@ code {
 
 .profile-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 1rem;
 }
 
@@ -3498,7 +3568,7 @@ code {
 
 .module-tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   gap: 0.85rem;
 }
 
@@ -3888,7 +3958,7 @@ code {
 }
 
 .landing-module-grid {
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
 }
 
 /* Slim down the brand-footer-band when used at the end of the
@@ -3941,7 +4011,7 @@ code {
 /* ---- Metric cards (deliverability + future dashboards) --------- */
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   gap: 0.75rem;
 }
 
@@ -4149,7 +4219,7 @@ code {
 /* ---- Reply classification card grid --------------------------- */
 .reply-class-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   gap: 0.5rem;
 }
 
@@ -4357,7 +4427,7 @@ code {
 /* ---- Summary metric cards ---- */
 .mail-dashboard {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
   gap: 0.75rem;
   margin-bottom: 1rem;
   max-width: none !important;
@@ -5034,7 +5104,7 @@ code {
 /* Dashboard cards */
 .contacts-dashboard {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   gap: 0.75rem;
 }
 .contacts-metric {
@@ -6047,7 +6117,7 @@ code {
 
 .crawl-plan-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   gap: 0.95rem;
 }
 .crawl-plan-form label {
@@ -6104,7 +6174,7 @@ code {
 
 .crawl-checkbox-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 0.45rem;
 }
 .crawl-checkbox-row {
@@ -6477,7 +6547,7 @@ code {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   gap: 0.85rem;
 }
 .product-card {
@@ -6568,7 +6638,7 @@ code {
 /* P62-20 - connector template grid (user-facing /connectors page) */
 .connector-template-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
   gap: 0.95rem;
   margin-top: 1rem;
 }
@@ -7051,7 +7121,9 @@ code {
 .bulk-selectable-list li {
   position: relative;
   display: grid;
-  grid-template-columns: 1.5rem 1fr;
+  /* minmax(0, …): the one-line snippet / reason rows below truncate with
+     an ellipsis; a bare 1fr let their nowrap text widen the row instead. */
+  grid-template-columns: 1.5rem minmax(0, 1fr);
   column-gap: 0.85rem;
   row-gap: 0.3rem;
   align-items: start;
@@ -7327,7 +7399,7 @@ code {
 
 .admin-totals {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr));
   gap: 0.75rem;
   margin: 1rem 0 1.5rem;
 }
@@ -7455,6 +7527,278 @@ code {
   display: grid;
   gap: 0.5rem;
   margin: 0 0 1.25rem;
+}
+
+/* ---- Mobile overflow containment (DS-03: I059, I144, I145, I146) ----
+   Every route must fit a 390px phone without sideways page scroll
+   (e2e/smoke.spec.ts checks scrollWidth on all of them). Desktop layout
+   is unchanged: each rule below either only bites when content would
+   overflow, or sits behind a max-width media query. */
+
+/* Wide tables scroll inside their own box (<TableScroll>). */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* /communication/[threadId]: lead context | conversation | reply. Used
+   to be an inline-style grid, which no media query can reach (I059). */
+.thread-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.6fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+/* Original + translation of one message, side by side. */
+.thread-bilingual {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+}
+
+/* CommunicationReply: To + Signature. */
+.reply-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+/* /mailbox/signatures browse mode: list | preview. */
+.signatures-browse {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+/* /admin/providers: embeddings / web search / vector storage selects. */
+.provider-defaults-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.75rem;
+}
+
+/* /communication/follow-ups row: details | schedule + actions. */
+.followup-row {
+  align-items: flex-start;
+}
+
+.followup-row-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+  min-width: 11rem;
+}
+
+@media (max-width: 900px) {
+  .thread-layout,
+  .signatures-browse {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 800px) {
+  /* Header: tighter gutters; the workspace select is the part that gives
+     way (ellipsis) and the account controls fold into a menu. */
+  .brand-header {
+    padding: 0 1rem;
+  }
+
+  .brand-header-right {
+    gap: 0.5rem;
+  }
+
+  .workspace-switcher {
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+
+  .workspace-switcher select {
+    min-width: 0;
+    width: 100%;
+    max-width: 10rem;
+    text-overflow: ellipsis;
+  }
+
+  .header-account-inline {
+    display: none;
+  }
+
+  .header-account-menu {
+    display: block;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .header-account-menu > summary {
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    padding: 0.375rem;
+  }
+
+  .header-account-menu > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .header-account-menu-panel {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    right: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+    width: max-content;
+    min-width: 12rem;
+    max-width: calc(100vw - 2rem);
+    padding: 0.875rem 1rem;
+    background: var(--brand-card-elevated);
+    border: 1px solid var(--brand-border);
+    border-radius: var(--brand-radius);
+    box-shadow: var(--brand-shadow);
+  }
+
+  .header-account-menu-panel .who {
+    overflow-wrap: anywhere;
+  }
+
+  /* Inline-form fields get a floor to wrap at: with max-width: 100% a
+     control no longer props its label open (its min-content counts as 0),
+     so without one the fields would squeeze to slivers instead of
+     wrapping. Phone-only — on desktop the forms keep their sizing. */
+  .inline-form label {
+    min-width: min(10rem, 100%);
+  }
+
+  /* Definition lists: the value column may shrink to what is left after
+     the label, and long addresses / ids / URLs break anywhere in it. */
+  main dl {
+    grid-template-columns: max-content minmax(0, 1fr);
+  }
+
+  main dd {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  :where(main) :is(a[href^='mailto:'], a[href^='http://'], a[href^='https://']) {
+    overflow-wrap: anywhere;
+  }
+
+  /* A row of ids, URLs, dates and badges is wider than a phone: wrap it,
+     and let a source URL or address break inside its own item. */
+  .profile-list .meta {
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+  }
+
+  .profile-list .meta > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* One content gutter instead of .app-main's plus .dashboard-wrap's. */
+  .app-main {
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .app-main > .dashboard-wrap {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  /* Before hydration the sidebar's groups still carry their desktop
+     open state; keep the inactive ones visually collapsed until
+     Sidebar's effect closes them for real, so the page doesn't jump. */
+  .sidebar:not([data-compact-ready])
+    .sidebar-group:not(.sidebar-group-active, .sidebar-group-emphasize)
+    > .sidebar-list {
+    display: none;
+  }
+
+  .sidebar:not([data-compact-ready])
+    .sidebar-group:not(.sidebar-group-active, .sidebar-group-emphasize)
+    > summary::after {
+    content: '▸';
+  }
+
+  /* Platform console: same single gutter, and a two-row top bar —
+     brand + "Back to app", then the section tabs as a scroll strip —
+     instead of three wrapped rows of sticky chrome. */
+  .admin-topbar {
+    gap: 0.5rem 0.75rem;
+    padding: 0.5rem 1rem;
+  }
+
+  .admin-topbar nav {
+    order: 1;
+    flex: 1 0 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .admin-nav-link {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .admin-nav-link:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .admin-main {
+    padding: 1rem;
+  }
+
+  .admin-main > .dashboard-wrap {
+    padding: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .provider-defaults-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .thread-bilingual,
+  .reply-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Recipe editor: Name and the Active toggle stack. */
+  .recipe-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Review / draft decisions: the field above its button. */
+  .approve-form,
+  .reject-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .approve-form button,
+  .reject-form button {
+    align-self: flex-start;
+  }
+
+  .followup-row-side {
+    min-width: 0;
+    width: 100%;
+    align-items: flex-start;
+  }
 }
 
 /* ---- Reduced motion (I177) ----

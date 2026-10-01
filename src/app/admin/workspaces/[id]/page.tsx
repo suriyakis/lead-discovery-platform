@@ -37,6 +37,7 @@ import { workspaces, workspaceMembers } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { describeActionError, withFlash } from '@/lib/action-errors';
+import { TableScroll } from '@/components/TableScroll';
 
 const KNOWN_FEATURE_KEYS = [
   'crm.hubspot',
@@ -434,45 +435,49 @@ export default async function AdminWorkspaceDetail({
           {usage30d.length > 0 ? (
             <details style={{ marginTop: '0.75rem' }}>
               <summary>Usage breakdown (30d)</summary>
-              <table className="data-table" style={{ marginTop: '0.5rem' }}>
-                <thead>
-                  <tr><th>Kind</th><th>Provider</th><th>Events</th><th>Est. cost</th></tr>
-                </thead>
-                <tbody>
-                  {usage30d.map((r) => (
-                    <tr key={`${r.kind}-${r.provider}`}>
-                      <td><code>{r.kind}</code></td>
-                      <td>{r.provider}</td>
-                      <td>{r.eventCount}</td>
-                      <td>€{(r.totalCostCents / 100).toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <TableScroll label="Usage breakdown, last 30 days">
+                <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                  <thead>
+                    <tr><th>Kind</th><th>Provider</th><th>Events</th><th>Est. cost</th></tr>
+                  </thead>
+                  <tbody>
+                    {usage30d.map((r) => (
+                      <tr key={`${r.kind}-${r.provider}`}>
+                        <td><code>{r.kind}</code></td>
+                        <td>{r.provider}</td>
+                        <td>{r.eventCount}</td>
+                        <td>€{(r.totalCostCents / 100).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableScroll>
             </details>
           ) : null}
 
           {tokenTx.length > 0 ? (
             <details style={{ marginTop: '0.5rem' }}>
               <summary>Token ledger (last {tokenTx.length})</summary>
-              <table className="data-table" style={{ marginTop: '0.5rem' }}>
-                <thead>
-                  <tr><th>When</th><th>Change</th><th>Balance after</th><th>Kind</th><th>Reason</th></tr>
-                </thead>
-                <tbody>
-                  {tokenTx.map((t) => (
-                    <tr key={t.id.toString()}>
-                      <td>{t.createdAt.toLocaleString()}</td>
-                      <td className={t.delta > 0n ? 'delta-good' : 'delta-bad'}>
-                        {t.delta > 0n ? '+' : ''}{t.delta.toLocaleString()}
-                      </td>
-                      <td>{t.balanceAfter.toLocaleString()}</td>
-                      <td><code>{t.kind}</code></td>
-                      <td>{t.reason}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <TableScroll label="Token ledger">
+                <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                  <thead>
+                    <tr><th>When</th><th>Change</th><th>Balance after</th><th>Kind</th><th>Reason</th></tr>
+                  </thead>
+                  <tbody>
+                    {tokenTx.map((t) => (
+                      <tr key={t.id.toString()}>
+                        <td>{t.createdAt.toLocaleString()}</td>
+                        <td className={t.delta > 0n ? 'delta-good' : 'delta-bad'}>
+                          {t.delta > 0n ? '+' : ''}{t.delta.toLocaleString()}
+                        </td>
+                        <td>{t.balanceAfter.toLocaleString()}</td>
+                        <td><code>{t.kind}</code></td>
+                        <td>{t.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableScroll>
             </details>
           ) : null}
         </section>

@@ -6,6 +6,7 @@
 // prop needed. Public pages (signed-out landing, /pending) bypass the
 // shell and render BrandHeader on their own.
 
+import { UserCircle } from 'lucide-react';
 import { AssistantPanel } from './AssistantPanel';
 import { BrandHeader } from './BrandHeader';
 import { CommandPalette } from './CommandPalette';
@@ -209,12 +210,29 @@ function DefaultRightSlot({
       {myWorkspaces.length > 1 ? (
         <WorkspaceSwitcher workspaces={myWorkspaces} />
       ) : null}
-      <span className="who">{email}</span>
-      <form action={signOutAction}>
+      {/* Desktop: e-mail + Sign out inline. Below 800px CSS hides these
+          and shows the compact menu instead — the full e-mail and a
+          button would not fit a phone-width header (I144). Plain
+          <details>, so it works before hydration and without JS. */}
+      <span className="who header-account-inline">{email}</span>
+      <form action={signOutAction} className="header-account-inline">
         <button type="submit" className="ghost-btn">
           Sign out
         </button>
       </form>
+      <details className="header-account-menu">
+        <summary className="ghost-btn" aria-label="Account menu" title={email}>
+          <UserCircle className="lucide" aria-hidden="true" />
+        </summary>
+        <div className="header-account-menu-panel">
+          <span className="who">{email}</span>
+          <form action={signOutAction}>
+            <button type="submit" className="ghost-btn">
+              Sign out
+            </button>
+          </form>
+        </div>
+      </details>
     </>
   );
 }

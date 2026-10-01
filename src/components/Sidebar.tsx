@@ -11,7 +11,13 @@
 //
 // Active route is auto-detected via usePathname(), so pages don't need
 // to pass an `active` prop.
+//
+// Below 800px the sidebar stacks ABOVE the page content (globals.css), so
+// every open group pushes the page further down. There only the group
+// holding the current page (and Emergency) start open — see
+// sectionStartsOpen(). A real mobile drawer is a later phase.
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -169,11 +175,51 @@ export interface SidebarProps {
   };
 }
 
+/** Matches the breakpoint where globals.css stacks the sidebar on top. */
+export const COMPACT_SIDEBAR_QUERY = '(max-width: 800px)';
+
+/**
+ * Whether a nav group starts open.
+ *
+ * Desktop: its configured default, or because it holds the current page.
+ * Compact (phone): only the group holding the current page — plus the
+ * emphasized Emergency group, so the autopilot kill switch stays one tap
+ * away. The user can still open any group by tapping its title.
+ */
+export function sectionStartsOpen(
+  section: Pick<NavSection, 'defaultOpen' | 'emphasize'>,
+  hasActiveChild: boolean,
+  compact: boolean,
+): boolean {
+  if (hasActiveChild) return true;
+  if (compact) return Boolean(section.emphasize);
+  return Boolean(section.defaultOpen);
+}
+
+/**
+ * Tracks the compact breakpoint. `ready` turns true after the first
+ * client check; until then (SSR + first paint) globals.css keeps the
+ * inactive groups visually collapsed on a phone, so nothing jumps when
+ * the effect closes them for real.
+ */
+function useCompactSidebar(): { compact: boolean; ready: boolean } {
+  const [state, setState] = useState({ compact: false, ready: false });
+  useEffect(() => {
+    const mq = window.matchMedia(COMPACT_SIDEBAR_QUERY);
+    const sync = () => setState({ compact: mq.matches, ready: true });
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+  return state;
+}
+
 export function Sidebar({
   isSuperAdmin = false,
   navCounts,
 }: Readonly<SidebarProps>) {
   const pathname = usePathname() ?? '';
+  const { compact, ready } = useCompactSidebar();
   const visibleSections = SECTIONS.filter(
     (s) => !s.superAdminOnly || isSuperAdmin,
   );
@@ -183,7 +229,7 @@ export function Sidebar({
   const activeHref = bestMatch(allItems, pathname);
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" data-compact-ready={ready ? '' : undefined}>
       <SidebarBrand />
 
       <SidebarList items={PINNED} activeHref={activeHref} navCounts={navCounts} />
@@ -194,6 +240,7 @@ export function Sidebar({
           section={s}
           activeHref={activeHref}
           hasActiveChild={s.items.some((it) => it.href === activeHref)}
+          compact={compact}
           navCounts={navCounts}
         />
       ))}
@@ -216,19 +263,26 @@ function SidebarSection({
   section,
   activeHref,
   hasActiveChild,
+  compact,
   navCounts,
 }: Readonly<{
   section: NavSection;
   activeHref: string | null;
   hasActiveChild: boolean;
+  compact: boolean;
   navCounts?: SidebarProps['navCounts'];
 }>) {
+  const className = [
+    'sidebar-group',
+    section.emphasize ? 'sidebar-group-emphasize' : null,
+    hasActiveChild ? 'sidebar-group-active' : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
   return (
     <details
-      className={
-        section.emphasize ? 'sidebar-group sidebar-group-emphasize' : 'sidebar-group'
-      }
-      open={section.defaultOpen || hasActiveChild}
+      className={className}
+      open={sectionStartsOpen(section, hasActiveChild, compact)}
     >
       <summary>{section.title}</summary>
       <SidebarList items={section.items} activeHref={activeHref} navCounts={navCounts} />

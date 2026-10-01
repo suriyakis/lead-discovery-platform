@@ -1,0 +1,22 @@
+[
+  {
+    "id": "X3",
+    "check": "status",
+    "paths": ["/pipeline/1"],
+    "note": "/pipeline/[id] answers 500 for every lead: a dead query joins contact_associations twice ('Alias … is already used'). Fixed by the Phase 0 lane that deletes the block (flow:F-02 / ia:F-02 / AP-01); remove this entry with it."
+  },
+  {
+    "id": "I115",
+    "check": "pageerror",
+    "match": "Hydration failed",
+    "paths": ["/settings/crm/1"],
+    "note": "The Test-connection <form> is nested inside the Save <form>, which React cannot hydrate. Fixed by DS-04 item 5; remove this entry with it."
+  },
+  {
+    "id": "X5",
+    "check": "pageerror",
+    "match": "Hydration failed",
+    "paths": ["*"],
+    "note": "Intermittent server/client mismatch under `next dev` only (the client expects .app-shell where it finds .brand-header); seen on /drafts, /leads, /pipeline, /pipeline?view=kanban, /review and /communication/follow-ups, and on the base commit too. A production build reports it to the console, not as a page error. Pre-existing; DS-04."
+  }
+]

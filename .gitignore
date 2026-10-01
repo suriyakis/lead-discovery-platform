@@ -34,3 +34,9 @@ docker/data/
 
 # Local docker-compose override (copy from docker-compose.override.yml.example)
 docker-compose.override.yml
+
+# Playwright (e2e/) — run output, HTML report, per-worker sign-in state
+e2e/.results/
+e2e/.report/
+test-results/
+playwright-report/
