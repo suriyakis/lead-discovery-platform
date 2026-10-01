@@ -127,12 +127,21 @@ describe('known issues (e2e/known-issues.json)', () => {
 
   it('knownIssue() matches on path, check and message text only', () => {
     const dev = { devServer: true };
-    expect(knownIssue('/pipeline/1', 'status', '', dev)?.id).toBe('X3');
-    expect(knownIssue('/pipeline/2', 'status', '', dev)).toBeUndefined();
-    expect(knownIssue('/pipeline/1', 'overflow', '', dev)).toBeUndefined();
     expect(knownIssue('/drafts', 'pageerror', 'Error: Hydration failed because …', dev)?.id).toBe('X5');
-    expect(knownIssue('/settings/crm/1', 'pageerror', 'Hydration failed because …', dev)?.id).toBe('I115');
+    expect(knownIssue('/drafts', 'status', '', dev)).toBeUndefined();
+    expect(knownIssue('/settings/crm/1', 'pageerror', 'Hydration failed because …', dev)).toBeUndefined();
     expect(knownIssue('/drafts', 'pageerror', 'TypeError: x is undefined', dev)).toBeUndefined();
+  });
+
+  it('defects fixed in Phase 0 are no longer excused (X3 lead page 500, I115 nested CRM form)', () => {
+    expect(KNOWN_ISSUES.map((k) => k.id)).not.toContain('X3');
+    expect(KNOWN_ISSUES.map((k) => k.id)).not.toContain('I115');
+    for (const devServer of [true, false]) {
+      expect(knownIssue('/pipeline/1', 'status', '', { devServer })).toBeUndefined();
+      expect(
+        knownIssue('/settings/crm/1', 'pageerror', 'Error: Minified React error #418', { devServer }),
+      ).toBeUndefined();
+    }
   });
 
   it('no page error is excused on every route: a new hydration failure elsewhere fails the smoke', () => {
@@ -146,12 +155,9 @@ describe('known issues (e2e/known-issues.json)', () => {
     const msg = 'Error: Hydration failed because …';
     expect(knownIssue('/review', 'pageerror', msg, { devServer: true })?.id).toBe('X5');
     expect(knownIssue('/review', 'pageerror', msg, { devServer: false })).toBeUndefined();
-    // Defects that are real in both (I115) stay tolerated against `next start`,
-    // where React's message is minified (seen in a build + start run).
-    expect(knownIssue('/settings/crm/1', 'pageerror', msg, { devServer: false })?.id).toBe('I115');
+    // A production build minifies React's message; nothing excuses it there.
     const minified =
       'Error: Minified React error #418; visit https://react.dev/errors/418?args[]=HTML&args[]= for the full message';
-    expect(knownIssue('/settings/crm/1', 'pageerror', minified, { devServer: false })?.id).toBe('I115');
     expect(knownIssue('/review', 'pageerror', minified, { devServer: false })).toBeUndefined();
     expect(knownIssue('/dashboard', 'pageerror', minified, { devServer: true })).toBeUndefined();
   });
