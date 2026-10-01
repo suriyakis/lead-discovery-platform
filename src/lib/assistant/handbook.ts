@@ -309,8 +309,8 @@ notification. Available to every member, including viewers.
   Hand-approved drafts can't be queued from the draft page yet (Known
   limitations, I002). (4) is the send-queue Emergency pause on
   ([/mailbox/queue]; an owner or admin switches it off)? For autopilot
-  drafts also check the master switch
-  and the Emergency pause on [/autopilot]. (5) has the daily email limit
+  drafts also check the master switch and the Emergency pause on
+  [/autopilot]. (5) has the daily email limit
   been reached, or is a domain cooldown or the mailbox's business window
   holding it (the queue entry shows why)? (6) is the mailbox paused or
   failing? (7) is the address on [/mailbox/suppression], or did the
@@ -339,7 +339,7 @@ ${KNOWN_LIMITATIONS_HEADING}
 - I004: There is no single switch that stops everything: each Emergency pause stops only its own part (see Autopilot), and follow-ups, manual sends, crawl plans and mailbox sync keep running.
 - I020: The per-product "Autopilot enabled" and "Emergency pause" overrides on [/autopilot] are saved but not applied.
 - I062: Saving the autopilot form on [/connectors/engine] while the Emergency pause is on also switches the autopilot master off; use [/autopilot] instead.
-- I063: After a plan lapses, ticking the Emergency pause on [/autopilot] fails unless every other switch is unticked in the same save; the send-queue pause on [/mailbox/queue] always works.
+- I063: After a plan lapses, ticking the Emergency pause on [/autopilot] fails unless every other switch is unticked in the same save; the send-queue pause on [/mailbox/queue] (owners and admins) always works.
 - I095: A failing mailbox keeps sending but is no longer read, and there is no alert when it starts failing: only the failing badge on its page and the next weekly health report on [/health] show it.
 - I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), and a class cannot be corrected.
 - I019: "Auto-send replies" does nothing yet, and autopilot's "Auto-drain" and "Sync inbound" switches do not control the background drain and sync.
