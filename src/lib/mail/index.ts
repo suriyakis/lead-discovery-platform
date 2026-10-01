@@ -6,6 +6,8 @@
 //
 // Real adapters land in ./smtp-imap.ts (lazy-imported by the factory).
 
+import type { InboundRelevanceSignals } from './relevance';
+
 export interface MailAddress {
   address: string;
   name?: string;
@@ -49,8 +51,14 @@ export interface InboundMessage {
   textBody: string | null;
   htmlBody: string | null;
   receivedAt: Date;
-  /** Decoded headers for audit. */
+  /** Headers for audit, JSON-safe: lower-cased name → unfolded value (an
+   *  array when the header repeats). */
   headers: Record<string, string | string[]>;
+  /** flow:F-01 — relevance signals captured from the raw message at parse
+   *  time (List-*, Precedence, Auto-Submitted, ESP markers, the parsed
+   *  delivery-status report …). Absent for providers that cannot see the
+   *  raw message (the mock); the service then derives them from `headers`. */
+  relevanceSignals?: InboundRelevanceSignals;
   attachments: Array<{
     filename: string;
     contentType: string;

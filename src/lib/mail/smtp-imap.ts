@@ -2,7 +2,7 @@
 
 import nodemailer, { type Transporter } from 'nodemailer';
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
-import { simpleParser } from 'mailparser';
+import { simpleParser, type MailParserOptions } from 'mailparser';
 import type {
   ConnectionTestResult,
   FetchInboundOptions,
@@ -13,6 +13,11 @@ import type {
   OutboundMessage,
   SendResult,
 } from './index';
+import {
+  deliveryStatusText,
+  extractRelevanceSignals,
+  unfoldHeaderValue,
+} from './relevance';
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -190,22 +195,34 @@ export class SmtpImapMailProvider implements IMailProvider {
 
 async function parseFetched(msg: FetchMessageObject): Promise<InboundMessage | null> {
   if (!msg.source) return null;
-  const parsed = await simpleParser(msg.source);
+  return parseRawMessage(msg.source, msg.uid ?? 0);
+}
+
+/**
+ * Parse one raw RFC 5322 message into an InboundMessage. Exported so the
+ * relevance gate can be tested on real .eml fixtures through the real
+ * parser.
+ *
+ * flow:F-01: the relevance signals are captured here, from the raw header
+ * lines and the report parts, because mailparser's structured header map
+ * folds every List-* header into one 'list' object and returns objects for
+ * Content-Type / addresses — the old String() pass stored those as
+ * '[object Object]'. `keepDeliveryStatus` keeps a DSN's
+ * message/delivery-status part as a part we can read instead of dropping
+ * it; its text is appended to the body so the operator still sees it.
+ */
+export async function parseRawMessage(
+  source: Buffer | string,
+  uid = 0,
+): Promise<InboundMessage | null> {
+  const parsed = await simpleParser(source, PARSER_OPTIONS);
 
   const from = pickFirstAddress(parsed.from?.value);
   if (!from) return null;
   const messageId = (parsed.messageId ?? '').trim();
   if (!messageId) return null;
 
-  const headers: Record<string, string | string[]> = {};
-  for (const [key, value] of parsed.headers.entries()) {
-    headers[key] =
-      typeof value === 'string'
-        ? value
-        : Array.isArray(value)
-        ? value.map(String)
-        : String(value);
-  }
+  const headers = jsonSafeHeaders(parsed.headerLines ?? [], parsed.headers);
 
   const referencesRaw = parsed.references;
   const references = Array.isArray(referencesRaw)
@@ -214,8 +231,28 @@ async function parseFetched(msg: FetchMessageObject): Promise<InboundMessage | n
     ? [referencesRaw]
     : [];
 
+  const attachments = (parsed.attachments ?? []).map((a) => ({
+    filename: a.filename ?? 'unnamed',
+    contentType: a.contentType ?? 'application/octet-stream',
+    sizeBytes: a.size ?? 0,
+    content: a.content as Buffer,
+  }));
+
+  const relevanceSignals = extractRelevanceSignals({
+    headers,
+    fromAddress: from.address,
+    parts: attachments.map((a) => ({ contentType: a.contentType, content: a.content })),
+    source: 'parser',
+  });
+
+  let textBody = parsed.text ?? null;
+  const report = deliveryStatusText(attachments);
+  if (report && !(textBody ?? '').includes(report)) {
+    textBody = textBody ? `${textBody.trimEnd()}\n\n${report}\n` : `${report}\n`;
+  }
+
   return {
-    uid: msg.uid ?? 0,
+    uid,
     messageId,
     inReplyTo: parsed.inReplyTo ?? null,
     references,
@@ -223,17 +260,51 @@ async function parseFetched(msg: FetchMessageObject): Promise<InboundMessage | n
     to: collectAddresses(parsed.to),
     cc: collectAddresses(parsed.cc),
     subject: parsed.subject ?? '',
-    textBody: parsed.text ?? null,
+    textBody,
     htmlBody: typeof parsed.html === 'string' ? parsed.html : null,
     receivedAt: parsed.date ?? new Date(),
     headers,
-    attachments: (parsed.attachments ?? []).map((a) => ({
-      filename: a.filename ?? 'unnamed',
-      contentType: a.contentType ?? 'application/octet-stream',
-      sizeBytes: a.size ?? 0,
-      content: a.content as Buffer,
-    })),
+    relevanceSignals,
+    attachments,
   };
+}
+
+/** mailparser supports keepDeliveryStatus (mail-parser.js) but
+ *  @types/mailparser does not declare it. */
+const PARSER_OPTIONS: MailParserOptions & { keepDeliveryStatus: boolean } = {
+  keepDeliveryStatus: true,
+};
+
+/** Headers whose decoded (encoded-word) text is worth keeping over the raw line. */
+const DECODED_TEXT_HEADERS = ['subject', 'from', 'to', 'cc', 'reply-to', 'sender'] as const;
+
+/**
+ * JSON-safe header record: lower-cased name → unfolded raw value, an array
+ * when the header repeats. Built from the raw header lines so List-*,
+ * Content-Type and friends keep their real values; the few human-facing
+ * headers take mailparser's decoded text so encoded words read normally.
+ */
+function jsonSafeHeaders(
+  lines: ReadonlyArray<{ key: string; line: string }>,
+  decoded: ReadonlyMap<string, unknown>,
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const { key, line } of lines) {
+    const name = key.toLowerCase();
+    const value = unfoldHeaderValue(line);
+    const prev = out[name];
+    out[name] = prev === undefined ? value : Array.isArray(prev) ? [...prev, value] : [prev, value];
+  }
+  for (const name of DECODED_TEXT_HEADERS) {
+    if (Array.isArray(out[name])) continue;
+    const value = decoded.get(name);
+    if (typeof value === 'string') {
+      out[name] = value;
+    } else if (value && typeof value === 'object' && typeof (value as { text?: unknown }).text === 'string') {
+      out[name] = (value as { text: string }).text;
+    }
+  }
+  return out;
 }
 
 function pickFirstAddress(

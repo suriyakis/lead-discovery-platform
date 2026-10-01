@@ -542,16 +542,29 @@ describe('ReplyAutoActionsCard', () => {
     expect(html).toContain('Only workspace admins can change these.');
   });
 
-  it('warns while auto-suppress is on, with the 30-day count', () => {
+  it('warns while unsubscribe auto-suppress is on, with the 30-day count', () => {
     const html = render({
-      switches: { ...allOff, autoSuppressBounce: true },
+      switches: { ...allOff, autoSuppressUnsubscribe: true },
       impact: { ...quiet, suppressedAddresses: 2, stillSuppressed: 1, closedLeads: 1 },
     });
-    expect(html).toContain('Automatic suppression currently acts on every synced email');
+    expect(html).toContain('Automatic suppression is on');
+    // flow:F-01: the warning no longer claims it acts on every synced email.
+    expect(html).toContain('It acts only on replies to emails you sent');
+    expect(html).not.toContain('every synced email');
     expect(html).toContain('<strong>2 addresses were</strong>');
     expect(html).toContain('in the last 30 days (1 still suppressed).');
     expect(html).toContain('1 lead was closed automatically.');
     expect(html).toContain('href="/mailbox/suppression"');
+  });
+
+  it('the bounce switch alone shows no suppression warning (inert until F-32) and says so', () => {
+    const html = render({
+      switches: { ...allOff, autoSuppressBounce: true },
+      impact: quiet,
+      action: save,
+    });
+    expect(html).not.toContain('data-testid="reply-auto-actions-warning"');
+    expect(html).toContain('Not active yet: bounce reports are recorded');
   });
 
   it('with suppression off, reports recent activity neutrally and shows no warning', () => {
@@ -560,7 +573,7 @@ describe('ReplyAutoActionsCard', () => {
       impact: { ...quiet, suppressedAddresses: 1, stillSuppressed: 1 },
       action: save,
     });
-    expect(html).not.toContain('Automatic suppression currently acts');
+    expect(html).not.toContain('data-testid="reply-auto-actions-warning"');
     expect(html).toContain('reply auto-actions suppressed 1 address (1 still suppressed)');
   });
 

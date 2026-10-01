@@ -48,6 +48,11 @@ export async function truncateAll(): Promise<void> {
   } catch {
     // ignore — drain is a stability nicety, not a correctness requirement
   }
+  // Same for detached hooks (src/lib/detached.ts), e.g. the reply
+  // handler's learning hook: one still writing during TRUNCATE deadlocked
+  // reply-classifier.test.ts in a full run. settleDetached never throws.
+  const { settleDetached } = await import('@/lib/detached');
+  await settleDetached();
   // RESTART IDENTITY resets sequences. CASCADE handles FKs.
   const ident = TENANT_TABLES.map((t) => `"${t}"`).join(', ');
   await db.execute(sql.raw(`TRUNCATE TABLE ${ident} RESTART IDENTITY CASCADE;`));

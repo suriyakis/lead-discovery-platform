@@ -7,12 +7,15 @@
 // the close_and_suppress branch in outreach-reply-handler.ts — read these
 // switches; nothing else does.
 //
-// X1 / I088: the classifier currently runs over every IMAP-synced message,
+// X1 / I088: the classifier used to run over every IMAP-synced message,
 // not only replies to our outreach, so the suppression switches silently
 // suppressed ordinary correspondents. Changing a switch is therefore
 // admin-only and audited (`reply_auto_actions.changed`), the defaults are
 // off (migration 0062), and getReplyAutoActionsImpact() reports what the
-// auto paths did recently so the settings page can show it.
+// auto paths did recently so the settings page can show it. Since F-01 the
+// auto paths only see mail proven to be about our outreach, suppress only
+// from prospect replies, and bounce suppression is inert until F-32
+// (inbound-relevance.ts autoSuppressionRefusal).
 
 import { z } from 'zod';
 import { and, eq, gt, gte, inArray, isNull, or, sql } from 'drizzle-orm';

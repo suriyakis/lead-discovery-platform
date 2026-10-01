@@ -19,13 +19,13 @@ const ROWS: ReadonlyArray<{ key: ReplyAutoActionKey; title: string; sub: string 
     key: 'autoSuppressUnsubscribe',
     title: 'Suppress the sender on an unsubscribe reply',
     sub:
-      'When an inbound message is classified as an unsubscribe request, add its sender to the suppression list and close their lead. People who click the unsubscribe link in your emails are always suppressed, whatever this says.',
+      'When a reply to one of your emails asks to unsubscribe, add its sender to the suppression list and close their lead. Newsletters and other mail that is not a reply to you never trigger this. People who click the unsubscribe link in your emails are always suppressed, whatever this says.',
   },
   {
     key: 'autoSuppressBounce',
     title: 'Suppress the sender on a bounce',
     sub:
-      'When an inbound message is classified as a bounce, add its sender to the suppression list and close the lead. Recipients your mail server rejects while sending are handled separately.',
+      'Not active yet: bounce reports are recorded on the conversation, but nobody is suppressed or closed automatically until bounces can be matched reliably to the email you sent. Recipients your mail server rejects while sending are handled separately.',
   },
   {
     key: 'autoCloseNegative',
@@ -56,7 +56,9 @@ export function ReplyAutoActionsCard({
   action?: (formData: FormData) => Promise<void>;
 }>) {
   const readOnly = !action;
-  const suppressing = switches.autoSuppressUnsubscribe || switches.autoSuppressBounce;
+  // Bounce auto-suppression is inert until F-32, so only the unsubscribe
+  // switch can suppress anyone today.
+  const suppressing = switches.autoSuppressUnsubscribe;
   const acted = impact.suppressedAddresses > 0 || impact.closedLeads > 0;
 
   const body = (
@@ -79,8 +81,8 @@ export function ReplyAutoActionsCard({
           <div>
             <p className="config-row-title">Automatic suppression is on</p>
             <p className="config-row-sub" data-testid="reply-auto-actions-warning">
-              Automatic suppression currently acts on every synced email, not only
-              replies to your outreach;{' '}
+              It acts only on replies to emails you sent, never on newsletters or
+              other incoming mail;{' '}
               <strong>{plural(impact.suppressedAddresses, 'address was', 'addresses were')}</strong>{' '}
               suppressed this way in the last {impact.windowDays} days
               {impact.suppressedAddresses > 0

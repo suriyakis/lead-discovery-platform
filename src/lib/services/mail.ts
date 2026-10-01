@@ -48,6 +48,12 @@ import {
 } from './signatures';
 import { analyseReply } from './reply-classifier';
 import { maybeAutoTranslateInbound } from './translation';
+import { assessInboundRelevance } from './inbound-relevance';
+import {
+  extractRelevanceSignals,
+  isOutreachLinked,
+  type OutreachRelevance,
+} from '@/lib/mail/relevance';
 import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
 import {
@@ -600,10 +606,15 @@ export async function syncInbound(
 
   let inserted = 0;
   let duplicates = 0;
+  const relevance: Partial<Record<OutreachRelevance, number>> = {};
   for (const inbound of messages) {
-    const existed = await persistInbound(ctx, mailbox.id, inbound);
-    if (existed) duplicates++;
-    else inserted++;
+    const outcome = await persistInbound(ctx, mailbox.id, inbound);
+    if (outcome.existed) {
+      duplicates++;
+    } else {
+      inserted++;
+      relevance[outcome.relevance] = (relevance[outcome.relevance] ?? 0) + 1;
+    }
   }
 
   await db
@@ -620,17 +631,36 @@ export async function syncInbound(
     kind: 'mail.sync_inbound',
     entityType: 'mailbox',
     entityId: mailbox.id,
-    payload: { fetched: messages.length, inserted, duplicates },
+    payload: { fetched: messages.length, inserted, duplicates, relevance },
   });
 
   return { fetched: messages.length, inserted, duplicates };
 }
 
+type PersistInboundOutcome =
+  | { existed: true }
+  | { existed: false; relevance: OutreachRelevance };
+
+/**
+ * Store one fetched message, then run the reply pipeline only when it is
+ * about our outreach (flow:F-01, X1). Every message is stored and threaded
+ * so it still shows in Conversations; what differs is the side effects:
+ *
+ *   relevance        contact  classify+auto-actions  translate  notify
+ *   prospect_reply     yes            yes               yes       yes
+ *   auto_reply         yes            yes               yes        —
+ *   bounce              —             yes                —         —
+ *   bulk / unrelated    —              —                 —         —
+ *
+ * "classify" (analyseReply) also covers the outreach reply handler and
+ * follow-up cancellation. A bounce's sender is the mailer daemon, so it is
+ * never made a contact; lead.replied is for people answering us (I161).
+ */
 async function persistInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   inbound: InboundMessage,
-): Promise<boolean> {
+): Promise<PersistInboundOutcome> {
   // Dedup by (workspace, message_id).
   const existing = await db
     .select()
@@ -642,7 +672,23 @@ async function persistInbound(
       ),
     )
     .limit(1);
-  if (existing[0]) return true;
+  if (existing[0]) return { existed: true };
+
+  const assessment = await assessInboundRelevance(ctx, {
+    fromAddress: inbound.from.address,
+    inReplyTo: inbound.inReplyTo,
+    references: inbound.references,
+    receivedAt: inbound.receivedAt,
+    signals:
+      inbound.relevanceSignals ??
+      extractRelevanceSignals({
+        headers: inbound.headers,
+        fromAddress: inbound.from.address,
+        source: 'stored_headers',
+      }),
+  });
+  const relevance = assessment.relevance;
+  const fromCounterpart = relevance === 'prospect_reply' || relevance === 'auto_reply';
 
   const thread = await ensureThread(ctx, mailboxId, {
     subject: inbound.subject || '(no subject)',
@@ -655,24 +701,28 @@ async function persistInbound(
     ],
   });
 
-  // Phase 16: resolve / upsert the inbound sender as a contact + attach.
+  // Phase 16: resolve / upsert the sender as a contact + attach — only for
+  // people answering our outreach (I165: newsletters, no-reply and daemon
+  // senders no longer fill the contact book).
   let contactId: bigint | null = null;
-  try {
-    const contact = await upsertContact(ctx, {
-      email: inbound.from.address,
-      name: inbound.from.name ?? null,
-    });
-    contactId = contact.id;
-    await attachContact(ctx, contact.id, {
-      type: 'mail_thread',
-      id: thread.id.toString(),
-      relation: 'inbound_sender',
-    });
-  } catch (err) {
-    console.error('[mail.persistInbound] contact resolve failed:', err);
+  if (fromCounterpart) {
+    try {
+      const contact = await upsertContact(ctx, {
+        email: inbound.from.address,
+        name: inbound.from.name ?? null,
+      });
+      contactId = contact.id;
+      await attachContact(ctx, contact.id, {
+        type: 'mail_thread',
+        id: thread.id.toString(),
+        relation: 'inbound_sender',
+      });
+    } catch (err) {
+      console.error('[mail.persistInbound] contact resolve failed:', err);
+    }
   }
 
-  await db.insert(mailMessages).values({
+  const [insertedRow] = await db.insert(mailMessages).values({
     workspaceId: ctx.workspaceId,
     mailboxId,
     threadId: thread.id,
@@ -699,46 +749,46 @@ async function persistInbound(
       // Phase 11+ can offload to IStorage when the bodies grow.
     })),
     receivedAt: inbound.receivedAt,
-  } satisfies NewMailMessage);
+    outreachRelevance: relevance,
+    relevanceSignals: assessment.signals,
+  } satisfies NewMailMessage).returning({ id: mailMessages.id });
 
   await touchThread(thread.id);
+
+  // Bulk and unrelated mail stops here: stored, threaded, no side effects.
+  if (!insertedRow || !isOutreachLinked(relevance)) {
+    return { existed: false, relevance };
+  }
 
   // Phase 20: classify the inbound + run auto-actions inline. Best-effort.
   // Phase 42: auto-translate non-English bodies inline so the operator
   // sees the English version on first thread open. Heuristic-gated so
   // English mail never bills the AI.
   try {
-    const insertedRows = await db
-      .select({ id: mailMessages.id })
-      .from(mailMessages)
-      .where(
-        and(
-          eq(mailMessages.workspaceId, ctx.workspaceId),
-          eq(mailMessages.messageId, inbound.messageId),
-        ),
-      )
-      .limit(1);
-    if (insertedRows[0]) {
-      await analyseReply(ctx, insertedRows[0].id);
-      await maybeAutoTranslateInbound(ctx, insertedRows[0].id);
+    await analyseReply(ctx, insertedRow.id);
+    if (fromCounterpart) {
+      await maybeAutoTranslateInbound(ctx, insertedRow.id);
     }
   } catch (err) {
     console.error('[mail.persistInbound] post-receive hooks failed:', err);
   }
 
   // Pull the team back to the app — a reply is the highest-value event
-  // in the whole pipeline. Best-effort by construction (notify never
-  // throws) and deduped per thread while unread.
-  const { notify } = await import('./notifications');
-  await notify(ctx.workspaceId, {
-    kind: 'lead.replied',
-    title: `Reply from ${inbound.from.name ?? inbound.from.address}`,
-    body: inbound.subject?.slice(0, 200) ?? null,
-    href: `/communication/${thread.id}`,
-    dedupeKey: `lead.replied:${thread.id}`,
-  });
+  // in the whole pipeline. Only a person answering our outreach counts
+  // (I161): not auto-replies, not bounces. Best-effort by construction
+  // (notify never throws) and deduped per thread while unread.
+  if (relevance === 'prospect_reply') {
+    const { notify } = await import('./notifications');
+    await notify(ctx.workspaceId, {
+      kind: 'lead.replied',
+      title: `Reply from ${inbound.from.name ?? inbound.from.address}`,
+      body: inbound.subject?.slice(0, 200) ?? null,
+      href: `/communication/${thread.id}`,
+      dedupeKey: `lead.replied:${thread.id}`,
+    });
+  }
 
-  return false;
+  return { existed: false, relevance };
 }
 
 // ---- read ----------------------------------------------------------

@@ -5,7 +5,10 @@ import {
   mailMessages,
   mailThreads,
   suppressionList,
+  type MailOutreachRelevance,
 } from '@/lib/db/schema/mailing';
+import { auditLog } from '@/lib/db/schema/audit';
+import { settleDetached } from '@/lib/detached';
 import {
   contactAssociations,
   contacts,
@@ -19,6 +22,7 @@ import {
 import {
   analyseReply,
   classifyReply,
+  constrainToRelevance,
   type ReplyClassification,
 } from '@/lib/services/reply-classifier';
 import {
@@ -43,11 +47,17 @@ function ctx(workspaceId: bigint, userId: string, role: WorkspaceContext['role']
   return makeWorkspaceContext({ workspaceId, userId, role });
 }
 
+let seedCounter = 0;
+
 beforeEach(async () => {
   await truncateAll();
+  seedCounter = 0;
 });
 
 afterAll(async () => {
+  // Let detached hooks (the reply handler's learning hook) finish before
+  // the client closes; truncateAll does the same between tests.
+  await settleDetached();
   await (db.$client as unknown as { end: () => Promise<void> }).end();
 });
 
@@ -110,6 +120,27 @@ describe('classifyReply (heuristic)', () => {
   });
 });
 
+describe('constrainToRelevance (flow:F-01)', () => {
+  const unsub = classifyReply('please unsubscribe me');
+  const redirect = classifyReply('Please contact erik@partner.example instead.');
+
+  it('a prospect reply keeps its classification', () => {
+    expect(constrainToRelevance(unsub, 'prospect_reply')).toBe(unsub);
+  });
+
+  it('an auto-reply is out-of-office unless it redirects', () => {
+    const c = constrainToRelevance(unsub, 'auto_reply');
+    expect(c.type).toBe('out_of_office');
+    expect(c.suggestedAction).toBe('wait_retry');
+    expect(constrainToRelevance(redirect, 'auto_reply')).toBe(redirect);
+  });
+
+  it('a delivery report is a bounce whatever its text says', () => {
+    const c = constrainToRelevance(classifyReply('Sure, sounds good'), 'bounce');
+    expect(c).toMatchObject({ type: 'bounce', extractedEmails: [] });
+  });
+});
+
 // ============ analyseReply persistence + auto-actions ===============
 
 /**
@@ -120,9 +151,18 @@ describe('classifyReply (heuristic)', () => {
 async function seedSyntheticInbound(
   s: Setup,
   body: string,
-  options: { withLead?: boolean } = {},
+  options: {
+    withLead?: boolean;
+    /** flow:F-01 relevance; defaults to a proven prospect reply. */
+    relevance?: MailOutreachRelevance | null;
+    fromAddress?: string;
+  } = {},
 ): Promise<{ messageId: bigint; leadId: bigint | null; threadId: bigint }> {
   const ws = s.workspaceA;
+  // Unique per seed within a test (several seeds may run in one ms); the
+  // first seed's contact keeps the historical address.
+  const n = ++seedCounter;
+  const contactEmail = n === 1 ? 'anna@target.com' : `anna+${n}@target.com`;
   // Mailbox row stub — needed because mail_message.mailbox_id is FK.
   const { mailboxes } = await import('@/lib/db/schema/mailing');
   const [mb] = await db
@@ -146,7 +186,7 @@ async function seedSyntheticInbound(
       workspaceId: ws,
       mailboxId: mb!.id,
       subject: 'Re: hi',
-      externalThreadKey: `subj:re-hi-${Date.now()}`,
+      externalThreadKey: `subj:re-hi-${Date.now()}-${n}`,
       participants: ['anna@target.com', 'sales@nulife.pl'],
     })
     .returning();
@@ -159,11 +199,13 @@ async function seedSyntheticInbound(
       threadId: thread!.id,
       direction: 'inbound',
       status: 'received',
-      messageId: `<reply-${Date.now()}@x.com>`,
-      fromAddress: 'anna@target.com',
+      messageId: `<reply-${Date.now()}-${n}@x.com>`,
+      fromAddress: options.fromAddress ?? 'anna@target.com',
       toAddresses: ['sales@nulife.pl'],
       subject: 'Re: hi',
       bodyText: body,
+      outreachRelevance:
+        options.relevance === undefined ? 'prospect_reply' : options.relevance,
     })
     .returning();
   let leadId: bigint | null = null;
@@ -175,7 +217,7 @@ async function seedSyntheticInbound(
       .insert(contacts)
       .values({
         workspaceId: ws,
-        email: 'anna@target.com',
+        email: contactEmail,
         name: 'Anna',
         status: 'active',
       })
@@ -191,7 +233,7 @@ async function seedSyntheticInbound(
       .values({
         workspaceId: ws,
         sourceSystem: 'mock',
-        sourceId: `fake-${Date.now()}`,
+        sourceId: `fake-${Date.now()}-${n}`,
         rawData: {},
         normalizedData: {},
         sourceUrl: 'https://example.com',
@@ -243,6 +285,18 @@ async function suppressionsOf(workspaceId: bigint) {
     .select()
     .from(suppressionList)
     .where(eq(suppressionList.workspaceId, workspaceId));
+}
+
+async function refusalsOf(workspaceId: bigint) {
+  return db
+    .select()
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.workspaceId, workspaceId),
+        eq(auditLog.kind, 'reply.auto_suppress_refused'),
+      ),
+    );
 }
 
 async function leadState(leadId: bigint | null) {
@@ -395,22 +449,125 @@ describe('analyseReply (DB-backed)', { timeout: 15000 }, () => {
     });
   });
 
-  it('autoSuppressBounce on: bounce suppresses the sender', async () => {
+  // flow:F-01: bounce auto-suppression stays off until F-32 — even with the
+  // switch on, a bounce suppresses nobody and closes nothing; the refusal is
+  // audited so the owner can see the switch did not act.
+  it('autoSuppressBounce on: a bounce is refused (F-32) — no suppression, lead open, refusal audited', async () => {
     const s = await setup();
     await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
       autoSuppressBounce: true,
     });
-    const { messageId } = await seedSyntheticInbound(
+    const { messageId, leadId } = await seedSyntheticInbound(
       s,
-      'Mailer-Daemon: undeliverable',
+      'Delivery to the following recipient failed permanently',
+      { withLead: true, relevance: 'bounce', fromAddress: 'mailer-daemon@mx.target.com' },
     );
-    await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
-    const supp = (await suppressionsOf(s.workspaceA)).find(
-      (e) => e.reason === 'bounce_hard',
+    const verdict = await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
+    expect(verdict.type).toBe('bounce');
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    expect((await leadState(leadId)).state).toBe('relevant');
+    const refused = await refusalsOf(s.workspaceA);
+    expect(refused.length).toBeGreaterThanOrEqual(1);
+    expect(refused.every((r) => r.entityId === messageId.toString())).toBe(true);
+    expect(refused.map((r) => (r.payload as { path: string }).path).sort()).toEqual([
+      'outreach_reply_handler',
+      'reply_classifier',
+    ]);
+    expect(refused[0]!.payload).toMatchObject({ trigger: 'bounce', relevance: 'bounce' });
+  });
+
+  it('autoSuppressUnsubscribe on: an auto-reply that says "unsubscribe" is read as out-of-office and suppresses nobody', async () => {
+    const s = await setup();
+    await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
+      autoSuppressUnsubscribe: true,
+    });
+    const { messageId, leadId } = await seedSyntheticInbound(
+      s,
+      'I am away. To unsubscribe from my notifications, ignore this.',
+      { withLead: true, relevance: 'auto_reply' },
     );
-    expect(supp).toBeTruthy();
-    expect(supp!.source).toBe('reply');
-    expect(supp!.sourceRef).toBe(`mail_message:${messageId}`);
+    const verdict = await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
+    expect(verdict.type).toBe('out_of_office');
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    expect((await leadState(leadId)).state).toBe('relevant');
+  });
+
+  it('mail that is not about our outreach is never classified, whatever the switches say', async () => {
+    const s = await setup();
+    await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
+      autoSuppressUnsubscribe: true,
+      autoCloseNegative: true,
+    });
+    for (const relevance of ['bulk', 'unrelated', null] as const) {
+      const { messageId, leadId } = await seedSyntheticInbound(
+        s,
+        'please unsubscribe — not interested',
+        { withLead: true, relevance },
+      );
+      const verdict = await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
+      expect(verdict.type, String(relevance)).toBe('irrelevant');
+      expect(verdict.rationale).toContain('not a reply to our outreach');
+      const [row] = await db.select().from(mailMessages).where(eq(mailMessages.id, messageId));
+      expect(row!.replyClassification).toBeNull();
+      expect((await leadState(leadId)).state).toBe('relevant');
+    }
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    const classified = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.workspaceId, s.workspaceA), eq(auditLog.kind, 'reply.classify')));
+    expect(classified).toHaveLength(0);
+  });
+
+  it('the outreach handler alone refuses to suppress from a message that is not a prospect reply', async () => {
+    const s = await setup();
+    await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
+      autoSuppressUnsubscribe: true,
+    });
+    // Not linked to outreach at all: the handler does nothing.
+    const bulk = await seedSyntheticInbound(s, 'unsubscribe', { withLead: true, relevance: 'bulk' });
+    const r1 = await handleClassifiedReply(ctx(s.workspaceA, s.ownerA), bulk.messageId, unsubscribeVerdict);
+    expect(r1.action.kind).toBe('none');
+    // Linked, but machine-sent: the switch is on, the guard says no.
+    const oof = await seedSyntheticInbound(s, 'unsubscribe', { withLead: true, relevance: 'auto_reply' });
+    const r2 = await handleClassifiedReply(ctx(s.workspaceA, s.ownerA), oof.messageId, unsubscribeVerdict);
+    expect(r2.action).toEqual({ kind: 'close_and_suppress', reason: 'unsubscribe' });
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    expect((await leadState(oof.leadId)).state).toBe('relevant');
+    const refused = await refusalsOf(s.workspaceA);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.payload).toMatchObject({
+      trigger: 'unsubscribe',
+      relevance: 'auto_reply',
+      path: 'outreach_reply_handler',
+    });
+  });
+
+  it('classifies the sender\'s own words: a quoted unsubscribe footer does not make a reply an unsubscribe', async () => {
+    const s = await setup();
+    await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
+      autoSuppressUnsubscribe: true,
+    });
+    const { messageId, leadId } = await seedSyntheticInbound(
+      s,
+      [
+        'Thanks - could you send the datasheet?',
+        '',
+        'On Tue, 29 Sep 2026 at 10:05, Sales <sales@nulife.pl> wrote:',
+        '> Hello',
+        '> ---',
+        "> Don't want these messages? Unsubscribe: https://app.example/api/unsubscribe/abc",
+      ].join('\n'),
+      { withLead: true },
+    );
+    const verdict = await analyseReply(ctx(s.workspaceA, s.ownerA), messageId, {
+      skipAutoActions: true,
+    });
+    expect(verdict.type).toBe('doc_request');
+    // The quoted attribution's address is not "extracted" as a redirect target.
+    expect(verdict.extractedEmails).toEqual([]);
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    expect((await leadState(leadId)).state).toBe('relevant');
   });
 
   it('redirect auto-creates the extracted contact', async () => {

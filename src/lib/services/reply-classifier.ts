@@ -2,13 +2,18 @@
 //
 // Two layers:
 //   1. classifyReply(message): pure heuristic — keyword matching against
-//      patterns. Cheap, deterministic, runs synchronously on every inbound
-//      message. Used as the default whenever no AI provider is wired in.
+//      patterns. Cheap, deterministic. Used as the default whenever no AI
+//      provider is wired in.
 //   2. analyseReply(ctx, message, ai?): the service entry point. Uses the
 //      AI provider when supplied; otherwise falls back to classifyReply.
 //      Persists the result onto mail_messages and (optionally) triggers
 //      auto-actions per the workspace's reply_auto_actions row (switches
 //      in reply-auto-actions.ts).
+//
+// flow:F-01 (X1): only inbound messages proven to be about our outreach
+// (mail_messages.outreach_relevance prospect_reply / auto_reply / bounce,
+// see inbound-relevance.ts) are classified at all, on the sender's own
+// words (quoted history and our unsubscribe footer stripped).
 
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -21,6 +26,12 @@ import { upsertContact, attachContact } from './contacts';
 import { addSuppression } from './suppression';
 import { transition as pipelineTransition } from './pipeline';
 import { autoClosePayload, getReplyAutoActions } from './reply-auto-actions';
+import {
+  autoSuppressionRefusal,
+  recordAutoSuppressionRefused,
+} from './inbound-relevance';
+import { isOutreachLinked, type OutreachLinkedRelevance } from '@/lib/mail/relevance';
+import { extractReplyText } from '@/lib/mail/reply-text';
 import type { IAIProvider } from '@/lib/ai';
 
 export type ReplyClass =
@@ -195,6 +206,49 @@ export interface AnalyseReplyOptions {
   skipAutoActions?: boolean;
 }
 
+/**
+ * Narrow a classification to what the message's relevance allows
+ * (flow:F-01). A bounce is a bounce whatever its text says; a machine-sent
+ * answer cannot express human intent, so an auto-reply is out-of-office
+ * unless it points to someone else ("in my absence contact …"). A
+ * prospect reply keeps its classification.
+ */
+export function constrainToRelevance(
+  classification: ReplyClassification,
+  relevance: OutreachLinkedRelevance,
+): ReplyClassification {
+  if (relevance === 'bounce') {
+    return {
+      type: 'bounce',
+      confidence: 95,
+      rationale: 'delivery report about mail we sent',
+      extractedEmails: [],
+      suggestedAction: 'suppress',
+    };
+  }
+  if (relevance === 'auto_reply' && classification.type !== 'redirect') {
+    return {
+      type: 'out_of_office',
+      confidence: Math.max(classification.confidence, 80),
+      rationale: `auto-reply markers (text read as ${classification.type})`,
+      extractedEmails: classification.extractedEmails,
+      suggestedAction: 'wait_retry',
+    };
+  }
+  return classification;
+}
+
+/**
+ * Classify an inbound message and run the reply pipeline on it: auto-
+ * actions, the staged-outreach handler, follow-up cancellation.
+ *
+ * flow:F-01: only messages whose outreach_relevance proves they are about
+ * our outreach (prospect_reply / auto_reply / bounce) are classified. For
+ * anything else — bulk, unrelated, or legacy rows not yet assessed — this
+ * persists nothing, runs nothing and returns an 'irrelevant' verdict.
+ * The text classified is the sender's own words: quoted history and our
+ * unsubscribe footer are stripped first (extractReplyText).
+ */
 export async function analyseReply(
   ctx: WorkspaceContext,
   messageId: bigint,
@@ -218,10 +272,21 @@ export async function analyseReply(
   if (msg.direction !== 'inbound') {
     throw new Error('analyseReply only valid for inbound messages');
   }
+  const relevance = msg.outreachRelevance;
+  if (!isOutreachLinked(relevance)) {
+    return {
+      type: 'irrelevant',
+      confidence: 100,
+      rationale: `not a reply to our outreach (relevance: ${relevance ?? 'unassessed'})`,
+      extractedEmails: [],
+      suggestedAction: 'human_review',
+    };
+  }
 
   // Heuristic first. AI provider can override (we accept its result if it
   // returns a known class; otherwise we keep the heuristic).
-  const heuristic = classifyReply(msg.bodyText);
+  const replyText = extractReplyText(msg.bodyText);
+  const heuristic = classifyReply(replyText);
   let final = heuristic;
   if (options.ai) {
     try {
@@ -229,7 +294,7 @@ export async function analyseReply(
         {
           system:
             'Classify the inbound email into one of: positive, redirect, question, interest, doc_request, negative, out_of_office, bounce, unsubscribe, irrelevant. Reply with the single word.',
-          prompt: msg.bodyText ?? '(no body)',
+          prompt: replyText || '(no body)',
         },
         { temperature: 0 },
       );
@@ -253,6 +318,7 @@ export async function analyseReply(
       console.error('[reply-classifier] AI fallback failed:', err);
     }
   }
+  final = constrainToRelevance(final, relevance);
 
   await db
     .update(mailMessages)
@@ -275,6 +341,7 @@ export async function analyseReply(
       rationale: final.rationale,
       extractedEmailsCount: final.extractedEmails.length,
       suggestedAction: final.suggestedAction,
+      relevance,
     },
   });
 
@@ -318,6 +385,12 @@ export async function analyseReply(
 // reply-auto-actions.ts. Every side effect below runs only when its
 // switch is on; each lead close carries autoClosePayload() so the
 // settings page can count what the auto paths did.
+//
+// flow:F-01: on top of the switches, suppression and lead closes need a
+// proven prospect reply (autoSuppressionRefusal); a refusal is audited.
+// Bounce auto-actions stay off until F-32 (bounces handled from the parsed
+// delivery report): with the switch on they are only audited as refused.
+// Redirect extraction also accepts auto-replies ("in my absence contact …").
 
 async function applyAutoActions(
   ctx: WorkspaceContext,
@@ -332,10 +405,30 @@ async function applyAutoActions(
     lead = await leadForThread(ctx, msg.threadId);
   }
 
+  if (classification.type === 'bounce') {
+    if (settings.autoSuppressBounce) {
+      await recordAutoSuppressionRefused(ctx, msg, {
+        trigger: 'bounce',
+        reason: autoSuppressionRefusal(msg, 'bounce') ?? 'refused',
+        path: 'reply_classifier',
+      });
+    }
+    return;
+  }
+
   if (
     classification.type === 'unsubscribe' &&
     settings.autoSuppressUnsubscribe
   ) {
+    const refusal = autoSuppressionRefusal(msg, 'unsubscribe');
+    if (refusal) {
+      await recordAutoSuppressionRefused(ctx, msg, {
+        trigger: 'unsubscribe',
+        reason: refusal,
+        path: 'reply_classifier',
+      });
+      return;
+    }
     try {
       await addSuppression(ctx, {
         kind: 'email',
@@ -364,37 +457,8 @@ async function applyAutoActions(
     return;
   }
 
-  if (classification.type === 'bounce' && settings.autoSuppressBounce) {
-    try {
-      await addSuppression(ctx, {
-        kind: 'email',
-        value: msg.fromAddress,
-        reason: 'bounce_hard',
-        source: 'reply',
-        sourceRef: `mail_message:${msg.id}`,
-        note: `auto-suppressed from message ${msg.id}`,
-      });
-    } catch (err) {
-      console.error('[reply-classifier] bounce suppress failed:', err);
-    }
-    if (lead && lead.state !== 'closed') {
-      try {
-        await pipelineTransition(ctx, lead.id, {
-          to: 'closed',
-          closeReason: 'wrong_fit',
-          closeNote: 'bounce',
-          force: true,
-          payload: autoClosePayload('bounce', msg.id),
-        });
-      } catch (err) {
-        console.error('[reply-classifier] close on bounce failed:', err);
-      }
-    }
-    return;
-  }
-
   if (classification.type === 'negative' && settings.autoCloseNegative) {
-    if (lead && lead.state !== 'closed') {
+    if (lead && lead.state !== 'closed' && msg.outreachRelevance === 'prospect_reply') {
       try {
         await pipelineTransition(ctx, lead.id, {
           to: 'closed',
@@ -413,7 +477,8 @@ async function applyAutoActions(
   if (
     classification.type === 'redirect' &&
     settings.autoExtractRedirects &&
-    classification.extractedEmails.length > 0
+    classification.extractedEmails.length > 0 &&
+    (msg.outreachRelevance === 'prospect_reply' || msg.outreachRelevance === 'auto_reply')
   ) {
     for (const email of classification.extractedEmails) {
       try {

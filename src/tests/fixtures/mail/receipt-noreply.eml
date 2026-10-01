@@ -1,0 +1,17 @@
+Return-Path: <bounce@rides.example>
+Received: from mta-7.rides.example (mta-7.rides.example [198.51.100.77])
+	by mx.nulife.pl (Postfix) with ESMTPS id 2B3C4D5E6F
+	for <sales@nulife.pl>; Sat, 26 Sep 2026 22:41:09 +0200 (CEST)
+From: Rides <noreply@rides.example>
+To: sales@nulife.pl
+Subject: =?UTF-8?Q?Tw=C3=B3j_paragon_za_przejazd?=
+Date: Sat, 26 Sep 2026 20:41:05 +0000
+Message-ID: <receipt-88213377@rides.example>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: 8bit
+
+Dziękujemy za przejazd. Poniżej znajdziesz szczegóły płatności i trasy.
+Całkowita kwota została pobrana z Twojej karty. Jeśli nie chcesz otrzymywać
+takich wiadomości, zmień ustawienia powiadomień w aplikacji lub wypisz się.
+Ta wiadomość została wysłana automatycznie, prosimy na nią nie odpowiadać.

@@ -58,3 +58,9 @@ export function getUnsubscribeFooter(
   const base = (lang ?? 'en').toLowerCase().split('-')[0] ?? 'en';
   return FOOTER_STRINGS[base] ?? EN;
 }
+
+/** Every localized footer prompt line — lets inbound processing recognise
+ *  (and strip) our own footer when a reply quotes it (flow:F-01). */
+export function allUnsubscribeFooterPrompts(): string[] {
+  return Array.from(new Set(Object.values(FOOTER_STRINGS).map((f) => f.prompt)));
+}

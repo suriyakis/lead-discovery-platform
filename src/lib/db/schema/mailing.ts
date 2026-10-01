@@ -182,6 +182,21 @@ export const mailStatus = pgEnum('mail_status', [
   'received', // inbound only
 ]);
 
+/**
+ * flow:F-01 — is an inbound message about our outreach? Set at sync time by
+ * services/inbound-relevance.ts (pure decision in lib/mail/relevance.ts).
+ * Only prospect_reply / auto_reply / bounce may trigger reply side effects
+ * (classification, auto-actions, contacts, translation, notifications).
+ * NULL = outbound, or inbound synced before F-01 and not yet backfilled.
+ */
+export const outreachRelevance = pgEnum('outreach_relevance', [
+  'prospect_reply',
+  'auto_reply',
+  'bounce',
+  'bulk',
+  'unrelated',
+]);
+
 export const mailMessages = pgTable(
   'mail_messages',
   {
@@ -241,6 +256,12 @@ export const mailMessages = pgTable(
     sourceDraftId: bigint('source_draft_id', { mode: 'bigint' }),
     /** Phase 16: optional FK to the resolved contact (matched on send / inbound parse). */
     contactId: bigint('contact_id', { mode: 'bigint' }),
+    /** flow:F-01: relevance of an inbound message to our outreach (null on
+        outbound and on not-yet-backfilled legacy inbound). */
+    outreachRelevance: outreachRelevance('outreach_relevance'),
+    /** flow:F-01: the signals + evidence behind outreachRelevance
+        (InboundRelevanceSignals plus `evidence`), snake_case keys. */
+    relevanceSignals: jsonb('relevance_signals'),
     /** Phase 20: classification of inbound replies (null on outbound). */
     replyClassification: text('reply_classification'),
     replyClassificationConfidence: smallint('reply_classification_confidence'),
@@ -311,6 +332,16 @@ export const mailMessages = pgTable(
       table.mailboxId,
       table.status,
     ),
+    // flow:F-01: "does this In-Reply-To / References / DSN id belong to one
+    // of OUR messages?" is matched case-insensitively (I008 b).
+    workspaceOutboundLowerMessageIdIdx: index('mail_messages_ws_outbound_lower_message_id_idx')
+      .on(table.workspaceId, sql`lower(${table.messageId})`)
+      .where(sql`${table.direction} = 'outbound'`),
+    // flow:F-01: inbound lists / backfill filter on relevance.
+    workspaceRelevanceIdx: index('mail_messages_ws_relevance_idx').on(
+      table.workspaceId,
+      table.outreachRelevance,
+    ),
   }),
 );
 
@@ -318,6 +349,7 @@ export type MailMessage = typeof mailMessages.$inferSelect;
 export type NewMailMessage = typeof mailMessages.$inferInsert;
 export type MailDirection = (typeof mailDirection.enumValues)[number];
 export type MailStatus = (typeof mailStatus.enumValues)[number];
+export type MailOutreachRelevance = (typeof outreachRelevance.enumValues)[number];
 
 /**
  * `signatures` — saved signature blocks. A mailbox can have a default

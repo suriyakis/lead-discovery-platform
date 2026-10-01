@@ -292,19 +292,27 @@ describe('contacts auto-resolved from outbound + inbound mail', () => {
     expect(messageRows[0]!.contactId).toBe(contact!.id);
   });
 
-  it('inbound syncInbound creates/links a contact for the sender', async () => {
+  // flow:F-01 (I165): only people answering our outreach become contacts.
+  it('inbound syncInbound links a contact for a sender replying to our outbound', async () => {
     const s = await setup();
     const mb = await newMailbox(s);
     const provider = new MockMailProvider();
+    const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      to: [{ address: 'lead@target.com' }],
+      subject: 'Question',
+      text: 'hello',
+      providerOverride: provider,
+    });
     provider.enqueueInbound({
       uid: 1,
       messageId: '<m1@target.com>',
-      inReplyTo: null,
-      references: [],
+      inReplyTo: sent.messageId,
+      references: [sent.messageId],
       from: { address: 'lead@target.com', name: 'Lead Person' },
       to: [{ address: mb.fromAddress }],
       cc: [],
-      subject: 'Question',
+      subject: 'Re: Question',
       textBody: 'we want a quote',
       htmlBody: null,
       receivedAt: new Date(),
@@ -318,11 +326,62 @@ describe('contacts auto-resolved from outbound + inbound mail', () => {
       'lead@target.com',
     );
     expect(contact).not.toBeNull();
+    expect(contact?.name).toBe('Lead Person');
     const associations = await db
       .select()
       .from(contactAssociations)
       .where(eq(contactAssociations.contactId, contact!.id));
     expect(associations.some((a) => a.entityType === 'mail_thread')).toBe(true);
+    // The inbound row itself is resolved to the contact.
+    const [inbound] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.messageId, '<m1@target.com>'));
+    expect(inbound!.contactId).toBe(contact!.id);
+  });
+
+  it('inbound syncInbound does not turn unrelated or no-reply senders into contacts', async () => {
+    const s = await setup();
+    const mb = await newMailbox(s);
+    const provider = new MockMailProvider();
+    const base = {
+      inReplyTo: null,
+      references: [],
+      to: [{ address: mb.fromAddress }],
+      cc: [],
+      htmlBody: null,
+      receivedAt: new Date(),
+      attachments: [],
+    };
+    provider.enqueueInbound(
+      {
+        ...base,
+        uid: 1,
+        messageId: '<cold@stranger.com>',
+        from: { address: 'someone@stranger.com' },
+        subject: 'Question',
+        textBody: 'we want a quote',
+        headers: {},
+      },
+      {
+        ...base,
+        uid: 2,
+        messageId: '<news@shop.com>',
+        from: { address: 'no-reply@shop.com' },
+        subject: 'Sale',
+        textBody: 'unsubscribe here',
+        headers: { 'list-unsubscribe': '<https://shop.com/u>' },
+      },
+    );
+    await syncInbound(ctx(s.workspaceA, s.ownerA), mb.id, provider);
+
+    expect(await getContactByEmail(ctx(s.workspaceA, s.ownerA), 'someone@stranger.com')).toBeNull();
+    expect(await getContactByEmail(ctx(s.workspaceA, s.ownerA), 'no-reply@shop.com')).toBeNull();
+    const assocs = await db
+      .select()
+      .from(contactAssociations)
+      .where(eq(contactAssociations.workspaceId, s.workspaceA));
+    expect(assocs).toHaveLength(0);
   });
 });
 
