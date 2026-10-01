@@ -195,11 +195,18 @@ The two pause switches — what each really stops:
 ## Mailboxes (/mailbox)
 Add one on [/mailbox/new]: SMTP for sending, IMAP for receiving. You need
 an active mailbox to send and receive. A mailbox is active, paused (see
-above), archived, or failing: after repeated sync failures it is marked
-failing and is no longer synced, so replies, bounces and unsubscribes
-sent to it go unseen — but it KEEPS SENDING queued emails and
-follow-ups. {H-16} To recover, fix its settings on its Edit page and
-click Reactivate on the mailbox's page. Send a test email from the
+above), archived, or failing. It is marked failing when its mail server
+refuses the login or its sync keeps failing, and the workspace's owners
+and admins get one "mailbox failing" notification. While it is failing,
+its queued emails and follow-ups are HELD — not sent and not failed —
+and replies, bounces and unsubscribes sent to it are not read. While
+"Mailbox auto-sync" is on, background sync re-checks it after a delay
+that grows from an hour (six after a refused login) to at most a day,
+and makes it active again once the connection works. {H-16} To fix it
+now: the mailbox's page says what broke and what to change (a server
+that refuses SMTP port 587 usually wants port 465, TLS on connect);
+change it on its Edit page, then click Test again on the mailbox's
+page. Send a test email from the
 mailbox's page; signatures live on [/mailbox/signatures]; the
 suppression list (addresses that are never emailed, checked before
 every send) on [/mailbox/suppression].
@@ -280,10 +287,10 @@ evidence chain.
   charged for them (as on [/settings/billing]). [/settings/audit]: who
   changed what (admins). [/settings/account]: your name and password.
 - [/health]: the weekly health report — empty wallet, missing product,
-  no mailbox, a failing mailbox, only paused mailboxes, recipes without
-  a target country, failed runs, review backlog, stale drafts,
-  follow-ups awaiting approval, plus an AI review of recent
-  conversations. Admins can run it now.
+  no mailbox, each failing mailbox (with how to fix it), no active
+  mailbox, recipes without a target country, failed runs, review
+  backlog, stale drafts, follow-ups awaiting approval, plus an AI review
+  of recent conversations. Admins can run it now.
 
 ## Contacting a human (/support)
 When the assistant can't solve it, [/support] (sidebar → Account →
@@ -340,7 +347,6 @@ ${KNOWN_LIMITATIONS_HEADING}
 - I020: The per-product "Autopilot enabled" and "Emergency pause" overrides on [/autopilot] are saved but not applied.
 - I062: Saving the autopilot form on [/connectors/engine] while the Emergency pause is on also switches the autopilot master off; use [/autopilot] instead.
 - I063: After a plan lapses, ticking the Emergency pause on [/autopilot] fails unless every other switch is unticked in the same save; the send-queue pause on [/mailbox/queue] (owners and admins) always works.
-- I095: A failing mailbox keeps sending but is no longer read, and there is no alert when it starts failing: only the failing badge on its page and the next weekly health report on [/health] show it.
 - I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), and a class cannot be corrected.
 - I019: "Auto-send replies" does nothing yet, and autopilot's "Auto-drain" and "Sync inbound" switches do not control the background drain and sync.
 `.trim();

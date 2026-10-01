@@ -133,9 +133,10 @@ async function workspaceSnapshot(
     `Recipes: ${Number(recipeRow.total)} (${Number(recipeRow.withCountry)} with a target country set)`,
     `Review queue (new + needs_review): ${Number(reviewPending[0]?.c ?? 0)}`,
     `Unapproved drafts: ${Number(draftsPending[0]?.c ?? 0)}`,
-    // A failing mailbox still sends but is not read; a paused one does
-    // neither (I095) — the model needs the split to diagnose either.
-    `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (still sending, not read), ${mailboxCount('paused')} paused (not sending, not read)`,
+    // A failing mailbox holds its queued sends until it works again; a
+    // paused one sends nothing and fails what comes due (flow:F-04). Neither
+    // is read — the model needs the split to diagnose either.
+    `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (queued sends held, not read), ${mailboxCount('paused')} paused (not sending, due sends fail, not read)`,
   ].join('\n');
 }
 

@@ -27,7 +27,7 @@ import {
   mailMessages,
   mailThreads,
   mailboxes,
-  type MailboxStatus,
+  type Mailbox,
 } from '@/lib/db/schema/mailing';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { productProfiles } from '@/lib/db/schema/products';
@@ -77,7 +77,6 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 
 // ---- rule findings --------------------------------------------------
 
-/** "2026-05-08 14:03 UTC" — findings are stored text, read later. */
 /**
  * flow:F-04: what "no active mailbox" means depends on why. Only a
  * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
@@ -132,9 +131,6 @@ export async function collectRuleFindings(
     });
   }
 
-  // flow:F-04 (I095): one finding per failing mailbox, by name, linking
-  // to it — not only "no active mailbox", which missed one failing box
-  // among several and said the wrong thing about what still works.
   const mbs = await db
     .select({
       id: mailboxes.id,
@@ -151,39 +147,7 @@ export async function collectRuleFindings(
     .from(mailboxes)
     .where(and(eq(mailboxes.workspaceId, wsId), ne(mailboxes.status, 'archived')))
     .orderBy(asc(mailboxes.id));
-  for (const mb of mbs.filter((m) => m.status === 'failing')) {
-    const summary = summarizeMailboxFailure(mb);
-    const since = mb.failingSince ? ` since ${formatUtc(mb.failingSince)}` : '';
-    const when = mb.lastErrorAt ? ` (${formatUtc(mb.lastErrorAt)})` : '';
-    findings.push({
-      severity: 'warning',
-      code: 'mailbox.failing',
-      message:
-        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice}` +
-        ` Last error${when}: ${(mb.lastError ?? 'unknown').slice(0, 300)}`,
-      href: `/mailbox/${mb.id}`,
-    });
-  }
-  if (!mbs.some((m) => m.status === 'active')) {
-    findings.push(
-      mbs.length === 0
-        ? {
-            severity: 'warning',
-            code: 'mailbox.none',
-            message: 'No mailbox is connected — nothing can be sent and no replies are read.',
-            href: '/mailbox/new',
-          }
-        : {
-            severity: 'warning',
-            code: 'mailbox.none',
-            message: noActiveMailboxMessage(
-              mbs.some((m) => m.status === 'failing'),
-              mbs.some((m) => m.status === 'paused'),
-            ),
-            href: '/mailbox',
-          },
-    );
-  }
+  findings.push(...mailboxFindings(mbs));
 
   const recipes = await db
     .select({
@@ -282,63 +246,72 @@ export async function collectRuleFindings(
   return findings;
 }
 
-/** How many mailbox addresses a finding names before "and N more". */
-const MAILBOX_NAMES_SHOWN = 3;
-
-function mailboxList(rows: ReadonlyArray<{ fromAddress: string }>): string {
-  const shown = rows.slice(0, MAILBOX_NAMES_SHOWN).map((r) => r.fromAddress);
-  const more = rows.length - shown.length;
-  return more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
-}
+/** A mailbox as the rule check reads it. */
+export type MailboxFindingRow = Pick<
+  Mailbox,
+  | 'id'
+  | 'name'
+  | 'status'
+  | 'lastError'
+  | 'lastErrorAt'
+  | 'failingSince'
+  | 'smtpHost'
+  | 'smtpPort'
+  | 'imapHost'
+  | 'imapPort'
+>;
 
 /**
- * Mailbox findings from the workspace's non-archived mailboxes (AP-01).
- * The statuses behave differently, so each gets its own finding:
- *   - none at all: nothing can be sent or received;
- *   - failing: STILL SENDS queued emails and follow-ups, but is no longer
- *     synced, so replies, bounces and unsubscribes go unread (I095) — a
- *     "nothing can be sent" message would be wrong here;
- *   - paused, with no active mailbox left: sends nothing (its queued
- *     emails fail instead of waiting) and is not synced.
+ * Mailbox findings (AP-01 wording, flow:F-04 behaviour). The statuses
+ * behave differently, so the copy says what each one really does:
+ *   - none connected (archived ones do not count): nothing is sent and
+ *     no replies are read;
+ *   - each FAILING mailbox, by name and linking to its page (I095): its
+ *     queued outreach and follow-ups are HELD, not sent and not failed;
+ *     replies to it are not read (and nothing is sent from it when SMTP
+ *     is the broken side); the advice is the mailbox page's own
+ *     (summarizeMailboxFailure — e.g. "use port 465 with TLS on connect"
+ *     when a server refuses 587), plus the last error;
+ *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing ones hold
+ *     their queue, paused ones mark due sends failed.
+ * A paused mailbox next to an active one is the operator's choice, not
+ * a finding.
  */
-export function mailboxFindings(
-  rows: ReadonlyArray<{ fromAddress: string; status: MailboxStatus }>,
-): HealthFinding[] {
-  const live = rows.filter((r) => r.status !== 'archived');
-  if (live.length === 0) {
-    return [
-      {
-        severity: 'warning',
-        code: 'mailbox.none',
-        message: 'No active mailbox — nothing can be sent or received.',
-        href: '/mailbox/new',
-      },
-    ];
-  }
+export function mailboxFindings(rows: ReadonlyArray<MailboxFindingRow>): HealthFinding[] {
+  const live = rows.filter((m) => m.status !== 'archived');
   const out: HealthFinding[] = [];
-  const failing = live.filter((r) => r.status === 'failing');
-  if (failing.length > 0) {
+  for (const mb of live.filter((m) => m.status === 'failing')) {
+    const summary = summarizeMailboxFailure(mb);
+    const since = mb.failingSince ? ` since ${formatUtc(mb.failingSince)}` : '';
+    const when = mb.lastErrorAt ? ` (${formatUtc(mb.lastErrorAt)})` : '';
     out.push({
       severity: 'warning',
       code: 'mailbox.failing',
       message:
-        failing.length === 1
-          ? `Mailbox ${mailboxList(failing)} is failing — it still sends queued emails and follow-ups, but replies, bounces and unsubscribes sent to it are not read. Fix its settings, then click Reactivate on its page.`
-          : `${failing.length} mailboxes are failing (${mailboxList(failing)}) — they still send queued emails and follow-ups, but replies, bounces and unsubscribes sent to them are not read. Fix their settings, then click Reactivate on each one's page.`,
-      href: '/mailbox',
+        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice}` +
+        ` Last error${when}: ${(mb.lastError ?? 'unknown').slice(0, 300)}`,
+      href: `/mailbox/${mb.id}`,
     });
   }
-  const paused = live.filter((r) => r.status === 'paused');
-  if (paused.length > 0 && !live.some((r) => r.status === 'active')) {
-    out.push({
-      severity: 'warning',
-      code: 'mailbox.paused',
-      message:
-        paused.length === 1
-          ? `Mailbox ${mailboxList(paused)} is paused and no mailbox is active — a paused mailbox sends nothing (its queued emails fail instead of waiting) and is not synced.`
-          : `${paused.length} mailboxes are paused (${mailboxList(paused)}) and none is active — a paused mailbox sends nothing (its queued emails fail instead of waiting) and is not synced.`,
-      href: '/mailbox',
-    });
+  if (!live.some((m) => m.status === 'active')) {
+    out.push(
+      live.length === 0
+        ? {
+            severity: 'warning',
+            code: 'mailbox.none',
+            message: 'No mailbox is connected — nothing can be sent and no replies are read.',
+            href: '/mailbox/new',
+          }
+        : {
+            severity: 'warning',
+            code: 'mailbox.none',
+            message: noActiveMailboxMessage(
+              live.some((m) => m.status === 'failing'),
+              live.some((m) => m.status === 'paused'),
+            ),
+            href: '/mailbox',
+          },
+    );
   }
   return out;
 }

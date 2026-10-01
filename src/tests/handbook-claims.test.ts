@@ -65,7 +65,7 @@ import {
   updateContact,
 } from '@/lib/services/pipeline';
 import { approveOutreachDraft, generateOutreachDraft } from '@/lib/services/outreach';
-import { createMailbox, updateMailbox } from '@/lib/services/mailbox';
+import { createMailbox, markMailboxFailing, updateMailbox } from '@/lib/services/mailbox';
 import {
   drainQueue,
   enqueueDraft,
@@ -805,19 +805,37 @@ describe('follow-up service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 // ---- mail service: mailbox status ----------------------------------
 
 describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () => {
-  it('[handbook H-16] a failing mailbox keeps sending queued email but is not synced', async () => {
+  it('[handbook H-16] a failing mailbox holds its queued email, tells the owners and admins once, and is re-checked only after its delay', async () => {
     const s = await setup();
     const { mailbox } = await queuedEmail(s, { imap: true });
-    await db.update(mailboxes).set({ status: 'failing' }).where(eq(mailboxes.id, mailbox.id));
+    await markMailboxFailing(ctx(s), mailbox.id, { protocol: 'imap', message: 'Socket timed out' });
 
+    // Held: neither sent nor failed; the entry stays queued with the reason.
     const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
-    expect(r.sent).toBe(1);
+    expect(r.sent).toBe(0);
+    expect(r.failed).toBe(0);
+    const [entry] = await queueRows(s);
+    expect(entry!.status).toBe('queued');
+    expect(entry!.lastError).toMatch(/^Held: the mailbox is failing/);
 
-    // The 2-minute IMAP tick only looks at ACTIVE mailboxes: the failing
-    // one is never considered; the active IMAP-less one is (and skipped).
-    await makeMailbox(s, { isDefault: false, address: 'info@nulife.pl' });
+    // One "mailbox failing" notification for each owner / admin.
+    const notes = await db
+      .select({ userId: notifications.userId })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.workspaceId, s.workspaceId),
+          eq(notifications.kind, 'mailbox.failing'),
+        ),
+      );
+    expect(notes.map((n) => n.userId).sort()).toEqual([s.adminId, s.ownerId].sort());
+
+    // Background sync leaves it alone until its re-check delay has passed.
     const tick = await runTick('mail.imap.tick');
-    expect(tick).toMatchObject({ mailboxesSynced: 0, failed: 0, skipped: 1 });
+    expect(tick).toMatchObject({ mailboxesSynced: 0, rechecked: 0 });
+    const [row] = await db.select().from(mailboxes).where(eq(mailboxes.id, mailbox.id));
+    expect(row!.status).toBe('failing');
+    expect(row!.imapNextSyncAfter!.getTime() - Date.now()).toBeGreaterThan(50 * 60 * 1000);
   });
 
   it('[handbook H-23] a paused mailbox sends nothing, and its queued email fails instead of waiting', async () => {

@@ -143,39 +143,47 @@ describe('collectRuleFindings', () => {
     expect(codes).toContain('tokens.empty');
     expect(codes).toContain('products.none');
     expect(codes).toContain('mailbox.none');
-    // Without an active mailbox there is no sending AND no inbox sync —
-    // the old copy only mentioned approved drafts.
+    // Without a mailbox there is no sending AND no inbox sync — the old
+    // copy only mentioned approved drafts.
     const mailbox = findings.find((f) => f.code === 'mailbox.none')!;
-    expect(mailbox.message).toBe('No active mailbox — nothing can be sent or received.');
+    expect(mailbox.message).toBe(
+      'No mailbox is connected — nothing can be sent and no replies are read.',
+    );
   });
 
-  describe('mailboxes by status (failing still sends; paused does not)', () => {
-    async function addMailbox(s: Setup, address: string, status: MailboxStatus) {
-      await db.insert(mailboxes).values({
-        workspaceId: s.workspaceA,
-        name: address,
-        fromAddress: address,
-        smtpHost: 'smtp.x',
-        smtpUser: address,
-        smtpPasswordSecretKey: `mailbox.smtp_${address}`,
-        imapFolder: 'INBOX',
-        status,
-      });
+  describe('mailboxes by status (failing holds its queue; paused fails it)', () => {
+    async function addMailbox(s: Setup, address: string, status: MailboxStatus): Promise<bigint> {
+      const [row] = await db
+        .insert(mailboxes)
+        .values({
+          workspaceId: s.workspaceA,
+          name: address,
+          fromAddress: address,
+          smtpHost: 'smtp.x',
+          smtpUser: address,
+          smtpPasswordSecretKey: `mailbox.smtp_${address}`,
+          imapFolder: 'INBOX',
+          status,
+        })
+        .returning({ id: mailboxes.id });
+      return row!.id;
     }
     async function mailboxCodes(s: Setup) {
       const findings = await collectRuleFindings(ctx(s.workspaceA, s.ownerA));
       return findings.filter((f) => f.code.startsWith('mailbox.'));
     }
 
-    it('a workspace whose only mailbox is failing is told it still sends, not that nothing can be sent', async () => {
+    it('a workspace whose only mailbox is failing is told its queue is held, not that it still sends', async () => {
       const s = await setup();
-      await addMailbox(s, 'sales@test.local', 'failing');
+      const id = await addMailbox(s, 'sales@test.local', 'failing');
       const found = await mailboxCodes(s);
-      expect(found.map((f) => f.code)).toEqual(['mailbox.failing']);
-      expect(found[0]!.message).toBe(
-        'Mailbox sales@test.local is failing — it still sends queued emails and follow-ups, but replies, bounces and unsubscribes sent to it are not read. Fix its settings, then click Reactivate on its page.',
-      );
-      expect(found[0]!.href).toBe('/mailbox');
+      expect(found.map((f) => f.code)).toEqual(['mailbox.failing', 'mailbox.none']);
+      expect(found[0]!.message).toContain('Mailbox "sales@test.local" has been failing.');
+      expect(found[0]!.message).toContain('queued outreach and follow-ups are held');
+      expect(found[0]!.message).not.toContain('still sends');
+      expect(found[0]!.href).toBe(`/mailbox/${id}`);
+      expect(found[1]!.message).toContain('(each one is failing)');
+      expect(found[1]!.message).toContain('held until it works again');
     });
 
     it('a failing mailbox is reported even when another one is active', async () => {
@@ -185,12 +193,13 @@ describe('collectRuleFindings', () => {
       expect((await mailboxCodes(s)).map((f) => f.code)).toEqual(['mailbox.failing']);
     });
 
-    it('only paused mailboxes: says nothing is sent or synced', async () => {
+    it('only paused mailboxes: due sends are marked failed, not held', async () => {
       const s = await setup();
       await addMailbox(s, 'sales@test.local', 'paused');
       const found = await mailboxCodes(s);
-      expect(found.map((f) => f.code)).toEqual(['mailbox.paused']);
-      expect(found[0]!.message).toContain('sends nothing (its queued emails fail instead of waiting)');
+      expect(found.map((f) => f.code)).toEqual(['mailbox.none']);
+      expect(found[0]!.message).toContain('(each one is paused)');
+      expect(found[0]!.message).toContain('marked failed, not held');
       expect(found[0]!.href).toBe('/mailbox');
     });
 
@@ -209,17 +218,35 @@ describe('collectRuleFindings', () => {
       expect(found[0]!.href).toBe('/mailbox/new');
     });
 
-    it('names at most three mailboxes and pluralises', () => {
-      const rows = ['a', 'b', 'c', 'd'].map((x) => ({
-        fromAddress: `${x}@test.local`,
-        status: 'failing' as const,
-      }));
-      const [f] = mailboxFindings(rows);
-      expect(f!.message).toContain(
-        '4 mailboxes are failing (a@test.local, b@test.local, c@test.local and 1 more) — they still send',
-      );
-      const [p] = mailboxFindings(rows.slice(0, 2).map((r) => ({ ...r, status: 'paused' as const })));
-      expect(p!.message).toContain('2 mailboxes are paused (a@test.local, b@test.local) and none is active');
+    it('names each failing mailbox with its own link and the mailbox page advice (pure)', () => {
+      const row = (id: bigint, name: string, status: MailboxStatus, lastError: string | null) => ({
+        id,
+        name,
+        status,
+        lastError,
+        lastErrorAt: null,
+        failingSince: new Date('2026-10-01T08:00:00Z'),
+        smtpHost: 'mail.example.test',
+        smtpPort: 587,
+        imapHost: 'mail.example.test',
+        imapPort: 993,
+      });
+      const found = mailboxFindings([
+        row(1n, 'alpha', 'failing', 'SMTP: connect ECONNREFUSED 192.0.2.1:587'),
+        row(2n, 'beta', 'failing', 'IMAP: Command failed: [AUTHENTICATIONFAILED] Authentication failed.'),
+        row(3n, 'gamma', 'active', null),
+        row(4n, 'delta', 'archived', null),
+      ]);
+      expect(found.map((f) => [f.code, f.href])).toEqual([
+        ['mailbox.failing', '/mailbox/1'],
+        ['mailbox.failing', '/mailbox/2'],
+      ]);
+      expect(found[0]!.message).toContain('Mailbox "alpha" has been failing since 2026-10-01 08:00 UTC.');
+      expect(found[0]!.message).toContain('port 465');
+      expect(found[1]!.message).toContain('refused the login');
+      expect(mailboxFindings([row(4n, 'delta', 'archived', null)])).toEqual([
+        expect.objectContaining({ code: 'mailbox.none', href: '/mailbox/new' }),
+      ]);
     });
   });
 
