@@ -30,6 +30,7 @@ import {
   unmarkSpam,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
+import { affectedNote, parseSelectedIds, retrySummary } from '@/lib/mail-bulk-actions';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 export async function trashMailboxMessages(
@@ -86,23 +87,9 @@ export async function retryMailboxMessages(
   mailboxId: string,
   formData: FormData,
 ): Promise<void> {
-  await runBulkAction(mailboxId, formData, 'retry failed', async (ctx, ids) => {
-    const r = await retrySend(ctx, ids);
-    const parts: string[] = [];
-    if (r.retried.length > 0) {
-      parts.push(
-        r.retried.length === 1 ? '1 message resent' : `${r.retried.length} messages resent`,
-      );
-    }
-    if (r.skippedHardBounce.length > 0) {
-      parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
-    }
-    if (r.skippedIneligible.length > 0) {
-      parts.push(`${r.skippedIneligible.length} ineligible`);
-    }
-    if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);
-    return parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.';
-  });
+  await runBulkAction(mailboxId, formData, 'retry failed', async (ctx, ids) =>
+    retrySummary(await retrySend(ctx, ids)),
+  );
 }
 
 // ---- helpers (module scope: never captured by an action's closure) ----
@@ -121,7 +108,7 @@ async function runBulkAction(
 ): Promise<void> {
   if (!/^\d+$/.test(mailboxId)) redirect('/mailbox');
   const ctx = await requireActionContext();
-  const ids = parseIds(formData);
+  const ids = parseSelectedIds(formData);
   let message: string;
   try {
     message = await act(ctx, ids);
@@ -147,21 +134,4 @@ function backToFolder(
   if (q) params.set('q', q);
   params.set(flash, text);
   redirect(`/mailbox/${mailboxId}?${params.toString()}`);
-}
-
-/** Selected message ids from the checkbox list; anything that is not a
- *  plain positive integer is ignored. */
-function parseIds(formData: FormData): bigint[] {
-  const out: bigint[] = [];
-  for (const raw of formData.getAll('ids')) {
-    const s = String(raw);
-    if (/^\d+$/.test(s)) out.push(BigInt(s));
-  }
-  return out;
-}
-
-function affectedNote(verb: string, n: number): string {
-  if (n === 0) return `No messages ${verb} (nothing was selected or eligible).`;
-  if (n === 1) return `1 message ${verb}.`;
-  return `${n} messages ${verb}.`;
 }
