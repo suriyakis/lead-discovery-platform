@@ -2,7 +2,7 @@
 // qualified_leads into a CRM via the configured ICRMConnector. CSV exports
 // are bundled and dropped into IStorage so the UI can offer a download link.
 
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
@@ -63,6 +63,11 @@ const invalid = (msg: string) =>
   new CrmServiceError(msg, 'invalid_input');
 const conflict = (msg: string) =>
   new CrmServiceError(msg, 'conflict');
+const archivedConnection = () =>
+  new CrmServiceError(
+    'This connection is archived. Restore it before testing it.',
+    'archived',
+  );
 
 const SUPPORTED_SYSTEMS = new Set(['csv', 'hubspot']);
 
@@ -189,6 +194,37 @@ export async function archiveCrmConnection(
   return updated;
 }
 
+/**
+ * Undo an archive: the connection becomes active again and its last
+ * error is cleared (the next test or push sets the real status). A
+ * connection that is not archived is returned unchanged, so a repeated
+ * click is harmless and writes no audit event.
+ */
+export async function restoreCrmConnection(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<CrmConnection> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('crm.restore_connection');
+  const [restored] = await db
+    .update(crmConnections)
+    .set({ status: 'active', lastError: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(crmConnections.workspaceId, ctx.workspaceId),
+        eq(crmConnections.id, id),
+        eq(crmConnections.status, 'archived'),
+      ),
+    )
+    .returning();
+  if (!restored) return loadConnection(ctx, id);
+  await recordAuditEvent(ctx, {
+    kind: 'crm.restore_connection',
+    entityType: 'crm_connection',
+    entityId: id,
+  });
+  return restored;
+}
+
 export async function listCrmConnections(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<CrmConnection[]> {
@@ -213,8 +249,21 @@ export async function testCrmConnection(
 ): Promise<{ ok: boolean; detail?: string }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.test');
   const conn = await loadConnection(ctx, id);
-  const connector = connectorOverride ?? (await buildConnector(ctx, conn));
-  const result = await connector.testConnection();
+  // A test used to overwrite the status with active/failing, which
+  // silently un-archived the connection (I115). Archived connections are
+  // not tested; restore first.
+  if (conn.status === 'archived') throw archivedConnection();
+  // A connector that cannot even be built (e.g. HubSpot with no stored
+  // token) is a failed test with a reason, not an unexpected error.
+  let result: { ok: boolean; detail?: string };
+  try {
+    const connector = connectorOverride ?? (await buildConnector(ctx, conn));
+    result = await connector.testConnection();
+  } catch (err) {
+    result = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+  // Guarded on status too, so an archive that lands while the test is
+  // in flight is not undone by the result.
   await db
     .update(crmConnections)
     .set({
@@ -222,7 +271,13 @@ export async function testCrmConnection(
       lastError: result.ok ? null : result.detail ?? 'failed',
       updatedAt: new Date(),
     })
-    .where(eq(crmConnections.id, id));
+    .where(
+      and(
+        eq(crmConnections.workspaceId, ctx.workspaceId),
+        eq(crmConnections.id, id),
+        ne(crmConnections.status, 'archived'),
+      ),
+    );
   return result;
 }
 
@@ -303,7 +358,8 @@ export async function pushLeadToCrm(
   const [entry] = await db.insert(crmSyncLog).values(row).returning();
   if (!entry) throw invariant('crm_sync_log insert returned no row');
 
-  // Update connection status on outcome.
+  // Update connection status on outcome — unless it was archived while
+  // the push was in flight (an archive must not be undone by a result).
   await db
     .update(crmConnections)
     .set({
@@ -312,7 +368,13 @@ export async function pushLeadToCrm(
       lastSyncedAt: result.outcome === 'succeeded' ? new Date() : conn.lastSyncedAt,
       updatedAt: new Date(),
     })
-    .where(eq(crmConnections.id, input.connectionId));
+    .where(
+      and(
+        eq(crmConnections.workspaceId, ctx.workspaceId),
+        eq(crmConnections.id, input.connectionId),
+        ne(crmConnections.status, 'archived'),
+      ),
+    );
 
   // Optional state advance.
   if (

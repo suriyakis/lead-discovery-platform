@@ -2,15 +2,12 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import {
   AlertTriangle,
-  Info,
   Languages,
   Mail,
   MessageSquareReply,
-  Pencil,
   Plus,
   RefreshCw,
   Trash2,
-  X,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
@@ -31,12 +28,16 @@ import {
   updateWorkspaceOutreachLanguage,
 } from '@/lib/services/workspace';
 import { ENABLED_LANGUAGE_OPTIONS } from '@/lib/i18n/language';
+import { loadSettings as loadFollowUpSettings } from '@/lib/services/follow-up';
+import { saveFollowUp } from './follow-up-actions';
 import {
-  FollowUpServiceError,
-  loadSettings as loadFollowUpSettings,
-  updateFollowUpConfig,
-  type FollowUpStepConfig,
-} from '@/lib/services/follow-up';
+  FOLLOW_UP_MAX_DAYS,
+  FOLLOW_UP_MAX_INSTRUCTIONS,
+  FOLLOW_UP_MAX_STEPS,
+  STEP_REMOVE_FIELD,
+  stepDaysField,
+  stepInstrField,
+} from './follow-up-form';
 import {
   TRASH_RETENTION_DAYS_MAX,
   TRASH_RETENTION_DAYS_MIN,
@@ -50,7 +51,9 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 const STEP_DESCRIPTORS = [
   'Gentle reminder',
   'Value proposition',
-  'Final attempt',
+  // Only the last step is the final attempt (rendered separately); a
+  // non-final step 3 gets the "polite nudge" framing its placeholder uses.
+  'Polite nudge',
   'Long-tail nudge',
   'Re-engage',
   'Last chance',
@@ -213,42 +216,8 @@ export default async function OutreachSettingsPage({
     }
   }
 
-  async function saveFollowUp(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const enabled = formData.get('followUpEnabled') === 'on';
-    const requireApproval =
-      formData.get('followUpRequireApproval') === 'on';
-    const stepDays = formData.getAll('stepDays') as string[];
-    const stepInstr = formData.getAll('stepInstr') as string[];
-    const steps: FollowUpStepConfig[] = [];
-    for (let i = 0; i < stepDays.length; i++) {
-      const d = Number(stepDays[i]);
-      if (!Number.isFinite(d) || d < 1) continue;
-      steps.push({
-        daysAfterPrev: Math.floor(d),
-        customInstructions: (stepInstr[i] ?? '').trim(),
-      });
-    }
-    if (steps.length === 0) {
-      redirect(
-        '/settings/outreach?error=' +
-          encodeURIComponent('at least one follow-up step is required'),
-      );
-    }
-    try {
-      await updateFollowUpConfig(c, { enabled, requireApproval, steps });
-      redirect('/settings/outreach?message=Follow-up+config+saved');
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m =
-        err instanceof FollowUpServiceError ? err.message : 'failed';
-      redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
-    }
-  }
-
   const steps = followUpSettings.steps;
-  const showAddRow = steps.length < 10;
+  const showAddRow = steps.length < FOLLOW_UP_MAX_STEPS;
 
   return (
     <AppShell>
@@ -411,62 +380,115 @@ export default async function OutreachSettingsPage({
 
         <div className="config-divider" />
 
-        <p className="config-eyebrow">Follow-up intervals</p>
+        <p className="config-eyebrow">Follow-up steps</p>
         <p className="config-row-sub" style={{ marginTop: 0 }}>
           Days after the previous step (step 1 counts from the first outbound).
           The last step gets a &ldquo;this is the final email&rdquo; framing
-          automatically.
+          automatically. Each step can carry its own AI instructions; leave
+          them empty to use the default tone.
         </p>
-        <div className="followup-step-grid">
+        {/* One card per step: its days, its AI instructions and its Remove
+            box travel together (stepDays.N / stepInstr.N / stepRemove=N,
+            parsed by ./follow-up-form.ts), so removing step 2 keeps every
+            other step's instructions on that step (I114). */}
+        <div className="followup-step-list">
           {steps.map((s, i) => (
-            <div className="followup-step-cell" key={i}>
-              <span className={`followup-step-badge tier-${tierColor(i)}`}>
-                Step {i + 1}
-              </span>
-              <div className="followup-step-input-row">
+            <div
+              className="followup-step-card"
+              key={i}
+              role="group"
+              aria-label={`Step ${i + 1}`}
+            >
+              <div className="followup-step-card-head">
+                <span className={`followup-step-badge tier-${tierColor(i)}`}>
+                  Step {i + 1}
+                </span>
+                <span className="followup-step-descriptor">
+                  {i === steps.length - 1
+                    ? 'Final attempt'
+                    : STEP_DESCRIPTORS[i] ?? 'Follow-up'}
+                </span>
+                <label className="followup-step-remove">
+                  <input type="checkbox" name={STEP_REMOVE_FIELD} value={i} />
+                  <Trash2 className="lucide" aria-hidden="true" /> Remove
+                </label>
+              </div>
+              <label className="followup-step-input-row">
                 <input
                   type="number"
-                  name="stepDays"
+                  name={stepDaysField(i)}
                   min={1}
-                  max={365}
+                  max={FOLLOW_UP_MAX_DAYS}
+                  step={1}
                   defaultValue={s.daysAfterPrev}
                   className="followup-step-input"
-                  required
                 />
-                <span className="followup-step-days-label">days</span>
-              </div>
-              <p className="followup-step-descriptor">
-                {i === steps.length - 1
-                  ? 'Final attempt'
-                  : STEP_DESCRIPTORS[i] ?? 'Follow-up'}
+                <span className="followup-step-days-label">
+                  days after {i === 0 ? 'the first email' : `step ${i}`}
+                </span>
+              </label>
+              <details className="followup-step-instr" open={s.customInstructions !== ''}>
+                <summary>AI instructions for step {i + 1}</summary>
+                <textarea
+                  name={stepInstrField(i)}
+                  defaultValue={s.customInstructions}
+                  placeholder={defaultInstr(i, steps.length)}
+                  maxLength={FOLLOW_UP_MAX_INSTRUCTIONS}
+                  rows={3}
+                  aria-label={`AI instructions for step ${i + 1}`}
+                  className="followup-instr-textarea"
+                />
+              </details>
+              <p className="followup-step-removed-note">
+                Removed when you save. Untick to keep it.
               </p>
             </div>
           ))}
           {showAddRow ? (
-            <div className="followup-step-cell followup-step-cell-add">
-              <span className="followup-step-badge tier-add">
-                <Plus className="lucide" aria-hidden="true" /> Add
-              </span>
-              <div className="followup-step-input-row">
+            <div
+              className="followup-step-card followup-step-card-add"
+              role="group"
+              aria-label="Add a step"
+            >
+              <div className="followup-step-card-head">
+                <span className="followup-step-badge tier-add">
+                  <Plus className="lucide" aria-hidden="true" /> Step {steps.length + 1}
+                </span>
+                <span className="followup-step-descriptor">
+                  Optional: fill in the days to add a step at the end
+                </span>
+              </div>
+              <label className="followup-step-input-row">
                 <input
                   type="number"
-                  name="stepDays"
+                  name={stepDaysField(steps.length)}
                   min={1}
-                  max={365}
+                  max={FOLLOW_UP_MAX_DAYS}
+                  step={1}
                   placeholder="7"
                   className="followup-step-input"
                 />
-                <span className="followup-step-days-label">days</span>
-              </div>
-              <p className="followup-step-descriptor">
-                Enter days to append a new step
-              </p>
+                <span className="followup-step-days-label">
+                  days after {steps.length === 0 ? 'the first email' : `step ${steps.length}`}
+                </span>
+              </label>
+              <details className="followup-step-instr">
+                <summary>AI instructions for the new step</summary>
+                <textarea
+                  name={stepInstrField(steps.length)}
+                  placeholder="Optional. Leave empty to use the default tone."
+                  maxLength={FOLLOW_UP_MAX_INSTRUCTIONS}
+                  rows={3}
+                  aria-label="AI instructions for the new step"
+                  className="followup-instr-textarea"
+                />
+              </details>
             </div>
           ) : null}
         </div>
-        <p className="config-row-sub" style={{ fontSize: '0.78rem' }}>
-          <X className="lucide" aria-hidden="true" /> To remove a step, clear
-          its &ldquo;days&rdquo; field before saving.
+        <p className="config-row-sub">
+          Tick <strong>Remove</strong> on a step and save to delete it. The
+          steps after it move up and keep their own instructions.
         </p>
 
         <div className="config-divider" />
@@ -488,44 +510,6 @@ export default async function OutreachSettingsPage({
             defaultChecked={followUpSettings.requireApproval}
           />
         </div>
-
-        <div className="config-divider" />
-
-        <details className="config-collapsible">
-          <summary className="config-collapsible-summary">
-            <Pencil className="lucide" aria-hidden="true" />
-            <div>
-              <p className="config-row-title">
-                Custom AI instructions per step
-              </p>
-              <p className="config-row-sub">
-                Override the default tone and content for each follow-up. Leave
-                a field empty to use the default.
-              </p>
-            </div>
-          </summary>
-          <div className="config-collapsible-body">
-            {steps.map((s, i) => (
-              <div key={i} className="followup-instr-block">
-                <label
-                  className={`followup-step-badge tier-${tierColor(i)}`}
-                  htmlFor={`step-instr-${i}`}
-                >
-                  Step {i + 1}
-                </label>
-                <textarea
-                  id={`step-instr-${i}`}
-                  name="stepInstr"
-                  defaultValue={s.customInstructions}
-                  placeholder={defaultInstr(i, steps.length)}
-                  maxLength={2000}
-                  rows={3}
-                  className="followup-instr-textarea"
-                />
-              </div>
-            ))}
-          </div>
-        </details>
 
         <div className="followup-info-amber">
           <AlertTriangle className="lucide" aria-hidden="true" />

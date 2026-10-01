@@ -315,13 +315,10 @@ export default async function KnowledgeSourceDetail({
                 name="productProfileIds"
                 multiple
                 size={Math.min(8, Math.max(3, allProducts.length))}
+                defaultValue={[...attachedSet]}
               >
                 {allProducts.map((p) => (
-                  <option
-                    key={p.id.toString()}
-                    value={p.id.toString()}
-                    selected={attachedSet.has(p.id.toString())}
-                  >
+                  <option key={p.id.toString()} value={p.id.toString()}>
                     {p.name}
                   </option>
                 ))}
