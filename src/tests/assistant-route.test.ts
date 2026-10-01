@@ -327,6 +327,31 @@ describe('POST /api/assistant — billing through the real metering path', () =>
     expect(await summarizeUsageByKeySource(tenantCtx)).toEqual([]);
   });
 
+  it('a super-admin asking in a tenant with an EMPTY wallet still gets the model, as support, and nothing is debited', async () => {
+    const w = await anthropicWorld(ANSWER);
+    await db.update(workspaces).set({ tokenBalance: 0n }).where(eq(workspaces.id, w.workspaceId));
+    const admin = await seedUser({ email: 'support2@platform.local', role: 'super_admin' });
+    await db.update(users).set({ activeWorkspaceId: w.workspaceId }).where(eq(users.id, admin));
+    signIn({ id: admin, role: 'super_admin', accountStatus: 'active' });
+
+    const res = await ask('why is nothing sending?');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.source).toBe('ai'); // not the "buy tokens" checklist
+    expect(body.answer).toContain('[/connectors]');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+    const { usage, tx } = await ledger(w.workspaceId);
+    expect(usage).toHaveLength(1);
+    expect(usage[0]!.payload).toMatchObject({ support: true });
+    expect(tx).toHaveLength(0);
+    const [wallet] = await db
+      .select({ balance: workspaces.tokenBalance })
+      .from(workspaces)
+      .where(eq(workspaces.id, w.workspaceId));
+    expect(wallet!.balance).toBe(0n);
+  });
+
   it('a thinking-only answer is a 502 that is logged but never billed', async () => {
     const w = await anthropicWorld({
       model: 'claude-haiku-4-5',

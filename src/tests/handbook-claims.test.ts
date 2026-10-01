@@ -1279,6 +1279,10 @@ describe('assistant (Ask the platform)', { timeout: DB_TEST_TIMEOUT_MS }, () => 
     expect(r.source).toBe('deterministic');
     expect(r.answer).toContain('[/settings/billing]');
     expect(r.findings).toContain('tokens.empty');
+    // A platform admin still gets the model there (as uncharged support).
+    const support = await askAssistant(superCtx, 'why is nothing sending?');
+    expect(support.source).toBe('ai');
+    expect(calls).toEqual([{ support: true }, { support: true }]);
     const txAfter = await db
       .select()
       .from(tokenTransactions)

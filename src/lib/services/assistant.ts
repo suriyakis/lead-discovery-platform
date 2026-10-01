@@ -9,7 +9,7 @@
 //     findings, with a [/settings/billing] link. Free.
 //   - A super-admin's question (ctx.role 'super_admin', member or god
 //     mode) is metered as platform support (payload.support) and never
-//     debited to the tenant.
+//     debited to the tenant — so it also skips the empty-wallet gate.
 //   - The model runs with `reasoning: 'low'`, which the adapters map per
 //     model (src/lib/ai/model-profiles.ts) so hidden reasoning can't eat
 //     the answer.
@@ -157,11 +157,17 @@ export async function askAssistant(
     throw new AssistantError('question too long', 'invalid_input');
   }
 
+  // I179: a super-admin (member or god mode) is doing platform support —
+  // metered as such, never debited to this tenant. So the wallet gate
+  // below does not apply to them: tenants with an empty wallet are the
+  // ones most likely to need support.
+  const support = isSuperAdmin(ctx);
+
   // I054: the guide used to 402 here, on exactly the question it exists
   // to answer. Same predicate as every other AI gate (assertTokens), but
   // the operator gets a real, free answer instead of an error.
   const wallet = await getTokenWallet(ctx);
-  if (!wallet.billingExempt && wallet.balance <= 0n) {
+  if (!support && !wallet.billingExempt && wallet.balance <= 0n) {
     return deterministicAnswer(ctx, 'wallet_empty');
   }
 
@@ -211,9 +217,7 @@ export async function askAssistant(
       { system, prompt },
       {
         ...ASSISTANT_GENERATION,
-        // I179: a super-admin (member or god mode) is doing platform
-        // support — metered as such, never debited to this tenant.
-        ...(isSuperAdmin(ctx) ? { support: true } : {}),
+        ...(support ? { support: true } : {}),
         mockSeed: `assistant:${trimmed.slice(0, 60)}`,
       },
     );
