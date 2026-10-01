@@ -14,8 +14,9 @@ import {
 import { listSignatures } from '@/lib/services/signatures';
 import { sendTestEmail } from '@/lib/services/mail';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { BRAND_NAME } from '@/lib/brand';
 
-const DEFAULT_BODY = `This is a test message from your Lead Discovery Platform mailbox.
+const DEFAULT_BODY = `This is a test message from your ${BRAND_NAME} mailbox.
 
 If you are reading this, the SMTP transport worked end-to-end. Check that:
   - The From address is your mailbox identity.

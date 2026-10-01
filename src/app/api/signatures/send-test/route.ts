@@ -8,15 +8,13 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
+import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { authErrorToResponse } from '@/lib/services/http';
 import { db } from '@/lib/db/client';
 import { mailboxes, signatures } from '@/lib/db/schema/mailing';
 import { and, desc, eq } from 'drizzle-orm';
 import { sendTestEmail, MailServiceError } from '@/lib/services/mail';
+import { BRAND_NAME } from '@/lib/brand';
 
 const InputSchema = z.object({
   signatureId: z.coerce.bigint(),
@@ -24,7 +22,7 @@ const InputSchema = z.object({
   mailboxId: z.coerce.bigint().optional(),
 });
 
-const DEFAULT_BODY = `This is a signature test from your Lead Discovery Platform.
+const DEFAULT_BODY = `This is a signature test from ${BRAND_NAME}.
 
 If you can read this, SMTP delivery + signature rendering are working.
 The signature below should match the live preview from the editor.`;
@@ -38,12 +36,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
-    if (err instanceof AuthRequiredError) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-    if (err instanceof NoWorkspaceError) {
-      return NextResponse.json({ error: 'no_workspace' }, { status: 400 });
-    }
+    const res = authErrorToResponse(err);
+    if (res) return res;
     throw err;
   }
 

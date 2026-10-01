@@ -106,6 +106,14 @@ describe('getOnboardingState', () => {
     expect(state.effectivelyComplete).toBe(false);
   });
 
+  it('review step copy does not promise that approvals become contactable leads (I001)', async () => {
+    const s = await setup();
+    const state = await getOnboardingState(ctx(s.workspaceA, s.ownerA));
+    const blurb = step(state, 'review').blurb;
+    expect(blurb).not.toMatch(/contactable/i);
+    expect(blurb).toContain('promote it to the pipeline from Leads and add its contact email');
+  });
+
   it('search step is done when the workspace picks a grounding provider', async () => {
     const s = await setup();
     const c = ctx(s.workspaceA, s.ownerA);

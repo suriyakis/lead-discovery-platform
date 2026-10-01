@@ -2,9 +2,10 @@
 // workspace and does two things a human account manager would:
 //
 //   1. RULE FINDINGS — deterministic audit of configuration + operations:
-//      empty wallet, recipes without a target country, mock search, no
-//      mailbox, each failing mailbox, failed runs, review backlog, stale
-//      drafts, pending follow-up approvals.
+//      empty wallet, no active product, no mailbox / each failing
+//      mailbox / no active mailbox, recipes without a target country,
+//      failed runs, review backlog, stale drafts, pending follow-up
+//      approvals. (There is no mock-search finding yet — see I073.)
 //   2. COMMUNICATION REVIEW — the AI reads a sample of recent outbound
 //      conversations and judges them the way a recipient would: is the
 //      flow natural? does it repeat itself? does it contradict earlier
@@ -22,7 +23,12 @@ import {
   workspaceHealthReports,
   type WorkspaceHealthReport,
 } from '@/lib/db/schema/health';
-import { mailMessages, mailThreads, mailboxes } from '@/lib/db/schema/mailing';
+import {
+  mailMessages,
+  mailThreads,
+  mailboxes,
+  type MailboxStatus,
+} from '@/lib/db/schema/mailing';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { productProfiles } from '@/lib/db/schema/products';
 import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
@@ -191,7 +197,9 @@ export async function collectRuleFindings(
     findings.push({
       severity: 'warning',
       code: 'recipes.no_country',
-      message: `${Number(recipeRow.total) - Number(recipeRow.withCountry)} of ${recipeRow.total} recipes have no target country — the geography gate cannot verify those leads and holds them for manual review.`,
+      // No target country = no geography gate (applyGeoGate → 'no_gate'):
+      // nothing is held for review, leads from anywhere pass straight on.
+      message: `${Number(recipeRow.total) - Number(recipeRow.withCountry)} of ${recipeRow.total} recipes have no target country — the geography gate is off for them, so leads from any country pass review and can be emailed.`,
       href: '/connectors',
     });
   }
@@ -272,6 +280,67 @@ export async function collectRuleFindings(
   }
 
   return findings;
+}
+
+/** How many mailbox addresses a finding names before "and N more". */
+const MAILBOX_NAMES_SHOWN = 3;
+
+function mailboxList(rows: ReadonlyArray<{ fromAddress: string }>): string {
+  const shown = rows.slice(0, MAILBOX_NAMES_SHOWN).map((r) => r.fromAddress);
+  const more = rows.length - shown.length;
+  return more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ');
+}
+
+/**
+ * Mailbox findings from the workspace's non-archived mailboxes (AP-01).
+ * The statuses behave differently, so each gets its own finding:
+ *   - none at all: nothing can be sent or received;
+ *   - failing: STILL SENDS queued emails and follow-ups, but is no longer
+ *     synced, so replies, bounces and unsubscribes go unread (I095) — a
+ *     "nothing can be sent" message would be wrong here;
+ *   - paused, with no active mailbox left: sends nothing (its queued
+ *     emails fail instead of waiting) and is not synced.
+ */
+export function mailboxFindings(
+  rows: ReadonlyArray<{ fromAddress: string; status: MailboxStatus }>,
+): HealthFinding[] {
+  const live = rows.filter((r) => r.status !== 'archived');
+  if (live.length === 0) {
+    return [
+      {
+        severity: 'warning',
+        code: 'mailbox.none',
+        message: 'No active mailbox — nothing can be sent or received.',
+        href: '/mailbox/new',
+      },
+    ];
+  }
+  const out: HealthFinding[] = [];
+  const failing = live.filter((r) => r.status === 'failing');
+  if (failing.length > 0) {
+    out.push({
+      severity: 'warning',
+      code: 'mailbox.failing',
+      message:
+        failing.length === 1
+          ? `Mailbox ${mailboxList(failing)} is failing — it still sends queued emails and follow-ups, but replies, bounces and unsubscribes sent to it are not read. Fix its settings, then click Reactivate on its page.`
+          : `${failing.length} mailboxes are failing (${mailboxList(failing)}) — they still send queued emails and follow-ups, but replies, bounces and unsubscribes sent to them are not read. Fix their settings, then click Reactivate on each one's page.`,
+      href: '/mailbox',
+    });
+  }
+  const paused = live.filter((r) => r.status === 'paused');
+  if (paused.length > 0 && !live.some((r) => r.status === 'active')) {
+    out.push({
+      severity: 'warning',
+      code: 'mailbox.paused',
+      message:
+        paused.length === 1
+          ? `Mailbox ${mailboxList(paused)} is paused and no mailbox is active — a paused mailbox sends nothing (its queued emails fail instead of waiting) and is not synced.`
+          : `${paused.length} mailboxes are paused (${mailboxList(paused)}) and none is active — a paused mailbox sends nothing (its queued emails fail instead of waiting) and is not synced.`,
+      href: '/mailbox',
+    });
+  }
+  return out;
 }
 
 // ---- AI communication review ----------------------------------------

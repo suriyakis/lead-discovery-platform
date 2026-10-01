@@ -31,7 +31,12 @@ export interface UsageEventInput {
  *   - the call ran on the workspace's own BYOK key
  *     (`payload.keySource === 'workspace'` — they pay the vendor),
  *   - the workspace is billing-exempt (platform-internal),
- *   - the cost rounds to zero tokens.
+ *   - the cost rounds to zero tokens,
+ *   - the call was platform support (`payload.support === true` — a
+ *     super-admin asking inside a tenant; the platform pays, AP-02),
+ *   - the call produced no usable output (`payload.unbilled` set — an
+ *     empty answer or a refusal is logged for cost tracking but never
+ *     charged, AP-02).
  * The debit is best-effort: a ledger hiccup must never fail the action
  * that already happened — the usage row itself is the recovery source.
  */
@@ -69,8 +74,11 @@ async function maybeDebitForUsage(
   entry: UsageLogEntry,
 ): Promise<void> {
   if (entry.provider === 'mock') return;
-  const keySource = (entry.payload as Record<string, unknown> | null)?.keySource;
+  const payload = (entry.payload as Record<string, unknown> | null) ?? {};
+  const keySource = payload.keySource;
   if (keySource === 'workspace' || keySource === 'mock') return;
+  if (payload.support === true) return;
+  if (payload.unbilled) return;
 
   const tokens = costCentsToTokens(entry.costEstimateCents);
   if (tokens <= 0) return;
@@ -108,16 +116,33 @@ export interface UsageSummaryRow {
 }
 
 /**
+ * Tenant cost views leave out platform-support rows (`payload.support`):
+ * a super-admin's questions asked inside the tenant are the platform's
+ * usage, not the tenant's (AP-02). Platform-wide admin aggregates read
+ * usage_log directly and still count them.
+ */
+function tenantUsageConds(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  range: UsageSummaryRange,
+): SQL[] {
+  const conds: SQL[] = [
+    eq(usageLog.workspaceId, ctx.workspaceId),
+    sql`(${usageLog.payload}->>'support') is distinct from 'true'`,
+  ];
+  if (range.since) conds.push(gte(usageLog.createdAt, range.since));
+  if (range.until) conds.push(lte(usageLog.createdAt, range.until));
+  return conds;
+}
+
+/**
  * Aggregate usage for a workspace over a time range, grouped by `(kind, provider)`.
- * Useful for the per-workspace cost view.
+ * Useful for the per-workspace cost view. Excludes platform-support rows.
  */
 export async function summarizeUsage(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   range: UsageSummaryRange = {},
 ): Promise<UsageSummaryRow[]> {
-  const conds: SQL[] = [eq(usageLog.workspaceId, ctx.workspaceId)];
-  if (range.since) conds.push(gte(usageLog.createdAt, range.since));
-  if (range.until) conds.push(lte(usageLog.createdAt, range.until));
+  const conds = tenantUsageConds(ctx, range);
 
   const rows = await db
     .select({
@@ -152,14 +177,13 @@ export interface UsageByKeySourceRow {
 /**
  * Cost view aggregation broken out by `payload.keySource` so the UI can
  * show "you spent X on your own SerpAPI key, Y on the platform default".
+ * Excludes platform-support rows, like summarizeUsage.
  */
 export async function summarizeUsageByKeySource(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   range: UsageSummaryRange = {},
 ): Promise<UsageByKeySourceRow[]> {
-  const conds: SQL[] = [eq(usageLog.workspaceId, ctx.workspaceId)];
-  if (range.since) conds.push(gte(usageLog.createdAt, range.since));
-  if (range.until) conds.push(lte(usageLog.createdAt, range.until));
+  const conds = tenantUsageConds(ctx, range);
 
   const keySource = sql<string>`coalesce(${usageLog.payload}->>'keySource', '(unspecified)')`;
   const rows = await db

@@ -229,8 +229,9 @@ export async function getOnboardingState(
   const runDone = Number(recordRow?.c ?? 0) > 0;
 
   // ─── Step 7: first review decision ─────────────────────────────────
-  // Approving/rejecting the first leads teaches the learning memory and
-  // unlocks outreach — a lead only becomes contactable once approved.
+  // Approving/rejecting the first leads teaches the learning memory. It
+  // does NOT make a lead contactable: that takes "Promote to pipeline" on
+  // /leads plus a contact email on the pipeline lead (see I001).
   const [decisionRow] = await db
     .select({ c: count() })
     .from(reviewItems)
@@ -334,7 +335,7 @@ export async function getOnboardingState(
       key: 'review',
       title: 'Review your first leads',
       blurb:
-        'Approve or reject what discovery found. Approvals become contactable leads; every decision (and comment) trains the learning memory, so the platform qualifies better each week.',
+        'Approve or reject what discovery found. Every decision (and comment) trains the learning memory, so the platform qualifies better each week. To contact a company, promote it to the pipeline from Leads and add its contact email.',
       done: reviewDone,
       href: '/review',
       why: reviewDone ? undefined : 'No approve/reject decisions yet.',
