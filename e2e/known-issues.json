@@ -8,9 +8,9 @@
   {
     "id": "I115",
     "check": "pageerror",
-    "match": "Hydration failed",
+    "match": ["Hydration failed", "Minified React error #418"],
     "paths": ["/settings/crm/1"],
-    "note": "The Test-connection <form> is nested inside the Save <form>, which React cannot hydrate. Fixed by DS-04 item 5; remove this entry with it."
+    "note": "The Test-connection <form> is nested inside the Save <form>, which React cannot hydrate (dev: 'Hydration failed…'; production build: 'Minified React error #418'). Fixed by DS-04 item 5; remove this entry with it."
   },
   {
     "id": "X5",

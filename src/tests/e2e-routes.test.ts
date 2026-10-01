@@ -146,8 +146,14 @@ describe('known issues (e2e/known-issues.json)', () => {
     const msg = 'Error: Hydration failed because …';
     expect(knownIssue('/review', 'pageerror', msg, { devServer: true })?.id).toBe('X5');
     expect(knownIssue('/review', 'pageerror', msg, { devServer: false })).toBeUndefined();
-    // Defects that are real in both (I115) stay tolerated against `next start`.
+    // Defects that are real in both (I115) stay tolerated against `next start`,
+    // where React's message is minified (seen in a build + start run).
     expect(knownIssue('/settings/crm/1', 'pageerror', msg, { devServer: false })?.id).toBe('I115');
+    const minified =
+      'Error: Minified React error #418; visit https://react.dev/errors/418?args[]=HTML&args[]= for the full message';
+    expect(knownIssue('/settings/crm/1', 'pageerror', minified, { devServer: false })?.id).toBe('I115');
+    expect(knownIssue('/review', 'pageerror', minified, { devServer: false })).toBeUndefined();
+    expect(knownIssue('/dashboard', 'pageerror', minified, { devServer: true })).toBeUndefined();
   });
 
   it('againstDevServer(): CI means `next start`, E2E_SERVER overrides', () => {

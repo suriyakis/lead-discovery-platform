@@ -170,8 +170,13 @@ export interface KnownIssue {
    * same failure on routes that never had it.
    */
   paths: string[];
-  /** For `pageerror`: only errors whose message contains this text. */
-  match?: string;
+  /**
+   * For `pageerror`: only errors whose message contains this text (or any
+   * of these texts). A production build minifies React's messages, so a
+   * hydration failure there reads "Minified React error #418", not
+   * "Hydration failed" — list both when the defect is real in both.
+   */
+  match?: string | string[];
   /** Only tolerated against `next dev`; a production server must pass. */
   devServerOnly?: boolean;
   note: string;
@@ -204,7 +209,7 @@ export function knownIssue(
     (k) =>
       k.check === check &&
       (k.paths.includes(visitPath) || k.paths.includes('*')) &&
-      (k.match === undefined || message.includes(k.match)) &&
+      (k.match === undefined || [k.match].flat().some((text) => message.includes(text))) &&
       (!k.devServerOnly || devServer),
   );
 }
