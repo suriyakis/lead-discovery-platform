@@ -16,7 +16,15 @@
     "id": "X5",
     "check": "pageerror",
     "match": "Hydration failed",
-    "paths": ["*"],
-    "note": "Intermittent server/client mismatch under `next dev` only (the client expects .app-shell where it finds .brand-header); seen on /drafts, /leads, /pipeline, /pipeline?view=kanban, /review and /communication/follow-ups, and on the base commit too. A production build reports it to the console, not as a page error. Pre-existing; DS-04."
+    "paths": [
+      "/drafts",
+      "/leads",
+      "/pipeline",
+      "/pipeline?view=kanban",
+      "/review",
+      "/communication/follow-ups"
+    ],
+    "devServerOnly": true,
+    "note": "Intermittent server/client mismatch under `next dev` only (the client expects .app-shell where it finds .brand-header), seen on exactly these routes and on the base commit too; a later review run with 2 repeats did not reproduce it. A production build reports it to the console, not as a page error, so it is not tolerated against `next start` (CI). Pre-existing; DS-04. Delete the entry once it stops reproducing."
   }
 ]

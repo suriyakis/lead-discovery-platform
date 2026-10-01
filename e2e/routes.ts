@@ -161,14 +161,31 @@ export interface KnownIssue {
   /** Audit id of the tracked defect (I…/X…). */
   id: string;
   check: SmokeCheck;
-  /** Visit paths exactly as in the smoke route list, or "*" for every route. */
+  /**
+   * Visit paths exactly as in the smoke route list, or "*" for every route.
+   * Prefer the paths where the defect was seen: a wildcard also hides the
+   * same failure on routes that never had it.
+   */
   paths: string[];
   /** For `pageerror`: only errors whose message contains this text. */
   match?: string;
+  /** Only tolerated against `next dev`; a production server must pass. */
+  devServerOnly?: boolean;
   note: string;
 }
 
 export const KNOWN_ISSUES: ReadonlyArray<KnownIssue> = knownIssuesJson as KnownIssue[];
+
+/**
+ * Whether the smoke runs against `next dev`. The CI job builds the app and
+ * runs `next start`; local runs use `next dev` (see playwright.config.ts).
+ * E2E_SERVER=dev|prod overrides the guess.
+ */
+export function againstDevServer(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  if (env.E2E_SERVER === 'dev') return true;
+  if (env.E2E_SERVER === 'prod') return false;
+  return !env.CI;
+}
 
 /**
  * The tracked issue that explains `check` failing on `visitPath`, if any.
@@ -178,11 +195,13 @@ export function knownIssue(
   visitPath: string,
   check: SmokeCheck,
   message = '',
+  { devServer = againstDevServer() }: { devServer?: boolean } = {},
 ): KnownIssue | undefined {
   return KNOWN_ISSUES.find(
     (k) =>
       k.check === check &&
       (k.paths.includes(visitPath) || k.paths.includes('*')) &&
-      (k.match === undefined || message.includes(k.match)),
+      (k.match === undefined || message.includes(k.match)) &&
+      (!k.devServerOnly || devServer),
   );
 }

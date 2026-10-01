@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  againstDevServer,
   appRoutePatterns,
   EXPECTED_LANDING,
   EXTRA_PATHS,
@@ -125,11 +126,34 @@ describe('known issues (e2e/known-issues.json)', () => {
   });
 
   it('knownIssue() matches on path, check and message text only', () => {
-    expect(knownIssue('/pipeline/1', 'status')?.id).toBe('X3');
-    expect(knownIssue('/pipeline/2', 'status')).toBeUndefined();
-    expect(knownIssue('/pipeline/1', 'overflow')).toBeUndefined();
-    expect(knownIssue('/drafts', 'pageerror', 'Error: Hydration failed because …')?.id).toBe('X5');
-    expect(knownIssue('/settings/crm/1', 'pageerror', 'Hydration failed because …')?.id).toBe('I115');
-    expect(knownIssue('/drafts', 'pageerror', 'TypeError: x is undefined')).toBeUndefined();
+    const dev = { devServer: true };
+    expect(knownIssue('/pipeline/1', 'status', '', dev)?.id).toBe('X3');
+    expect(knownIssue('/pipeline/2', 'status', '', dev)).toBeUndefined();
+    expect(knownIssue('/pipeline/1', 'overflow', '', dev)).toBeUndefined();
+    expect(knownIssue('/drafts', 'pageerror', 'Error: Hydration failed because …', dev)?.id).toBe('X5');
+    expect(knownIssue('/settings/crm/1', 'pageerror', 'Hydration failed because …', dev)?.id).toBe('I115');
+    expect(knownIssue('/drafts', 'pageerror', 'TypeError: x is undefined', dev)).toBeUndefined();
+  });
+
+  it('no page error is excused on every route: a new hydration failure elsewhere fails the smoke', () => {
+    expect(KNOWN_ISSUES.filter((k) => k.check === 'pageerror' && k.paths.includes('*'))).toEqual([]);
+    for (const path of ['/dashboard', '/review/8', '/drafts/39', '/admin/users']) {
+      expect(knownIssue(path, 'pageerror', 'Error: Hydration failed because …', { devServer: true }), path).toBeUndefined();
+    }
+  });
+
+  it('dev-server-only entries are not tolerated against a production server', () => {
+    const msg = 'Error: Hydration failed because …';
+    expect(knownIssue('/review', 'pageerror', msg, { devServer: true })?.id).toBe('X5');
+    expect(knownIssue('/review', 'pageerror', msg, { devServer: false })).toBeUndefined();
+    // Defects that are real in both (I115) stay tolerated against `next start`.
+    expect(knownIssue('/settings/crm/1', 'pageerror', msg, { devServer: false })?.id).toBe('I115');
+  });
+
+  it('againstDevServer(): CI means `next start`, E2E_SERVER overrides', () => {
+    expect(againstDevServer({})).toBe(true);
+    expect(againstDevServer({ CI: 'true' })).toBe(false);
+    expect(againstDevServer({ CI: 'true', E2E_SERVER: 'dev' })).toBe(true);
+    expect(againstDevServer({ E2E_SERVER: 'prod' })).toBe(false);
   });
 });
