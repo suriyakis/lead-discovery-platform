@@ -354,6 +354,7 @@ export default async function AdminWorkspaceDetail({
               <ConfirmTokenAdjustButton
                 className="primary-btn"
                 workspaceName={ws.name}
+                workspaceSlug={ws.slug}
                 balance={ws.tokenBalance.toString()}
                 billingExempt={ws.billingExempt}
               >
@@ -367,6 +368,7 @@ export default async function AdminWorkspaceDetail({
                   className="ghost-btn"
                   message={billingExemptOffConfirm({
                     name: ws.name,
+                    slug: ws.slug,
                     balance: ws.tokenBalance.toString(),
                     plan: ws.plan,
                     subscriptionStatus: ws.subscriptionStatus,
@@ -377,7 +379,7 @@ export default async function AdminWorkspaceDetail({
               ) : (
                 <ConfirmFormButton
                   className="ghost-btn"
-                  message={billingExemptOnConfirm({ name: ws.name })}
+                  message={billingExemptOnConfirm({ name: ws.name, slug: ws.slug })}
                   confirmPhrase={ws.slug}
                 >
                   Make billing exempt
@@ -465,7 +467,11 @@ export default async function AdminWorkspaceDetail({
               </label>
               <ConfirmFormButton
                 className="ghost-btn"
-                message={archiveWorkspaceConfirm({ name: ws.name, memberCount: members.length })}
+                message={archiveWorkspaceConfirm({
+                  name: ws.name,
+                  slug: ws.slug,
+                  memberCount: members.length,
+                })}
               >
                 Archive workspace
               </ConfirmFormButton>
@@ -475,7 +481,11 @@ export default async function AdminWorkspaceDetail({
               <form action={restore}>
                 <ConfirmFormButton
                   className="primary-btn"
-                  message={restoreWorkspaceConfirm({ name: ws.name, memberCount: members.length })}
+                  message={restoreWorkspaceConfirm({
+                    name: ws.name,
+                    slug: ws.slug,
+                    memberCount: members.length,
+                  })}
                 >
                   Restore workspace
                 </ConfirmFormButton>
@@ -555,7 +565,7 @@ export default async function AdminWorkspaceDetail({
                       <input type="hidden" name="targetUserId" value={user.id} />
                       <ConfirmFormButton
                         className="ghost-btn"
-                        message={removeMemberConfirm(user, ws.name)}
+                        message={removeMemberConfirm(user, { name: ws.name, slug: ws.slug })}
                       >
                         Remove from workspace
                       </ConfirmFormButton>

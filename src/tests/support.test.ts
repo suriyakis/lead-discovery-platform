@@ -176,8 +176,11 @@ describe('admin side', () => {
     const adminCtx = platformCtx(s.admin);
 
     expect(await adminSupportUnreadCount()).toBe(1);
-    await adminGetSupportThread(adminCtx, t.id);
+    const detail = await adminGetSupportThread(adminCtx, t.id);
     expect(await adminSupportUnreadCount()).toBe(0);
+    // Name AND slug: the close confirm needs the slug, names repeat.
+    expect(detail.workspaceName).toBe('Sup A');
+    expect(detail.workspaceSlug).toMatch(/^sup-a-/);
 
     await adminReplySupportThread(adminCtx, t.id, 'pong');
     expect(await workspaceSupportUnreadCount(ctx(s.workspaceA, s.ownerA))).toBe(1);

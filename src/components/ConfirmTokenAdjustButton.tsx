@@ -7,6 +7,8 @@ import { tokenAdjustmentConfirm } from '@/lib/confirm-copy';
 interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: ReactNode;
   workspaceName: string;
+  /** The workspace slug, shown next to the name (names are not unique). */
+  workspaceSlug?: string | null;
   /** Current token balance as a decimal string (shows balance before → after). */
   balance?: string;
   billingExempt?: boolean;
@@ -19,12 +21,14 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 /**
  * Submit button for the super-admin token grant/deduct forms. Reads the
  * amount the operator typed and confirms the signed delta against the
- * named workspace ("+1,000 tokens to Acme" / "-1,000 tokens from Acme"),
+ * named workspace ("+1,000 tokens to Acme (acme)" / "-1,000 tokens from
+ * Acme (acme)"),
  * so a stray minus sign or an extra zero is caught before anything is
  * sent. An invalid amount skips the dialog; the server rejects it.
  */
 export function ConfirmTokenAdjustButton({
   workspaceName,
+  workspaceSlug,
   balance,
   billingExempt,
   tokensField = 'tokens',
@@ -43,6 +47,7 @@ export function ConfirmTokenAdjustButton({
           raw: readFieldValue(form, tokensField),
           reason: readFieldValue(form, reasonField),
           workspaceName,
+          workspaceSlug,
           balance,
           billingExempt,
         });

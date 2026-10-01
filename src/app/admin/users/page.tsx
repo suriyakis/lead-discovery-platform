@@ -37,7 +37,7 @@ export default async function AdminUsersPage({
     listPreauthorizedEmails(pctx),
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
-  const workspaceNameById = new Map(allWorkspaces.map((w) => [w.id.toString(), w.name]));
+  const workspaceById = new Map(allWorkspaces.map((w) => [w.id.toString(), w]));
 
   async function setStatus(formData: FormData) {
     'use server';
@@ -222,7 +222,10 @@ export default async function AdminUsersPage({
                         email: p.email,
                         role: p.role,
                         workspaceName: p.workspaceId
-                          ? (workspaceNameById.get(p.workspaceId) ?? `workspace #${p.workspaceId}`)
+                          ? (workspaceById.get(p.workspaceId)?.name ?? `workspace #${p.workspaceId}`)
+                          : null,
+                        workspaceSlug: p.workspaceId
+                          ? workspaceById.get(p.workspaceId)?.slug
                           : null,
                       })}
                     >

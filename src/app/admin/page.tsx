@@ -190,6 +190,7 @@ export default async function AdminPage({
                       <ConfirmTokenAdjustButton
                         className="ghost-btn"
                         workspaceName={s.name}
+                        workspaceSlug={s.slug}
                         balance={s.tokenBalance.toString()}
                         billingExempt={s.billingExempt}
                       >

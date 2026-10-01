@@ -197,9 +197,12 @@ that workspace under your own `user_id`.
 exemption, platform role, account status, removing a member, revoking a
 pre-authorisation, closing a support thread, removing a console key and
 saving platform defaults all show a confirmation that names the workspace
-or user; Cancel sends nothing. A token grant reads `+1,000 tokens to
-<workspace>` (or `-1,000 tokens from <workspace>`) with the balance before
-and after, so a stray minus or an extra zero shows up before it is applied.
+or user; Cancel sends nothing. A workspace is named with its slug, e.g.
+`"Personal" (personal-1a2b3c4d)`, because names repeat (every self-signup
+workspace is called Personal). A token grant reads `+1,000 tokens to
+<workspace> (<slug>)` (or `-1,000 tokens from ...`) with the balance
+before and after, so a wrong row, a stray minus or an extra zero shows up
+before it is applied.
 **Promote to super-admin** asks you to type the user's email and **Make
 billing exempt** the workspace slug. Workspace admins get the same
 confirmations for removing a member, switching to Simple setup, clearing a

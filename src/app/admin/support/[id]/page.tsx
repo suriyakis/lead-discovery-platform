@@ -33,7 +33,7 @@ export default async function AdminSupportThreadPage({
     }
     throw err;
   }
-  const { thread, messages, workspaceName, senderNames } = data;
+  const { thread, messages, workspaceName, workspaceSlug, senderNames } = data;
 
   async function reply(formData: FormData) {
     'use server';
@@ -123,7 +123,11 @@ export default async function AdminSupportThreadPage({
             messageByValue={{
               field: 'status',
               messages: {
-                closed: closeSupportThreadConfirm({ subject: thread.subject, workspaceName }),
+                closed: closeSupportThreadConfirm({
+                  subject: thread.subject,
+                  workspaceName,
+                  workspaceSlug,
+                }),
               },
             }}
           >

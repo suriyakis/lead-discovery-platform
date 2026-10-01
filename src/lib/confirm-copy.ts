@@ -2,9 +2,12 @@
 //
 // Every message names the workspace, user or product it acts on and says
 // what happens next, so a misclick on the wrong row is caught before the
-// request leaves the browser. Pure and browser-safe: server pages build
-// the static messages, ConfirmTokenAdjustButton builds the token one from
-// what the operator typed.
+// request leaves the browser. A workspace is named by name AND slug
+// (workspaceLabel): names are not unique — every self-signup workspace is
+// called "Personal" — so the name alone would not catch the wrong row.
+// Pure and browser-safe: server pages build the static messages,
+// ConfirmTokenAdjustButton builds the token one from what the operator
+// typed.
 
 const numberFormat = new Intl.NumberFormat('en-US');
 
@@ -26,6 +29,24 @@ export function parseTokenDelta(raw: string): bigint | null {
   return BigInt(n);
 }
 
+/** A workspace as the confirms name it. */
+export interface WorkspaceRef {
+  name: string;
+  /** Unique; shown next to the name. Omit only where it is not loaded. */
+  slug?: string | null;
+}
+
+/**
+ * `Personal (personal-1a2b3c4d)`, or `"Personal" (personal-1a2b3c4d)`
+ * with `quoted`. The slug is left out when it is missing or equals the
+ * name.
+ */
+export function workspaceLabel(ws: WorkspaceRef, opts: { quoted?: boolean } = {}): string {
+  const name = opts.quoted ? `"${ws.name}"` : ws.name;
+  const slug = ws.slug?.trim();
+  return slug && slug !== ws.name ? `${name} (${slug})` : name;
+}
+
 function parseBalance(raw: string | null | undefined): bigint | null {
   if (raw === null || raw === undefined || !/^-?\d+$/.test(raw.trim())) return null;
   return BigInt(raw.trim());
@@ -34,7 +55,7 @@ function parseBalance(raw: string | null | undefined): bigint | null {
 /**
  * Confirm text for a token grant or deduction:
  *
- *   +1,000 tokens to Acme Ltd
+ *   +1,000 tokens to Acme Ltd (acme-ltd)
  *   Balance: 5,000 → 6,000 tokens.
  *
  * Returns null when the typed amount is not a valid adjustment — the
@@ -43,6 +64,7 @@ function parseBalance(raw: string | null | undefined): bigint | null {
 export function tokenAdjustmentConfirm(input: {
   raw: string;
   workspaceName: string;
+  workspaceSlug?: string | null;
   /** Current balance as a decimal string. */
   balance?: string | null;
   billingExempt?: boolean;
@@ -50,10 +72,11 @@ export function tokenAdjustmentConfirm(input: {
 }): string | null {
   const delta = parseTokenDelta(input.raw);
   if (delta === null) return null;
+  const ws = workspaceLabel({ name: input.workspaceName, slug: input.workspaceSlug });
   const lines = [
     delta > 0n
-      ? `+${formatTokens(delta)} tokens to ${input.workspaceName}`
-      : `-${formatTokens(-delta)} tokens from ${input.workspaceName}`,
+      ? `+${formatTokens(delta)} tokens to ${ws}`
+      : `-${formatTokens(-delta)} tokens from ${ws}`,
   ];
   const balance = parseBalance(input.balance);
   if (balance !== null) {
@@ -85,40 +108,47 @@ export function userLabel(user: { name: string | null; email: string | null }): 
 
 // ---- workspaces (console) -------------------------------------------------
 
-export function archiveWorkspaceConfirm(ws: { name: string; memberCount: number }): string {
+export function archiveWorkspaceConfirm(ws: WorkspaceRef & { memberCount: number }): string {
   const members = membersAccess(ws.memberCount, 'loses', 'lose', 'access on their next page load.');
-  return `Archive the workspace "${ws.name}"?\n\n${members} Its scheduled jobs stop until a super-admin restores it. Nothing is deleted.`;
+  return `Archive the workspace ${workspaceLabel(ws, { quoted: true })}?\n\n${members} Its scheduled jobs stop until a super-admin restores it. Nothing is deleted.`;
 }
 
-export function restoreWorkspaceConfirm(ws: { name: string; memberCount: number }): string {
-  const members = membersAccess(ws.memberCount, 'gets', 'get', 'access back on their next page load.');
-  return `Restore the workspace "${ws.name}"?\n\n${members} Its scheduled jobs resume.`;
+export function restoreWorkspaceConfirm(ws: WorkspaceRef & { memberCount: number }): string {
+  const members = membersAccess(
+    ws.memberCount,
+    'gets',
+    'get',
+    'access back on their next page load.',
+  );
+  return `Restore the workspace ${workspaceLabel(ws, { quoted: true })}?\n\n${members} Its scheduled jobs resume.`;
 }
 
-export function billingExemptOnConfirm(ws: { name: string }): string {
-  return `Make "${ws.name}" billing exempt?\n\nUsage stops debiting its token balance, it gets Pro plan limits whatever it pays for, and auto top-up stops. The platform pays its provider costs from now on.`;
+export function billingExemptOnConfirm(ws: WorkspaceRef): string {
+  return `Make ${workspaceLabel(ws, { quoted: true })} billing exempt?\n\nUsage stops debiting its token balance, it gets Pro plan limits whatever it pays for, and auto top-up stops. The platform pays its provider costs from now on.`;
 }
 
-export function billingExemptOffConfirm(ws: {
-  name: string;
-  balance: string;
-  plan: string;
-  subscriptionStatus: string;
-}): string {
+export function billingExemptOffConfirm(
+  ws: WorkspaceRef & {
+    balance: string;
+    plan: string;
+    subscriptionStatus: string;
+  },
+): string {
   const balance = parseBalance(ws.balance);
   const shown = balance === null ? ws.balance : formatTokens(balance);
   const empty =
     balance !== null && balance <= 0n
       ? ' Its wallet is empty, so metered work (discovery, qualification, drafting) pauses until tokens are added.'
       : '';
-  return `End the billing exemption for "${ws.name}"?\n\nUsage debits its token balance again (${shown} tokens now) and its own plan limits apply (${ws.plan}, ${ws.subscriptionStatus}).${empty}`;
+  return `End the billing exemption for ${workspaceLabel(ws, { quoted: true })}?\n\nUsage debits its token balance again (${shown} tokens now) and its own plan limits apply (${ws.plan}, ${ws.subscriptionStatus}).${empty}`;
 }
 
 export function removeMemberConfirm(
   user: { name: string | null; email: string | null },
-  workspaceName?: string,
+  workspace?: WorkspaceRef | string,
 ): string {
-  const where = workspaceName ? `"${workspaceName}"` : 'this workspace';
+  const ws = typeof workspace === 'string' ? { name: workspace } : workspace;
+  const where = ws ? workspaceLabel(ws, { quoted: true }) : 'this workspace';
   return `Remove ${userLabel(user)} from ${where}?\n\nThey lose access to it on their next page load. What they created stays in the workspace.`;
 }
 
@@ -168,17 +198,22 @@ export function revokePreauthConfirm(p: {
   email: string;
   role: string;
   workspaceName: string | null;
+  workspaceSlug?: string | null;
 }): string {
   const effect = p.workspaceName
-    ? `They will no longer join "${p.workspaceName}" as ${p.role} automatically: if they sign in, they wait in pending review.`
+    ? `They will no longer join ${workspaceLabel({ name: p.workspaceName, slug: p.workspaceSlug }, { quoted: true })} as ${p.role} automatically: if they sign in, they wait in pending review.`
     : 'If they sign in, they wait in pending review instead of being let straight in.';
   return `Revoke the pre-authorisation for ${p.email}?\n\n${effect}`;
 }
 
 // ---- support (console) ----------------------------------------------------
 
-export function closeSupportThreadConfirm(t: { subject: string; workspaceName: string }): string {
-  return `Close the support thread "${t.subject}" from ${t.workspaceName}?\n\nThe customer sees it as closed. Their next reply reopens it.`;
+export function closeSupportThreadConfirm(t: {
+  subject: string;
+  workspaceName: string;
+  workspaceSlug?: string | null;
+}): string {
+  return `Close the support thread "${t.subject}" from ${workspaceLabel({ name: t.workspaceName, slug: t.workspaceSlug })}?\n\nThe customer sees it as closed. Their next reply reopens it.`;
 }
 
 // ---- providers (console) --------------------------------------------------
@@ -200,12 +235,17 @@ export function savePlatformDefaultsConfirm(): string {
 
 // ---- workspace settings ---------------------------------------------------
 
-export function switchToSimpleSetupConfirm(workspaceName: string): string {
-  return `Switch "${workspaceName}" to Simple setup?\n\nEvery provider and model choice on this page goes back to the platform defaults. Stored workspace API keys are kept. Switching back to Advanced later does not restore your choices.`;
+export function switchToSimpleSetupConfirm(workspace: WorkspaceRef | string): string {
+  const ws = typeof workspace === 'string' ? { name: workspace } : workspace;
+  return `Switch ${workspaceLabel(ws, { quoted: true })} to Simple setup?\n\nEvery provider and model choice on this page goes back to the platform defaults. Stored workspace API keys are kept. Switching back to Advanced later does not restore your choices.`;
 }
 
-export function clearWorkspaceKeyConfirm(p: { vendorName: string; workspaceName: string }): string {
-  return `Delete the ${p.vendorName} key stored for "${p.workspaceName}"?\n\n${p.vendorName} calls fall back to the platform key, if one is configured, and are billed from your token balance. The key cannot be shown again, so keep a copy if you plan to re-add it.`;
+export function clearWorkspaceKeyConfirm(p: {
+  vendorName: string;
+  workspaceName: string;
+  workspaceSlug?: string | null;
+}): string {
+  return `Delete the ${p.vendorName} key stored for ${workspaceLabel({ name: p.workspaceName, slug: p.workspaceSlug }, { quoted: true })}?\n\n${p.vendorName} calls fall back to the platform key, if one is configured, and are billed from your token balance. The key cannot be shown again, so keep a copy if you plan to re-add it.`;
 }
 
 export function archiveCrmConnectionConfirm(c: { name: string; system: string }): string {
@@ -259,7 +299,9 @@ export function clearAutopilotOverridesConfirm(
 ): string {
   const turnsOn: string[] = [];
   const turnsOff: string[] = [];
-  for (const key of Object.keys(AUTOPILOT_STEP_LABELS) as Array<keyof typeof AUTOPILOT_STEP_LABELS>) {
+  for (const key of Object.keys(AUTOPILOT_STEP_LABELS) as Array<
+    keyof typeof AUTOPILOT_STEP_LABELS
+  >) {
     const override = overlay[key];
     if (override === null || override === base[key]) continue;
     (base[key] ? turnsOn : turnsOff).push(AUTOPILOT_STEP_LABELS[key]);

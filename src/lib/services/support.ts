@@ -240,6 +240,7 @@ export async function adminListSupportThreads(
 
 export interface AdminThreadDetail extends ThreadWithMessages {
   workspaceName: string;
+  workspaceSlug: string;
   senderNames: Map<string, string>;
 }
 
@@ -250,7 +251,11 @@ export async function adminGetSupportThread(
 ): Promise<AdminThreadDetail> {
   if (!isPlatformContext(pctx)) throw denied('support.admin.read');
   const rows = await db
-    .select({ thread: supportThreads, workspaceName: workspaces.name })
+    .select({
+      thread: supportThreads,
+      workspaceName: workspaces.name,
+      workspaceSlug: workspaces.slug,
+    })
     .from(supportThreads)
     .innerJoin(workspaces, eq(workspaces.id, supportThreads.workspaceId))
     .where(eq(supportThreads.id, id))
@@ -286,7 +291,13 @@ export async function adminGetSupportThread(
     for (const u of userRows) senderNames.set(u.id, u.name ?? u.email ?? u.id);
   }
 
-  return { thread, messages, workspaceName: row.workspaceName, senderNames };
+  return {
+    thread,
+    messages,
+    workspaceName: row.workspaceName,
+    workspaceSlug: row.workspaceSlug,
+    senderNames,
+  };
 }
 
 /** Admin reply — notifies the customer workspace. */

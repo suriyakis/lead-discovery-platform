@@ -691,7 +691,7 @@ export default async function IntegrationsPage({
                 className="ghost-btn"
                 messageByValue={{
                   field: 'mode',
-                  messages: { simple: switchToSimpleSetupConfirm(workspaceRow.name) },
+                  messages: { simple: switchToSimpleSetupConfirm(workspaceRow) },
                 }}
               >
                 {isSimple ? 'Switch to Advanced setup' : 'Switch to Simple setup'}
@@ -1004,6 +1004,7 @@ export default async function IntegrationsPage({
                       message={clearWorkspaceKeyConfirm({
                         vendorName: 'SerpAPI',
                         workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
                       })}
                     >
                       Clear workspace key
@@ -1090,6 +1091,7 @@ export default async function IntegrationsPage({
                       message={clearWorkspaceKeyConfirm({
                         vendorName: 'OpenAI',
                         workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
                       })}
                     >
                       Clear workspace OpenAI key
@@ -1197,6 +1199,7 @@ export default async function IntegrationsPage({
                       message={clearWorkspaceKeyConfirm({
                         vendorName: 'Anthropic',
                         workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
                       })}
                     >
                       Clear workspace Anthropic key
@@ -1302,6 +1305,7 @@ export default async function IntegrationsPage({
                       message={clearWorkspaceKeyConfirm({
                         vendorName: 'Gemini',
                         workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
                       })}
                     >
                       Clear workspace Gemini key
@@ -1394,6 +1398,7 @@ export default async function IntegrationsPage({
                       message={clearWorkspaceKeyConfirm({
                         vendorName: 'Perplexity',
                         workspaceName: workspaceRow.name,
+                        workspaceSlug: workspaceRow.slug,
                       })}
                     >
                       Clear workspace Perplexity key

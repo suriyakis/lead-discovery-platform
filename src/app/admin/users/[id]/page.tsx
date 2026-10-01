@@ -357,7 +357,10 @@ export default async function AdminUserDetail({
                   />
                   <ConfirmFormButton
                     className="ghost-btn"
-                    message={removeMemberConfirm(user, m.workspace.name)}
+                    message={removeMemberConfirm(user, {
+                      name: m.workspace.name,
+                      slug: m.workspace.slug,
+                    })}
                   >
                     Remove from this workspace
                   </ConfirmFormButton>

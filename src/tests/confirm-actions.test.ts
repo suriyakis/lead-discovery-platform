@@ -37,6 +37,7 @@ import {
   revokePreauthConfirm,
   switchToSimpleSetupConfirm,
   tokenAdjustmentConfirm,
+  workspaceLabel,
   type AutopilotBaseLike,
   type AutopilotOverlayLike,
 } from '@/lib/confirm-copy';
@@ -160,6 +161,84 @@ describe('token adjustment confirm', () => {
   });
 });
 
+describe('workspaces are named by name and slug', () => {
+  // Every self-signup workspace is called "Personal", so the name alone
+  // cannot tell one tenant's row from the next one's.
+  const mine = { name: 'Personal', slug: 'personal-1a2b3c4d' };
+  const theirs = { name: 'Personal', slug: 'personal-9f8e7d6c' };
+
+  it('workspaceLabel: name + slug, quoted on request, slug left out when missing or redundant', () => {
+    expect(workspaceLabel(mine)).toBe('Personal (personal-1a2b3c4d)');
+    expect(workspaceLabel(mine, { quoted: true })).toBe('"Personal" (personal-1a2b3c4d)');
+    expect(workspaceLabel({ name: 'Acme' })).toBe('Acme');
+    expect(workspaceLabel({ name: 'Acme', slug: null }, { quoted: true })).toBe('"Acme"');
+    expect(workspaceLabel({ name: 'acme', slug: 'acme' })).toBe('acme');
+  });
+
+  it('two workspaces with the same name get different confirms', () => {
+    const grant = (ws: typeof mine) =>
+      tokenAdjustmentConfirm({ raw: '1000', workspaceName: ws.name, workspaceSlug: ws.slug })!;
+    expect(grant(mine).split('\n')[0]).toBe('+1,000 tokens to Personal (personal-1a2b3c4d)');
+    expect(grant(mine)).not.toBe(grant(theirs));
+
+    for (const build of [
+      (ws: typeof mine) => archiveWorkspaceConfirm({ ...ws, memberCount: 1 }),
+      (ws: typeof mine) => restoreWorkspaceConfirm({ ...ws, memberCount: 1 }),
+      (ws: typeof mine) => billingExemptOnConfirm(ws),
+      (ws: typeof mine) =>
+        billingExemptOffConfirm({
+          ...ws,
+          balance: '10',
+          plan: 'pro',
+          subscriptionStatus: 'active',
+        }),
+      (ws: typeof mine) => removeMemberConfirm({ name: null, email: 'bo@example.com' }, ws),
+      (ws: typeof mine) => switchToSimpleSetupConfirm(ws),
+      (ws: typeof mine) =>
+        clearWorkspaceKeyConfirm({
+          vendorName: 'Gemini',
+          workspaceName: ws.name,
+          workspaceSlug: ws.slug,
+        }),
+      (ws: typeof mine) =>
+        closeSupportThreadConfirm({
+          subject: 'Help',
+          workspaceName: ws.name,
+          workspaceSlug: ws.slug,
+        }),
+      (ws: typeof mine) =>
+        revokePreauthConfirm({
+          email: 'new@example.com',
+          role: 'member',
+          workspaceName: ws.name,
+          workspaceSlug: ws.slug,
+        }),
+    ]) {
+      expect(build(mine)).toContain('personal-1a2b3c4d');
+      expect(build(mine)).not.toBe(build(theirs));
+    }
+  });
+
+  it('the copy reads naturally with the slug in it', () => {
+    expect(archiveWorkspaceConfirm({ ...mine, memberCount: 2 })).toContain(
+      'Archive the workspace "Personal" (personal-1a2b3c4d)?',
+    );
+    expect(billingExemptOnConfirm(mine)).toContain(
+      'Make "Personal" (personal-1a2b3c4d) billing exempt?',
+    );
+    expect(removeMemberConfirm({ name: null, email: 'bo@example.com' }, mine)).toContain(
+      'Remove bo@example.com from "Personal" (personal-1a2b3c4d)?',
+    );
+    expect(
+      closeSupportThreadConfirm({
+        subject: 'Help',
+        workspaceName: mine.name,
+        workspaceSlug: mine.slug,
+      }),
+    ).toContain('Close the support thread "Help" from Personal (personal-1a2b3c4d)?');
+  });
+});
+
 describe('confirm copy names what it acts on', () => {
   const ada = { name: 'Ada Lovelace', email: 'ada@example.com' };
 
@@ -191,7 +270,12 @@ describe('confirm copy names what it acts on', () => {
     expect(off).toContain('(pro, trial)');
     expect(off).toContain('pauses until tokens are added');
     expect(
-      billingExemptOffConfirm({ name: 'A', balance: '12000', plan: 'pro', subscriptionStatus: 'active' }),
+      billingExemptOffConfirm({
+        name: 'A',
+        balance: '12000',
+        plan: 'pro',
+        subscriptionStatus: 'active',
+      }),
     ).not.toContain('pauses');
   });
 
@@ -216,7 +300,11 @@ describe('confirm copy names what it acts on', () => {
     expect(fromPending.pending).toBeUndefined();
     expect(fromPending.active).toContain('Set Ada Lovelace <ada@example.com> to active?');
 
-    const superAdmin = accountStatusConfirms({ ...ada, role: 'super_admin', accountStatus: 'active' });
+    const superAdmin = accountStatusConfirms({
+      ...ada,
+      role: 'super_admin',
+      accountStatus: 'active',
+    });
     expect(superAdmin.suspended).toContain('does not lock super-admins out');
   });
 
@@ -227,16 +315,24 @@ describe('confirm copy names what it acts on', () => {
     expect(
       revokePreauthConfirm({ email: 'new@example.com', role: 'member', workspaceName: null }),
     ).toContain('pending review');
-    expect(closeSupportThreadConfirm({ subject: 'Billing question', workspaceName: 'Acme' })).toContain(
-      'Close the support thread "Billing question" from Acme?',
-    );
+    expect(
+      closeSupportThreadConfirm({ subject: 'Billing question', workspaceName: 'Acme' }),
+    ).toContain('Close the support thread "Billing question" from Acme?');
   });
 
   it('provider keys and defaults', () => {
-    const withEnv = removeConsoleKeyConfirm({ vendorName: 'OpenAI', envVar: 'OPENAI_API_KEY', envSet: true });
+    const withEnv = removeConsoleKeyConfirm({
+      vendorName: 'OpenAI',
+      envVar: 'OPENAI_API_KEY',
+      envSet: true,
+    });
     expect(withEnv).toContain('Remove the platform OpenAI key?');
     expect(withEnv).toContain('fall back to the OPENAI_API_KEY server env var');
-    const noEnv = removeConsoleKeyConfirm({ vendorName: 'OpenAI', envVar: 'OPENAI_API_KEY', envSet: false });
+    const noEnv = removeConsoleKeyConfirm({
+      vendorName: 'OpenAI',
+      envVar: 'OPENAI_API_KEY',
+      envSet: false,
+    });
     expect(noEnv).toContain('OPENAI_API_KEY is not set');
     expect(clearWorkspaceKeyConfirm({ vendorName: 'Gemini', workspaceName: 'Acme' })).toContain(
       'Delete the Gemini key stored for "Acme"?',
@@ -410,7 +506,9 @@ describe('ConfirmTokenAdjustButton', () => {
     const confirm = vi.fn((_m: string) => true);
     vi.stubGlobal('confirm', confirm);
 
-    expect(click(button(), fakeForm({ tokens: '1000', reason: 'promo' })).preventDefault).not.toHaveBeenCalled();
+    expect(
+      click(button(), fakeForm({ tokens: '1000', reason: 'promo' })).preventDefault,
+    ).not.toHaveBeenCalled();
     const grant = String(confirm.mock.calls[0]?.[0]);
     expect(grant.startsWith('+1,000 tokens to Acme Ltd\n')).toBe(true);
     expect(grant).toContain('Balance: 5,000 → 6,000 tokens.');
@@ -422,8 +520,25 @@ describe('ConfirmTokenAdjustButton', () => {
     expect(deduct).toContain('Balance: 5,000 → 4,000 tokens.');
   });
 
+  it('names the workspace by name and slug', () => {
+    const confirm = vi.fn((_m: string) => true);
+    vi.stubGlobal('confirm', confirm);
+    const el = ConfirmTokenAdjustButton({
+      workspaceName: 'Personal',
+      workspaceSlug: 'personal-1a2b3c4d',
+      children: 'Apply',
+    });
+    click(el, fakeForm({ tokens: '1000' }));
+    expect(String(confirm.mock.calls[0]?.[0])).toMatch(
+      /^\+1,000 tokens to Personal \(personal-1a2b3c4d\)\n/,
+    );
+  });
+
   it('dismissing sends nothing', () => {
-    vi.stubGlobal('confirm', vi.fn((_m: string) => false));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn((_m: string) => false),
+    );
     const onClick = vi.fn();
     const el = ConfirmTokenAdjustButton({ workspaceName: 'Acme', onClick, children: 'Apply' });
     expect(click(el, fakeForm({ tokens: '-100000' })).preventDefault).toHaveBeenCalled();
@@ -527,9 +642,46 @@ describe('high-impact forms submit through a confirm button', () => {
     expect(src).not.toMatch(/!\(rows\[0\]\?\.exempt/);
   });
 
+  it('console confirms that name a workspace pass its slug too', () => {
+    const CONSOLE_FILES = [
+      'src/app/admin/page.tsx',
+      'src/app/admin/workspaces/page.tsx',
+      'src/app/admin/workspaces/[id]/page.tsx',
+      'src/app/admin/users/page.tsx',
+      'src/app/admin/users/[id]/page.tsx',
+      'src/app/admin/support/[id]/page.tsx',
+    ];
+    const missing: string[] = [];
+    for (const file of CONSOLE_FILES) {
+      const src = readFileSync(path.join(ROOT, file), 'utf8');
+      // <ConfirmTokenAdjustButton …> opening tags
+      for (const m of src.matchAll(/<ConfirmTokenAdjustButton\b[^>]*>/g)) {
+        if (!/\bworkspaceSlug=/.test(m[0])) missing.push(`${file}: ConfirmTokenAdjustButton`);
+      }
+      // xxxConfirm({ … }) calls that take a workspace object
+      for (const m of src.matchAll(
+        /\b(archiveWorkspaceConfirm|restoreWorkspaceConfirm|billingExemptOnConfirm|billingExemptOffConfirm)\(\{[^}]*\}/g,
+      )) {
+        if (!/\bslug:/.test(m[0])) missing.push(`${file}: ${m[1]}`);
+      }
+      for (const m of src.matchAll(
+        /\b(closeSupportThreadConfirm|revokePreauthConfirm)\(\{[\s\S]*?\}\)/g,
+      )) {
+        if (!/\bworkspaceSlug\b/.test(m[0])) missing.push(`${file}: ${m[1]}`);
+      }
+      // removeMemberConfirm(user, <workspace>): an object with a slug, not a bare name
+      for (const m of src.matchAll(/\bremoveMemberConfirm\(\s*\w+\s*,([\s\S]*?)\)\}/g)) {
+        if (!/\bslug:/.test(m[1]!)) missing.push(`${file}: removeMemberConfirm`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
   it('super-admin promotion and billing exemption are type-to-confirm', () => {
     const user = readFileSync(path.join(ROOT, 'src/app/admin/users/[id]/page.tsx'), 'utf8');
-    expect(user).toMatch(/message=\{promoteSuperAdminConfirm\(user\)\}\s*confirmPhrase=\{user\.email\}/);
+    expect(user).toMatch(
+      /message=\{promoteSuperAdminConfirm\(user\)\}\s*confirmPhrase=\{user\.email\}/,
+    );
     const ws = readFileSync(path.join(ROOT, 'src/app/admin/workspaces/[id]/page.tsx'), 'utf8');
     expect(ws).toMatch(/message=\{billingExemptOnConfirm\([^)]*\)\}\s*confirmPhrase=\{ws\.slug\}/);
   });

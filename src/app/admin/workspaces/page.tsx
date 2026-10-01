@@ -139,6 +139,7 @@ export default async function AdminWorkspacesPage({
                         className="ghost-btn"
                         message={archiveWorkspaceConfirm({
                           name: w.name,
+                          slug: w.slug,
                           memberCount: w.memberCount,
                         })}
                       >
@@ -156,6 +157,7 @@ export default async function AdminWorkspacesPage({
                         className="primary-btn"
                         message={restoreWorkspaceConfirm({
                           name: w.name,
+                          slug: w.slug,
                           memberCount: w.memberCount,
                         })}
                       >
