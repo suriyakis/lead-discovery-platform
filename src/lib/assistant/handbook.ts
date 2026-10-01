@@ -85,7 +85,8 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    close reason (won, lost, no_response, wrong_fit, duplicate, spam,
    other). {H-05} Promoted leads start at relevant. Stages move when you
    move them: sending an email or getting a reply does not advance a
-   lead; only reply auto-actions close leads and a CRM push sets
+   lead; only a reply auto-action closes a lead, and only while an admin
+   has switched it on under [/settings/outreach]; a CRM push sets
    synced_to_crm. {H-21}
    CONTACTS ([/contacts]) are the people behind your mail threads and
    leads, created automatically from your mail; open one to see its
@@ -132,12 +133,19 @@ the next step follows from the class: interest / doc_request → a pitch
 draft; question / positive → an engagement draft; redirect → a thank-you
 in the thread plus a discovery draft to the person they named (or an
 engagement draft asking for their address when none was given);
-negative → nothing, unless auto-close-negative is on (it is off);
-out_of_office / irrelevant → nothing. Reply auto-actions: an unsubscribe
-or bounce puts the sender's address on [/mailbox/suppression] and closes
-the linked lead. These auto-actions are always on and there is no
-setting to change them yet. {H-18} Counts per class are on
-[/mailbox/deliverability].
+negative → nothing, unless the reply auto-action "Close the lead on a
+negative reply" is on; out_of_office / irrelevant → nothing.
+Reply auto-actions are four switches on [/settings/outreach]: suppress
+the sender on an unsubscribe reply, suppress the sender on a bounce
+(both also close the linked lead), close the lead on a negative reply,
+and create contacts from redirect replies. The suppress and close
+switches are off unless an admin turns them on; only owners and admins
+can change them, everyone else sees them read-only. With a switch off
+the message is still classified and shown to you, and you decide what
+to do. Two things suppress an address whatever the switches say: the
+recipient clicking the unsubscribe link in your email, and your mail
+server rejecting the address while sending. {H-18} Counts per class are
+on [/mailbox/deliverability].
 
 ## Autopilot (/autopilot)
 [/autopilot] is for Starter and Pro plans (and billing-exempt
@@ -255,10 +263,12 @@ evidence chain.
 ## Settings that matter
 - [/settings/integrations]: AI provider (BYOK), Web Search backend
   (Gemini grounding recommended), embeddings, research provider.
-- [/settings/outreach]: workspace native language, default outreach
-  language, "Auto-draft replies" (AI drafts the next reply on lead
-  threads for your review; "Auto-send replies" has no effect yet, so
-  reply drafts always wait for you), follow-up schedule and approval,
+- [/settings/outreach] (owners and admins; everyone else sees only the
+  reply auto-action switches, read-only): workspace native language,
+  default outreach language, "Auto-draft replies" (AI drafts the next
+  reply on lead threads for your review; "Auto-send replies" has no
+  effect yet, so reply drafts always wait for you), the reply
+  auto-action switches (see Replies), follow-up schedule and approval,
   mailbox auto-sync, trash retention.
 - [/settings/members]: invite teammates and set their roles (admins).
 - [/settings/crm]: CRM connections, plus a CSV export of every pipeline
@@ -283,8 +293,11 @@ notification. Available to every member, including viewers.
 - "Leads from the wrong country": set the recipe's target country.
   Without one there is no geography check at all; with one, mismatches
   are rejected and unverifiable companies go to review.
-- "An address was suppressed or a lead closed by itself": reply
-  auto-actions (see Replies) — and Known limitations, X1.
+- "An address was suppressed or a lead closed by itself": the recipient
+  used the unsubscribe link, your mail server rejected the address, or
+  a reply auto-action switch on [/settings/outreach] is on (see Replies
+  and Known limitations, X1). [/mailbox/suppression] shows each entry's
+  source, and an admin can revoke an entry there.
 - "Draft won't send" — check in this order: (1) is the draft approved?
   (2) does it have a pipeline lead with a contact email (open the lead
   from [/pipeline])? (3) is it really in the queue on [/mailbox/queue]?
@@ -315,14 +328,14 @@ ${KNOWN_LIMITATIONS_HEADING}
 - I001: Nothing creates pipeline leads or contact emails automatically. Approving a review item (by hand or by autopilot) does not make it contactable: promote it on [/leads], then set the contact email on the lead's page (opened from [/pipeline]). Autopilot's generate + enqueue fails for a lead without a contact email, leaves an approved draft behind and then skips that lead for good; an admin can free it with "Archive (mark superseded)" on the draft's page so the next run tries again.
 - I002: On a draft's page the "Enqueue for send" form disappears once the draft is approved, so a hand-approved draft (cold email or AI reply draft) cannot be queued; only autopilot's generate + enqueue queues drafts today. The only manual route is sending the text yourself (from the thread on [/communication], or from a mailbox's compose page), which skips the queue's caps, cooldowns, business windows and geography re-check.
 - I005: Follow-ups are never scheduled after a cold email, so the follow-up cadence set on [/settings/outreach] sends nothing for cold outreach.
-- X1: Every message synced from a mailbox's inbox is classified as if it were a reply to your outreach, including newsletters and notifications. An "unsubscribe" or "bounce" match there suppresses that sender (sometimes a colleague or customer) and raises a "replied" notification. Check [/mailbox/suppression] for addresses you never meant to block and lift them.
+- X1: Every message synced from a mailbox's inbox is classified as if it were a reply to your outreach, including newsletters and notifications, and raises a "replied" notification. {H-25} Only while the auto-suppress switches on [/settings/outreach] are on does an "unsubscribe" or "bounce" match there suppress that sender (sometimes a colleague or customer) and close their lead, which is why they are off by default. Addresses suppressed that way before the switches were turned off stay suppressed: check [/mailbox/suppression] and have an admin revoke the ones you never meant to block.
 - I073: If the research provider chosen on [/settings/integrations] (Gemini or Perplexity) has no working key, discovery silently falls back to mock search: leads called "Mock result N" on example-*.test domains, possibly qualified at token cost. The run's log says provider=mock.
 - I004: There is no single switch that stops everything: each Emergency pause stops only its own part (see Autopilot), and follow-ups, manual sends, crawl plans and mailbox sync keep running.
 - I020: The per-product "Autopilot enabled" and "Emergency pause" overrides on [/autopilot] are saved but not applied.
 - I062: Saving the autopilot form on [/connectors/engine] while the Emergency pause is on also switches the autopilot master off; use [/autopilot] instead.
 - I063: After a plan lapses, ticking the Emergency pause on [/autopilot] fails unless every other switch is unticked in the same save; the send-queue pause on [/mailbox/queue] always works.
 - I095: A failing mailbox keeps sending but is no longer read, and nobody is notified; only its page shows the failing badge.
-- I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), a class cannot be corrected, and the reply auto-actions cannot be configured.
+- I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), and a class cannot be corrected.
 - I019: "Auto-send replies" does nothing yet, and autopilot's "Auto-drain" and "Sync inbound" switches do not control the background drain and sync.
 `.trim();
 

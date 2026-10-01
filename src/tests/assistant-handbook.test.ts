@@ -159,12 +159,22 @@ describe('assistant handbook — content truth', () => {
     }
   });
 
-  it("never points reply 'auto-actions' at /settings/outreach (they cannot be configured there)", () => {
-    const at = occurrences(HANDBOOK_SOURCE, 'auto-actions');
+  // ia:F-03 (mail-safety, migration 0062) made the reply auto-actions
+  // admin-only switches on /settings/outreach, off by default. This test
+  // used to require the opposite; it flipped with that change.
+  it("points every reply 'auto-action' at its switch on /settings/outreach", () => {
+    const at = occurrences(HANDBOOK_SOURCE, 'auto-action');
     expect(at.length).toBeGreaterThan(0);
     for (const i of at) {
-      expect(window(HANDBOOK_SOURCE, i, 400)).not.toContain('/settings/outreach');
+      expect(window(HANDBOOK_SOURCE, i, 400)).toContain('[/settings/outreach]');
     }
+    const replies = flat(section(HANDBOOK_SOURCE, '## Replies'));
+    expect(replies).toContain('Reply auto-actions are four switches on [/settings/outreach]');
+    expect(replies).toContain('off unless an admin turns them on');
+    // …and the retired "always on, no setting" claim is gone everywhere.
+    const f = flat(HANDBOOK_SOURCE).toLowerCase();
+    expect(f).not.toContain('always on and there is no setting');
+    expect(f).not.toContain('auto-actions cannot be configured');
   });
 
   it('carries an issue id on every Known-limitations line, incl. the Phase 0 blockers', () => {

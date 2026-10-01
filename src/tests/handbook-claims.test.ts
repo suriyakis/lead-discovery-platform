@@ -68,19 +68,21 @@ import {
   updateAutopilotSettings,
   upsertProductAutopilotSettings,
 } from '@/lib/services/autopilot';
-import { sendMessage } from '@/lib/services/mail';
+import { sendMessage, syncInbound } from '@/lib/services/mail';
 import {
   processDueFollowUps,
   scheduleFollowUps,
   updateFollowUpConfig,
 } from '@/lib/services/follow-up';
+import { analyseReply, classifyReply, type ReplyClass } from '@/lib/services/reply-classifier';
 import {
-  analyseReply,
-  classifyReply,
   getReplyAutoActions,
-  type ReplyClass,
-} from '@/lib/services/reply-classifier';
-import { isSuppressed } from '@/lib/services/suppression';
+  switchesOf,
+  updateReplyAutoActions,
+} from '@/lib/services/reply-auto-actions';
+import { isSuppressed, recordUnsubscribeByToken } from '@/lib/services/suppression';
+import { notifications } from '@/lib/db/schema/notifications';
+import type { InboundMessage, OutboundMessage, SendResult } from '@/lib/mail';
 import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
 import {
   updateWorkspaceNativeLanguage,
@@ -866,6 +868,11 @@ async function leadState(id: bigint) {
   return row!.state;
 }
 
+async function replyClassOf(messageId: bigint) {
+  const [row] = await db.select().from(mailMessages).where(eq(mailMessages.id, messageId));
+  return row!.replyClassification;
+}
+
 describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
   it('[handbook H-17] every inbound message gets exactly one of the ten reply classes', () => {
     const samples: Record<ReplyClass, string> = {
@@ -886,15 +893,46 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(classifyReply('').type).toBe('irrelevant');
   });
 
-  it('[handbook H-18] unsubscribe and bounce replies suppress the sender and close the lead; the auto-actions cannot be configured in the app', async () => {
+  it('[handbook H-18] reply auto-actions are admin-only switches on /settings/outreach, off by default; the unsubscribe link and SMTP rejections suppress regardless', async () => {
     const s = await setup();
     const mailbox = await makeMailbox(s);
 
-    const unsub = await leadThreadWithReply(s, mailbox.id, 'anna@target.com', 'Please unsubscribe me.');
-    await analyseReply(ctx(s), unsub.messageId);
-    expect(await isSuppressed(ctx(s), 'anna@target.com')).toBe(true);
-    expect(await leadState(unsub.leadId)).toBe('closed');
+    // Defaults: the suppress and close switches are off.
+    expect(switchesOf(await getReplyAutoActions(ctx(s)))).toEqual({
+      autoSuppressUnsubscribe: false,
+      autoSuppressBounce: false,
+      autoCloseNegative: false,
+      autoExtractRedirects: true,
+    });
 
+    // Switched off, the message is still classified; nothing else happens.
+    const quiet = await leadThreadWithReply(s, mailbox.id, 'anna@target.com', 'Please unsubscribe me.');
+    await analyseReply(ctx(s), quiet.messageId);
+    expect(await replyClassOf(quiet.messageId)).toBe('unsubscribe');
+    expect(await isSuppressed(ctx(s), 'anna@target.com')).toBe(false);
+    expect(await leadState(quiet.leadId)).toBe('relevant');
+
+    // Only owners and admins can change them, and the only app caller is
+    // the /settings/outreach save action.
+    const member = makeWorkspaceContext({ workspaceId: s.workspaceId, userId: s.adminId, role: 'member' });
+    await expect(
+      updateReplyAutoActions(member, { autoSuppressUnsubscribe: true }),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+    expect(filesContaining('app', 'updateReplyAutoActions(')).toEqual([
+      'app/settings/outreach/actions.ts',
+    ]);
+    expect(filesContaining('components', 'updateReplyAutoActions')).toEqual([]);
+
+    // Switched on by an admin: unsubscribe and bounce replies suppress the
+    // sender and close the lead.
+    await updateReplyAutoActions(adminCtx(s), {
+      autoSuppressUnsubscribe: true,
+      autoSuppressBounce: true,
+    });
+    const unsub = await leadThreadWithReply(s, mailbox.id, 'olga@target.com', 'Please unsubscribe me.');
+    await analyseReply(ctx(s), unsub.messageId);
+    expect(await isSuppressed(ctx(s), 'olga@target.com')).toBe(true);
+    expect(await leadState(unsub.leadId)).toBe('closed');
     const bounce = await leadThreadWithReply(
       s,
       mailbox.id,
@@ -904,20 +942,104 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     await analyseReply(ctx(s), bounce.messageId);
     expect(await isSuppressed(ctx(s), 'piotr@other.com')).toBe(true);
     expect(await leadState(bounce.leadId)).toBe('closed');
-
-    // A negative reply does nothing: auto-close-negative is off.
+    // A negative reply still does nothing: its own switch is off.
     const no = await leadThreadWithReply(s, mailbox.id, 'ewa@third.com', 'Thanks, but we are not interested.');
     await analyseReply(ctx(s), no.messageId);
     expect(await isSuppressed(ctx(s), 'ewa@third.com')).toBe(false);
     expect(await leadState(no.leadId)).toBe('relevant');
 
-    expect(await getReplyAutoActions(ctx(s))).toMatchObject({
-      autoSuppressUnsubscribe: true,
-      autoSuppressBounce: true,
-      autoCloseNegative: false,
+    // Whatever the switches say: the unsubscribe link…
+    await updateReplyAutoActions(adminCtx(s), {
+      autoSuppressUnsubscribe: false,
+      autoSuppressBounce: false,
     });
-    expect(filesContaining('app', 'updateReplyAutoActions')).toEqual([]);
-    expect(filesContaining('components', 'updateReplyAutoActions')).toEqual([]);
+    const token = 'abcdef0123456789abcdef01';
+    await db.insert(mailMessages).values({
+      workspaceId: s.workspaceId,
+      mailboxId: mailbox.id,
+      direction: 'outbound',
+      status: 'sent',
+      messageId: '<link-out@nulife.pl>',
+      fromAddress: 'sales@nulife.pl',
+      toAddresses: ['link@target.com'],
+      subject: 'Concrete sealing',
+      bodyText: 'Hello',
+      trackingToken: token,
+    });
+    await recordUnsubscribeByToken(token);
+    expect(await isSuppressed(ctx(s), 'link@target.com')).toBe(true);
+    // …and a rejection by the mail server while sending.
+    class RejectingProvider extends MockMailProvider {
+      override async send(_message: OutboundMessage): Promise<SendResult> {
+        throw Object.assign(new Error('550 5.1.1 mailbox unavailable'), { responseCode: 550 });
+      }
+    }
+    await expect(
+      sendMessage(ctx(s), {
+        mailboxId: mailbox.id,
+        to: [{ address: 'gone@target.com' }],
+        subject: 'Hi',
+        text: 'manual',
+        providerOverride: new RejectingProvider(),
+      }),
+    ).rejects.toThrow(/550/);
+    expect(await isSuppressed(ctx(s), 'gone@target.com')).toBe(true);
+  });
+});
+
+// ---- inbound sync (Known limitations X1) ----------------------------
+
+function newsletter(uid: number, from: string): InboundMessage {
+  return {
+    uid,
+    messageId: `<news-${uid}@${from.split('@')[1]}>`,
+    inReplyTo: null,
+    references: [],
+    from: { address: from, name: 'Weekly News' },
+    to: [{ address: 'sales@nulife.pl' }],
+    cc: [],
+    subject: 'This week in concrete',
+    textBody: 'Top stories this week.\n\nClick here to unsubscribe from this newsletter.',
+    htmlBody: null,
+    // Later than the previous sync, so the mock's `since` filter keeps it.
+    receivedAt: new Date(Date.now() + uid * 1000),
+    headers: { 'list-unsubscribe': `<https://${from.split('@')[1]}/u>` },
+    attachments: [],
+  };
+}
+
+describe('inbound sync — classification of non-replies', { timeout: DB_TEST_TIMEOUT_MS }, () => {
+  it('[handbook H-25] a synced newsletter is classified as if it were a reply and notifies; it suppresses its sender only while auto-suppress is on', async () => {
+    const s = await setup();
+    const mailbox = await makeMailbox(s, { imap: true });
+    const provider = new MockMailProvider();
+
+    provider.enqueueInbound(newsletter(1, 'news@letters.example'));
+    await syncInbound(ctx(s), mailbox.id, provider);
+    const [msg] = await db
+      .select()
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, s.workspaceId),
+          eq(mailMessages.fromAddress, 'news@letters.example'),
+        ),
+      );
+    expect(msg!.inReplyTo ?? null).toBeNull();
+    expect(msg!.replyClassification).toBe('unsubscribe');
+    const replied = await db
+      .select()
+      .from(notifications)
+      .where(and(eq(notifications.workspaceId, s.workspaceId), eq(notifications.kind, 'lead.replied')));
+    expect(replied).toHaveLength(1);
+    // The switches are off by default: the sender is not suppressed…
+    expect(await isSuppressed(ctx(s), 'news@letters.example')).toBe(false);
+
+    // …but with auto-suppress on, the next newsletter's sender is.
+    await updateReplyAutoActions(adminCtx(s), { autoSuppressUnsubscribe: true });
+    provider.enqueueInbound(newsletter(2, 'digest@other.example'));
+    await syncInbound(ctx(s), mailbox.id, provider);
+    expect(await isSuppressed(ctx(s), 'digest@other.example')).toBe(true);
   });
 });
 
