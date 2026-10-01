@@ -13,7 +13,7 @@ import {
 } from '@/lib/db/schema/workspaces';
 import { isEnabledLanguage } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
-import { canAdminWorkspace, canOwnWorkspace, type WorkspaceContext } from './context';
+import { canAdminWorkspace, type WorkspaceContext } from './context';
 
 export class WorkspaceServiceError extends Error {
   public readonly code: string;
@@ -348,160 +348,10 @@ export async function listMembers(ctx: WorkspaceContext): Promise<MemberWithUser
   return rows.map((r) => ({ member: r.member, user: r.user }));
 }
 
-// ---- mutations ---------------------------------------------------------
-
-export interface AddMemberInput {
-  userId: string;
-  role: WorkspaceMemberRole;
-}
-
-export async function addMember(
-  ctx: WorkspaceContext,
-  input: AddMemberInput,
-): Promise<WorkspaceMember> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('add member');
-  if (input.role === 'owner') {
-    throw conflict('cannot add a member as owner directly; transfer ownership instead');
-  }
-
-  return db.transaction(async (tx) => {
-    const userRows = await tx.select().from(users).where(eq(users.id, input.userId));
-    if (!userRows[0]) throw notFound('user');
-
-    const existing = await tx
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, input.userId),
-        ),
-      );
-    if (existing[0]) throw conflict('user is already a member of this workspace');
-
-    const inserted = await tx
-      .insert(workspaceMembers)
-      .values({
-        workspaceId: ctx.workspaceId,
-        userId: input.userId,
-        role: input.role,
-      })
-      .returning();
-    const member = inserted[0];
-    if (!member) throw invariant('workspace_members insert returned no row');
-
-    await recordAuditEvent(ctx, {
-      kind: 'workspace.member.add',
-      entityType: 'workspace_member',
-      entityId: member.id,
-      payload: { addedUserId: input.userId, role: input.role },
-    });
-
-    return member;
-  });
-}
-
-export async function removeMember(ctx: WorkspaceContext, userId: string): Promise<void> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('remove member');
-
-  return db.transaction(async (tx) => {
-    const targetRows = await tx
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      );
-    const target = targetRows[0];
-    if (!target) throw notFound('workspace member');
-    if (target.role === 'owner') {
-      throw conflict('cannot remove the workspace owner; transfer ownership first');
-    }
-
-    await tx
-      .delete(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      );
-
-    await recordAuditEvent(ctx, {
-      kind: 'workspace.member.remove',
-      entityType: 'workspace_member',
-      entityId: target.id,
-      payload: { removedUserId: userId, formerRole: target.role },
-    });
-  });
-}
-
-export async function setMemberRole(
-  ctx: WorkspaceContext,
-  userId: string,
-  role: WorkspaceMemberRole,
-): Promise<WorkspaceMember> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('set member role');
-  // Promoting someone to owner is a separate, ownership-transferring operation
-  // (not implemented in Phase 1). Demoting the owner needs canOwnWorkspace.
-  if (role === 'owner' && !canOwnWorkspace(ctx)) {
-    throw permissionDenied('promote to owner (only owner/super_admin can transfer)');
-  }
-
-  return db.transaction(async (tx) => {
-    const targetRows = await tx
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      );
-    const target = targetRows[0];
-    if (!target) throw notFound('workspace member');
-
-    // Don't let the last owner be demoted.
-    if (target.role === 'owner' && role !== 'owner') {
-      const owners = await tx
-        .select()
-        .from(workspaceMembers)
-        .where(
-          and(
-            eq(workspaceMembers.workspaceId, ctx.workspaceId),
-            eq(workspaceMembers.role, 'owner'),
-          ),
-        );
-      if (owners.length <= 1) {
-        throw conflict('cannot demote the only owner; assign another owner first');
-      }
-    }
-
-    const updated = await tx
-      .update(workspaceMembers)
-      .set({ role, updatedAt: new Date() })
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      )
-      .returning();
-    const member = updated[0];
-    if (!member) throw invariant('workspace_members update returned no row');
-
-    await recordAuditEvent(ctx, {
-      kind: 'workspace.member.role_change',
-      entityType: 'workspace_member',
-      entityId: member.id,
-      payload: { userId, previousRole: target.role, newRole: role },
-    });
-
-    return member;
-  });
-}
+// Member mutations (add, remove, change role) live only in users.ts,
+// the single guarded implementation behind /settings/members. The
+// weaker copies that used to sit here were removed (audit I043,
+// deliverable ia:F-04).
 
 // ---- Phase 28: active workspace + multi-workspace switching --------
 

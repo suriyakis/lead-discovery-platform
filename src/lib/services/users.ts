@@ -3,7 +3,7 @@
 // ops (add/remove member, change role). Every mutation is audit-logged.
 
 import bcrypt from 'bcryptjs';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   accounts,
@@ -15,13 +15,16 @@ import {
   type User,
 } from '@/lib/db/schema/auth';
 import {
+  workspaceMemberRole,
   workspaceMembers,
+  workspaces,
   type WorkspaceMember,
   type WorkspaceMemberRole,
 } from '@/lib/db/schema/workspaces';
 import { recordAuditEvent } from './audit';
 import {
   canAdminWorkspace,
+  canOwnWorkspace,
   isSuperAdmin,
   type WorkspaceContext,
 } from './context';
@@ -237,61 +240,151 @@ export async function listWorkspaceMembers(
     .where(eq(workspaceMembers.workspaceId, ctx.workspaceId));
 }
 
+// The one implementation of per-workspace member changes; the
+// /settings/members actions call it. (The super-admin console's
+// cross-workspace variants live in admin.ts.) Rules:
+//   - owner, admin and super_admin may add, re-role and remove members;
+//   - only an owner or a super_admin may grant 'owner', or re-role or
+//     remove a member who currently IS an owner. Before audit I043
+//     (deliverable ia:F-04) an admin could add or promote anyone to
+//     owner and demote or remove the real owners;
+//   - nobody changes their own role, whatever it is;
+//   - the last owner can be neither demoted nor removed.
+// Each change runs in one transaction that first locks the workspace
+// row, so two concurrent changes cannot both pass the last-owner check,
+// and writes its audit row before it commits.
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Every workspace role, in the order the members page lists them. */
+const MEMBER_ROLES: readonly WorkspaceMemberRole[] = workspaceMemberRole.enumValues;
+
+const ownerOnly = () =>
+  new UserServiceError(
+    'Permission denied: only a workspace owner can grant, change or remove the owner role',
+    'permission_denied',
+  );
+
+/**
+ * The roles this actor may hand out when adding a member or changing a
+ * role. Empty for non-admins; 'owner' only for owners and super-admins.
+ */
+export function assignableMemberRoles(ctx: WorkspaceContext): WorkspaceMemberRole[] {
+  if (!canAdminWorkspace(ctx)) return [];
+  return canOwnWorkspace(ctx) ? [...MEMBER_ROLES] : MEMBER_ROLES.filter((r) => r !== 'owner');
+}
+
+/**
+ * True if the actor may change the role of, or remove, a member who
+ * currently holds `currentRole`. Says nothing about the actor's own row
+ * (self role changes are always refused) or the last-owner guard.
+ */
+export function canManageMemberWithRole(
+  ctx: WorkspaceContext,
+  currentRole: WorkspaceMemberRole,
+): boolean {
+  if (!canAdminWorkspace(ctx)) return false;
+  return currentRole !== 'owner' || canOwnWorkspace(ctx);
+}
+
+function parseMemberRole(role: unknown): WorkspaceMemberRole {
+  const match = MEMBER_ROLES.find((r) => r === role);
+  if (!match) throw invalid(`invalid workspace role: ${String(role)}`);
+  return match;
+}
+
+/**
+ * Lock the workspace row until the transaction ends, serialising member
+ * changes in this workspace. FOR NO KEY UPDATE, not FOR UPDATE: the
+ * audit_log insert (recordAuditEvent, on its own pooled connection) and
+ * any other FK insert take FOR KEY SHARE on this row, which FOR UPDATE
+ * would block, deadlocking the transaction against its own audit write.
+ */
+async function lockWorkspaceMembership(tx: Tx, workspaceId: bigint): Promise<void> {
+  const rows = await tx
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .for('no key update');
+  if (!rows[0]) throw notFound('workspace');
+}
+
+async function loadMembership(
+  tx: Tx,
+  workspaceId: bigint,
+  userId: string,
+): Promise<WorkspaceMember | null> {
+  const rows = await tx
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, userId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+async function countOwners(tx: Tx, workspaceId: bigint): Promise<number> {
+  const [row] = await tx
+    .select({ n: count() })
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.role, 'owner'),
+      ),
+    );
+  return row?.n ?? 0;
+}
+
 export async function setMemberRole(
   ctx: WorkspaceContext,
   targetUserId: string,
   role: WorkspaceMemberRole,
 ): Promise<WorkspaceMember> {
   if (!canAdminWorkspace(ctx)) throw denied('users.set_member_role');
-  const existing = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .limit(1);
-  if (!existing[0]) throw notFound('workspace_member');
-  // Don't let an admin demote the last owner.
-  if (existing[0].role === 'owner' && role !== 'owner') {
-    const owners = await db
-      .select()
-      .from(workspaceMembers)
+  const nextRole = parseMemberRole(role);
+  if (nextRole === 'owner' && !canOwnWorkspace(ctx)) throw ownerOnly();
+  if (targetUserId === ctx.userId) {
+    throw conflict('cannot change your own workspace role');
+  }
+  return db.transaction(async (tx) => {
+    await lockWorkspaceMembership(tx, ctx.workspaceId);
+    const existing = await loadMembership(tx, ctx.workspaceId, targetUserId);
+    if (!existing) throw notFound('workspace_member');
+    if (existing.role === 'owner' && !canOwnWorkspace(ctx)) throw ownerOnly();
+    // Nothing changes, so nothing to audit.
+    if (existing.role === nextRole) return existing;
+    if (existing.role === 'owner' && (await countOwners(tx, ctx.workspaceId)) <= 1) {
+      throw conflict('cannot demote the last owner');
+    }
+    const [updated] = await tx
+      .update(workspaceMembers)
+      .set({ role: nextRole, updatedAt: new Date() })
       .where(
         and(
           eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.role, 'owner'),
+          eq(workspaceMembers.id, existing.id),
         ),
+      )
+      .returning();
+    if (!updated) {
+      throw new UserServiceError(
+        'member role update returned no row',
+        'invariant_violation',
       );
-    if (owners.length <= 1) {
-      throw conflict('cannot demote the last owner');
     }
-  }
-  const [updated] = await db
-    .update(workspaceMembers)
-    .set({ role, updatedAt: new Date() })
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .returning();
-  if (!updated) {
-    throw new UserServiceError(
-      'member role update returned no row',
-      'invariant_violation',
-    );
-  }
-  await recordAuditEvent(ctx, {
-    kind: 'user.set_member_role',
-    entityType: 'workspace_member',
-    entityId: updated.id,
-    payload: { targetUserId, role, prior: existing[0].role },
+    await recordAuditEvent(ctx, {
+      kind: 'user.set_member_role',
+      entityType: 'workspace_member',
+      entityId: updated.id,
+      payload: { targetUserId, role: nextRole, prior: existing.role },
+    });
+    return updated;
   });
-  return updated;
 }
 
 export async function removeMember(
@@ -299,44 +392,32 @@ export async function removeMember(
   targetUserId: string,
 ): Promise<void> {
   if (!canAdminWorkspace(ctx)) throw denied('users.remove_member');
-  const existing = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .limit(1);
-  if (!existing[0]) throw notFound('workspace_member');
-  if (existing[0].role === 'owner') {
-    const owners = await db
-      .select()
-      .from(workspaceMembers)
+  await db.transaction(async (tx) => {
+    await lockWorkspaceMembership(tx, ctx.workspaceId);
+    const existing = await loadMembership(tx, ctx.workspaceId, targetUserId);
+    if (!existing) throw notFound('workspace_member');
+    if (existing.role === 'owner') {
+      if (!canOwnWorkspace(ctx)) throw ownerOnly();
+      // Also covers an owner leaving on their own: they can, unless no
+      // other owner would remain.
+      if ((await countOwners(tx, ctx.workspaceId)) <= 1) {
+        throw conflict('cannot remove the last owner');
+      }
+    }
+    await tx
+      .delete(workspaceMembers)
       .where(
         and(
           eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.role, 'owner'),
+          eq(workspaceMembers.id, existing.id),
         ),
       );
-    if (owners.length <= 1) {
-      throw conflict('cannot remove the last owner');
-    }
-  }
-  await db
-    .delete(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    );
-  await recordAuditEvent(ctx, {
-    kind: 'user.remove_member',
-    entityType: 'workspace_member',
-    entityId: existing[0].id,
-    payload: { targetUserId, role: existing[0].role },
+    await recordAuditEvent(ctx, {
+      kind: 'user.remove_member',
+      entityType: 'workspace_member',
+      entityId: existing.id,
+      payload: { targetUserId, role: existing.role },
+    });
   });
 }
 
@@ -346,42 +427,44 @@ export async function addMember(
   role: WorkspaceMemberRole = 'member',
 ): Promise<WorkspaceMember> {
   if (!canAdminWorkspace(ctx)) throw denied('users.add_member');
-  const existing = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .limit(1);
-  if (existing[0]) throw conflict('already a member');
-  const target = await loadUser(targetUserId);
-  if (target.accountStatus !== 'active') {
-    throw conflict(`target user account is ${target.accountStatus}`);
-  }
-  const [created] = await db
-    .insert(workspaceMembers)
-    .values({
-      workspaceId: ctx.workspaceId,
-      userId: targetUserId,
-      role,
-    })
-    .returning();
-  if (!created) {
-    throw new UserServiceError(
-      'member insert returned no row',
-      'invariant_violation',
-    );
-  }
-  await recordAuditEvent(ctx, {
-    kind: 'user.add_member',
-    entityType: 'workspace_member',
-    entityId: created.id,
-    payload: { targetUserId, role },
+  const newRole = parseMemberRole(role);
+  if (newRole === 'owner' && !canOwnWorkspace(ctx)) throw ownerOnly();
+  return db.transaction(async (tx) => {
+    await lockWorkspaceMembership(tx, ctx.workspaceId);
+    if (await loadMembership(tx, ctx.workspaceId, targetUserId)) {
+      throw conflict('already a member');
+    }
+    const [target] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.id, targetUserId))
+      .limit(1);
+    if (!target) throw notFound('user');
+    if (target.accountStatus !== 'active') {
+      throw conflict(`target user account is ${target.accountStatus}`);
+    }
+    const [created] = await tx
+      .insert(workspaceMembers)
+      .values({
+        workspaceId: ctx.workspaceId,
+        userId: targetUserId,
+        role: newRole,
+      })
+      .returning();
+    if (!created) {
+      throw new UserServiceError(
+        'member insert returned no row',
+        'invariant_violation',
+      );
+    }
+    await recordAuditEvent(ctx, {
+      kind: 'user.add_member',
+      entityType: 'workspace_member',
+      entityId: created.id,
+      payload: { targetUserId, role: newRole },
+    });
+    return created;
   });
-  return created;
 }
 
 // ---- Phase 30: password auth ---------------------------------------
@@ -651,7 +734,6 @@ export async function deleteUserGlobally(
   // workspaces.ownerUserId references users.id without ON DELETE. If the
   // target owns any workspace, the delete would FK-fail. We pre-check
   // and refuse with a useful message rather than letting Postgres throw.
-  const { workspaces } = await import('@/lib/db/schema/workspaces');
   const ownsRows = await db
     .select({ id: workspaces.id })
     .from(workspaces)

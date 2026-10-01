@@ -633,9 +633,10 @@ export async function updateUserProfile(
 }
 
 /**
- * Super-admin add: drop a user into any workspace at any role. Bypasses
- * the workspace-admin gate that the regular `users.addMember` enforces,
- * and accepts `owner` as a role (the regular path doesn't).
+ * Super-admin add: drop a user into any workspace at any role. Unlike
+ * the regular `users.addMember`, it needs no membership in the target
+ * workspace (the regular path acts on ctx.workspaceId and lets only
+ * owners grant `owner`).
  */
 export async function adminAddUserToWorkspace(
   ctx: WorkspaceContext,
@@ -682,7 +683,7 @@ export async function adminAddUserToWorkspace(
 }
 
 /**
- * Super-admin set-member-role. The regular workspace.ts setMemberRole
+ * Super-admin set-member-role. The regular role change in users.ts
  * scopes the query by ctx.workspaceId — that's wrong when a super-admin
  * is editing a workspace they don't belong to. This variant takes the
  * target workspaceId explicitly.

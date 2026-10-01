@@ -11,15 +11,12 @@ import {
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace } from '@/lib/services/context';
 import {
-  UserServiceError,
-  addMember,
+  assignableMemberRoles,
+  canManageMemberWithRole,
   listWorkspaceMembers,
-  removeMember,
-  setMemberRole,
 } from '@/lib/services/users';
 import { isNextRedirectError } from '@/lib/server-redirect';
-
-const ROLES = ['owner', 'admin', 'manager', 'member', 'viewer'] as const;
+import { addMemberAction, changeMemberRoleAction, removeMemberAction } from './actions';
 
 export default async function MembersPage({
   searchParams,
@@ -56,49 +53,11 @@ export default async function MembersPage({
 
   const members = await listWorkspaceMembers(ctx);
 
-  async function changeRole(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const targetUserId = String(formData.get('userId') ?? '');
-    const role = String(formData.get('role') ?? 'member') as (typeof ROLES)[number];
-    try {
-      await setMemberRole(c, targetUserId, role);
-      redirect('/settings/members?message=Role+updated');
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof UserServiceError ? err.message : 'failed';
-      redirect(`/settings/members?error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function remove(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const targetUserId = String(formData.get('userId') ?? '');
-    try {
-      await removeMember(c, targetUserId);
-      redirect('/settings/members?message=Removed');
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof UserServiceError ? err.message : 'failed';
-      redirect(`/settings/members?error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function add(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const targetUserId = String(formData.get('userId') ?? '').trim();
-    const role = String(formData.get('role') ?? 'member') as (typeof ROLES)[number];
-    try {
-      await addMember(c, targetUserId, role);
-      redirect('/settings/members?message=Member+added');
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof UserServiceError ? err.message : 'failed';
-      redirect(`/settings/members?error=${encodeURIComponent(m)}`);
-    }
-  }
+  // Only owners (and super-admins) are offered 'owner', and only they get
+  // controls on an owner's row. users.ts enforces the same rules for a
+  // hand-crafted POST (audit I043, deliverable ia:F-04).
+  const roles = assignableMemberRoles(ctx);
+  const canGrantOwner = roles.includes('owner');
 
   return (
     <AppShell>
@@ -119,7 +78,10 @@ export default async function MembersPage({
           handles the OAuth-first-time flow. This form is for users who are
           already in the platform but not yet in this workspace.
         </p>
-        <form action={add} className="inline-form">
+        {canGrantOwner ? null : (
+          <p className="muted">Only a workspace owner can grant the owner role.</p>
+        )}
+        <form action={addMemberAction} className="inline-form">
           <label>
             <span>User id</span>
             <input type="text" name="userId" required maxLength={120} />
@@ -127,7 +89,7 @@ export default async function MembersPage({
           <label>
             <span>Role</span>
             <select name="role" defaultValue="member">
-              {ROLES.map((r) => (
+              {roles.map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>
@@ -152,14 +114,16 @@ export default async function MembersPage({
               </div>
               {user.id === session.user.id ? (
                 <p className="muted">— this is you</p>
+              ) : !canManageMemberWithRole(ctx, member.role) ? (
+                <p className="muted">Only an owner can change or remove an owner.</p>
               ) : (
                 <div className="action-row" style={{ marginTop: '0.5rem' }}>
-                  <form action={changeRole} className="inline-form">
+                  <form action={changeMemberRoleAction} className="inline-form">
                     <input type="hidden" name="userId" value={user.id} />
                     <label>
                       <span>Role</span>
                       <select name="role" defaultValue={member.role}>
-                        {ROLES.map((r) => (
+                        {roles.map((r) => (
                           <option key={r} value={r}>
                             {r}
                           </option>
@@ -168,7 +132,7 @@ export default async function MembersPage({
                     </label>
                     <button type="submit">Update</button>
                   </form>
-                  <form action={remove}>
+                  <form action={removeMemberAction}>
                     <input type="hidden" name="userId" value={user.id} />
                     <button type="submit" className="ghost-btn">
                       Remove

@@ -16,15 +16,14 @@ This document is a reference; deep details live in each module's own README (add
 - `createWorkspace(ctx, { name, ownerUserId }) -> Workspace`
 - `getWorkspace(ctx) -> Workspace`
 - `updateWorkspaceSettings(ctx, patch) -> WorkspaceSettings`
-- `addMember(ctx, { userId, role }) -> WorkspaceMember`
-- `removeMember(ctx, userId) -> void`
-- `setMemberRole(ctx, userId, role) -> WorkspaceMember`
 - `listMembers(ctx) -> WorkspaceMember[]`
+- Member changes live in `src/lib/services/users.ts`, the one guarded implementation (the `/settings/members` actions call it): `addMember(ctx, userId, role)`, `removeMember(ctx, userId)`, `setMemberRole(ctx, userId, role)`, `listWorkspaceMembers(ctx)`.
 
 **Roles.** `owner | admin | manager | member | viewer`. Plus a platform-wide `super_admin` granted only to the bootstrap user (whose email matches `OWNER_EMAIL`).
 
 **Permission rules.**
 - `owner`, `admin` — full workspace control, including settings and member management.
+- Only an `owner` (or a `super_admin`) may grant `owner`, or change the role of or remove a member who is an owner. Nobody changes their own role, and the last owner can be neither demoted nor removed.
 - `manager` — runs discovery, reviews queue, creates drafts. No settings, no member management.
 - `member` — works on assigned records. Can comment, approve/reject only items assigned to them.
 - `viewer` — read-only.

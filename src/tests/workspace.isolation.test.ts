@@ -8,6 +8,11 @@
 //
 // Three workspaces (A, B, C), users seeded with explicit roles. Each test
 // truncates all tables and re-seeds via `setupRoleMatrix()`.
+//
+// Member mutations (add / remove / change role) come from users.ts, the
+// single guarded implementation behind /settings/members; workspace.ts
+// no longer has its own copies (audit I043, deliverable ia:F-04). The
+// full owner-escalation matrix lives in member-roles.test.ts.
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -17,13 +22,11 @@ import {
 } from '@/lib/services/context';
 import {
   WorkspaceServiceError,
-  addMember,
   createWorkspace,
   getWorkspace,
   listMembers,
-  removeMember,
-  setMemberRole,
 } from '@/lib/services/workspace';
+import { addMember, removeMember, setMemberRole } from '@/lib/services/users';
 import { listAuditEvents, recordAuditEvent } from '@/lib/services/audit';
 import { recordUsage, summarizeUsage } from '@/lib/services/usage';
 import { db } from '@/lib/db/client';
@@ -233,10 +236,7 @@ describe('write isolation', () => {
 
   it('addMember in workspace A does not show up in workspace B', async () => {
     const m = await setupRoleMatrix();
-    await addMember(ctx(m.workspaceA, m.ownerA, 'owner'), {
-      userId: m.outsider,
-      role: 'member',
-    });
+    await addMember(ctx(m.workspaceA, m.ownerA, 'owner'), m.outsider, 'member');
     const aMembers = await listMembers(ctx(m.workspaceA, m.ownerA, 'owner'));
     const bMembers = await listMembers(ctx(m.workspaceB, m.ownerB, 'owner'));
     expect(aMembers.map((r) => r.user.email)).toContain('outsider@test.local');
@@ -246,10 +246,7 @@ describe('write isolation', () => {
   it('removeMember in workspace A only removes the WS-A row', async () => {
     const m = await setupRoleMatrix();
     // First, also add managerA to workspace B as a member.
-    await addMember(ctx(m.workspaceB, m.ownerB, 'owner'), {
-      userId: m.managerA,
-      role: 'member',
-    });
+    await addMember(ctx(m.workspaceB, m.ownerB, 'owner'), m.managerA, 'member');
 
     // Now remove managerA from workspace A only.
     await removeMember(ctx(m.workspaceA, m.ownerA, 'owner'), m.managerA);
@@ -262,10 +259,7 @@ describe('write isolation', () => {
 
   it('setMemberRole only changes the row in the targeted workspace', async () => {
     const m = await setupRoleMatrix();
-    await addMember(ctx(m.workspaceB, m.ownerB, 'owner'), {
-      userId: m.managerA,
-      role: 'member',
-    });
+    await addMember(ctx(m.workspaceB, m.ownerB, 'owner'), m.managerA, 'member');
 
     await setMemberRole(ctx(m.workspaceA, m.ownerA, 'owner'), m.managerA, 'admin');
 
@@ -282,62 +276,52 @@ describe('role-based authorization', () => {
   it('viewer cannot add members', async () => {
     const m = await setupRoleMatrix();
     await expect(
-      addMember(ctx(m.workspaceA, m.viewerA, 'viewer'), {
-        userId: m.outsider,
-        role: 'member',
-      }),
+      addMember(ctx(m.workspaceA, m.viewerA, 'viewer'), m.outsider, 'member'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
   it('member cannot add members', async () => {
     const m = await setupRoleMatrix();
     await expect(
-      addMember(ctx(m.workspaceA, m.memberA, 'member'), {
-        userId: m.outsider,
-        role: 'member',
-      }),
+      addMember(ctx(m.workspaceA, m.memberA, 'member'), m.outsider, 'member'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
   it('manager cannot add members', async () => {
     const m = await setupRoleMatrix();
     await expect(
-      addMember(ctx(m.workspaceA, m.managerA, 'manager'), {
-        userId: m.outsider,
-        role: 'member',
-      }),
+      addMember(ctx(m.workspaceA, m.managerA, 'manager'), m.outsider, 'member'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
   it('admin can add members', async () => {
     const m = await setupRoleMatrix();
-    await addMember(ctx(m.workspaceA, m.adminA, 'admin'), {
-      userId: m.outsider,
-      role: 'member',
-    });
+    await addMember(ctx(m.workspaceA, m.adminA, 'admin'), m.outsider, 'member');
     const members = await listMembers(ctx(m.workspaceA, m.ownerA, 'owner'));
     expect(members.map((r) => r.user.email)).toContain('outsider@test.local');
   });
 
   it('owner can add members', async () => {
     const m = await setupRoleMatrix();
-    await addMember(ctx(m.workspaceA, m.ownerA, 'owner'), {
-      userId: m.outsider,
-      role: 'manager',
-    });
+    await addMember(ctx(m.workspaceA, m.ownerA, 'owner'), m.outsider, 'manager');
     const members = await listMembers(ctx(m.workspaceA, m.ownerA, 'owner'));
     const added = members.find((r) => r.user.email === 'outsider@test.local');
     expect(added?.member.role).toBe('manager');
   });
 
-  it('addMember rejects role=owner via this path', async () => {
+  it('admin cannot add a member as owner', async () => {
     const m = await setupRoleMatrix();
     await expect(
-      addMember(ctx(m.workspaceA, m.ownerA, 'owner'), {
-        userId: m.outsider,
-        role: 'owner',
-      }),
-    ).rejects.toMatchObject({ code: 'conflict' });
+      addMember(ctx(m.workspaceA, m.adminA, 'admin'), m.outsider, 'owner'),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+
+  it('owner can add a member as owner', async () => {
+    const m = await setupRoleMatrix();
+    await addMember(ctx(m.workspaceA, m.ownerA, 'owner'), m.outsider, 'owner');
+    const members = await listMembers(ctx(m.workspaceA, m.ownerA, 'owner'));
+    const added = members.find((r) => r.user.email === 'outsider@test.local');
+    expect(added?.member.role).toBe('owner');
   });
 
   it('viewer cannot remove members', async () => {
@@ -358,7 +342,7 @@ describe('role-based authorization', () => {
     const m = await setupRoleMatrix();
     await expect(
       removeMember(ctx(m.workspaceA, m.adminA, 'admin'), m.ownerA),
-    ).rejects.toMatchObject({ code: 'conflict' });
+    ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
   it('viewer cannot setMemberRole', async () => {
@@ -368,10 +352,13 @@ describe('role-based authorization', () => {
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
-  it('admin cannot promote to owner (only owner/super_admin can transfer)', async () => {
+  it('admin cannot promote to owner (only owner/super_admin can)', async () => {
     const m = await setupRoleMatrix();
     await expect(
       setMemberRole(ctx(m.workspaceA, m.adminA, 'admin'), m.adminA, 'owner'),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+    await expect(
+      setMemberRole(ctx(m.workspaceA, m.adminA, 'admin'), m.memberA, 'owner'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
@@ -405,6 +392,12 @@ describe('last-owner protection', () => {
 
   it('cannot demote the only owner of a workspace', async () => {
     const m = await setupRoleMatrix();
+    // A super-admin is the only actor who can reach the guard: the sole
+    // owner may not re-role themselves, and anyone else who is an owner
+    // would make two.
+    await expect(
+      setMemberRole(ctx(m.workspaceC, m.superAdmin, 'super_admin'), m.ownerC, 'admin'),
+    ).rejects.toMatchObject({ code: 'conflict', message: 'cannot demote the last owner' });
     await expect(
       setMemberRole(ctx(m.workspaceC, m.ownerC, 'owner'), m.ownerC, 'admin'),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -432,11 +425,8 @@ describe('WorkspaceContext invariants', () => {
   it('all service-layer errors are WorkspaceServiceError instances', async () => {
     const m = await setupRoleMatrix();
     try {
-      await addMember(ctx(m.workspaceA, m.viewerA, 'viewer'), {
-        userId: m.outsider,
-        role: 'member',
-      });
-      expect.unreachable('addMember should have thrown');
+      await getWorkspace(ctx(99999n, m.ownerA, 'owner'));
+      expect.unreachable('getWorkspace should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(WorkspaceServiceError);
     }
