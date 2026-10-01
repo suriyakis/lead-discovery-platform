@@ -15,6 +15,7 @@ import { load } from 'cheerio';
 import { describe, expect, it } from 'vitest';
 import { EmptyState } from '@/components/EmptyState';
 import { HintBadge } from '@/components/HintBadge';
+import { type SupportBadgeAudience, SupportStatusBadge } from '@/components/SupportStatusBadge';
 import type { HintSeverity } from '@/lib/services/hints';
 import {
   cascade,
@@ -222,6 +223,45 @@ describe('badge tones (DS-02 item 3, I151)', () => {
     );
     expect(styleOf($, '#t', rules, 'background')).toBe('var(--brand-primary)');
     expect(styleOf($, '#t', rules, 'color')).toBe('var(--brand-primary-foreground)');
+  });
+
+  it('support threads: open is info (customer) / warn (admin inbox), closed is neutral', () => {
+    const cls = (status: string, audience: SupportBadgeAudience) =>
+      load(renderToStaticMarkup(createElement(SupportStatusBadge, { status, audience })))(
+        'span',
+      ).attr('class');
+    expect(cls('open', 'customer')).toBe('badge badge-info');
+    expect(cls('open', 'admin')).toBe('badge badge-warn');
+    expect(cls('closed', 'customer')).toBe('badge');
+    expect(cls('closed', 'admin')).toBe('badge');
+    // ...and open and closed really look different now.
+    const neutral = tone('badge').get('color')?.value;
+    expect(tone('badge badge-info').get('color')?.value).not.toBe(neutral);
+    expect(tone('badge badge-warn').get('color')?.value).not.toBe(neutral);
+  });
+
+  it('the four support pages render the thread status through SupportStatusBadge', () => {
+    const pages: Record<string, SupportBadgeAudience> = {
+      'src/app/support/page.tsx': 'customer',
+      'src/app/support/[id]/page.tsx': 'customer',
+      'src/app/admin/support/page.tsx': 'admin',
+      'src/app/admin/support/[id]/page.tsx': 'admin',
+    };
+    for (const [file, audience] of Object.entries(pages)) {
+      const src = readFileSync(path.resolve(process.cwd(), file), 'utf8');
+      expect(src, file).toMatch(
+        new RegExp(`<SupportStatusBadge status=\\{\\w+\\.status\\} audience="${audience}" />`),
+      );
+    }
+  });
+
+  it('no status ternary uses the (now neutral) bare badge as its highlighted branch', () => {
+    const offenders: string[] = [];
+    for (const file of srcFiles(/\.tsx$/)) {
+      const src = readFileSync(file, 'utf8');
+      if (/\? ['"]badge['"] :/.test(src)) offenders.push(path.relative(process.cwd(), file));
+    }
+    expect(offenders).toEqual([]);
   });
 
   const sample: Record<HintSeverity, string> = {

@@ -8,6 +8,7 @@ import {
 } from '@/lib/services/auth-context';
 import { isSuperAdmin } from '@/lib/services/context';
 import { adminListSupportThreads } from '@/lib/services/support';
+import { SupportStatusBadge } from '@/components/SupportStatusBadge';
 import { TableScroll } from '@/components/TableScroll';
 
 export default async function AdminSupportPage({
@@ -86,9 +87,7 @@ export default async function AdminSupportPage({
                     {t.workspaceName} <span className="muted">/{t.workspaceSlug}</span>
                   </td>
                   <td>
-                    <span className={t.status === 'open' ? 'badge' : 'badge muted'}>
-                      {t.status}
-                    </span>
+                    <SupportStatusBadge status={t.status} audience="admin" />
                   </td>
                   <td>{t.lastMessageAt.toLocaleString()}</td>
                 </tr>
