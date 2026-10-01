@@ -222,12 +222,39 @@ export async function createFirstWorkspace(
 
 // ---- pre-authorisation ------------------------------------------------
 
+/**
+ * True when the user already has somewhere to work: a membership of an
+ * active workspace, or an active workspace they own.
+ *
+ * Archived workspaces do not count here, unlike in readStartState. The
+ * self-service rule ("create a workspace once") treats an archived
+ * workspace as used up, so a user cannot route around an archive by
+ * creating a new one. A super-admin who explicitly pre-authorises
+ * "their own new workspace" for that same user means to unblock them,
+ * and must not get an entry that is consumed with nothing granted.
+ */
+async function hasLiveWorkspace(reader: Reader, userId: string): Promise<boolean> {
+  const [membership] = await reader
+    .select({ id: workspaceMembers.id })
+    .from(workspaceMembers)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+    .where(and(eq(workspaceMembers.userId, userId), eq(workspaces.status, 'active')))
+    .limit(1);
+  if (membership) return true;
+  const [owned] = await reader
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(and(eq(workspaces.ownerUserId, userId), eq(workspaces.status, 'active')))
+    .limit(1);
+  return owned !== undefined;
+}
+
 export type PreauthorizationOutcome =
   /** Added to the named workspace (or already a member of it). */
   | { kind: 'joined'; workspaceId: bigint }
   /** Given a workspace of their own. */
   | { kind: 'own_workspace'; workspaceId: bigint }
-  /** Asked for their own workspace but already has one; nothing added. */
+  /** Asked for their own workspace but already has an active one; nothing added. */
   | { kind: 'kept_existing' };
 
 function parseRole(role: string): WorkspaceMemberRole {
@@ -243,7 +270,8 @@ function parseRole(role: string): WorkspaceMemberRole {
  *   user.preauthorize_consumed in that workspace.
  * - No workspace ("their own new workspace"), or a named one deleted or
  *   archived since: provision a workspace they own, unless they already
- *   belong to or own one.
+ *   belong to or own an active one (hasLiveWorkspace). Archived ones do
+ *   not block: the entry is an explicit grant.
  */
 export async function applyPreauthorization(
   tx: Tx,
@@ -286,8 +314,7 @@ export async function applyPreauthorization(
   }
 
   if (outcome === null) {
-    const state = await readStartState(tx, input.userId);
-    if (state.canCreate) {
+    if (!(await hasLiveWorkspace(tx, input.userId))) {
       const ws = await provisionOwnedWorkspace(tx, {
         userId: input.userId,
         email: input.email,

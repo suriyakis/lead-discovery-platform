@@ -339,6 +339,49 @@ describe('preauthorizeEmail for an account that already exists', () => {
     expect(await ownedBy(member)).toHaveLength(0);
   });
 
+  // Self-service treats an archived workspace as used up (see the
+  // createFirstWorkspace tests below); an explicit pre-authorisation by a
+  // super-admin is how such a user is unblocked, so it must grant.
+  it("'their own new workspace' unblocks a user whose own workspace is archived", async () => {
+    const admin = await seedPlatformAdmin();
+    const user = await seedUser({ email: 'archived@test.local' });
+    const old = await seedWorkspace({ name: 'Old Co', ownerUserId: user });
+    await archiveWorkspace(admin.ctx, old);
+    expect((await getWorkspaceStartState(user)).canCreate).toBe(false);
+
+    const entry = await preauthorizeEmail(admin.ctx, { email: 'archived@test.local' });
+
+    expect(entry.consumedAt).toBeInstanceOf(Date);
+    const fresh = (await ownedBy(user)).filter((w) => w.id !== old);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]!.status).toBe('active');
+    expect(await membershipsOf(user)).toEqual(
+      expect.arrayContaining([
+        { workspaceId: old, role: 'owner' },
+        { workspaceId: fresh[0]!.id, role: 'owner' },
+      ]),
+    );
+    expect((await resolveWorkspaceContextForUser(user, false)).workspaceId).toBe(fresh[0]!.id);
+  });
+
+  it("'their own new workspace' unblocks a member whose only team is archived", async () => {
+    const admin = await seedPlatformAdmin();
+    const owner = await seedUser({ email: 'owner@test.local' });
+    const member = await seedUser({ email: 'member@test.local' });
+    const team = await seedWorkspace({
+      name: 'Team',
+      ownerUserId: owner,
+      extraMembers: [{ userId: member, role: 'member' }],
+    });
+    await archiveWorkspace(admin.ctx, team);
+
+    await preauthorizeEmail(admin.ctx, { email: 'member@test.local' });
+
+    const owned = await ownedBy(member);
+    expect(owned).toHaveLength(1);
+    expect((await resolveWorkspaceContextForUser(member, false)).workspaceId).toBe(owned[0]!.id);
+  });
+
   it('pre-authorising an already-consumed email again works and adds the second workspace', async () => {
     const admin = await seedPlatformAdmin();
     const owner = await seedUser({ email: 'owner@test.local' });
