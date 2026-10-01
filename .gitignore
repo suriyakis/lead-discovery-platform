@@ -34,3 +34,6 @@ docker/data/
 
 # Local docker-compose override (copy from docker-compose.override.yml.example)
 docker-compose.override.yml
+
+# Data-remediation reports (flow:F-06) carry personal data; never commit them
+remediation-reports/

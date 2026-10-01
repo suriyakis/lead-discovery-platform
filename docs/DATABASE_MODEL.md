@@ -169,6 +169,13 @@ Linked to a workspace, product profile, and target entity (company/contact/oppor
 ### `learning_events`, `learning_lessons` (Phase 5)
 `learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12.
 
+### `remediation_runs`, `remediation_log` (Phase 0, flow:F-06)
+Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`). Not tenant-owned: a run spans workspaces and is driven by a platform super admin.
+
+`remediation_runs`: id (text, the dry-run batch id), script, module, plan_hash, decisions_hash, options (jsonb), status (`applying` / `applied` / `failed` / `reverted` / `revert_partial`), summary (jsonb: per-category counts, post-apply checks), error, applied_by / started_at / finished_at, reverted_by / reverted_at.
+
+`remediation_log`: one row per changed row — run_id, workspace_id, category (`R1a`, `R4`, …), table_name (allow-listed), row_id, action (`update` / `delete` / `ledger_credit`), before / after (jsonb images: the changed columns for an update, the whole row for a delete), reverted_at.
+
 ## Reserved fields and tables (no migration needed for future phases)
 
 These columns / tables are reserved on Phase-1-and-Phase-2 tables so later phases can attach without an "alter table" parade:

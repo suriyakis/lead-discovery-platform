@@ -12,7 +12,9 @@
 //   - reply-classifier.applyAutoActions and the outreach reply handler's
 //     close_and_suppress branch: autoSuppressionRefusal() before any
 //     suppression a classification would cause.
-//   - remediation (flow:F-06): backfillInboundRelevance(), dry run first.
+//   - remediation (flow:F-06, scripts/remediation/2026-10-funnel): labels
+//     legacy rows with assessStoredInbound(), the same per-row logic as
+//     backfillInboundRelevance(), recording before-images so it can revert.
 
 import { and, asc, eq, gt, gte, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -370,6 +372,38 @@ function storedParserSignals(value: unknown): InboundRelevanceSignals | null {
   return signals;
 }
 
+/** The stored columns assessStoredInbound reads. */
+export type StoredInboundRow = Pick<
+  MailMessage,
+  'fromAddress' | 'inReplyTo' | 'references' | 'headers' | 'receivedAt' | 'relevanceSignals'
+>;
+
+/**
+ * Assess an already-stored inbound row from what survived on it: the
+ * parse-time signals when F-01 captured them, otherwise the stored headers.
+ * Read-only. Shared by backfillInboundRelevance and the F-06 remediation
+ * (scripts/remediation/2026-10-funnel), so both label a row identically.
+ */
+export async function assessStoredInbound(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  row: StoredInboundRow,
+): Promise<RelevanceAssessment> {
+  const signals =
+    storedParserSignals(row.relevanceSignals) ??
+    extractRelevanceSignals({
+      headers: (row.headers ?? {}) as Record<string, unknown>,
+      fromAddress: row.fromAddress,
+      source: 'stored_headers',
+    });
+  return assessInboundRelevance(ctx, {
+    fromAddress: row.fromAddress,
+    inReplyTo: row.inReplyTo,
+    references: row.references,
+    receivedAt: row.receivedAt,
+    signals,
+  });
+}
+
 /**
  * Label existing inbound messages with their outreach relevance. Uses only
  * what survived on the row: stored headers (mailparser's folded 'list' key,
@@ -433,20 +467,7 @@ export async function backfillInboundRelevance(
     for (const row of rows) {
       lastId = row.id;
       scanned++;
-      const signals =
-        storedParserSignals(row.relevanceSignals) ??
-        extractRelevanceSignals({
-          headers: (row.headers ?? {}) as Record<string, unknown>,
-          fromAddress: row.fromAddress,
-          source: 'stored_headers',
-        });
-      const assessment = await assessInboundRelevance(ctx, {
-        fromAddress: row.fromAddress,
-        inReplyTo: row.inReplyTo,
-        references: row.references,
-        receivedAt: row.receivedAt,
-        signals,
-      });
+      const assessment = await assessStoredInbound(ctx, row);
       byRelevance[assessment.relevance]++;
       byReason[assessment.reason] = (byReason[assessment.reason] ?? 0) + 1;
       if (isOutreachLinked(assessment.relevance)) outreachLinkedIds.push(row.id.toString());
