@@ -34,6 +34,10 @@
   --brand-grid-line: oklch(0.3 0.025 250 / 0.4);
 
   --brand-radius: 0.5rem;
+  /* Height of the sticky .brand-header. Anything else that sticks while
+     the page scrolls offsets its `top` by this, or it slides under the
+     header (I143). */
+  --header-h: 4rem;
   --brand-shadow:
     0 1px 0 0 oklch(1 0 0 / 0.04) inset, 0 8px 24px -12px oklch(0 0 0 / 0.5);
   --brand-shadow-hover:
@@ -94,7 +98,7 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 4rem;
+  height: var(--header-h);
   padding: 0 1.5rem;
   border-bottom: 1px solid oklch(0.3 0.025 250 / 0.6);
   background: oklch(0.18 0.025 250 / 0.7);
@@ -167,9 +171,9 @@ main {
 
 .sidebar {
   position: sticky;
-  top: 0;
+  top: var(--header-h);
   align-self: start;
-  height: calc(100vh - 4.5rem);
+  height: calc(100vh - var(--header-h));
   border-right: 1px solid var(--brand-border);
   padding: 1rem 0.75rem;
   overflow-y: auto;
@@ -467,6 +471,13 @@ main {
   outline: none;
 }
 
+/* The select drops its native outline, so the pill around it carries the
+   keyboard focus ring instead (I177). */
+.workspace-switcher:has(select:focus-visible) {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
 .workspace-switcher select:disabled {
   opacity: 0.5;
   cursor: progress;
@@ -561,7 +572,15 @@ main h1 {
   letter-spacing: -0.02em;
 }
 
-main section {
+/* Default section card + section heading — for BARE elements only (I149).
+   A classed <section>/<h2> styles itself: grids, dashboards and lists
+   (.cockpit-grid, .mail-dashboard, .contact-activity, …) used to pick up
+   this card too and rendered as cards nested inside cards. :where() keeps
+   the specificity at (0,0,1), so contextual rules such as
+   `.lead-research h2` and `.connector-admin-section h2` keep winning.
+   Classed sections that ARE meant to be this card opt in by name. */
+:where(main) section:not(:where([class])),
+:where(main) section:where(.profile-list-card, .lead-research) {
   margin: 1.5rem 0;
   padding: 1.5rem 1.75rem;
   background: var(--brand-card);
@@ -570,7 +589,7 @@ main section {
   box-shadow: var(--brand-shadow);
 }
 
-main h2 {
+:where(main) h2:not(:where([class])) {
   font-family: var(--brand-mono);
   font-size: 0.8rem;
   text-transform: uppercase;
@@ -632,7 +651,10 @@ button.signin-btn:hover {
   border-color: oklch(0.92 0.005 250);
 }
 
-button.ghost-btn {
+/* Secondary button. Any element can carry it — <button>, <Link> and the
+   disabled <span>s in Pagination. It used to be `button.ghost-btn`, so
+   about 27 <Link className="ghost-btn"> rendered as bare text (I152). */
+.ghost-btn {
   background: transparent;
   border-color: var(--brand-border);
   color: var(--brand-muted);
@@ -640,9 +662,31 @@ button.ghost-btn {
   padding: 0.375rem 0.75rem;
 }
 
-button.ghost-btn:hover {
+.ghost-btn:hover {
   color: var(--brand-fg);
   background: var(--brand-input);
+  /* Keep the resting border: `button:hover` (0,1,1) would otherwise win
+     now that this rule is (0,2,0) instead of (0,2,1). */
+  border-color: var(--brand-border);
+  text-decoration: none;
+}
+
+/* Non-<button> ghost buttons don't get the base `button` box, so give
+   them the same one. Laid out like .primary-btn so an icon + label link
+   lines up with the primary CTA next to it. */
+.ghost-btn:where(:not(button)) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: var(--brand-radius);
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 code {
@@ -744,16 +788,21 @@ code {
   margin: 0;
 }
 
-.page-header a {
+/* Breadcrumb/back links in the header are muted — but not the CTA
+   buttons: at (0,1,1) this rule beat .primary-btn and painted its label
+   grey on cyan on about 10 pages. :where() keeps the specificity. */
+.page-header a:where(:not(.primary-btn, .ghost-btn)) {
   color: var(--brand-muted);
   text-decoration: none;
 }
 
-.page-header a:hover {
+.page-header a:where(:not(.primary-btn, .ghost-btn)):hover {
   color: var(--brand-fg);
 }
 
-/* ---- Buttons (link-as-button) ---- */
+/* ---- Buttons (link-as-button) ----
+   One rule for <a> and <button> alike; the `button.primary-btn` font
+   reset now lives here (a no-op on links, which inherit font anyway). */
 .primary-btn {
   display: inline-flex;
   align-items: center;
@@ -764,6 +813,7 @@ code {
   border: 1px solid var(--brand-primary);
   border-radius: var(--brand-radius);
   text-decoration: none;
+  font: inherit;
   font-weight: 500;
   font-size: 0.875rem;
   cursor: pointer;
@@ -784,12 +834,6 @@ code {
   width: 0.95rem;
   height: 0.95rem;
   flex-shrink: 0;
-}
-
-button.primary-btn {
-  font: inherit;
-  font-weight: 500;
-  font-size: 0.875rem;
 }
 
 /* ---- Profile list — used as a generic list-of-things on /products,
@@ -1293,6 +1337,12 @@ button.primary-btn {
   padding: 1rem 1.1rem;
   font-size: 0.95rem;
   border-bottom: 1px solid var(--brand-border);
+}
+
+/* Inset: .cmdk-modal clips overflow, so an outside ring would be cut. */
+.cmdk-input:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: -2px;
 }
 
 .cmdk-input::placeholder {
@@ -2140,17 +2190,35 @@ button.primary-btn {
   font-size: 0.92rem;
 }
 
+/* A bare .badge is a NEUTRAL label (role, kind, stage, step N/M). Tone
+   comes only from a modifier: -good, -bad, -warn (amber — what the bare
+   badge used to be) or -info. I151: amber-by-default made every status
+   read as a warning, and .badge-warn was used on six pages but never
+   defined. flex-shrink: 0 so a badge in a flex row never squashes. */
 .badge {
   display: inline-block;
+  flex-shrink: 0;
   font-family: var(--brand-mono);
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   padding: 0.25rem 0.625rem;
   border-radius: 999px;
+  background: var(--brand-input);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-muted);
+}
+
+.badge-warn {
   background: oklch(0.78 0.13 75 / 0.18);
-  border: 1px solid oklch(0.78 0.13 75 / 0.4);
+  border-color: oklch(0.78 0.13 75 / 0.4);
   color: var(--brand-accent-amber);
+}
+
+.badge-info {
+  background: color-mix(in oklab, var(--brand-primary) 18%, transparent);
+  border-color: color-mix(in oklab, var(--brand-primary) 40%, transparent);
+  color: var(--brand-primary);
 }
 
 .badge-good {
@@ -3148,7 +3216,7 @@ button.primary-btn {
 
 .signature-preview {
   position: sticky;
-  top: 1rem;
+  top: calc(var(--header-h) + 1rem);
   background: var(--brand-bg);
   border: 1px solid var(--brand-border);
   border-radius: 8px;
@@ -3859,7 +3927,11 @@ button.primary-btn {
   text-decoration: none;
 }
 
-.window-tab.active {
+/* Communication, Follow-ups and mailbox detail mark the current tab with
+   .window-tab-active; only .active (deliverability) was ever defined, so
+   their active tab never showed. */
+.window-tab.active,
+.window-tab.window-tab-active {
   background: var(--brand-primary);
   color: var(--brand-primary-foreground);
   border-color: var(--brand-primary);
@@ -4138,7 +4210,15 @@ button.primary-btn {
   line-height: 1.55;
 }
 
-.empty-state a {
+.empty-state .empty-state-title {
+  color: var(--brand-fg);
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+/* Inline links only — a .primary-btn CTA must keep its own label colour
+   (cyan text on a cyan button otherwise). */
+.empty-state a:where(:not(.primary-btn, .ghost-btn)) {
   color: var(--brand-primary);
 }
 
@@ -4474,7 +4554,7 @@ button.primary-btn {
   border: 1px solid var(--brand-border);
   border-radius: 0.6rem;
   position: sticky;
-  top: 1rem;
+  top: calc(var(--header-h) + 1rem);
 }
 .mail-rail-section-title {
   font-size: 0.78rem;
@@ -4649,7 +4729,7 @@ button.primary-btn {
   border-radius: 0.6rem 0.6rem 0 0;
   background: var(--brand-card-elevated);
   position: sticky;
-  top: 0;
+  top: var(--header-h);
   z-index: 2;
 }
 .mail-toolbar-leading {
@@ -5084,6 +5164,11 @@ button.primary-btn {
   outline: none;
   font-size: 0.9rem;
 }
+/* The borderless input drops its outline; ring the field around it. */
+.contacts-filter-search:has(input:focus-visible) {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 1px;
+}
 .contacts-filters > label {
   display: flex;
   flex-direction: column;
@@ -5122,7 +5207,7 @@ button.primary-btn {
   border-radius: 0.55rem 0.55rem 0 0;
   background: var(--brand-card-elevated);
   position: sticky;
-  top: 0;
+  top: var(--header-h);
   z-index: 2;
   gap: 0.5rem;
   flex-wrap: wrap;
@@ -5184,6 +5269,10 @@ button.primary-btn {
   outline: none;
   font-size: 0.82rem;
   width: 100px;
+}
+.contacts-tag-group:has(input:focus-visible) {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 1px;
 }
 
 /* Contact card rows */
@@ -6468,6 +6557,8 @@ button.primary-btn {
 .product-card-actions .ghost-btn {
   font-size: 0.78rem;
   padding: 0.32rem 0.6rem;
+  /* The compact padding lands at ~31px; keep a 32px hit target. */
+  min-height: 2rem;
 }
 .product-card-actions .danger {
   color: oklch(0.82 0.16 25);
@@ -7364,4 +7455,18 @@ button.primary-btn {
   display: grid;
   gap: 0.5rem;
   margin: 0 0 1.25rem;
+}
+
+/* ---- Reduced motion (I177) ----
+   Users who ask the OS for less motion get no animations (the pulsing
+   hero dot) and no transitions (hover lifts, fades). Last in the file and
+   !important so no component rule can opt back in. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }

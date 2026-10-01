@@ -500,6 +500,9 @@ function statusBadgeClass(status: OutreachDraftStatus): string {
       return 'badge badge-good';
     case 'rejected':
       return 'badge badge-bad';
+    case 'needs_edit':
+      // Waiting on the operator. A bare .badge is neutral now (I151).
+      return 'badge badge-warn';
     default:
       return 'badge';
   }
