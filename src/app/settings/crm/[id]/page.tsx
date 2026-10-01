@@ -18,6 +18,8 @@ import {
   updateCrmConnection,
 } from '@/lib/services/crm';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { archiveCrmConnectionConfirm } from '@/lib/confirm-copy';
 
 export default async function CrmConnectionDetail({
   params,
@@ -173,9 +175,12 @@ export default async function CrmConnectionDetail({
           <section>
             <h2>Admin</h2>
             <form action={archive}>
-              <button type="submit" className="ghost-btn">
+              <ConfirmFormButton
+                className="ghost-btn"
+                message={archiveCrmConnectionConfirm({ name: conn.name, system: conn.system })}
+              >
                 Archive connection
-              </button>
+              </ConfirmFormButton>
             </form>
           </section>
         ) : null}

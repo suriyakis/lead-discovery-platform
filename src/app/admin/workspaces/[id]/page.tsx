@@ -27,6 +27,15 @@ import { db } from '@/lib/db/client';
 import { workspaces, workspaceMembers } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { ConfirmTokenAdjustButton } from '@/components/ConfirmTokenAdjustButton';
+import {
+  archiveWorkspaceConfirm,
+  billingExemptOffConfirm,
+  billingExemptOnConfirm,
+  removeMemberConfirm,
+  restoreWorkspaceConfirm,
+} from '@/lib/confirm-copy';
 
 const KNOWN_FEATURE_KEYS = [
   'crm.hubspot',
@@ -97,16 +106,17 @@ export default async function AdminWorkspaceDetail({
     }
   }
 
-  async function toggleExempt() {
+  async function setExemptState(formData: FormData) {
     'use server';
     const c = await requirePlatformAdmin();
-    const rows = await db
-      .select({ exempt: workspaces.billingExempt })
-      .from(workspaces)
-      .where(eq(workspaces.id, targetWorkspaceId))
-      .limit(1);
+    // The state the operator confirmed, not a flip of whatever the row
+    // holds now: on a stale page a flip would undo what they asked for.
+    const target = String(formData.get('exempt') ?? '');
+    if (target !== 'on' && target !== 'off') {
+      redirect(`/admin/workspaces/${idStr}?error=Invalid+billing+exemption+state`);
+    }
     try {
-      await setBillingExempt(c, targetWorkspaceId, !(rows[0]?.exempt ?? false));
+      await setBillingExempt(c, targetWorkspaceId, target === 'on');
       redirect(`/admin/workspaces/${idStr}?message=Billing+exemption+updated`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -341,12 +351,38 @@ export default async function AdminWorkspaceDetail({
                 <span>Reason</span>
                 <input type="text" name="reason" maxLength={200} placeholder="promo / support credit / correction" />
               </label>
-              <button type="submit" className="primary-btn">Apply</button>
+              <ConfirmTokenAdjustButton
+                className="primary-btn"
+                workspaceName={ws.name}
+                balance={ws.tokenBalance.toString()}
+                billingExempt={ws.billingExempt}
+              >
+                Apply
+              </ConfirmTokenAdjustButton>
             </form>
-            <form action={toggleExempt}>
-              <button type="submit" className="ghost-btn">
-                {ws.billingExempt ? 'Disable billing exemption' : 'Make billing exempt'}
-              </button>
+            <form action={setExemptState}>
+              <input type="hidden" name="exempt" value={ws.billingExempt ? 'off' : 'on'} />
+              {ws.billingExempt ? (
+                <ConfirmFormButton
+                  className="ghost-btn"
+                  message={billingExemptOffConfirm({
+                    name: ws.name,
+                    balance: ws.tokenBalance.toString(),
+                    plan: ws.plan,
+                    subscriptionStatus: ws.subscriptionStatus,
+                  })}
+                >
+                  Disable billing exemption
+                </ConfirmFormButton>
+              ) : (
+                <ConfirmFormButton
+                  className="ghost-btn"
+                  message={billingExemptOnConfirm({ name: ws.name })}
+                  confirmPhrase={ws.slug}
+                >
+                  Make billing exempt
+                </ConfirmFormButton>
+              )}
             </form>
           </div>
 
@@ -427,16 +463,22 @@ export default async function AdminWorkspaceDetail({
                 <span>Reason (optional)</span>
                 <input type="text" name="reason" maxLength={200} />
               </label>
-              <button type="submit" className="ghost-btn">
+              <ConfirmFormButton
+                className="ghost-btn"
+                message={archiveWorkspaceConfirm({ name: ws.name, memberCount: members.length })}
+              >
                 Archive workspace
-              </button>
+              </ConfirmFormButton>
             </form>
           ) : (
             <>
               <form action={restore}>
-                <button type="submit" className="primary-btn">
+                <ConfirmFormButton
+                  className="primary-btn"
+                  message={restoreWorkspaceConfirm({ name: ws.name, memberCount: members.length })}
+                >
                   Restore workspace
-                </button>
+                </ConfirmFormButton>
               </form>
               <p
                 className="muted"
@@ -511,9 +553,12 @@ export default async function AdminWorkspaceDetail({
                   {member.role !== 'owner' || members.filter((m) => m.member.role === 'owner').length > 1 ? (
                     <form action={removeUser}>
                       <input type="hidden" name="targetUserId" value={user.id} />
-                      <button type="submit" className="ghost-btn">
+                      <ConfirmFormButton
+                        className="ghost-btn"
+                        message={removeMemberConfirm(user, ws.name)}
+                      >
                         Remove from workspace
-                      </button>
+                      </ConfirmFormButton>
                     </form>
                   ) : (
                     <span className="muted">last owner — cannot remove</span>

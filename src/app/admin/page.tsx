@@ -9,6 +9,7 @@ import {
 } from '@/lib/services/admin';
 import { TokenError, adjustTokens } from '@/lib/services/token-ledger';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmTokenAdjustButton } from '@/components/ConfirmTokenAdjustButton';
 
 export default async function AdminPage({
   searchParams,
@@ -185,9 +186,14 @@ export default async function AdminPage({
                         style={{ width: '8rem' }}
                         aria-label="Reason"
                       />
-                      <button type="submit" className="ghost-btn">
+                      <ConfirmTokenAdjustButton
+                        className="ghost-btn"
+                        workspaceName={s.name}
+                        balance={s.tokenBalance.toString()}
+                        billingExempt={s.billingExempt}
+                      >
                         Apply
-                      </button>
+                      </ConfirmTokenAdjustButton>
                     </form>
                   </td>
                 </tr>

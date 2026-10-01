@@ -26,6 +26,8 @@ import {
   type ResolvedProvider,
 } from '@/lib/services/provider-settings';
 import { ProviderModelPair } from '@/components/ProviderModelPair';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { removeConsoleKeyConfirm, savePlatformDefaultsConfirm } from '@/lib/confirm-copy';
 import {
   PlatformSettingsError,
   getPlatformSettings,
@@ -437,7 +439,16 @@ export default async function AdminProvidersPage({
                 {row ? (
                   <form action={removeKey}>
                     <input type="hidden" name="secretKey" value={p.secretKey} />
-                    <button type="submit" className="ghost-btn">Remove console key</button>
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={removeConsoleKeyConfirm({
+                        vendorName: p.name,
+                        envVar: p.envVar,
+                        envSet,
+                      })}
+                    >
+                      Remove console key
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
                 {active !== 'none' ? (
@@ -569,7 +580,9 @@ export default async function AdminProvidersPage({
             ))}
           </div>
           <div className="action-row">
-            <button type="submit" className="primary-btn">Save platform defaults</button>
+            <ConfirmFormButton className="primary-btn" message={savePlatformDefaultsConfirm()}>
+              Save platform defaults
+            </ConfirmFormButton>
           </div>
         </form>
       </section>

@@ -21,6 +21,8 @@ import { workspaces } from '@/lib/db/schema/workspaces';
 import type { AccountStatus } from '@/lib/db/schema/auth';
 import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { accountStatusConfirms, revokePreauthConfirm } from '@/lib/confirm-copy';
 
 export default async function AdminUsersPage({
   searchParams,
@@ -35,6 +37,7 @@ export default async function AdminUsersPage({
     listPreauthorizedEmails(pctx),
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
+  const workspaceNameById = new Map(allWorkspaces.map((w) => [w.id.toString(), w.name]));
 
   async function setStatus(formData: FormData) {
     'use server';
@@ -213,9 +216,18 @@ export default async function AdminUsersPage({
                 {!p.consumedAt ? (
                   <form action={revoke} style={{ marginTop: '0.5rem' }}>
                     <input type="hidden" name="id" value={p.id} />
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton
+                      className="ghost-btn"
+                      message={revokePreauthConfirm({
+                        email: p.email,
+                        role: p.role,
+                        workspaceName: p.workspaceId
+                          ? (workspaceNameById.get(p.workspaceId) ?? `workspace #${p.workspaceId}`)
+                          : null,
+                      })}
+                    >
                       Revoke
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 ) : null}
               </li>
@@ -344,7 +356,11 @@ function UserSection({
                     <span>Reason</span>
                     <input type="text" name="reason" maxLength={200} />
                   </label>
-                  <button type="submit">Apply</button>
+                  <ConfirmFormButton
+                    messageByValue={{ field: 'status', messages: accountStatusConfirms(u) }}
+                  >
+                    Apply
+                  </ConfirmFormButton>
                   <Link href={`/admin/users/${u.id}`} className="ghost-btn">
                     Edit profile + memberships →
                   </Link>

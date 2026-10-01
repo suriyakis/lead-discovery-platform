@@ -5,6 +5,10 @@ import { defineConfig } from 'vitest/config';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  // tsconfig keeps `jsx: preserve` for Next; tests that import a .tsx
+  // component (e.g. confirm-actions.test.ts) need the automatic runtime
+  // instead of esbuild's default React.createElement.
+  esbuild: { jsx: 'automatic' },
   test: {
     environment: 'node',
     globals: false,

@@ -25,6 +25,13 @@ import { db } from '@/lib/db/client';
 import { users, type AccountStatus } from '@/lib/db/schema/auth';
 import { workspaces, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import {
+  accountStatusConfirms,
+  demoteSuperAdminConfirm,
+  promoteSuperAdminConfirm,
+  removeMemberConfirm,
+} from '@/lib/confirm-copy';
 
 export default async function AdminUserDetail({
   params,
@@ -277,7 +284,11 @@ export default async function AdminUserDetail({
               <span>Reason</span>
               <input type="text" name="reason" maxLength={200} />
             </label>
-            <button type="submit">Apply</button>
+            <ConfirmFormButton
+              messageByValue={{ field: 'status', messages: accountStatusConfirms(user) }}
+            >
+              Apply
+            </ConfirmFormButton>
           </form>
         )}
       </section>
@@ -303,14 +314,19 @@ export default async function AdminUserDetail({
               name="role"
               value={user.role === 'super_admin' ? 'member' : 'super_admin'}
             />
-            <button
-              type="submit"
-              className={user.role === 'super_admin' ? 'ghost-btn' : 'primary-btn'}
-            >
-              {user.role === 'super_admin'
-                ? 'Demote to member'
-                : 'Promote to super-admin'}
-            </button>
+            {user.role === 'super_admin' ? (
+              <ConfirmFormButton className="ghost-btn" message={demoteSuperAdminConfirm(user)}>
+                Demote to member
+              </ConfirmFormButton>
+            ) : (
+              <ConfirmFormButton
+                className="primary-btn"
+                message={promoteSuperAdminConfirm(user)}
+                confirmPhrase={user.email}
+              >
+                Promote to super-admin
+              </ConfirmFormButton>
+            )}
           </form>
         )}
       </section>
@@ -339,9 +355,12 @@ export default async function AdminUserDetail({
                     name="workspaceId"
                     value={m.workspace.id.toString()}
                   />
-                  <button type="submit" className="ghost-btn">
+                  <ConfirmFormButton
+                    className="ghost-btn"
+                    message={removeMemberConfirm(user, m.workspace.name)}
+                  >
                     Remove from this workspace
-                  </button>
+                  </ConfirmFormButton>
                 </form>
               </li>
             ))}

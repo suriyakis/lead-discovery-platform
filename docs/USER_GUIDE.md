@@ -188,6 +188,19 @@ a workspace the way its members do, leave the console and pick it under
 **god mode** in the workspace switcher. Whatever you do there is logged in
 that workspace under your own `user_id`.
 
+**High-impact buttons ask first.** Archive/restore, token grants, billing
+exemption, platform role, account status, removing a member, revoking a
+pre-authorisation, closing a support thread, removing a console key and
+saving platform defaults all show a confirmation that names the workspace
+or user; Cancel sends nothing. A token grant reads `+1,000 tokens to
+<workspace>` (or `-1,000 tokens from <workspace>`) with the balance before
+and after, so a stray minus or an extra zero shows up before it is applied.
+**Promote to super-admin** asks you to type the user's email and **Make
+billing exempt** the workspace slug. Workspace admins get the same
+confirmations for removing a member, switching to Simple setup, clearing a
+workspace API key, clearing a product's autopilot overrides and archiving a
+CRM connection.
+
 ## 7. Operational quirks (saved as memories)
 
 - Compose port mapping must live in **exactly one** of base/prod

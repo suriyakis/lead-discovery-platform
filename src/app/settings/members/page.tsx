@@ -18,6 +18,8 @@ import {
   setMemberRole,
 } from '@/lib/services/users';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { removeMemberConfirm } from '@/lib/confirm-copy';
 
 const ROLES = ['owner', 'admin', 'manager', 'member', 'viewer'] as const;
 
@@ -170,9 +172,9 @@ export default async function MembersPage({
                   </form>
                   <form action={remove}>
                     <input type="hidden" name="userId" value={user.id} />
-                    <button type="submit" className="ghost-btn">
+                    <ConfirmFormButton className="ghost-btn" message={removeMemberConfirm(user)}>
                       Remove
-                    </button>
+                    </ConfirmFormButton>
                   </form>
                 </div>
               )}

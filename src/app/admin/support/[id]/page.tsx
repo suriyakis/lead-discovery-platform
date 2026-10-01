@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { closeSupportThreadConfirm } from '@/lib/confirm-copy';
 import {
   SupportServiceError,
   adminGetSupportThread,
@@ -115,9 +117,18 @@ export default async function AdminSupportThreadPage({
             name="status"
             value={thread.status === 'open' ? 'closed' : 'open'}
           />
-          <button type="submit" className="ghost-btn">
+          {/* Closing asks first; reopening is harmless and does not. */}
+          <ConfirmFormButton
+            className="ghost-btn"
+            messageByValue={{
+              field: 'status',
+              messages: {
+                closed: closeSupportThreadConfirm({ subject: thread.subject, workspaceName }),
+              },
+            }}
+          >
             {thread.status === 'open' ? 'Close thread' : 'Reopen thread'}
-          </button>
+          </ConfirmFormButton>
         </form>
       </section>
     </div>

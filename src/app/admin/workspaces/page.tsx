@@ -11,6 +11,8 @@ import {
   restoreWorkspace,
 } from '@/lib/services/admin';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { archiveWorkspaceConfirm, restoreWorkspaceConfirm } from '@/lib/confirm-copy';
 
 export default async function AdminWorkspacesPage({
   searchParams,
@@ -133,9 +135,15 @@ export default async function AdminWorkspacesPage({
                         placeholder="Reason (optional)"
                         maxLength={200}
                       />
-                      <button type="submit" className="ghost-btn">
+                      <ConfirmFormButton
+                        className="ghost-btn"
+                        message={archiveWorkspaceConfirm({
+                          name: w.name,
+                          memberCount: w.memberCount,
+                        })}
+                      >
                         Archive
-                      </button>
+                      </ConfirmFormButton>
                     </form>
                   ) : (
                     <form action={restore}>
@@ -144,9 +152,15 @@ export default async function AdminWorkspacesPage({
                         name="workspaceId"
                         value={w.workspaceId.toString()}
                       />
-                      <button type="submit" className="primary-btn">
+                      <ConfirmFormButton
+                        className="primary-btn"
+                        message={restoreWorkspaceConfirm({
+                          name: w.name,
+                          memberCount: w.memberCount,
+                        })}
+                      >
                         Restore
-                      </button>
+                      </ConfirmFormButton>
                     </form>
                   )}
                 </div>
