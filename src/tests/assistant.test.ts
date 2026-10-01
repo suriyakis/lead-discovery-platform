@@ -226,7 +226,9 @@ describe('askAssistant', () => {
     const r = await askAssistant(ctx(s.workspaceA, s.ownerA), 'something odd');
     expect(r.source).toBe('deterministic');
     expect(r.fallbackReason).toBe('refusal');
-    expect(r.answer).toMatch(/^I can't answer that one; here is what I can see/);
+    expect(r.answer).toMatch(/^I can't answer that one\.\n\nWhat I can see in this workspace right now:\n/);
+    // Said once, not twice.
+    expect(r.answer.match(/what I can see in this workspace/gi)).toHaveLength(1);
     // A fresh workspace has no product and no mailbox — both are named.
     expect(r.findings).toEqual(expect.arrayContaining(['products.none', 'mailbox.none']));
     expect(r.answer).toContain('[/mailbox/new]');
@@ -252,8 +254,13 @@ describe('askAssistant on an empty wallet', () => {
     expect(r.fallbackReason).toBe('wallet_empty');
     expect(r.findings).toContain('tokens.empty');
     expect(r.answer).toContain('[/settings/billing]');
-    expect(r.answer).toContain('Token wallet is empty');
+    expect(r.answer).toMatch(/^Your token wallet is empty/);
     expect(r.answer).toContain('Auto top-up');
+    // The header already says the wallet is empty: the tokens.empty
+    // finding is not listed a second time, the other findings are.
+    expect(r.answer).not.toContain('Token wallet is empty — discovery');
+    expect(r.answer).toContain('Anything else I can see in this workspace right now:');
+    expect(r.answer).toContain('No active product profile');
     // An owner can buy tokens — no "ask an admin" line for them.
     expect(r.answer).not.toContain('ask one of them');
   });

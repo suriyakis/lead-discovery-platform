@@ -240,7 +240,8 @@ export async function askAssistant(
 /**
  * The built-in answer: no model call, no tokens. Built from the same rule
  * findings as the health report, so it names real problems in this
- * workspace with links to fix them.
+ * workspace with links to fix them. Its fixed lines are English only
+ * (unlike model answers, which follow the question's language).
  */
 async function deterministicAnswer(
   ctx: WorkspaceContext,
@@ -261,13 +262,26 @@ async function deterministicAnswer(
       lines.push('Only workspace owners and admins can buy tokens — ask one of them.');
     }
   } else {
-    lines.push("I can't answer that one; here is what I can see in this workspace right now.");
+    lines.push("I can't answer that one.");
   }
-  lines.push('', 'What I can see in this workspace right now:');
-  if (findings.length === 0) {
-    lines.push('- Nothing in the workspace checks looks wrong.');
+  // The empty wallet is already the header of a wallet_empty answer, so
+  // its finding is not listed again (its code stays in `findings`).
+  const walletEmpty = reason === 'wallet_empty';
+  const listed = walletEmpty ? findings.filter((f) => f.code !== 'tokens.empty') : findings;
+  lines.push(
+    '',
+    walletEmpty
+      ? 'Anything else I can see in this workspace right now:'
+      : 'What I can see in this workspace right now:',
+  );
+  if (listed.length === 0) {
+    lines.push(
+      walletEmpty
+        ? '- Nothing else in the workspace checks looks wrong.'
+        : '- Nothing in the workspace checks looks wrong.',
+    );
   } else {
-    for (const f of findings) {
+    for (const f of listed) {
       lines.push(`- ${f.message}${f.href ? ` [${f.href}]` : ''}`);
     }
   }
