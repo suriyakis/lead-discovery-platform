@@ -6,7 +6,7 @@
 // closes over page-local helpers.
 
 import { redirect } from 'next/navigation';
-import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { requireActionContext } from '@/lib/action-context';
 import {
   FollowUpServiceError,
   updateFollowUpConfig,
@@ -15,7 +15,7 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 import { parseFollowUpForm } from './follow-up-form';
 
 export async function saveFollowUp(formData: FormData): Promise<void> {
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   const parsed = parseFollowUpForm(formData);
   if (!parsed.ok) {
     redirect(`/settings/outreach?error=${encodeURIComponent(parsed.error)}`);

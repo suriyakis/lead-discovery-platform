@@ -15,13 +15,7 @@
 // failure.
 
 import { redirect } from 'next/navigation';
-import {
-  AccountInactiveError,
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import type { WorkspaceContext } from '@/lib/services/context';
+import { requireActionContext } from '@/lib/action-context';
 import {
   OutreachQueueError,
   cancelQueueEntry,
@@ -45,7 +39,7 @@ import {
 
 export async function saveSendSettingsAction(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
-  const ctx = await requireContext();
+  const ctx = await requireActionContext();
   const parsed = parseSendSettingsForm(formData);
   if (!parsed.ok) backToQueue(view, 'error', parsed.error);
   await runOrFlash(view, 'settings', () => updateSendSettings(ctx, parsed.value));
@@ -54,7 +48,7 @@ export async function saveSendSettingsAction(formData: FormData): Promise<void> 
 
 export async function cancelQueuedEmailAction(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
-  const ctx = await requireContext();
+  const ctx = await requireActionContext();
   const id = parseEntryId(formData.get('id'));
   if (id === null) backToQueue(view, 'error', 'That email is no longer in the queue.');
   await runOrFlash(view, 'cancel', () => cancelQueueEntry(ctx, id));
@@ -63,7 +57,7 @@ export async function cancelQueuedEmailAction(formData: FormData): Promise<void>
 
 export async function rescheduleQueuedEmailAction(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
-  const ctx = await requireContext();
+  const ctx = await requireActionContext();
   const id = parseEntryId(formData.get('id'));
   if (id === null) backToQueue(view, 'error', 'That email is no longer in the queue.');
   const when = parseUtcDateTimeLocal(formData.get('scheduledSendAt'));
@@ -74,7 +68,7 @@ export async function rescheduleQueuedEmailAction(formData: FormData): Promise<v
 
 export async function drainSendQueueAction(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
-  const ctx = await requireContext();
+  const ctx = await requireActionContext();
   const message = await runOrFlash(view, 'drain', async () => {
     const r = await drainQueue(ctx);
     if (r.picked > 0) {
@@ -93,18 +87,6 @@ export async function drainSendQueueAction(formData: FormData): Promise<void> {
 }
 
 // ---- helpers (module scope: never captured by an action's closure) ----
-
-/** The signed-in user's workspace, or the same redirects the page uses. */
-async function requireContext(): Promise<WorkspaceContext> {
-  try {
-    return await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-}
 
 /**
  * Run a service call; on failure flash a human error instead. Expected

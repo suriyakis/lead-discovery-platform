@@ -20,7 +20,7 @@
 
 import { redirect } from 'next/navigation';
 import type { WorkspaceContext } from '@/lib/services/context';
-import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { requireActionContext } from '@/lib/action-context';
 import {
   markAsSpam,
   moveToTrash,
@@ -120,7 +120,7 @@ async function runBulkAction(
   act: (ctx: WorkspaceContext, ids: bigint[]) => Promise<string>,
 ): Promise<void> {
   if (!/^\d+$/.test(mailboxId)) redirect('/mailbox');
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   const ids = parseIds(formData);
   let message: string;
   try {

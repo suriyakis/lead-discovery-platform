@@ -16,7 +16,7 @@
 
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
-import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { requireActionContext } from '@/lib/action-context';
 import {
   CrmServiceError,
   archiveCrmConnection,
@@ -46,7 +46,7 @@ export async function saveCrmConnectionAction(
   if (!parsed.success) {
     redirect(detailUrl(id, { error: parsed.error.issues[0]?.message ?? 'Invalid input.' }));
   }
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   try {
     // Merge into the stored config as it is now, not as it was when the
     // page rendered. An empty base URL clears the override.
@@ -70,7 +70,7 @@ export async function saveCrmConnectionAction(
 
 export async function testCrmConnectionAction(connectionId: string): Promise<void> {
   const id = parseConnectionId(connectionId);
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   let result: { ok: boolean; detail?: string };
   try {
     result = await testCrmConnection(ctx, id);
@@ -91,7 +91,7 @@ export async function testCrmConnectionAction(connectionId: string): Promise<voi
 
 export async function archiveCrmConnectionAction(connectionId: string): Promise<void> {
   const id = parseConnectionId(connectionId);
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   try {
     await archiveCrmConnection(ctx, id);
   } catch (err) {
@@ -107,7 +107,7 @@ export async function archiveCrmConnectionAction(connectionId: string): Promise<
 
 export async function restoreCrmConnectionAction(connectionId: string): Promise<void> {
   const id = parseConnectionId(connectionId);
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   try {
     await restoreCrmConnection(ctx, id);
   } catch (err) {

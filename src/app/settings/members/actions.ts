@@ -13,7 +13,7 @@
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { workspaceMemberRole } from '@/lib/db/schema/workspaces';
-import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { requireActionContext } from '@/lib/action-context';
 import { UserServiceError, addMember, removeMember, setMemberRole } from '@/lib/services/users';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
@@ -64,7 +64,7 @@ async function runMemberAction<I>(
 }
 
 export async function addMemberAction(formData: FormData): Promise<void> {
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   await runMemberAction(
     AddMemberForm,
     formData,
@@ -74,7 +74,7 @@ export async function addMemberAction(formData: FormData): Promise<void> {
 }
 
 export async function changeMemberRoleAction(formData: FormData): Promise<void> {
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   await runMemberAction(
     ChangeRoleForm,
     formData,
@@ -84,7 +84,7 @@ export async function changeMemberRoleAction(formData: FormData): Promise<void> 
 }
 
 export async function removeMemberAction(formData: FormData): Promise<void> {
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   await runMemberAction(
     RemoveMemberForm,
     formData,
