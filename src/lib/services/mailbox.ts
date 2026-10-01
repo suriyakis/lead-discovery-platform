@@ -13,7 +13,7 @@ import {
 } from '@/lib/db/schema/mailing';
 import { recordAuditEvent } from './audit';
 import { failingRecheckDelayMs } from './imap-backoff';
-import { notify, resolveNotifications, type NotifyInput } from './notifications';
+import { notifyWorkspaceAdmins, resolveNotifications, type NotifyInput } from './notifications';
 import {
   canAdminWorkspace,
   canWrite,
@@ -450,7 +450,8 @@ export async function pauseMailbox(
 // Sync — all recordMailboxConnectionCheck), Reactivate, pause or archive;
 // each resolves the notification so the next failure notifies again.
 
-/** Dedupe key of a mailbox's 'mailbox.failing' notification. */
+/** Dedupe key of a mailbox's 'mailbox.failing' notification (each
+ *  admin's copy appends adminDedupeKey's ':user:<id>'). */
 export function mailboxFailingDedupeKey(mailboxId: bigint): string {
   return `mailbox.failing:${mailboxId}`;
 }
@@ -509,12 +510,19 @@ export function summarizeMailboxFailure(
   };
 }
 
-function failingNotice(mailbox: Mailbox): NotifyInput {
+/** How much of the server's error text the notification quotes; the
+ *  mailbox page shows all of it. */
+const NOTICE_ERROR_EXCERPT = 200;
+
+function failingNotice(mailbox: Mailbox): Omit<NotifyInput, 'userId'> {
   const summary = summarizeMailboxFailure(mailbox);
+  const error = mailbox.lastError ?? 'unknown';
+  const excerpt =
+    error.length > NOTICE_ERROR_EXCERPT ? `${error.slice(0, NOTICE_ERROR_EXCERPT - 1)}…` : error;
   return {
     kind: 'mailbox.failing',
     title: `Mailbox "${mailbox.name}" is failing`,
-    body: `${summary.impact} ${summary.advice} Last error — ${mailbox.lastError ?? 'unknown'}`,
+    body: `${summary.impact} ${summary.advice} Last error — ${excerpt}`,
     href: `/mailbox/${mailbox.id}`,
     dedupeKey: mailboxFailingDedupeKey(mailbox.id),
   };
@@ -533,7 +541,8 @@ function failingNotice(mailbox: Mailbox): NotifyInput {
  *
  * A paused or archived mailbox keeps its status: those are operator
  * decisions and nothing is sent through them anyway. The notification
- * is workspace-wide (every member, admins included, sees the bell).
+ * goes to the workspace owners / admins — the people who can fix the
+ * credentials or reactivate it — one row each (notifyWorkspaceAdmins).
  */
 export async function markMailboxFailing(
   ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
@@ -599,8 +608,8 @@ export async function markMailboxFailing(
     });
   }
 
-  const row = await notify(ctx.workspaceId, failingNotice(updated));
-  return { marked: true, notified: row !== null, nextSyncAfter };
+  const rows = await notifyWorkspaceAdmins(ctx.workspaceId, failingNotice(updated));
+  return { marked: true, notified: rows.length > 0, nextSyncAfter };
 }
 
 /**

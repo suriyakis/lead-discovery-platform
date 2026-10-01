@@ -36,7 +36,10 @@ import {
   reactivateMailbox,
   testMailboxConnection,
 } from '@/lib/services/mailbox';
-import { markNotificationsRead } from '@/lib/services/notifications';
+import {
+  listNotifications,
+  markNotificationsRead,
+} from '@/lib/services/notifications';
 import { TRANSIENT_FAILURE_PAUSE_THRESHOLD } from '@/lib/services/imap-backoff';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -185,7 +188,9 @@ describe('safeSyncOne failure bookkeeping (F-04)', () => {
     let notes = await failingNotices(s.workspaceId);
     expect(notes).toHaveLength(1);
     expect(notes[0]!.href).toBe(`/mailbox/${mb.id}`);
-    expect(notes[0]!.dedupeKey).toBe(`mailbox.failing:${mb.id}`);
+    // Targeted at the workspace's only admin (its owner), deduped per admin.
+    expect(notes[0]!.userId).toBe(s.ownerId);
+    expect(notes[0]!.dedupeKey).toBe(`mailbox.failing:${mb.id}:user:${s.ownerId}`);
     expect(notes[0]!.title).toBe('Mailbox "sales" is failing');
     expect(notes[0]!.body).toContain('Replies to it are not read');
 
@@ -513,6 +518,88 @@ describe('runImapTick (F-04)', () => {
     // Gated: the next tick leaves it alone.
     await runImapTick();
     expect(provider.fetchCalls).toBe(1);
+  });
+});
+
+// ---- who is told ---------------------------------------------------------
+
+describe('mailbox.failing goes to workspace admins only (F-04)', () => {
+  it('one row per owner / admin; managers, members and viewers see nothing', async () => {
+    seq++;
+    const ownerId = await seedUser({ email: `own-${seq}@test.local` });
+    const adminId = await seedUser({ email: `adm-${seq}@test.local` });
+    const managerId = await seedUser({ email: `mgr-${seq}@test.local` });
+    const memberId = await seedUser({ email: `mem-${seq}@test.local` });
+    const viewerId = await seedUser({ email: `view-${seq}@test.local` });
+    const workspaceId = await seedWorkspace({
+      name: `roles-${seq}`,
+      ownerUserId: ownerId,
+      extraMembers: [
+        { userId: adminId, role: 'admin' },
+        { userId: managerId, role: 'manager' },
+        { userId: memberId, role: 'member' },
+        { userId: viewerId, role: 'viewer' },
+      ],
+    });
+    const s: Setup = { workspaceId, ownerId, c: ctx(workspaceId, ownerId) };
+    const mb = await makeMailbox(s);
+    const as = (userId: string, role: WorkspaceContext['role']) =>
+      makeWorkspaceContext({ workspaceId, userId, role });
+
+    const first = await markMailboxFailing(s.c, mb.id, {
+      protocol: 'smtp',
+      message: 'Invalid login: 535 5.7.8 Error: authentication failed',
+    });
+    expect(first.notified).toBe(true);
+    let notes = await failingNotices(workspaceId);
+    expect(notes.map((n) => n.userId).sort()).toEqual([adminId, ownerId].sort());
+    for (const n of notes) {
+      expect(n.dedupeKey).toBe(`mailbox.failing:${mb.id}:user:${n.userId}`);
+    }
+    for (const [userId, role] of [
+      [managerId, 'manager'],
+      [memberId, 'member'],
+      [viewerId, 'viewer'],
+    ] as const) {
+      const seen = await listNotifications(as(userId, role));
+      expect(seen.filter((n) => n.kind === 'mailbox.failing'), role).toHaveLength(0);
+    }
+    expect(
+      (await listNotifications(as(adminId, 'admin'))).filter((n) => n.kind === 'mailbox.failing'),
+    ).toHaveLength(1);
+
+    // A repeat failure while both are unread adds nothing.
+    const repeat = await markMailboxFailing(s.c, mb.id, { protocol: 'smtp', message: 'again' });
+    expect(repeat.notified).toBe(false);
+    expect(await failingNotices(workspaceId)).toHaveLength(2);
+
+    // The admin reads theirs: the next failure re-notifies only them.
+    const adminNote = notes.find((n) => n.userId === adminId)!;
+    await markNotificationsRead(as(adminId, 'admin'), [adminNote.id]);
+    const third = await markMailboxFailing(s.c, mb.id, { protocol: 'smtp', message: 'again' });
+    expect(third.notified).toBe(true);
+    notes = await failingNotices(workspaceId);
+    expect(notes).toHaveLength(3);
+    expect(notes.filter((n) => n.readAt === null).map((n) => n.userId).sort()).toEqual(
+      [adminId, ownerId].sort(),
+    );
+
+    // Recovery resolves every admin's copy.
+    provider.test = HEALTHY;
+    await testMailboxConnection(s.c, mb.id);
+    expect((await row(mb.id)).status).toBe('active');
+    notes = await failingNotices(workspaceId);
+    expect(notes.every((n) => n.readAt !== null)).toBe(true);
+  });
+
+  it('quotes at most 200 characters of the server error', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s);
+    await markMailboxFailing(s.c, mb.id, { protocol: 'imap', message: `Socket timed out ${'x'.repeat(600)}` });
+    const [note] = await failingNotices(s.workspaceId);
+    const quoted = note!.body!.split('Last error — ')[1]!;
+    expect(quoted.length).toBeLessThanOrEqual(200);
+    expect(quoted.startsWith('IMAP: Socket timed out')).toBe(true);
   });
 });
 
