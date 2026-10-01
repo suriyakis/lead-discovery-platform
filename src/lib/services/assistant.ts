@@ -12,6 +12,7 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { PLATFORM_HANDBOOK } from '@/lib/assistant/handbook';
+import { BRAND_NAME } from '@/lib/brand';
 import type { WorkspaceContext } from './context';
 import { getTokenWallet } from './token-ledger';
 
@@ -117,7 +118,7 @@ export async function askAssistant(
       : '';
 
   const system = [
-    'You are the built-in guide of the Lead Discovery Platform. Answer the',
+    `You are the built-in guide of ${BRAND_NAME}. Answer the`,
     "operator's questions about how to use the product, and diagnose",
     'problems using the live workspace snapshot provided.',
     'Rules:',
@@ -126,6 +127,9 @@ export async function askAssistant(
     '  exactly as they appear in the handbook — the UI turns them into links.',
     '- When the snapshot explains the problem (empty wallet, no mailbox, no',
     '  target country on recipes), SAY SO first — that is the actual answer.',
+    '- The handbook\'s "Known limitations right now" section lists what does',
+    '  not work yet. If the question touches one, say so plainly and give the',
+    '  workaround it names; never claim that part works.',
     "- If something isn't covered by the handbook, say you're not sure and",
     '  suggest where to look. Never invent features.',
     '- Answer in the language the question was asked in.',

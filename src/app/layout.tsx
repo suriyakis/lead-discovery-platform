@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
+import { BRAND_NAME } from '@/lib/brand';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -15,7 +16,7 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Leadsonar',
+  title: BRAND_NAME,
   description:
     'Ping the market, keep the echoes that matter. B2B lead discovery, qualification, outreach, and intelligence — with evidence and a learning layer.',
 };

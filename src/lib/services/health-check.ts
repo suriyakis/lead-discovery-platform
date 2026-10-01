@@ -2,9 +2,10 @@
 // workspace and does two things a human account manager would:
 //
 //   1. RULE FINDINGS — deterministic audit of configuration + operations:
-//      empty wallet, recipes without a target country, mock search, no
-//      mailbox, failed runs, review backlog, stale drafts, pending
-//      follow-up approvals.
+//      empty wallet, no active product, no active mailbox, recipes
+//      without a target country, failed runs, review backlog, stale
+//      drafts, pending follow-up approvals. (There is no mock-search
+//      finding yet — see I073.)
 //   2. COMMUNICATION REVIEW — the AI reads a sample of recent outbound
 //      conversations and judges them the way a recipient would: is the
 //      flow natural? does it repeat itself? does it contradict earlier
@@ -108,7 +109,7 @@ export async function collectRuleFindings(
     findings.push({
       severity: 'warning',
       code: 'mailbox.none',
-      message: 'No active mailbox — approved drafts cannot be sent.',
+      message: 'No active mailbox — nothing can be sent or received.',
       href: '/mailbox/new',
     });
   }
@@ -125,7 +126,9 @@ export async function collectRuleFindings(
     findings.push({
       severity: 'warning',
       code: 'recipes.no_country',
-      message: `${Number(recipeRow.total) - Number(recipeRow.withCountry)} of ${recipeRow.total} recipes have no target country — the geography gate cannot verify those leads and holds them for manual review.`,
+      // No target country = no geography gate (applyGeoGate → 'no_gate'):
+      // nothing is held for review, leads from anywhere pass straight on.
+      message: `${Number(recipeRow.total) - Number(recipeRow.withCountry)} of ${recipeRow.total} recipes have no target country — the geography gate is off for them, so leads from any country pass review and can be emailed.`,
       href: '/connectors',
     });
   }

@@ -7,9 +7,16 @@
 //   2. discovery recipe    the recipe that found the lead
 //                          (connector_recipes.selectors.language, falling
 //                          back to the frozen connector_runs.recipe_snapshot)
-//   3. product profile     resolveProfileLanguage(product)
+//   2.5 workspace default  getWorkspaceOutreachLanguage(ctx) — the default
+//                          outreach language from Settings → Outreach
+//   3. product profile     resolveProfileLanguage(product) — language
+//                          detected in the description/instructions beats
+//                          the product's explicit `language` field
 //   4. workspace native    getWorkspaceNativeLanguage(ctx)
 //   5. 'en'                ultimate fallback
+//
+// The assistant handbook states this order (claim H-19); keep the two in
+// step.
 //
 // Recipe sits ABOVE product on purpose: an explicit per-campaign language
 // choice must win over the product profile's free-text language detection

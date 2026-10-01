@@ -27,6 +27,7 @@ import {
   type HealthFinding,
   type ThreadReview,
 } from '@/lib/services/health-check';
+import { createConnector, createRecipe } from '@/lib/services/connector-run';
 import { listNotifications } from '@/lib/services/notifications';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
@@ -136,6 +137,37 @@ describe('collectRuleFindings', () => {
     expect(codes).toContain('tokens.empty');
     expect(codes).toContain('products.none');
     expect(codes).toContain('mailbox.none');
+    // Without an active mailbox there is no sending AND no inbox sync —
+    // the old copy only mentioned approved drafts.
+    const mailbox = findings.find((f) => f.code === 'mailbox.none')!;
+    expect(mailbox.message).toBe('No active mailbox — nothing can be sent or received.');
+  });
+
+  it('recipes without a target country: says the geography gate is off, not "held for review"', async () => {
+    const s = await setup();
+    const c = await createConnector(ctx(s.workspaceA, s.ownerA), {
+      templateType: 'mock',
+      name: 'Mock',
+      config: {},
+    });
+    await createRecipe(ctx(s.workspaceA, s.ownerA), {
+      connectorId: c.id,
+      name: 'no country',
+      selectors: { seed: 'hc', count: 1 },
+    });
+    await createRecipe(ctx(s.workspaceA, s.ownerA), {
+      connectorId: c.id,
+      name: 'poland',
+      selectors: { seed: 'hc2', count: 1, country: 'PL' },
+    });
+    const findings = await collectRuleFindings(ctx(s.workspaceA, s.ownerA));
+    const f = findings.find((x) => x.code === 'recipes.no_country');
+    expect(f).toBeDefined();
+    expect(f!.message).toBe(
+      '1 of 2 recipes have no target country — the geography gate is off for them, so leads from any country pass review and can be emailed.',
+    );
+    expect(f!.message).not.toContain('manual review');
+    expect(f!.href).toBe('/connectors');
   });
 });
 

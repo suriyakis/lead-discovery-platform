@@ -17,6 +17,7 @@ import { db } from '@/lib/db/client';
 import { mailboxes, signatures } from '@/lib/db/schema/mailing';
 import { and, desc, eq } from 'drizzle-orm';
 import { sendTestEmail, MailServiceError } from '@/lib/services/mail';
+import { BRAND_NAME } from '@/lib/brand';
 
 const InputSchema = z.object({
   signatureId: z.coerce.bigint(),
@@ -24,7 +25,7 @@ const InputSchema = z.object({
   mailboxId: z.coerce.bigint().optional(),
 });
 
-const DEFAULT_BODY = `This is a signature test from your Lead Discovery Platform.
+const DEFAULT_BODY = `This is a signature test from ${BRAND_NAME}.
 
 If you can read this, SMTP delivery + signature rendering are working.
 The signature below should match the live preview from the editor.`;

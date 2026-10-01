@@ -16,6 +16,7 @@ import {
   makeWorkspaceContext,
 } from '@/lib/services/context';
 import { AssistantError, askAssistant } from '@/lib/services/assistant';
+import { BRAND_NAME } from '@/lib/brand';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -89,7 +90,11 @@ describe('askAssistant', () => {
     expect(prompt).toContain('Token balance: 500');
     expect(prompt).toContain('Active products: 1');
     expect(prompt).toContain('why am I getting no leads?');
-    expect(stub.lastInput!.system).toContain('guide of the Lead Discovery Platform');
+    expect(stub.lastInput!.system).toContain(`guide of ${BRAND_NAME}`);
+    expect(stub.lastInput!.system).not.toContain('Lead Discovery Platform');
+    // The model reads the handbook without its claim tags.
+    expect(prompt).toContain('Known limitations right now');
+    expect(prompt).not.toMatch(/\{H-\d{2}\}/);
   });
 
   it('carries short conversation history', async () => {
