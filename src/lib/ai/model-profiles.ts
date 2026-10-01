@@ -13,21 +13,32 @@
 // (pinned by src/tests/ai-model-profiles.test.ts), so no existing caller
 // changes behaviour.
 //
-// | model family                      | effort knob               | output floor |
-// |-----------------------------------|---------------------------|--------------|
-// | gpt-5.x, o1/o3 (OpenAI)           | reasoning_effort          | 2,500        |
-// | o1-mini, o1-preview               | none (predates the knob)  | 2,500        |
-// | gpt-5 chat variants               | none (no reasoning)       | none         |
-// | claude 4.6+ / 5.x / fable         | output_config.effort      | 4,000        |
-// | claude-haiku-4-5, pre-4.6 claude  | none (400 if sent)        | 1,500        |
-// | deepseek-v4-pro                   | none (content only)       | 3,000        |
-// | deepseek-v4-flash, gemini, other  | none                      | none         |
+// | model family                          | effort knob              | output floor |
+// |---------------------------------------|--------------------------|--------------|
+// | gpt-5.x, o1/o3 (OpenAI)               | reasoning_effort         | 2,500        |
+// | o1-mini, o1-preview                   | none (predates the knob) | 2,500        |
+// | gpt-5 chat variants                   | none (no reasoning)      | none         |
+// | claude sonnet-5*, opus-5*, fable,     | output_config.effort     | 4,000        |
+// |   mythos (think when `thinking` is    |                          |              |
+// |   omitted)                            |                          |              |
+// | claude opus-4-6/4-7/4-8, sonnet-4-6   | output_config.effort     | 1,500        |
+// |   (no thinking when it is omitted)    |                          |              |
+// | claude-haiku-4-5, pre-4.6 claude      | none (400 if sent)       | 1,500        |
+// | deepseek-v4-pro                       | none (content only)      | 3,000        |
+// | deepseek-v4-flash, gemini, other      | none                     | none         |
 //
 // Gemini needs nothing here: its adapter already adds 2,048 tokens of
 // thinking headroom on 2.5+/3.x models, with or without `reasoning`.
 // Thinking is never configured explicitly for Anthropic: Sonnet 5.5 and
-// Opus 5.5 reject `thinking: {type: 'disabled'}` (400) and run adaptive
-// thinking when it is omitted, which the 4,000 floor leaves room for.
+// Opus 5.5 reject `thinking: {type: 'disabled'}` (400). With `thinking`
+// omitted, only the 5-family and Fable/Mythos think (adaptively), so only
+// they get the 4,000 floor; Opus 4.6-4.8 and Sonnet 4.6 run without
+// thinking, so all of their budget is visible answer and the plain 1,500
+// floor is enough (4,000 there would be 4.4x the old 900-token cap).
+//
+// A floor only raises a budget the caller set. An unset maxTokens stays
+// unset, so OpenAI and DeepSeek keep their vendor default (Anthropic's
+// adapter always sets one: max_tokens is required there).
 
 /** How hard a reasoning model should think before answering. */
 export type AIReasoningEffort = 'low' | 'medium' | 'high';
@@ -66,14 +77,15 @@ export function reasoningProfile(vendor: ReasoningVendor, model: string): Reason
   }
 }
 
-/** Raise `maxTokens` to the profile's floor (an unset budget becomes the
- *  floor; no floor leaves it untouched). */
+/** Raise `maxTokens` to the profile's floor. An unset budget stays unset
+ *  (the vendor default applies, which is never a hard cap we invented);
+ *  no floor leaves it untouched. */
 export function withOutputFloor(
   maxTokens: number | undefined,
   profile: ReasoningProfile,
 ): number | undefined {
-  if (profile.minOutputTokens <= 0) return maxTokens;
-  return Math.max(maxTokens ?? 0, profile.minOutputTokens);
+  if (maxTokens === undefined || profile.minOutputTokens <= 0) return maxTokens;
+  return Math.max(maxTokens, profile.minOutputTokens);
 }
 
 function openAIProfile(m: string): ReasoningProfile {
@@ -90,6 +102,7 @@ function openAIProfile(m: string): ReasoningProfile {
 }
 
 function anthropicProfile(m: string): ReasoningProfile {
+  // Fable / Mythos always think (thinking cannot be switched off).
   if (/fable|mythos/.test(m)) {
     return { effort: 'output_config', minOutputTokens: ANTHROPIC_THINKING_MIN_OUTPUT_TOKENS };
   }
@@ -99,8 +112,15 @@ function anthropicProfile(m: string): ReasoningProfile {
   if (v && v[1] !== 'haiku') {
     const major = Number(v[2]);
     const minor = Number(v[3] ?? 0);
-    if (major > 4 || (major === 4 && minor >= 6)) {
+    // Sonnet 5 / 5.5 and Opus 5 / 5.5 run adaptive thinking when
+    // `thinking` is omitted: hidden reasoning shares the budget.
+    if (major >= 5) {
       return { effort: 'output_config', minOutputTokens: ANTHROPIC_THINKING_MIN_OUTPUT_TOKENS };
+    }
+    // Opus 4.6-4.8 and Sonnet 4.6 take effort but do NOT think when
+    // `thinking` is omitted: the whole budget is visible answer.
+    if (major === 4 && minor >= 6) {
+      return { effort: 'output_config', minOutputTokens: ANTHROPIC_PLAIN_MIN_OUTPUT_TOKENS };
     }
   }
   // Haiku 4.5 and the pre-4.6 models return a 400 for output_config.effort;

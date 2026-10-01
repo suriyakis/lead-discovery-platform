@@ -531,8 +531,9 @@ export class AnthropicAIProvider implements IAIProvider {
     }
     // Effort is GA (no beta header) on 4.6+ models; Haiku 4.5 and older
     // models return a 400 for it. `thinking` is never sent: Sonnet 5.5 /
-    // Opus 5.5 reject {type: 'disabled'} and run adaptive when it is
-    // omitted — the profile's output floor leaves room for that.
+    // Opus 5.5 reject {type: 'disabled'}. With it omitted the 5-family and
+    // Fable/Mythos think adaptively (the profile gives them a 4,000-token
+    // floor) and Opus 4.6-4.8 / Sonnet 4.6 don't think at all (1,500).
     if (profile?.effort === 'output_config') body.output_config = { effort: options.reasoning };
     if (input.system) body.system = input.system;
 

@@ -21,7 +21,7 @@ import {
   type AIGenOptions,
 } from '@/lib/ai';
 import { GeminiAIProvider } from '@/lib/ai/gemini';
-import { reasoningProfile } from '@/lib/ai/model-profiles';
+import { reasoningProfile, withOutputFloor } from '@/lib/ai/model-profiles';
 
 interface Captured {
   url: string;
@@ -251,6 +251,46 @@ describe('with `reasoning`: Anthropic', () => {
     expect(body).not.toHaveProperty('temperature');
   });
 
+  it('claude-opus-4-8 / sonnet-4-6: effort, but only the plain 1500 floor (no thinking when it is omitted)', async () => {
+    for (const model of ['claude-opus-4-8', 'claude-sonnet-4-6']) {
+      const calls = stubFetch(ANTHROPIC_OK);
+      await new AnthropicAIProvider({ apiKey: 'k', model }).generateText(INPUT, REASONING);
+      const body = parsed(calls[0]!);
+      expect(body.output_config, model).toEqual({ effort: 'low' });
+      expect(body.max_tokens, model).toBe(1500);
+      expect(body, model).not.toHaveProperty('thinking');
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('the 4,000 floor is only for models that think when `thinking` is omitted', () => {
+    for (const model of [
+      'claude-sonnet-5',
+      'claude-sonnet-5-5',
+      'claude-opus-5',
+      'claude-opus-5-5',
+      'claude-fable-5-1',
+      'claude-mythos-5-1',
+    ]) {
+      expect(reasoningProfile('anthropic', model), model).toEqual({
+        effort: 'output_config',
+        minOutputTokens: 4000,
+      });
+    }
+    for (const model of ['claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6']) {
+      expect(reasoningProfile('anthropic', model), model).toEqual({
+        effort: 'output_config',
+        minOutputTokens: 1500,
+      });
+    }
+    for (const model of ['claude-haiku-4-5', 'claude-sonnet-4-5-20250929', 'claude-opus-4-1']) {
+      expect(reasoningProfile('anthropic', model), model).toEqual({
+        effort: null,
+        minOutputTokens: 1500,
+      });
+    }
+  });
+
   it('pre-4.6 models get no effort; 4.6+ and Opus 5.5 do', () => {
     expect(reasoningProfile('anthropic', 'claude-sonnet-4-5-20250929').effort).toBeNull();
     expect(reasoningProfile('anthropic', 'claude-sonnet-4-20250514').effort).toBeNull();
@@ -365,6 +405,25 @@ describe('with `reasoning`: OpenAI and DeepSeek', () => {
     });
     const r = await new OpenAIAIProvider({ apiKey: 'k', model: 'gpt-5.5' }).healthCheck();
     expect(r.ok).toBe(true);
+  });
+
+  it('an unset maxTokens stays unset (vendor default), with `reasoning` too', async () => {
+    expect(withOutputFloor(undefined, reasoningProfile('openai', 'gpt-5.5'))).toBeUndefined();
+    expect(withOutputFloor(undefined, reasoningProfile('deepseek', 'deepseek-v4-pro'))).toBeUndefined();
+    expect(withOutputFloor(900, reasoningProfile('openai', 'gpt-5.5'))).toBe(2500);
+    expect(withOutputFloor(9000, reasoningProfile('openai', 'gpt-5.5'))).toBe(9000);
+
+    const calls = stubFetch(OPENAI_OK);
+    await new OpenAIAIProvider({ apiKey: 'k', model: 'gpt-5.5' }).generateText(INPUT, {
+      reasoning: 'low',
+    });
+    await new DeepSeekAIProvider({ apiKey: 'k', model: 'deepseek-v4-pro' }).generateText(INPUT, {
+      reasoning: 'low',
+    });
+    const gpt = parsed(calls[0]!);
+    expect(gpt.reasoning_effort).toBe('low');
+    expect(gpt).not.toHaveProperty('max_completion_tokens');
+    expect(parsed(calls[1]!)).not.toHaveProperty('max_tokens');
   });
 
   it('deepseek-v4-pro gets >= 3000 output tokens and no reasoning_effort; flash is unchanged', async () => {
