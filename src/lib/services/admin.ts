@@ -2,7 +2,7 @@
 // canSuperAdmin(ctx) before doing anything; failure to do so is the same
 // security mistake as forgetting workspace_id in a query.
 
-import { and, count, desc, eq, isNull, sql, sum, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNull, lte, sql, sum, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users, type User } from '@/lib/db/schema/auth';
 import {
@@ -1222,12 +1222,11 @@ export async function listAuditAcrossWorkspaces(
     conds.push(eq(auditLog.workspaceId, filter.workspaceId));
   }
   if (filter.kind) conds.push(eq(auditLog.kind, filter.kind));
-  if (filter.since) {
-    conds.push(sql`${auditLog.createdAt} >= ${filter.since}`);
-  }
-  if (filter.until) {
-    conds.push(sql`${auditLog.createdAt} <= ${filter.until}`);
-  }
+  // gte/lte encode the Date through the column. A Date inside a raw sql``
+  // template reaches postgres.js unencoded and crashes the query
+  // (src/tests/sql-date-binding.test.ts guards against that).
+  if (filter.since) conds.push(gte(auditLog.createdAt, filter.since));
+  if (filter.until) conds.push(lte(auditLog.createdAt, filter.until));
   const limit = Math.min(filter.limit ?? 100, 1000);
   return db
     .select()

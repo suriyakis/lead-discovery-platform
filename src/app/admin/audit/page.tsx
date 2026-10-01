@@ -2,10 +2,15 @@
 //
 // Filters across all workspaces. Useful for investigating cross-workspace
 // activity, support, security review.
+//
+// Since / Until are datetime-local inputs, read in the viewer's time zone
+// (the form's hidden `tz` field) and converted to UTC before they reach
+// the service; timestamps below are shown in the same zone.
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { inArray, sql } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
+import { ViewerTimeZoneField } from '@/components/ViewerTimeZoneField';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -21,6 +26,12 @@ import {
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
+import {
+  formatDateTimeInZone,
+  parseDateTimeLocal,
+  resolveTimeZone,
+  toDateTimeLocalValue,
+} from '@/lib/time-zone';
 
 const ALLOWED_LIMITS = [50, 100, 250, 500, 1000] as const;
 
@@ -32,6 +43,7 @@ export default async function PlatformAuditPage({
     kind?: string;
     since?: string;
     until?: string;
+    tz?: string;
     limit?: string;
   }>;
 }) {
@@ -60,8 +72,10 @@ export default async function PlatformAuditPage({
   const workspaceFilter =
     sp.workspace && /^\d+$/.test(sp.workspace) ? BigInt(sp.workspace) : undefined;
   const kindFilter = sp.kind?.trim() || undefined;
-  const since = parseDateInput(sp.since);
-  const until = parseDateInput(sp.until);
+  const requestedZone = resolveTimeZone(sp.tz);
+  const timeZone = requestedZone ?? 'UTC';
+  const since = parseDateTimeLocal(sp.since, timeZone) ?? undefined;
+  const until = parseDateTimeLocal(sp.until, timeZone) ?? undefined;
   const limit =
     sp.limit && /^\d+$/.test(sp.limit) ? Number(sp.limit) : 100;
   const safeLimit = (ALLOWED_LIMITS as ReadonlyArray<number>).includes(limit)
@@ -132,7 +146,7 @@ export default async function PlatformAuditPage({
           <input
             type="datetime-local"
             name="since"
-            defaultValue={toLocalInput(since)}
+            defaultValue={since ? toDateTimeLocalValue(since, timeZone) : ''}
           />
         </label>
         <label>
@@ -140,7 +154,7 @@ export default async function PlatformAuditPage({
           <input
             type="datetime-local"
             name="until"
-            defaultValue={toLocalInput(until)}
+            defaultValue={until ? toDateTimeLocalValue(until, timeZone) : ''}
           />
         </label>
         <label>
@@ -153,8 +167,10 @@ export default async function PlatformAuditPage({
             ))}
           </select>
         </label>
+        <ViewerTimeZoneField current={requestedZone} />
         <button type="submit">Apply</button>
       </form>
+      <p className="muted">Times are in {timeZone}.</p>
 
       <section>
         {events.length === 0 ? (
@@ -169,7 +185,9 @@ export default async function PlatformAuditPage({
               return (
                 <li key={e.id.toString()}>
                   <div>
-                    <span className="muted">{e.createdAt.toLocaleString()}</span>{' '}
+                    <span className="muted">
+                      {formatDateTimeInZone(e.createdAt, timeZone)}
+                    </span>{' '}
                     <code>ws:{w ? w.name : (e.workspaceId?.toString() ?? '—')}</code>{' '}
                     <strong>{e.kind}</strong>
                     {e.entityType ? (
@@ -198,16 +216,4 @@ export default async function PlatformAuditPage({
       </section>
     </div>
   );
-}
-
-function parseDateInput(raw: string | undefined): Date | undefined {
-  if (!raw) return undefined;
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
-function toLocalInput(d: Date | undefined): string {
-  if (!d) return '';
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
