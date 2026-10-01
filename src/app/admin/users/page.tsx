@@ -62,6 +62,7 @@ export default async function AdminUsersPage({
     listPreauthorizedEmails(ctx),
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
+  const workspaceNames = new Map(allWorkspaces.map((w) => [w.id.toString(), w.name]));
 
   async function setStatus(formData: FormData) {
     'use server';
@@ -84,8 +85,16 @@ export default async function AdminUsersPage({
     'use server';
     const c = await getWorkspaceContext();
     const email = String(formData.get('email') ?? '').trim();
-    const wsRaw = String(formData.get('workspaceId') ?? '');
-    const workspaceId = /^\d+$/.test(wsRaw) ? BigInt(wsRaw) : null;
+    // An explicit choice (audit I117): 'own' = their own new workspace,
+    // or the id of an existing one. A blank choice used to mean "no
+    // workspace", which left the user with none.
+    const destination = parsePreauthDestination(formData.get('workspaceChoice'));
+    if (destination === undefined) {
+      redirect(
+        `/admin/users?error=${encodeURIComponent('Choose where they will work: their own new workspace or an existing one.')}`,
+      );
+    }
+    const workspaceId = destination;
     const role = (String(formData.get('role') ?? 'member') as 'owner' | 'admin' | 'manager' | 'member' | 'viewer');
     try {
       await preauthorizeEmail(c, { email, workspaceId, role });
@@ -190,9 +199,10 @@ export default async function AdminUsersPage({
       <section>
         <h2>Pre-authorize</h2>
         <p className="muted">
-          Drop an email into the allow-list before they sign in. On first
-          OAuth round-trip they&apos;ll skip the pending state and join the
-          named workspace at the named role.
+          Drop an email into the allow-list. They skip the pending state and
+          get either a workspace of their own (as its owner) or a seat in an
+          existing workspace at the chosen role. Someone who already has an
+          account gets it straight away; anyone else at their first sign-in.
         </p>
         <form action={preauth} className="inline-form">
           <label>
@@ -201,17 +211,24 @@ export default async function AdminUsersPage({
           </label>
           <label>
             <span>Workspace</span>
-            <select name="workspaceId" defaultValue="">
-              <option value="">— none —</option>
-              {allWorkspaces.map((w) => (
-                <option key={w.id.toString()} value={w.id.toString()}>
-                  {w.name}
-                </option>
-              ))}
+            <select name="workspaceChoice" defaultValue="" required>
+              <option value="" disabled>
+                Choose…
+              </option>
+              <option value={OWN_WORKSPACE}>Their own new workspace</option>
+              <optgroup label="Existing workspace">
+                {allWorkspaces
+                  .filter((w) => w.status === 'active')
+                  .map((w) => (
+                    <option key={w.id.toString()} value={w.id.toString()}>
+                      {w.name}
+                    </option>
+                  ))}
+              </optgroup>
             </select>
           </label>
           <label>
-            <span>Role</span>
+            <span>Role (existing workspace)</span>
             <select name="role" defaultValue="member">
               <option value="owner">owner</option>
               <option value="admin">admin</option>
@@ -230,6 +247,11 @@ export default async function AdminUsersPage({
               <li key={p.id}>
                 <div className="lead-row">
                   <code>{p.email}</code>
+                  <span className="muted">
+                    {p.workspaceId === null
+                      ? 'own new workspace'
+                      : (workspaceNames.get(p.workspaceId) ?? 'a deleted workspace')}
+                  </span>
                   <span className="badge">{p.role}</span>
                   {p.consumedAt ? (
                     <span className="muted">
@@ -383,6 +405,20 @@ function UserSection({
       )}
     </section>
   );
+}
+
+/** The pre-authorize form's value for "Their own new workspace". */
+const OWN_WORKSPACE = 'own';
+
+/**
+ * The pre-authorize form's workspace choice: null for their own new
+ * workspace, the id of an existing one, or undefined when nothing valid
+ * was chosen.
+ */
+function parsePreauthDestination(raw: FormDataEntryValue | null): bigint | null | undefined {
+  if (raw === OWN_WORKSPACE) return null;
+  if (typeof raw === 'string' && /^\d+$/.test(raw)) return BigInt(raw);
+  return undefined;
 }
 
 function statusBadge(s: string): string {

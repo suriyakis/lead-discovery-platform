@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import {
+  AccountInactiveError,
   AuthRequiredError,
   NoWorkspaceError,
   getWorkspaceContext,
@@ -29,14 +30,8 @@ export default async function CrmSettingsPage({
   } catch (err) {
     if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) {
-      return (
-        <AppShell>
-            <h1>CRM</h1>
-            <p>You don&apos;t belong to a workspace yet.</p>
-          </AppShell>
-      );
-    }
+    if (err instanceof AccountInactiveError) redirect('/pending');
+    if (err instanceof NoWorkspaceError) redirect('/dashboard');
     throw err;
   }
 

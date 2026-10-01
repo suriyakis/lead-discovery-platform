@@ -65,7 +65,9 @@ export default async function OnboardingPage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
+    // No workspace yet: the dashboard is the screen that lets them create
+    // one or explains how to be added (ia:F-07).
+    if (err instanceof NoWorkspaceError) redirect('/dashboard');
     throw err;
   }
 

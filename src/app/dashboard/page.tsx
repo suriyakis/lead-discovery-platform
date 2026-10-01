@@ -23,6 +23,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { NoWorkspaceScreen } from '@/components/NoWorkspaceScreen';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -34,6 +35,7 @@ import { canAdminWorkspace, type WorkspaceContext } from '@/lib/services/context
 import { getDashboardSignals } from '@/lib/services/dashboard-signals';
 import { claimOnboardingStart } from '@/lib/services/onboarding';
 import { getActiveWorkspaceSummary } from '@/lib/services/workspace';
+import { getWorkspaceStartState } from '@/lib/services/workspace-provisioning';
 import type { PipelineState } from '@/lib/db/schema/pipeline';
 
 interface ModuleTile {
@@ -154,7 +156,7 @@ const MODULES: ReadonlyArray<ModuleTile> = [
 
 /**
  * The signed-in user's active workspace context, or null when they have
- * no workspace yet (the page then shows the "No workspace yet" card).
+ * no workspace yet (the page then shows the no-workspace screen).
  */
 async function resolveDashboardContext(): Promise<WorkspaceContext | null> {
   try {
@@ -167,7 +169,11 @@ async function resolveDashboardContext(): Promise<WorkspaceContext | null> {
   }
 }
 
-export default async function Dashboard() {
+export default async function Dashboard({
+  searchParams,
+}: {
+  searchParams?: Promise<{ error?: string }>;
+} = {}) {
   const session = await auth();
   if (!session?.user?.id) {
     redirect('/');
@@ -187,25 +193,36 @@ export default async function Dashboard() {
   // memberships[0]. The onboarding gate, the card and the signals all
   // read it (audit I042, deliverables ia:F-05 / PC-04).
   const ctx = await resolveDashboardContext();
-  const active = ctx ? await getActiveWorkspaceSummary(ctx) : null;
+
+  // No workspace: one screen to create their own or ask to be added
+  // (ia:F-07). /onboarding and the settings pages send such users here.
+  if (!ctx) {
+    const sp = (await searchParams) ?? {};
+    const start = await getWorkspaceStartState(session.user.id);
+    return (
+      <NoWorkspaceScreen
+        userId={session.user.id}
+        email={session.user.email ?? ''}
+        isSuperAdmin={isSuperAdmin}
+        start={start}
+        error={sp.error?.slice(0, 300) ?? null}
+      />
+    );
+  }
+
+  const active = await getActiveWorkspaceSummary(ctx);
 
   // Phase 47 first-run redirect, at most once per workspace: only while
   // the active workspace is still 'pending', only for someone who can
   // run the wizard, and claiming the redirect moves it to 'in_progress'.
   // Non-admins and god-mode visits are never redirected; a non-admin
   // used to bounce between here and /onboarding indefinitely.
-  if (
-    ctx &&
-    active?.workspace.onboardingStatus === 'pending' &&
-    (await claimOnboardingStart(ctx))
-  ) {
+  if (active.workspace.onboardingStatus === 'pending' && (await claimOnboardingStart(ctx))) {
     redirect('/onboarding');
   }
 
-  const signals = ctx ? await getDashboardSignals(ctx) : null;
+  const signals = await getDashboardSignals(ctx);
   const showSetupLink =
-    ctx !== null &&
-    active !== null &&
     !active.isGodMode &&
     active.workspace.onboardingStatus !== 'completed' &&
     canAdminWorkspace(ctx);
@@ -237,78 +254,66 @@ export default async function Dashboard() {
             <p className="profile-card-meta">{session.user.email}</p>
           </article>
 
-          {active ? (
-            <article className="profile-card">
-              <div className="profile-card-header">
-                <span className="profile-card-eyebrow">Active workspace</span>
-                {active.isGodMode ? (
-                  <span className="role-pill role-pill-super_admin">god mode</span>
-                ) : (
-                  <span className={`role-pill role-pill-${active.memberRole}`}>
-                    {active.memberRole}
-                  </span>
-                )}
-              </div>
-              <h2 className="profile-card-title">{active.workspace.name}</h2>
-              <p className="profile-card-meta">
-                <code>{active.workspace.slug}</code>
-                {active.workspace.status === 'archived' ? ' · archived' : null}
-                {active.membershipCount > 1 ? (
-                  <>
-                    {' · '}
-                    member of {active.membershipCount} workspaces
-                  </>
-                ) : null}
-              </p>
-              {showSetupLink ? (
-                <p className="profile-card-meta">
-                  <Link href="/onboarding">Continue workspace setup</Link>
-                </p>
+          <article className="profile-card">
+            <div className="profile-card-header">
+              <span className="profile-card-eyebrow">Active workspace</span>
+              {active.isGodMode ? (
+                <span className="role-pill role-pill-super_admin">god mode</span>
+              ) : (
+                <span className={`role-pill role-pill-${active.memberRole}`}>
+                  {active.memberRole}
+                </span>
+              )}
+            </div>
+            <h2 className="profile-card-title">{active.workspace.name}</h2>
+            <p className="profile-card-meta">
+              <code>{active.workspace.slug}</code>
+              {active.workspace.status === 'archived' ? ' · archived' : null}
+              {active.membershipCount > 1 ? (
+                <>
+                  {' · '}
+                  member of {active.membershipCount} workspaces
+                </>
               ) : null}
-            </article>
-          ) : (
-            <article className="profile-card profile-card-empty">
-              <h2 className="profile-card-title">No workspace yet</h2>
+            </p>
+            {showSetupLink ? (
               <p className="profile-card-meta">
-                If you expect to be the platform owner, check that your email
-                matches <code>OWNER_EMAIL</code> in the server config.
+                <Link href="/onboarding">Continue workspace setup</Link>
               </p>
-            </article>
-          )}
+            ) : null}
+          </article>
         </section>
 
-        {signals ? <CockpitGrid signals={signals} /> : null}
+        <CockpitGrid signals={signals} />
 
-        {active ? (
-          <section className="dashboard-modules">
-            <div className="section-header">
-              <h2 className="section-title">Modules</h2>
-              <p className="section-sub">Pick a workspace to dive in.</p>
-            </div>
-            <div className="module-tile-grid">
-              {visibleModules.map((m) => {
-                const Icon = m.icon;
-                const toneClass = m.tone ? `module-tile-${m.tone}` : '';
-                return (
-                  <Link
-                    key={m.href}
-                    href={m.href}
-                    className={`module-tile ${toneClass}`.trim()}
-                  >
-                    <div className="module-tile-icon">
-                      <Icon aria-hidden="true" />
-                    </div>
-                    <div className="module-tile-body">
-                      <h3>{m.title}</h3>
-                      <p>{m.blurb}</p>
-                    </div>
-                    <ArrowRight className="module-tile-arrow" aria-hidden="true" />
-                  </Link>
-                );
-              })}
-            </div>
-          </section>
-        ) : null}
+        <section className="dashboard-modules">
+          <div className="section-header">
+            <h2 className="section-title">Modules</h2>
+            <p className="section-sub">Pick a workspace to dive in.</p>
+          </div>
+          <div className="module-tile-grid">
+            {visibleModules.map((m) => {
+              const Icon = m.icon;
+              const toneClass = m.tone ? `module-tile-${m.tone}` : '';
+              return (
+                <Link
+                  key={m.href}
+                  href={m.href}
+                  className={`module-tile ${toneClass}`.trim()}
+                >
+                  <div className="module-tile-icon">
+                    <Icon aria-hidden="true" />
+                  </div>
+                  <div className="module-tile-body">
+                    <h3>{m.title}</h3>
+                    <p>{m.blurb}</p>
+                  </div>
+                  <ArrowRight className="module-tile-arrow" aria-hidden="true" />
+                </Link>
+              );
+            })}
+          </div>
+        </section>
       </div>
     </AppShell>
   );

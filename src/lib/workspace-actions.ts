@@ -1,8 +1,11 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 import { auth } from './auth';
-import { setActiveWorkspace } from './services/workspace';
+import { isNextRedirectError } from './server-redirect';
+import { WorkspaceServiceError, setActiveWorkspace } from './services/workspace';
+import { createFirstWorkspace } from './services/workspace-provisioning';
 import { isSuperAdmin } from './services/context';
 
 /**
@@ -25,4 +28,32 @@ export async function setActiveWorkspaceAction(workspaceIdRaw: string): Promise<
   // shell as well as every page below it.
   revalidatePath('/', 'layout');
   void isSuperAdmin;
+}
+
+/**
+ * "Create your workspace" on the no-workspace screen (/dashboard,
+ * ia:F-07). The service allows it once, for an active user who belongs
+ * to no workspace, and validates the name. On success the new owner goes
+ * straight into the setup wizard; a refusal comes back to the screen as
+ * a readable message.
+ */
+export async function createFirstWorkspaceAction(formData: FormData): Promise<void> {
+  const session = await auth();
+  if (!session?.user?.id) redirect('/');
+  if (session.user.accountStatus !== 'active' && session.user.role !== 'super_admin') {
+    redirect('/pending');
+  }
+  const name = formData.get('name');
+  try {
+    await createFirstWorkspace(session.user.id, {
+      name: typeof name === 'string' ? name : '',
+    });
+  } catch (err) {
+    if (isNextRedirectError(err)) throw err;
+    if (err instanceof WorkspaceServiceError) {
+      redirect(`/dashboard?error=${encodeURIComponent(err.message)}`);
+    }
+    throw err;
+  }
+  redirect('/onboarding');
 }

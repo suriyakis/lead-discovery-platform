@@ -6,6 +6,7 @@ import { SettingsNav } from '@/components/SettingsNav';
 import { ProviderModelPair } from '@/components/ProviderModelPair';
 import { auth } from '@/lib/auth';
 import {
+  AccountInactiveError,
   AuthRequiredError,
   NoWorkspaceError,
   getWorkspaceContext,
@@ -117,16 +118,8 @@ export default async function IntegrationsPage({
       !!process.env[PERPLEXITY_ENV] && process.env[PERPLEXITY_ENV]!.trim() !== '';
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) {
-      return (
-        <AppShell>
-            <h1>Integrations</h1>
-            <section>
-              <p>You don&apos;t belong to a workspace yet.</p>
-            </section>
-          </AppShell>
-      );
-    }
+    if (err instanceof AccountInactiveError) redirect('/pending');
+    if (err instanceof NoWorkspaceError) redirect('/dashboard');
     throw err;
   }
 

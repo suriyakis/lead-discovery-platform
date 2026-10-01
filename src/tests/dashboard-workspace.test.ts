@@ -236,12 +236,14 @@ describe('/dashboard onboarding redirect', () => {
     expect(html).not.toContain('Continue workspace setup');
   });
 
-  it('a user with no workspace sees the empty card instead of an error', async () => {
+  it('a user with no workspace gets the no-workspace screen instead of an error', async () => {
     const loner = await seedUser({ email: 'loner@test.local' });
     await signInAs(loner);
 
+    // The screen itself is covered in no-workspace.test.ts (ia:F-07).
     const html = await renderDashboard();
-    expect(html).toContain('No workspace yet');
+    expect(html).toContain('Create your workspace');
+    expect(html).not.toContain('OWNER_EMAIL');
     expect(pendingReviewSignal(html)).toBeNull();
   });
 });

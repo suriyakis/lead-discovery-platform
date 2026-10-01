@@ -34,7 +34,7 @@ export default async function MembersPage({
     if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
+    if (err instanceof NoWorkspaceError) redirect('/dashboard');
     throw err;
   }
 

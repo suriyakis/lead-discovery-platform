@@ -41,7 +41,7 @@ export default async function BillingPage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
+    if (err instanceof NoWorkspaceError) redirect('/dashboard');
     throw err;
   }
 

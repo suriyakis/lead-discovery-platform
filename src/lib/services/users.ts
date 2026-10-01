@@ -28,6 +28,7 @@ import {
   isSuperAdmin,
   type WorkspaceContext,
 } from './context';
+import { applyPreauthorization } from './workspace-provisioning';
 
 export class UserServiceError extends Error {
   public readonly code: string;
@@ -113,12 +114,25 @@ export async function listAllUsers(
 
 export interface PreauthorizeInput {
   email: string;
-  /** Workspace to drop the user into on first signin. Optional. */
+  /**
+   * The workspace to drop the user into. null or absent means "their own
+   * new workspace": they get a workspace they own (unless they already
+   * have one), never zero memberships (audit I117).
+   */
   workspaceId?: bigint | null;
-  /** Role they should land at. Defaults to 'member'. */
+  /** Role in the named workspace. Defaults to 'member'; with no
+   *  workspace they become the owner of their own. */
   role?: WorkspaceMemberRole;
 }
 
+/**
+ * Put an email on the allow-list. Someone who signs up with it later is
+ * handled at first sign-in (workspace-provisioning.ts provisionOnSignIn).
+ * When the account already exists, the entry is applied now: the account
+ * is activated, the membership (or their own workspace) is created and
+ * the entry is marked consumed. Before audit I117 that path only
+ * activated the account, and the entry stayed unconsumed for good.
+ */
 export async function preauthorizeEmail(
   ctx: WorkspaceContext,
   input: PreauthorizeInput,
@@ -126,66 +140,92 @@ export async function preauthorizeEmail(
   if (!isSuperAdmin(ctx)) throw denied('users.preauthorize');
   const email = normalizeEmail(input.email);
   if (!EMAIL_RE.test(email)) throw invalid('invalid email');
+  const workspaceId = input.workspaceId ?? null;
+  const role: WorkspaceMemberRole =
+    workspaceId === null ? 'owner' : parseMemberRole(input.role ?? 'member');
 
-  // Idempotent: re-preauthorizing the same email replaces the prior
-  // unconsumed entry.
-  await db
-    .delete(preauthorizedEmails)
-    .where(
-      and(
-        eq(preauthorizedEmails.email, email),
-        isNull(preauthorizedEmails.consumedAt),
-      ),
-    );
+  const { entry, existingUserId } = await db.transaction(async (tx) => {
+    if (workspaceId !== null) {
+      const [target] = await tx
+        .select({ status: workspaces.status })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+      if (!target) throw notFound('workspace');
+      if (target.status !== 'active') throw invalid('that workspace is archived');
+    }
 
-  const [created] = await db
-    .insert(preauthorizedEmails)
-    .values({
+    // Re-preauthorizing an email replaces its earlier entry, consumed or
+    // not (email is unique, and the audit log keeps the history).
+    await tx.delete(preauthorizedEmails).where(eq(preauthorizedEmails.email, email));
+
+    const [created] = await tx
+      .insert(preauthorizedEmails)
+      .values({
+        email,
+        workspaceId: workspaceId?.toString() ?? null,
+        role,
+        createdBy: ctx.userId,
+      })
+      .returning();
+    if (!created) {
+      throw new UserServiceError(
+        'preauthorize insert returned no row',
+        'invariant_violation',
+      );
+    }
+
+    // Locked like createFirstWorkspace locks it, so the two cannot both
+    // give this user a workspace of their own.
+    const [existing] = await tx
+      .select({ id: users.id, accountStatus: users.accountStatus })
+      .from(users)
+      .where(sql`lower(${users.email}) = ${email}`)
+      .limit(1)
+      .for('no key update');
+    if (!existing) return { entry: created, existingUserId: null };
+
+    // The account already exists: apply the entry now.
+    if (existing.accountStatus !== 'active') {
+      await tx
+        .update(users)
+        .set({
+          accountStatus: 'active',
+          accountStatusUpdatedAt: new Date(),
+          accountStatusUpdatedBy: ctx.userId,
+        })
+        .where(eq(users.id, existing.id));
+    }
+    await applyPreauthorization(tx, {
+      userId: existing.id,
       email,
-      workspaceId: input.workspaceId ? input.workspaceId.toString() : null,
-      role: input.role ?? 'member',
-      createdBy: ctx.userId,
-    })
-    .returning();
-  if (!created) {
-    throw new UserServiceError(
-      'preauthorize insert returned no row',
-      'invariant_violation',
-    );
-  }
+      entry: created,
+      actorUserId: ctx.userId,
+    });
+    const [consumed] = await tx
+      .select()
+      .from(preauthorizedEmails)
+      .where(eq(preauthorizedEmails.id, created.id))
+      .limit(1);
+    return { entry: consumed ?? created, existingUserId: existing.id };
+  });
+
   await recordAuditEvent(
     { workspaceId: ctx.workspaceId, userId: ctx.userId },
     {
       kind: 'user.preauthorize',
       entityType: 'preauthorized_email',
-      entityId: created.id,
+      entityId: entry.id,
       payload: {
         email,
-        workspaceId: input.workspaceId?.toString() ?? null,
-        role: input.role ?? 'member',
+        workspaceId: workspaceId?.toString() ?? null,
+        role,
+        appliedToExistingUser: existingUserId,
       },
     },
   );
 
-  // If the user already exists (and signed in before being pre-approved),
-  // lift them to active right away.
-  const existing = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
-  if (existing[0] && existing[0].accountStatus !== 'active') {
-    await db
-      .update(users)
-      .set({
-        accountStatus: 'active',
-        accountStatusUpdatedAt: new Date(),
-        accountStatusUpdatedBy: ctx.userId,
-      })
-      .where(eq(users.id, existing[0].id));
-  }
-
-  return created;
+  return entry;
 }
 
 export async function listPreauthorizedEmails(

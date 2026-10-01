@@ -51,16 +51,7 @@ export default async function UsagePage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) {
-      return (
-        <AppShell>
-            <h1>Usage</h1>
-            <section>
-              <p>You don&apos;t belong to a workspace yet.</p>
-            </section>
-          </AppShell>
-      );
-    }
+    if (err instanceof NoWorkspaceError) redirect('/dashboard');
     throw err;
   }
 
