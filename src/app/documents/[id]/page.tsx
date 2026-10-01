@@ -166,7 +166,8 @@ export default async function DocumentDetail({
               {/* A plain link to the authenticated download route. Not
                   next/link: it would prefetch the API route. The response
                   is an attachment, so the browser saves the file and stays
-                  on this page. */}
+                  on this page; a failed download redirects back here (or
+                  to /documents) with the reason as ?error=. */}
               <a href={url} className="primary-btn">
                 Download {document.filename}
               </a>

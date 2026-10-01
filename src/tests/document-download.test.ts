@@ -89,16 +89,32 @@ async function uploadPdf(f: Fixture, filename = 'Cennik zażółć 2026.pdf') {
   return r.document;
 }
 
-function getDocumentDownload(id: string): Promise<Response> {
-  return downloadDocument(new Request(`http://app.test/api/documents/${id}/download`), {
+/** Headers of a browser following a link (a same-tab navigation). */
+const NAVIGATION: Record<string, string> = {
+  'sec-fetch-mode': 'navigate',
+  accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+};
+
+function getDocumentDownload(id: string, headers: Record<string, string> = {}): Promise<Response> {
+  return downloadDocument(new Request(`http://app.test/api/documents/${id}/download`, { headers }), {
     params: Promise.resolve({ id }),
   });
 }
 
-function getCsvExport(file: string): Promise<Response> {
-  return downloadCsvExport(new Request(`http://app.test/api/crm/exports/${file}`), {
+function getCsvExport(file: string, headers: Record<string, string> = {}): Promise<Response> {
+  return downloadCsvExport(new Request(`http://app.test/api/crm/exports/${file}`, { headers }), {
     params: Promise.resolve({ file }),
   });
+}
+
+/** A 303's target, split into path and decoded query. */
+function seeOtherTarget(res: Response): { path: string; error: string | null } {
+  expect(res.status).toBe(303);
+  const location = res.headers.get('location') ?? '';
+  // Relative, so the public host behind the proxy is kept.
+  expect(location.startsWith('/')).toBe(true);
+  const url = new URL(location, 'http://app.test');
+  return { path: url.pathname, error: url.searchParams.get('error') };
 }
 
 async function renderDocumentPage(id: bigint): Promise<string> {
@@ -231,6 +247,114 @@ describe('GET /api/documents/[id]/download', () => {
     // The operator still gets the key in the server log.
     expect(logged.mock.calls.flat().join(' ')).toContain(doc.storageKey);
     logged.mockRestore();
+  });
+});
+
+// ============ a browser following a failed Download link ================
+//
+// The links are same-tab, so a JSON error body would replace the page.
+// Browser navigations are sent back to a page with the reason instead;
+// fetch() keeps the JSON (every test above sends no navigation headers).
+
+describe('failed downloads send a browser back to a page', () => {
+  it('archived: back to the document with the reason', async () => {
+    const f = await setup();
+    const doc = await uploadPdf(f);
+    await archiveDocument(ctx(f.workspaceA, f.ownerA), doc.id);
+    signInAs(f.ownerA);
+
+    const target = seeOtherTarget(await getDocumentDownload(doc.id.toString(), NAVIGATION));
+    expect(target.path).toBe(`/documents/${doc.id}`);
+    expect(target.error).toBe('This document is archived. Restore it to download it.');
+  });
+
+  it('bytes gone: back to the document, never the storage key', async () => {
+    const f = await setup();
+    const doc = await uploadPdf(f);
+    await storage.delete(doc.storageKey);
+    signInAs(f.ownerA);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await getDocumentDownload(doc.id.toString(), NAVIGATION);
+
+    logged.mockRestore();
+    const target = seeOtherTarget(res);
+    expect(target.path).toBe(`/documents/${doc.id}`);
+    expect(target.error).toMatch(/stored file for this document is missing/);
+    expect(res.headers.get('location')).not.toContain(doc.storageKey);
+  });
+
+  it("another workspace's document (a switch in another tab): back to the list", async () => {
+    const f = await setup();
+    const doc = await uploadPdf(f);
+    signInAs(f.ownerB);
+
+    const target = seeOtherTarget(await getDocumentDownload(doc.id.toString(), NAVIGATION));
+    expect(target.path).toBe('/documents');
+    expect(target.error).toMatch(/not in your current workspace/);
+    // Same answer as an id that never existed or does not parse.
+    for (const id of [(doc.id + 1000n).toString(), 'abc']) {
+      expect(seeOtherTarget(await getDocumentDownload(id, NAVIGATION))).toEqual(target);
+    }
+  });
+
+  it('signed out goes to sign-in, an inactive account to /pending', async () => {
+    const f = await setup();
+    const doc = await uploadPdf(f);
+    expect(seeOtherTarget(await getDocumentDownload(doc.id.toString(), NAVIGATION))).toEqual({
+      path: '/',
+      error: null,
+    });
+    signInAs(f.ownerA, 'pending');
+    expect(seeOtherTarget(await getDocumentDownload(doc.id.toString(), NAVIGATION)).path).toBe(
+      '/pending',
+    );
+  });
+
+  it('an Accept: text/html request without Sec-Fetch-Mode counts as a navigation', async () => {
+    const f = await setup();
+    const doc = await uploadPdf(f);
+    await archiveDocument(ctx(f.workspaceA, f.ownerA), doc.id);
+    signInAs(f.ownerA);
+
+    const res = await getDocumentDownload(doc.id.toString(), { accept: 'text/html' });
+    expect(seeOtherTarget(res).path).toBe(`/documents/${doc.id}`);
+    // A fetch() that asks for HTML is still not a navigation.
+    const fetched = await getDocumentDownload(doc.id.toString(), {
+      'sec-fetch-mode': 'cors',
+      accept: 'text/html',
+    });
+    expect(fetched.status).toBe(409);
+  });
+
+  it('a successful navigation still streams the file', async () => {
+    const f = await setup();
+    const doc = await uploadPdf(f);
+    signInAs(f.ownerA);
+
+    const res = await getDocumentDownload(doc.id.toString(), NAVIGATION);
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer()).equals(BINARY)).toBe(true);
+  });
+
+  it('CSV export: a viewer or a stale file goes back to /settings/crm with the reason', async () => {
+    const f = await setup();
+    const exp = await exportLeadsToCsv(ctx(f.workspaceA, f.ownerA), {}, storage);
+
+    signInAs(await addMember(f.workspaceA, 'viewer'));
+    const denied = seeOtherTarget(await getCsvExport(exp.fileName, NAVIGATION));
+    expect(denied).toEqual({
+      path: '/settings/crm',
+      error: 'Your role cannot download lead exports. Ask an admin.',
+    });
+
+    signInAs(f.ownerB);
+    const elsewhere = seeOtherTarget(await getCsvExport(exp.fileName, NAVIGATION));
+    expect(elsewhere.path).toBe('/settings/crm');
+    expect(elsewhere.error).toMatch(/not available in your current workspace/);
+
+    signOut();
+    expect(seeOtherTarget(await getCsvExport(exp.fileName, NAVIGATION)).path).toBe('/');
   });
 });
 
