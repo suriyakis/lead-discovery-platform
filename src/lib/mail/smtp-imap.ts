@@ -87,7 +87,11 @@ export class SmtpImapMailProvider implements IMailProvider {
       })),
     });
 
-    return { messageId: info.messageId, raw: info.response };
+    return {
+      messageId: info.messageId,
+      raw: info.response,
+      rejected: partialRejections(info),
+    };
   }
 
   async fetchInbound(options: FetchInboundOptions = {}): Promise<InboundMessage[]> {
@@ -337,6 +341,26 @@ function collectAddresses(
 
 function addrToString(addr: MailAddress): string {
   return addr.name ? `"${addr.name.replace(/"/g, '\\"')}" <${addr.address}>` : addr.address;
+}
+
+/** flow:F-05 — nodemailer accepts a message when at least one recipient
+ *  passed RCPT TO and lists the refused ones (with the server's reply) on
+ *  `rejectedErrors`. Surface them so the service can tell a non-existent
+ *  address from a delivered one. */
+function partialRejections(info: unknown): SendResult['rejected'] {
+  const errors = (info as { rejectedErrors?: unknown }).rejectedErrors;
+  if (!Array.isArray(errors) || errors.length === 0) return undefined;
+  const out: NonNullable<SendResult['rejected']>[number][] = [];
+  for (const raw of errors) {
+    const e = (raw ?? {}) as { recipient?: unknown; responseCode?: unknown; response?: unknown };
+    if (typeof e.recipient !== 'string') continue;
+    out.push({
+      address: e.recipient,
+      responseCode: typeof e.responseCode === 'number' ? e.responseCode : null,
+      response: typeof e.response === 'string' ? e.response : null,
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function explain(err: unknown): string {

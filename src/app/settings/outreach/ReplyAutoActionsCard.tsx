@@ -19,7 +19,7 @@ const ROWS: ReadonlyArray<{ key: ReplyAutoActionKey; title: string; sub: string 
     key: 'autoSuppressUnsubscribe',
     title: 'Suppress the sender on an unsubscribe reply',
     sub:
-      'When a reply to one of your emails asks to unsubscribe, add its sender to the suppression list and close their lead. Newsletters and other mail that is not a reply to you never trigger this. People who click the unsubscribe link in your emails are always suppressed, whatever this says.',
+      'When a reply to one of your emails asks to unsubscribe, add its sender to the suppression list and close their lead. Newsletters and other mail that is not a reply to you never trigger this. People who unsubscribe with the link in your outreach emails (and confirm on its page) are always suppressed, whatever this says.',
   },
   {
     key: 'autoSuppressBounce',

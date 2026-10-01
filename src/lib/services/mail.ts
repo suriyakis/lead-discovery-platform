@@ -38,9 +38,14 @@ import {
 } from './imap-backoff';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
-import { buildProviderFor } from './mailbox';
+import { buildProviderFor, markMailboxFailing } from './mailbox';
 import { attachContact, upsertContact } from './contacts';
 import { isSuppressed, recordBounce } from './suppression';
+import {
+  classifySmtpError,
+  hardRejectedFromPartial,
+  isRecipientHardBounceText,
+} from '@/lib/mail/smtp-errors';
 import {
   defaultSignature,
   renderSignatureHtml,
@@ -82,7 +87,32 @@ const suppressed = (addr: string) =>
 
 // ---- send ----------------------------------------------------------
 
+/**
+ * flow:F-05 (I089) — what kind of mail this is.
+ *   one_to_one → a person writing to a person: compose, thread replies,
+ *                drafts answering a prospect's reply. No bulk unsubscribe
+ *                footer and no List-Unsubscribe headers.
+ *   sequence   → outreach the platform sends on the operator's behalf:
+ *                cold first touches and follow-ups. Carries the visible
+ *                unsubscribe footer plus RFC 8058 List-Unsubscribe(-Post).
+ * Required on every send so no caller gets either behaviour by accident.
+ */
+export type SendMode = 'one_to_one' | 'sequence';
+
+/** Mode of an already-sent / failed message, read back from the headers
+ *  it was built with (only sequence mail carries List-Unsubscribe). */
+export function sendModeFromHeaders(headers: unknown): SendMode {
+  if (headers && typeof headers === 'object') {
+    for (const key of Object.keys(headers as Record<string, unknown>)) {
+      if (key.toLowerCase() === 'list-unsubscribe') return 'sequence';
+    }
+  }
+  return 'one_to_one';
+}
+
 export interface SendMailInput {
+  /** flow:F-05 — see SendMode. */
+  mode: SendMode;
   mailboxId: bigint;
   to: ReadonlyArray<MailAddress>;
   cc?: ReadonlyArray<MailAddress>;
@@ -191,27 +221,32 @@ export async function sendMessage(
 
   // Phase 35: RFC 8058 one-click unsubscribe. Same trackingToken doubles
   // as the unsubscribe token (workspace-scoped, single-use, opaque). The
-  // public route lives at /api/unsubscribe/<token> and adds the
-  // recipient address(es) to the suppression list.
-  const unsubUrl = `${appUrl}/api/unsubscribe/${trackingToken}`;
-  const unsubMailto = `mailto:${mailbox.fromAddress}?subject=unsubscribe`;
-  // Two-value List-Unsubscribe: HTTPS first (preferred by Gmail/Yahoo),
-  // mailto: as a fallback for old clients. Plus List-Unsubscribe-Post
-  // for the one-click POST handshake (RFC 8058).
-  headers['List-Unsubscribe'] = `<${unsubUrl}>, <${unsubMailto}>`;
-  headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+  // public route lives at /api/unsubscribe/<token>: GET shows a
+  // confirmation page, only POST records the opt-out (flow:F-05).
+  // flow:F-05: sequence mail only — a one-to-one message (compose, a
+  // thread reply) is personal correspondence and carries neither the
+  // headers nor the bulk footer.
+  if (input.mode === 'sequence') {
+    const unsubUrl = `${appUrl}/api/unsubscribe/${trackingToken}`;
+    const unsubMailto = `mailto:${mailbox.fromAddress}?subject=unsubscribe`;
+    // Two-value List-Unsubscribe: HTTPS first (preferred by Gmail/Yahoo),
+    // mailto: as a fallback for old clients. Plus List-Unsubscribe-Post
+    // for the one-click POST handshake (RFC 8058).
+    headers['List-Unsubscribe'] = `<${unsubUrl}>, <${unsubMailto}>`;
+    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
 
-  // Render a visible unsubscribe footer in the body. CAN-SPAM requires
-  // the link be conspicuous; modern bulk senders also do this for
-  // engagement reasons.
-  // Phase 63: localize the unsubscribe footer to the email's target
-  // language so a foreign-language body doesn't carry an English footer.
-  const footer = getUnsubscribeFooter(input.targetLanguage);
-  const footerText = `\n\n---\n${footer.prompt} ${unsubUrl}`;
-  const footerHtml = `<div dir="${footer.dir}" style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#888;font-family:Arial,sans-serif"><a href="${unsubUrl}" style="color:#888;text-decoration:underline">${footer.unsubscribe}</a></div>`;
-  outboundText = (outboundText ?? '') + footerText;
-  if (outboundHtml) {
-    outboundHtml = outboundHtml + footerHtml;
+    // Render a visible unsubscribe footer in the body. CAN-SPAM requires
+    // the link be conspicuous; modern bulk senders also do this for
+    // engagement reasons.
+    // Phase 63: localize the unsubscribe footer to the email's target
+    // language so a foreign-language body doesn't carry an English footer.
+    const footer = getUnsubscribeFooter(input.targetLanguage);
+    const footerText = `\n\n---\n${footer.prompt} ${unsubUrl}`;
+    const footerHtml = `<div dir="${footer.dir}" style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#888;font-family:Arial,sans-serif"><a href="${unsubUrl}" style="color:#888;text-decoration:underline">${footer.unsubscribe}</a></div>`;
+    outboundText = (outboundText ?? '') + footerText;
+    if (outboundHtml) {
+      outboundHtml = outboundHtml + footerHtml;
+    }
   }
 
   const out: OutboundMessage = {
@@ -226,43 +261,33 @@ export async function sendMessage(
     headers,
   };
 
+  const attempted = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])].map(
+    (a) => a.address,
+  );
+
   let sendResult;
   try {
     sendResult = await provider.send(out);
   } catch (err) {
-    // Phase 17: SMTP-layer rejection that includes a 5xx response triggers
-    // an auto-bounce-suppress. nodemailer surfaces an `responseCode` on
-    // the error object; we match conservatively to avoid suppressing on
-    // transient network errors.
+    // flow:F-05 (I007): classify before suppressing. Only a recipient the
+    // server refused at RCPT TO as non-existent / disabled is suppressed
+    // (source smtp). Our own failures — a refused login, a dead
+    // connection, a 4xx, a policy or relay refusal — never touch the
+    // recipient; a refused login marks the mailbox failing instead.
     const e = err as { responseCode?: number; message?: string };
     const responseCode = e?.responseCode ?? null;
-    if (responseCode && responseCode >= 500 && responseCode < 600) {
-      for (const recipient of input.to) {
-        try {
-          await recordBounce(ctx, recipient.address, 'hard', e.message ?? null);
-        } catch {
-          // best-effort
-        }
-      }
-    } else if (responseCode && responseCode >= 400 && responseCode < 500) {
-      for (const recipient of input.to) {
-        try {
-          await recordBounce(ctx, recipient.address, 'soft', e.message ?? null);
-        } catch {
-          // best-effort
-        }
-      }
-    }
+    const failure = classifySmtpError(err, attempted);
+    let failedRowId: bigint | null = null;
     // P61-08: persist the failure as a mail_messages row so it lands in
     // the Errors folder AND so future bounce-loop detection has the
     // history to count against. We never let the persistence fail bubble
     // up — the send already threw and that contract is preserved.
     try {
       const failureReason = e?.message ?? (err instanceof Error ? err.message : String(err));
+      // 'bounced' is reserved for a recipient hard rejection; isHardBounce
+      // (and so Retry) relies on that.
       const failedStatus: MailMessage['status'] =
-        responseCode && responseCode >= 500 && responseCode < 600
-          ? 'bounced'
-          : 'failed';
+        failure.kind === 'recipient_hard' ? 'bounced' : 'failed';
       const primaryAddress = input.to[0]?.address ?? null;
       const isLoop =
         primaryAddress !== null &&
@@ -304,7 +329,11 @@ export async function sendMessage(
         spamReason: isLoop ? 'bounce_loop' : null,
         createdBy: ctx.userId,
       };
-      await db.insert(mailMessages).values(failedRow);
+      const [failedInserted] = await db
+        .insert(mailMessages)
+        .values(failedRow)
+        .returning({ id: mailMessages.id });
+      failedRowId = failedInserted?.id ?? null;
       await touchThread(failedThread.id);
       if (isLoop) {
         await recordAuditEvent(ctx, {
@@ -319,8 +348,37 @@ export async function sendMessage(
     } catch (persistErr) {
       console.error('[mail.send] failed to persist failure row:', persistErr);
     }
+
+    for (const address of failure.hardRejectedRecipients) {
+      try {
+        await recordBounce(
+          ctx,
+          address,
+          'hard',
+          (e?.message ?? null)?.slice(0, 1000) ?? null,
+          failedRowId ? `mail_message:${failedRowId}` : null,
+        );
+      } catch (bounceErr) {
+        console.error('[mail.send] bounce suppression failed:', bounceErr);
+      }
+    }
+    if (failure.kind === 'auth') {
+      try {
+        await markMailboxFailing(ctx, mailbox.id, {
+          protocol: 'smtp',
+          message: e?.message ?? String(err),
+        });
+      } catch (markErr) {
+        console.error('[mail.send] could not mark the mailbox failing:', markErr);
+      }
+    }
     throw err;
   }
+
+  // flow:F-05: the server accepted the message but refused some
+  // recipients. A refusal that says the address does not exist suppresses
+  // that address only; anything else is left alone.
+  const partialHard = hardRejectedFromPartial(sendResult.rejected, attempted);
 
   // Resolve / create thread.
   const thread = await ensureThread(ctx, mailbox.id, {
@@ -395,15 +453,42 @@ export async function sendMessage(
     }
   }
 
+  for (const address of partialHard) {
+    try {
+      const rejection = sendResult.rejected?.find(
+        (r) => r.address.trim().toLowerCase() === address,
+      );
+      await recordBounce(
+        ctx,
+        address,
+        'hard',
+        rejection?.response?.slice(0, 1000) ?? null,
+        `mail_message:${created.id}`,
+      );
+    } catch (bounceErr) {
+      console.error('[mail.send] bounce suppression failed:', bounceErr);
+    }
+  }
+
   await recordAuditEvent(ctx, {
     kind: 'mail.send',
     entityType: 'mail_message',
     entityId: created.id,
     payload: {
       mailboxId: mailbox.id.toString(),
+      mode: input.mode,
       to: input.to.map((a) => a.address),
       threadId: thread.id.toString(),
       sourceDraftId: input.sourceDraftId?.toString() ?? null,
+      ...(sendResult.rejected && sendResult.rejected.length > 0
+        ? {
+            rejected: sendResult.rejected.map((r) => ({
+              address: r.address,
+              response: r.response,
+              suppressed: partialHard.includes(r.address.trim().toLowerCase()),
+            })),
+          }
+        : {}),
     },
   });
 
@@ -1554,20 +1639,21 @@ export async function detectBounceLoop(
 
 // ---- retry (P61-07) ------------------------------------------------
 
-const HARD_BOUNCE_RE = /\b5\d{2}\b/;
-
 /** A message is "hard bounced" if either:
- *    - its status is 'bounced' (which is only set by the DSN parser on
- *      a permanent receiver-side rejection), or
- *    - its failureReason carries an SMTP 5xx response code.
- *  Hard bounces are not retryable — the receiving server has actively
- *  refused delivery and re-sending will just bounce again. */
+ *    - its status is 'bounced' (since flow:F-05 only set when the
+ *      receiving server refused a recipient as non-existent / disabled), or
+ *    - it failed and its failureReason reads as such a refusal (enhanced
+ *      status 5.1.x / 5.2.1, or 550-class "user unknown" wording).
+ *  Hard bounces are not retryable — re-sending will just bounce again.
+ *  Any other 5xx (a refused SMTP login, a relay or policy refusal) is the
+ *  sender's problem and stays retryable once it is fixed. */
 export function isHardBounce(msg: {
   status: MailMessage['status'];
   failureReason: string | null;
 }): boolean {
   if (msg.status === 'bounced') return true;
-  return msg.failureReason ? HARD_BOUNCE_RE.test(msg.failureReason) : false;
+  if (msg.status !== 'failed') return false;
+  return isRecipientHardBounceText(msg.failureReason);
 }
 
 export interface RetryResult {
@@ -1621,6 +1707,8 @@ export async function retrySend(
     }
     try {
       await sendMessage(ctx, {
+        // flow:F-05: a retry keeps the original's kind of mail.
+        mode: sendModeFromHeaders(original.headers),
         mailboxId: original.mailboxId,
         to: original.toAddresses.map((address) => ({ address })),
         cc: original.ccAddresses.map((address) => ({ address })),

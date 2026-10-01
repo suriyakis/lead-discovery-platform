@@ -1,4 +1,5 @@
-// Localized unsubscribe footer appended to every outbound email. Static
+// Localized unsubscribe footer appended to every sequence email (cold
+// first touches and follow-ups — flow:F-05; one-to-one mail has none). Static
 // strings (no AI call, deterministic) keyed by ISO language, falling back
 // to English. The footer language follows the email's target language so a
 // foreign-language body doesn't carry an English footer.

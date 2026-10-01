@@ -37,6 +37,13 @@ export interface SendResult {
   messageId: string;
   /** Provider raw response for audit. */
   raw?: string;
+  /** flow:F-05 — recipients the server refused while accepting the
+   *  message for the others (per-recipient RCPT TO replies). */
+  rejected?: ReadonlyArray<{
+    address: string;
+    responseCode: number | null;
+    response: string | null;
+  }>;
 }
 
 export interface InboundMessage {

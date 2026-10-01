@@ -705,23 +705,27 @@ function deriveDomain(email: string): string | null {
 }
 
 /**
- * Auto-suppress on bounce. Called from the mail-send error path when the
- * SMTP layer returns a 5xx (hard bounce) or persistent 4xx (soft bounce).
- * Hard bounces have no TTL; soft bounces expire in 7 days so the address
- * can be retried later without manual intervention. F-03: a soft bounce
- * never weakens a stronger row (an opt-out stays an opt-out, no expiry).
+ * Auto-suppress on bounce. Called from the mail-send path (flow:F-05) only
+ * when the receiving server refused this recipient at RCPT TO as
+ * non-existent / disabled — never for a sender-side failure (refused
+ * login, connection, 4xx, policy). Hard bounces have no TTL; soft bounces
+ * expire in 7 days. F-03: a soft bounce never weakens a stronger row (an
+ * opt-out stays an opt-out, no expiry). `sourceRef` points at the
+ * evidence, e.g. the failed `mail_message:<id>`.
  */
 export async function recordBounce(
   ctx: WorkspaceContext,
   email: string,
   kind: 'hard' | 'soft' = 'hard',
   detail: string | null = null,
+  sourceRef: string | null = null,
 ): Promise<SuppressionEntry> {
   return addSuppression(ctx, {
     kind: 'email',
     value: email,
     reason: kind === 'hard' ? 'bounce_hard' : 'bounce_soft',
     source: 'smtp',
+    sourceRef,
     note: detail,
     expiresAt:
       kind === 'soft'

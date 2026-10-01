@@ -5,12 +5,23 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Languages } from 'lucide-react';
 import { translateComposeAction, sendComposeAction } from './actions';
+import { SIGNATURE_DEFAULT, SIGNATURE_NONE } from './compose-input';
+
+interface SignatureOption {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
 
 interface Props {
   mailboxId: string;
   initialTo: string;
   initialSubject: string;
   initialBody: string;
+  /** Signatures available for this mailbox; the chosen one is appended
+   *  once, on send (flow:F-05). */
+  signatures: ReadonlyArray<SignatureOption>;
+  defaultSignatureName: string | null;
   languageOptions: ReadonlyArray<{ code: string; name: string }>;
   /** Language the operator writes in; translating to it is a no-op. */
   nativeLanguage: string;
@@ -23,6 +34,8 @@ export function ComposeForm({
   initialTo,
   initialSubject,
   initialBody,
+  signatures,
+  defaultSignatureName,
   languageOptions,
   nativeLanguage,
   cancelHref,
@@ -34,6 +47,7 @@ export function ComposeForm({
   const [bcc, setBcc] = useState('');
   const [subject, setSubject] = useState(initialSubject);
   const [body, setBody] = useState(initialBody);
+  const [signature, setSignature] = useState(SIGNATURE_DEFAULT);
   const [target, setTarget] = useState('');
   const [tSubject, setTSubject] = useState('');
   const [tBody, setTBody] = useState('');
@@ -79,6 +93,7 @@ export function ComposeForm({
       translatedSubject: shown ? tSubject : '',
       translatedBody: shown ? tBody : '',
       draftId,
+      signature,
     });
     if (res.ok) {
       router.push(res.threadId ? `/communication/${res.threadId}` : '/mailbox');
@@ -114,7 +129,7 @@ export function ComposeForm({
         />
       </label>
       <label>
-        <span>Message</span>
+        <span>Message — the signature below is added when you send</span>
         <textarea
           value={body}
           onChange={(e) => onNativeChange(setBody, e.target.value)}
@@ -122,6 +137,24 @@ export function ComposeForm({
           maxLength={50000}
           required
         />
+      </label>
+
+      <label>
+        <span>Signature</span>
+        <select value={signature} onChange={(e) => setSignature(e.target.value)}>
+          <option value={SIGNATURE_DEFAULT}>
+            {defaultSignatureName
+              ? `Mailbox default (${defaultSignatureName})`
+              : 'Mailbox default (none set — no signature)'}
+          </option>
+          <option value={SIGNATURE_NONE}>No signature</option>
+          {signatures.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+              {s.isDefault ? ' (default)' : ''}
+            </option>
+          ))}
+        </select>
       </label>
 
       <label>

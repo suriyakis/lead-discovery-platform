@@ -660,6 +660,7 @@ describe('sendMessage', () => {
     const provider = new MockMailProvider();
 
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com', name: 'Target' }],
       subject: 'Glass tender Q3',
@@ -682,6 +683,7 @@ describe('sendMessage', () => {
     });
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
+        mode: 'sequence',
         mailboxId: mb.id,
         to: [{ address: 'lead@target.com' }],
         subject: 'Re: Glass tender Q3',
@@ -698,6 +700,7 @@ describe('sendMessage', () => {
     const provider = new MockMailProvider();
 
     const first = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Tender Q3',
@@ -705,6 +708,7 @@ describe('sendMessage', () => {
       providerOverride: provider,
     });
     const second = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Re: Tender Q3',
@@ -724,6 +728,7 @@ describe('sendMessage', () => {
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA, 'viewer'), {
+        mode: 'sequence',
         mailboxId: mb.id,
         to: [{ address: 'lead@target.com' }],
         subject: 'x',
@@ -739,6 +744,7 @@ describe('sendMessage', () => {
     await archiveMailbox(ctx(s.workspaceA, s.ownerA), mb.id);
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
+        mode: 'sequence',
         mailboxId: mb.id,
         to: [{ address: 'lead@target.com' }],
         subject: 'x',
@@ -863,6 +869,7 @@ describe('listThreads + getThread + getMessage', () => {
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'one@x.com' }],
       subject: 'one',
@@ -871,6 +878,7 @@ describe('listThreads + getThread + getMessage', () => {
     });
     await new Promise((r) => setTimeout(r, 5));
     const second = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'two@x.com' }],
       subject: 'two',
@@ -887,6 +895,7 @@ describe('listThreads + getThread + getMessage', () => {
     const s = await setup();
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'x@x.com' }],
       subject: 'x',
@@ -904,6 +913,7 @@ describe('isolation', () => {
     const s = await setup();
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'x@x.com' }],
       subject: 'x',
@@ -1058,6 +1068,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
 
     // Three threads via sendMessage (creates mail_threads rows).
     const a = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead-a@target.com' }],
       subject: 'Lead A',
@@ -1065,6 +1076,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
       providerOverride: provider,
     });
     const b = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead-b@target.com' }],
       subject: 'Lead B',
@@ -1072,6 +1084,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
       providerOverride: provider,
     });
     const c = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'random-c@target.com' }],
       subject: 'Random C',
@@ -1121,6 +1134,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'x@y.com' }],
       subject: 'no filter',
@@ -1139,6 +1153,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     const mb2 = await makeMailbox(s, s.workspaceA, s.ownerA, 'mb2');
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb1.id,
       to: [{ address: 'x@y.com' }],
       subject: 'in mb1',
@@ -1745,9 +1760,19 @@ describe('isHardBounce (P61-07)', () => {
     expect(isHardBounce({ status: 'bounced', failureReason: '450 try later' })).toBe(true);
   });
 
-  it('failureReason with a 5xx code → hard bounce', () => {
+  it('failureReason that says the recipient does not exist → hard bounce', () => {
     expect(isHardBounce({ status: 'failed', failureReason: '550 user unknown' })).toBe(true);
-    expect(isHardBounce({ status: 'failed', failureReason: 'SMTP error: 554 transaction failed' })).toBe(true);
+    expect(
+      isHardBounce({ status: 'failed', failureReason: '550 Recipient command failed: 550 5.1.1 <a@x.com>: user unknown' }),
+    ).toBe(true);
+  });
+
+  it('flow:F-05 — a sender-side 5xx stays retryable', () => {
+    // A refused login, a generic transaction failure or a policy refusal
+    // is ours to fix, not the recipient's.
+    expect(isHardBounce({ status: 'failed', failureReason: '535 Invalid login: 535 5.7.8 authentication failed' })).toBe(false);
+    expect(isHardBounce({ status: 'failed', failureReason: 'SMTP error: 554 transaction failed' })).toBe(false);
+    expect(isHardBounce({ status: 'failed', failureReason: '550 5.7.1 Relaying denied' })).toBe(false);
   });
 
   it('failureReason without a 5xx code → not hard bounce', () => {
@@ -2075,12 +2100,24 @@ describe('detectBounceLoop (P61-08)', () => {
 
 describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
   class AlwaysFailingProvider extends MockMailProvider {
-    constructor(private code: number = 550, private detail = 'mailbox unavailable') {
+    constructor(
+      private code: number = 550,
+      private detail = 'mailbox unavailable',
+      private command: string | null = null,
+    ) {
       super();
     }
     async send(_message: import('@/lib/mail').OutboundMessage): Promise<import('@/lib/mail').SendResult> {
-      const err = new Error(this.detail) as Error & { responseCode: number };
+      const err = new Error(this.detail) as Error & {
+        responseCode: number;
+        command?: string;
+        response?: string;
+      };
       err.responseCode = this.code;
+      if (this.command) {
+        err.command = this.command;
+        err.response = this.detail;
+      }
       throw err;
     }
   }
@@ -2100,9 +2137,14 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
   it('persists a failed mail_messages row when SMTP send throws', async () => {
     const s = await setup();
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
-    const provider = new AlwaysFailingProvider(550, 'rejected');
+    const provider = new AlwaysFailingProvider(
+      550,
+      '550 5.1.1 <broken@test.com>: Recipient address rejected: User unknown',
+      'RCPT TO',
+    );
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
+        mode: 'sequence',
         mailboxId: mb.id,
         to: [{ address: 'broken@test.com' }],
         subject: 'attempt 1',
@@ -2110,14 +2152,38 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
         providerOverride: provider,
       }),
     ).rejects.toThrow();
-    // 5xx → status 'bounced'.
+    // flow:F-05: a RCPT-stage "user unknown" → status 'bounced'.
     const errorsRows = await listMessages(ctx(s.workspaceA, s.ownerA), {
       mailboxId: mb.id,
       folder: 'errors',
     });
     expect(errorsRows).toHaveLength(1);
     expect(errorsRows[0]!.message.status).toBe('bounced');
-    expect(errorsRows[0]!.message.failureReason).toMatch(/rejected/);
+    expect(errorsRows[0]!.message.failureReason).toMatch(/User unknown/);
+  });
+
+  it('flow:F-05 — a 5xx that is not a recipient rejection persists as failed', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
+    // A bare 550 with no SMTP stage is not attributable to the recipient.
+    const provider = new AlwaysFailingProvider(550, 'rejected');
+    await expect(
+      sendMessage(ctx(s.workspaceA, s.ownerA), {
+        mode: 'sequence',
+        mailboxId: mb.id,
+        to: [{ address: 'broken@test.com' }],
+        subject: 'attempt 1',
+        text: 'body',
+        providerOverride: provider,
+      }),
+    ).rejects.toThrow();
+    const errorsRows = await listMessages(ctx(s.workspaceA, s.ownerA), {
+      mailboxId: mb.id,
+      folder: 'errors',
+    });
+    expect(errorsRows).toHaveLength(1);
+    expect(errorsRows[0]!.message.status).toBe('failed');
+    expect(errorsRows[0]!.message.failureReason).toMatch(/^550 rejected/);
   });
 
   it('non-5xx send error persists as status=failed (not bounced)', async () => {
@@ -2127,6 +2193,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
     const provider = new TransportErrorProvider();
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
+        mode: 'sequence',
         mailboxId: mb.id,
         to: [{ address: 'someone@test.com' }],
         subject: 'attempt',
@@ -2149,6 +2216,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
     for (let i = 0; i < BOUNCE_LOOP_THRESHOLD; i++) {
       await expect(
         sendMessage(ctx(s.workspaceA, s.ownerA), {
+          mode: 'sequence',
           mailboxId: mb.id,
           to: [{ address: 'loop@test.com' }],
           subject: `try ${i + 1}`,
@@ -2177,6 +2245,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
     for (const addr of ['alice@test.com', 'alice@test.com', 'bob@test.com', 'bob@test.com']) {
       await expect(
         sendMessage(ctx(s.workspaceA, s.ownerA), {
+          mode: 'sequence',
           mailboxId: mb.id,
           to: [{ address: addr }],
           subject: 'mixed',

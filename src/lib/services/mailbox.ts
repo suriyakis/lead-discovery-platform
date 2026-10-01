@@ -2,7 +2,7 @@
 // workspace_secrets, connection testing, and a builder that hands the
 // outreach service a ready IMailProvider per mailbox.
 
-import { and, desc, eq, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import {
@@ -12,6 +12,7 @@ import {
   type NewMailbox,
 } from '@/lib/db/schema/mailing';
 import { recordAuditEvent } from './audit';
+import { notify } from './notifications';
 import {
   canAdminWorkspace,
   canWrite,
@@ -408,6 +409,100 @@ export async function pauseMailbox(
     entityId: id,
   });
   return updated;
+}
+
+// ---- failure (flow:F-05, shared with F-04) --------------------------
+
+/** Default cooldown before the IMAP tick may look at a failing mailbox. */
+export const MAILBOX_FAILING_RETRY_MS = 60 * 60 * 1000;
+
+export interface MailboxFailure {
+  /** Which side failed; prefixes lastError ("SMTP: …" / "IMAP: …") the
+   *  same way testMailboxConnection does. */
+  protocol: 'smtp' | 'imap';
+  /** The server's / library's message. */
+  message: string;
+  /** Next IMAP attempt; defaults to now + MAILBOX_FAILING_RETRY_MS. */
+  nextSyncAfter?: Date;
+}
+
+export interface MarkMailboxFailingResult {
+  /** False when the mailbox is paused / archived / gone — left untouched. */
+  marked: boolean;
+  /** True when this call created the (deduped) notification. */
+  notified: boolean;
+}
+
+/**
+ * Mark a mailbox as failing after a credential / configuration failure
+ * that is ours, not a recipient's (send-time EAUTH today; the IMAP
+ * auto-pause in F-04). Sets status 'failing', lastError and a non-null
+ * imap_next_sync_after — also when the mailbox is already failing, so a
+ * repeat failure refreshes the error and the backoff — and raises one
+ * 'mailbox.failing' notification per mailbox (deduped while unread).
+ *
+ * A paused or archived mailbox keeps its status: those are operator
+ * decisions and nothing is sent through them anyway.
+ */
+export async function markMailboxFailing(
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  mailboxId: bigint,
+  failure: MailboxFailure,
+): Promise<MarkMailboxFailingResult> {
+  const label = failure.protocol === 'smtp' ? 'SMTP' : 'IMAP';
+  const lastError = `${label}: ${failure.message}`.slice(0, 2000);
+  const nextSyncAfter =
+    failure.nextSyncAfter ?? new Date(Date.now() + MAILBOX_FAILING_RETRY_MS);
+
+  const prior = (
+    await db
+      .select({ status: mailboxes.status })
+      .from(mailboxes)
+      .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
+      .limit(1)
+  )[0];
+
+  const [updated] = await db
+    .update(mailboxes)
+    .set({
+      status: 'failing',
+      lastError,
+      imapNextSyncAfter: nextSyncAfter,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mailboxes.workspaceId, ctx.workspaceId),
+        eq(mailboxes.id, mailboxId),
+        inArray(mailboxes.status, ['active', 'failing']),
+      ),
+    )
+    .returning();
+  if (!updated) return { marked: false, notified: false };
+
+  if (prior?.status !== 'failing') {
+    await recordAuditEvent(ctx, {
+      kind: 'mailbox.marked_failing',
+      entityType: 'mailbox',
+      entityId: mailboxId,
+      payload: { protocol: failure.protocol, lastError, priorStatus: prior?.status ?? null },
+    });
+  }
+
+  const howToFix =
+    failure.protocol === 'smtp'
+      ? 'The mail server refused the SMTP login, so nothing can be sent from it. ' +
+        'No recipient was suppressed; queued mail and follow-ups wait. ' +
+        'Fix the password under Edit settings, then click Reactivate.'
+      : 'Inbound mail is not being read. Fix the IMAP settings under Edit settings, then click Reactivate.';
+  const row = await notify(ctx.workspaceId, {
+    kind: 'mailbox.failing',
+    title: `Mailbox "${updated.name}" is failing`,
+    body: `${howToFix} Last error — ${lastError}`,
+    href: `/mailbox/${mailboxId}`,
+    dedupeKey: `mailbox.failing:${mailboxId}`,
+  });
+  return { marked: true, notified: row !== null };
 }
 
 // ---- read ----------------------------------------------------------

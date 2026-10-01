@@ -2,8 +2,9 @@
 // append-only pipeline_events log. All mutations route here so transitions,
 // validations, and audit happen in exactly one place.
 
-import { and, asc, desc, eq, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ne, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import { auditLog } from '@/lib/db/schema/audit';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import { reviewItems, type ReviewItem } from '@/lib/db/schema/review';
 import {
@@ -233,6 +234,80 @@ export async function transition(
   });
 
   return updated;
+}
+
+/**
+ * flow:F-05 (I012) — the recipient opted out through the public
+ * unsubscribe link: close every open lead whose current target is that
+ * address (current_contact_email, else contact_email). There is no
+ * signed-in actor — the recipient clicked a link — so the pipeline event
+ * and the audit row carry a null user and name the source in the payload.
+ * Closing is a forward move from every state. Returns the closed ids.
+ */
+export async function closeLeadsForRecipient(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  address: string,
+  input: { closeReason: CloseReason; closeNote: string; payload?: Record<string, unknown> },
+): Promise<bigint[]> {
+  const normalized = address.trim().toLowerCase();
+  if (!normalized) return [];
+  const open = await db
+    .select({ id: qualifiedLeads.id, state: qualifiedLeads.state })
+    .from(qualifiedLeads)
+    .where(
+      and(
+        eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+        ne(qualifiedLeads.state, 'closed'),
+        sql`lower(coalesce(${qualifiedLeads.currentContactEmail}, ${qualifiedLeads.contactEmail})) = ${normalized}`,
+      ),
+    );
+
+  const closed: bigint[] = [];
+  for (const lead of open) {
+    const now = new Date();
+    const [updated] = await db
+      .update(qualifiedLeads)
+      .set({
+        state: 'closed',
+        closedAt: now,
+        closeReason: input.closeReason,
+        closeNote: input.closeNote,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+          eq(qualifiedLeads.id, lead.id),
+          ne(qualifiedLeads.state, 'closed'),
+        ),
+      )
+      .returning({ id: qualifiedLeads.id });
+    if (!updated) continue;
+    closed.push(lead.id);
+    const payload = {
+      ...(input.payload ?? {}),
+      forced: false,
+      closeReason: input.closeReason,
+    };
+    await db.insert(pipelineEvents).values({
+      workspaceId: ctx.workspaceId,
+      qualifiedLeadId: lead.id,
+      fromState: lead.state,
+      toState: 'closed',
+      eventKind: 'transition',
+      payload,
+      actorUserId: null,
+    });
+    await db.insert(auditLog).values({
+      workspaceId: ctx.workspaceId,
+      userId: null,
+      kind: 'pipeline.transition',
+      entityType: 'qualified_lead',
+      entityId: lead.id.toString(),
+      payload: { ...payload, from: lead.state, to: 'closed' },
+    });
+  }
+  return closed;
 }
 
 // ---- contact / assign / notes --------------------------------------

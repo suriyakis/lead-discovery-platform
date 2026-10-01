@@ -131,6 +131,7 @@ describe('scheduleFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -182,6 +183,7 @@ describe('scheduleFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -226,6 +228,7 @@ describe('scheduleFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -264,6 +267,7 @@ describe('cancelFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -319,6 +323,7 @@ describe('sendMessage auto-schedule trigger (P58)', () => {
 
     // Send first — no lead link yet.
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -352,6 +357,7 @@ describe('sendMessage auto-schedule trigger (P58)', () => {
       stage: 'discovery',
     });
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Re: Hi',
@@ -428,6 +434,7 @@ describe('processDueFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -500,6 +507,7 @@ describe('processDueFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -554,6 +562,7 @@ describe('processDueFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -623,6 +632,7 @@ describe('processDueFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -695,6 +705,7 @@ describe('processDueFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -783,6 +794,7 @@ describe('processDueFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -851,6 +863,7 @@ describe('processDueFollowUps (P58)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',

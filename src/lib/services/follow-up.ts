@@ -13,9 +13,9 @@
 // Cancellation is preferred over deletion so the operator can see the
 // schedule history on the Follow-ups tab.
 
-import { and, asc, desc, eq, isNull, lte, ne, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { mailMessages, mailThreads } from '@/lib/db/schema/mailing';
+import { mailMessages, mailThreads, mailboxes } from '@/lib/db/schema/mailing';
 import {
   outreachFollowUps,
   type FollowUpSkipReason,
@@ -33,6 +33,8 @@ import {
   type ThreadMessage,
 } from './outreach-engine';
 import { sendMessage } from './mail';
+import { isSuppressed } from './suppression';
+import { classifySmtpError } from '@/lib/mail/smtp-errors';
 import { prepareOutboundDualBody } from './language-resolution';
 import { getWorkspaceNativeLanguage } from './workspace';
 import type { IMailProvider } from '@/lib/mail';
@@ -295,6 +297,51 @@ export async function cancelFollowUps(
 }
 
 /**
+ * flow:F-05 (I012) — the recipient opted out: cancel every follow-up that
+ * would still mail them, pending or awaiting approval — on the thread the
+ * opt-out came from, and on every lead whose contact is this address
+ * (follow-ups are sent to the lead's contact email). Rows are kept as
+ * 'skipped' for the history. Returns the cancelled ids; the caller audits.
+ */
+export async function cancelFollowUpsForRecipient(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  input: { address: string; threadId?: bigint | null },
+  reason: FollowUpSkipReason,
+): Promise<bigint[]> {
+  const normalized = input.address.trim().toLowerCase();
+  const scope: SQL[] = [];
+  if (input.threadId) scope.push(eq(outreachFollowUps.threadId, input.threadId));
+  if (normalized) {
+    const leads = await db
+      .select({ id: qualifiedLeads.id })
+      .from(qualifiedLeads)
+      .where(
+        and(
+          eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+          sql`lower(${qualifiedLeads.contactEmail}) = ${normalized}`,
+        ),
+      );
+    if (leads.length > 0) {
+      scope.push(inArray(outreachFollowUps.qualifiedLeadId, leads.map((l) => l.id)));
+    }
+  }
+  if (scope.length === 0) return [];
+  const now = new Date();
+  const rows = await db
+    .update(outreachFollowUps)
+    .set({ status: 'skipped', skipReason: reason, processedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(outreachFollowUps.workspaceId, ctx.workspaceId),
+        inArray(outreachFollowUps.status, ['pending', 'awaiting_approval']),
+        or(...scope),
+      ),
+    )
+    .returning({ id: outreachFollowUps.id });
+  return rows.map((r) => r.id);
+}
+
+/**
  * Worker entry — process every pending follow-up whose scheduled_for has
  * passed for this workspace. Returns counts for the tick telemetry log.
  *
@@ -353,8 +400,20 @@ export async function processDueFollowUps(
       if (verdict === 'sent') sent++;
       else if (verdict === 'skipped') skipped++;
     } catch (err) {
-      failed++;
       const msg = err instanceof Error ? err.message : String(err);
+      // flow:F-05: a refused SMTP login is the mailbox's problem
+      // (sendMessage marked it failing). Leave the step pending; the
+      // failing-mailbox hold in processOne keeps it from retrying until
+      // the mailbox is fixed.
+      if (classifySmtpError(err, []).kind === 'auth') {
+        skipped++;
+        await db
+          .update(outreachFollowUps)
+          .set({ lastError: msg.slice(0, 2000), updatedAt: new Date() })
+          .where(eq(outreachFollowUps.id, row.id));
+        continue;
+      }
+      failed++;
       await db
         .update(outreachFollowUps)
         .set({
@@ -438,6 +497,13 @@ async function processOne(
     return 'skipped';
   }
 
+  // flow:F-05 (I012): never compose (and pay for) a follow-up to an
+  // address that has opted out or hard-bounced since the schedule began.
+  if (await isSuppressed(ctx, lead.contactEmail)) {
+    await cancelFollowUps(ctx, row.threadId, 'suppressed');
+    return 'skipped';
+  }
+
   const [thread] = await db
     .select()
     .from(mailThreads)
@@ -445,6 +511,23 @@ async function processOne(
     .limit(1);
   if (!thread) {
     await cancelFollowUps(ctx, row.threadId, 'manual_cancel');
+    return 'skipped';
+  }
+
+  // flow:F-05: the thread's mailbox is failing (a refused SMTP login, or
+  // the IMAP auto-pause) — leave the step pending: no compose, no send
+  // attempt. It goes out on a later tick once the mailbox is reactivated.
+  const [mailbox] = await db
+    .select({ status: mailboxes.status })
+    .from(mailboxes)
+    .where(
+      and(
+        eq(mailboxes.workspaceId, ctx.workspaceId),
+        eq(mailboxes.id, thread.mailboxId),
+      ),
+    )
+    .limit(1);
+  if (mailbox?.status === 'failing') {
     return 'skipped';
   }
 
@@ -565,6 +648,9 @@ async function processOne(
     nativeBody: verdict.body,
   });
   const sent = await sendMessage(ctx, {
+    // flow:F-05: follow-ups belong to the outreach sequence — they keep
+    // the unsubscribe footer and List-Unsubscribe headers.
+    mode: 'sequence',
     mailboxId: thread.mailboxId,
     to: [
       {
@@ -721,6 +807,9 @@ export async function approveFollowUp(
     targetLanguage = dual.targetLanguage;
   }
   const sent = await sendMessage(ctx, {
+    // flow:F-05: follow-ups belong to the outreach sequence — they keep
+    // the unsubscribe footer and List-Unsubscribe headers.
+    mode: 'sequence',
     mailboxId: thread.mailboxId,
     to: [
       {
