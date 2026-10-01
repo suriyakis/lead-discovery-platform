@@ -83,7 +83,11 @@ describe('describeActionError', () => {
       [OutreachServiceError, TokenError],
     );
     expect(tokens.code).toBe('insufficient_tokens');
-    expect(tokens.message).toMatch(/buy a token pack/);
+    // Members and managers hit this too, and only admins can buy: the copy
+    // must not tell them to do something they can't.
+    expect(tokens.message).toBe(
+      'No tokens left — a workspace admin can buy a token pack in Settings → Billing.',
+    );
 
     expect(
       describeActionError(new ReviewServiceError('review_item not found', 'not_found'), [

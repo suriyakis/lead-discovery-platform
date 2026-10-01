@@ -59,8 +59,10 @@ export const MAX_FLASH_LENGTH = 300;
 export const DEFAULT_ACTION_MESSAGES: Readonly<Record<string, string>> = {
   permission_denied:
     "You don't have permission to do that. Ask a workspace admin if you need it.",
+  // Role-neutral: the people who hit this (members and managers clicking
+  // Generate draft or Run now) can't buy — only workspace admins can.
   insufficient_tokens:
-    'No tokens left — buy a token pack in Settings → Billing to continue.',
+    'No tokens left — a workspace admin can buy a token pack in Settings → Billing.',
   not_found: 'That item no longer exists — it may have been removed in the meantime.',
   conflict:
     'That item changed in the meantime, so nothing was done. Reload the page to see its current state.',

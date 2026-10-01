@@ -227,7 +227,8 @@ export async function assertTokens(
   if (wallet.billingExempt) return;
   if (wallet.balance <= 0n) {
     throw new TokenError(
-      'No tokens left — buy a token pack in Settings → Billing to continue.',
+      // Role-neutral: whoever hits the gate may not be allowed to buy.
+      'No tokens left — a workspace admin can buy a token pack in Settings → Billing.',
       'insufficient_tokens',
     );
   }

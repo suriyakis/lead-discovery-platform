@@ -3,7 +3,7 @@
 // "Run now" on the recipe detail page. It used to rethrow everything but
 // ConnectorServiceError, so an empty token wallet (TokenError from the
 // prepaid gate in startRun) crashed into Next's error page instead of
-// showing the "buy a token pack" message the service already wrote (I078).
+// showing the "No tokens left" message (I078).
 
 import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';

@@ -216,7 +216,8 @@ describe('review detail actions', () => {
       reviewActions.generateDraftAction(s.itemId.toString(), form({ productId: '1', method: 'rules' })),
     );
     expect(to.pathname).toBe(`/review/${s.itemId}`);
-    expect(to.searchParams.get('error')).toMatch(/No tokens left.*token pack/);
+    // A member can't buy tokens — the flash points them at an admin.
+    expect(to.searchParams.get('error')).toMatch(/No tokens left.*workspace admin can buy a token pack/);
     expect(await db.select().from(outreachDrafts)).toHaveLength(0);
   });
 
@@ -280,7 +281,7 @@ describe('recipe Run now', () => {
       recipeActions.runRecipeNowAction(s.connectorId.toString(), s.recipeId.toString()),
     );
     expect(to.pathname).toBe(`/connectors/${s.connectorId}/recipes/${s.recipeId}`);
-    expect(to.searchParams.get('error')).toMatch(/No tokens left.*token pack/);
+    expect(to.searchParams.get('error')).toMatch(/No tokens left.*workspace admin can buy a token pack/);
     expect(await runCount(s.ws)).toBe(before);
   });
 
