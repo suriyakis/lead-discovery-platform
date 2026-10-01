@@ -2,8 +2,9 @@
 // qualified_leads into a CRM via the configured ICRMConnector. CSV exports
 // are bundled and dropped into IStorage so the UI can offer a download link.
 
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import type { Readable } from 'node:stream';
 import { db } from '@/lib/db/client';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import {
@@ -42,7 +43,11 @@ import {
   type ICRMConnector,
   type SyncResult,
 } from '@/lib/crm';
-import { getStorage, type IStorage } from '@/lib/storage';
+import {
+  StorageObjectNotFoundError,
+  getStorage,
+  type IStorage,
+} from '@/lib/storage';
 
 export class CrmServiceError extends Error {
   public readonly code: string;
@@ -63,6 +68,11 @@ const invalid = (msg: string) =>
   new CrmServiceError(msg, 'invalid_input');
 const conflict = (msg: string) =>
   new CrmServiceError(msg, 'conflict');
+const archivedConnection = () =>
+  new CrmServiceError(
+    'This connection is archived. Restore it before testing it.',
+    'archived',
+  );
 
 const SUPPORTED_SYSTEMS = new Set(['csv', 'hubspot']);
 
@@ -189,6 +199,37 @@ export async function archiveCrmConnection(
   return updated;
 }
 
+/**
+ * Undo an archive: the connection becomes active again and its last
+ * error is cleared (the next test or push sets the real status). A
+ * connection that is not archived is returned unchanged, so a repeated
+ * click is harmless and writes no audit event.
+ */
+export async function restoreCrmConnection(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<CrmConnection> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('crm.restore_connection');
+  const [restored] = await db
+    .update(crmConnections)
+    .set({ status: 'active', lastError: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(crmConnections.workspaceId, ctx.workspaceId),
+        eq(crmConnections.id, id),
+        eq(crmConnections.status, 'archived'),
+      ),
+    )
+    .returning();
+  if (!restored) return loadConnection(ctx, id);
+  await recordAuditEvent(ctx, {
+    kind: 'crm.restore_connection',
+    entityType: 'crm_connection',
+    entityId: id,
+  });
+  return restored;
+}
+
 export async function listCrmConnections(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<CrmConnection[]> {
@@ -213,8 +254,21 @@ export async function testCrmConnection(
 ): Promise<{ ok: boolean; detail?: string }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.test');
   const conn = await loadConnection(ctx, id);
-  const connector = connectorOverride ?? (await buildConnector(ctx, conn));
-  const result = await connector.testConnection();
+  // A test used to overwrite the status with active/failing, which
+  // silently un-archived the connection (I115). Archived connections are
+  // not tested; restore first.
+  if (conn.status === 'archived') throw archivedConnection();
+  // A connector that cannot even be built (e.g. HubSpot with no stored
+  // token) is a failed test with a reason, not an unexpected error.
+  let result: { ok: boolean; detail?: string };
+  try {
+    const connector = connectorOverride ?? (await buildConnector(ctx, conn));
+    result = await connector.testConnection();
+  } catch (err) {
+    result = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+  // Guarded on status too, so an archive that lands while the test is
+  // in flight is not undone by the result.
   await db
     .update(crmConnections)
     .set({
@@ -222,7 +276,13 @@ export async function testCrmConnection(
       lastError: result.ok ? null : result.detail ?? 'failed',
       updatedAt: new Date(),
     })
-    .where(eq(crmConnections.id, id));
+    .where(
+      and(
+        eq(crmConnections.workspaceId, ctx.workspaceId),
+        eq(crmConnections.id, id),
+        ne(crmConnections.status, 'archived'),
+      ),
+    );
   return result;
 }
 
@@ -303,7 +363,8 @@ export async function pushLeadToCrm(
   const [entry] = await db.insert(crmSyncLog).values(row).returning();
   if (!entry) throw invariant('crm_sync_log insert returned no row');
 
-  // Update connection status on outcome.
+  // Update connection status on outcome — unless it was archived while
+  // the push was in flight (an archive must not be undone by a result).
   await db
     .update(crmConnections)
     .set({
@@ -312,7 +373,13 @@ export async function pushLeadToCrm(
       lastSyncedAt: result.outcome === 'succeeded' ? new Date() : conn.lastSyncedAt,
       updatedAt: new Date(),
     })
-    .where(eq(crmConnections.id, input.connectionId));
+    .where(
+      and(
+        eq(crmConnections.workspaceId, ctx.workspaceId),
+        eq(crmConnections.id, input.connectionId),
+        ne(crmConnections.status, 'archived'),
+      ),
+    );
 
   // Optional state advance.
   if (
@@ -650,8 +717,31 @@ export interface BulkExportInput {
 export interface BulkExportResult {
   csv: string;
   storageKey: string;
+  /** The export's file name inside this workspace's exports folder. */
+  fileName: string;
+  /** Download link (csvExportDownloadPath) the caller can offer. */
   url: string;
   rowCount: number;
+}
+
+// `leads-<epoch ms>-<8 hex>.csv`, exactly what exportLeadsToCsv writes.
+// Anything else is refused before it can reach a storage key.
+const CSV_EXPORT_FILE_RE = /^leads-\d{1,16}-[0-9a-f]{8}\.csv$/;
+
+/** True for a file name exportLeadsToCsv could have produced. */
+export function isCsvExportFileName(value: unknown): value is string {
+  return typeof value === 'string' && CSV_EXPORT_FILE_RE.test(value);
+}
+
+/** The authenticated download link for a CSV export of the caller's
+ *  workspace. The route re-derives the storage key from the session's
+ *  workspace, so the link is useless outside that workspace. */
+export function csvExportDownloadPath(fileName: string): string {
+  return `/api/crm/exports/${encodeURIComponent(fileName)}`;
+}
+
+function csvExportKey(workspaceId: bigint, fileName: string): string {
+  return `workspaces/${workspaceId}/exports/${fileName}`;
 }
 
 export async function exportLeadsToCsv(
@@ -680,9 +770,9 @@ export async function exportLeadsToCsv(
   const csv = rowsToCsv(records);
 
   const storage = storageOverride ?? getStorage();
-  const key = `workspaces/${ctx.workspaceId}/exports/leads-${Date.now()}-${randomUUID().slice(0, 8)}.csv`;
+  const fileName = `leads-${Date.now()}-${randomUUID().slice(0, 8)}.csv`;
+  const key = csvExportKey(ctx.workspaceId, fileName);
   await storage.put(key, Buffer.from(csv, 'utf8'), { contentType: 'text/csv' });
-  const url = await storage.signedUrl(key, { download: true });
 
   await recordAuditEvent(ctx, {
     kind: 'crm.export_csv',
@@ -695,7 +785,36 @@ export async function exportLeadsToCsv(
     },
   });
 
-  return { csv, storageKey: key, url, rowCount: records.length };
+  return {
+    csv,
+    storageKey: key,
+    fileName,
+    url: csvExportDownloadPath(fileName),
+    rowCount: records.length,
+  };
+}
+
+/**
+ * Stream a CSV export back for GET /api/crm/exports/[file]. Same
+ * permission as creating one. The key is built from ctx.workspaceId, so
+ * another workspace's file name resolves to nothing here: `not_found`,
+ * the same as a name that never existed.
+ */
+export async function streamCsvExport(
+  ctx: WorkspaceContext,
+  fileName: string,
+  storageOverride?: IStorage,
+): Promise<{ fileName: string; stream: Readable }> {
+  if (!canWrite(ctx)) throw permissionDenied('crm.export_csv');
+  if (!isCsvExportFileName(fileName)) throw notFound('csv export');
+  const storage = storageOverride ?? getStorage();
+  try {
+    const stream = await storage.get(csvExportKey(ctx.workspaceId, fileName));
+    return { fileName, stream };
+  } catch (err) {
+    if (err instanceof StorageObjectNotFoundError) throw notFound('csv export');
+    throw err;
+  }
 }
 
 // ---- read ---------------------------------------------------------

@@ -1,5 +1,12 @@
 // Documents service. Wraps IStorage for byte handling, persists metadata,
 // audit-logs every mutation. SHA-256 captured for dedup detection.
+//
+// Browsers download through GET /api/documents/[id]/download, which
+// resolves the WorkspaceContext and streams streamDocument(). The `url`
+// this service hands out is always that route, whatever the storage
+// provider: never file:// (unopenable, and it printed the server path)
+// and never a presigned bucket URL (anyone holding it could fetch the
+// file, under a UUID filename).
 
 import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
@@ -14,6 +21,7 @@ import {
 import { recordAuditEvent } from './audit';
 import {
   canAdminWorkspace,
+  canRead,
   canWrite,
   type WorkspaceContext,
 } from './context';
@@ -42,6 +50,11 @@ const conflict = (msg: string) =>
 const MAX_NAME_LEN = 200;
 const MAX_TAGS = 32;
 
+/** The authenticated, workspace-checked download link for a document. */
+export function documentDownloadPath(id: bigint): string {
+  return `/api/documents/${id}/download`;
+}
+
 // ---- upload ---------------------------------------------------------
 
 export interface UploadDocumentInput {
@@ -56,7 +69,7 @@ export interface UploadDocumentInput {
 
 export interface UploadDocumentResult {
   document: Document;
-  /** Pre-signed URL or file:// URL the caller can offer for download. */
+  /** Download link (documentDownloadPath) the caller can offer. */
   url: string;
   /** True when the exact same bytes already existed in the workspace —
    *  `document` is then the EXISTING row and nothing new was stored. */
@@ -99,8 +112,11 @@ export async function uploadDocument(
     .orderBy(desc(documents.createdAt))
     .limit(1);
   if (existing[0]) {
-    const url = await storage.signedUrl(existing[0].storageKey);
-    return { document: existing[0], url, deduplicated: true };
+    return {
+      document: existing[0],
+      url: documentDownloadPath(existing[0].id),
+      deduplicated: true,
+    };
   }
 
   const ext = extractExtension(filename);
@@ -141,8 +157,7 @@ export async function uploadDocument(
     },
   });
 
-  const url = await storage.signedUrl(storageKey);
-  return { document: created, url, deduplicated: false };
+  return { document: created, url: documentDownloadPath(created.id), deduplicated: false };
 }
 
 // ---- read -----------------------------------------------------------
@@ -180,48 +195,35 @@ export async function listDocuments(
     .limit(limit);
 }
 
+/** The document row plus its download link (documentDownloadPath). */
 export async function getDocument(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   id: bigint,
-  storageOverride?: IStorage,
 ): Promise<{ document: Document; url: string }> {
-  const rows = await db
-    .select()
-    .from(documents)
-    .where(
-      and(
-        eq(documents.workspaceId, ctx.workspaceId),
-        eq(documents.id, id),
-      ),
-    )
-    .limit(1);
-  if (!rows[0]) throw notFound();
-  const storage = storageOverride ?? getStorage();
-  const url = await storage.signedUrl(rows[0].storageKey);
-  return { document: rows[0], url };
+  const document = await loadDocument(ctx, id);
+  return { document, url: documentDownloadPath(document.id) };
 }
 
-/** Stream the document bytes back to the caller. */
+/**
+ * Stream the document bytes back to the caller (the download route).
+ * Another workspace's document is `not_found`, exactly like a missing id,
+ * so the response never confirms that it exists. Rejects with the
+ * storage layer's StorageObjectNotFoundError when the row is there but
+ * its bytes are not.
+ */
 export async function streamDocument(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  ctx: WorkspaceContext,
   id: bigint,
   storageOverride?: IStorage,
 ): Promise<{ document: Document; stream: Readable }> {
-  const rows = await db
-    .select()
-    .from(documents)
-    .where(
-      and(
-        eq(documents.workspaceId, ctx.workspaceId),
-        eq(documents.id, id),
-      ),
-    )
-    .limit(1);
-  if (!rows[0]) throw notFound();
-  if (rows[0].status === 'archived') throw conflict('document is archived');
+  if (!canRead(ctx)) throw permissionDenied('document.download');
+  const document = await loadDocument(ctx, id);
+  if (document.status === 'archived') {
+    throw conflict('document is archived; restore it to download');
+  }
   const storage = storageOverride ?? getStorage();
-  const stream = await storage.get(rows[0].storageKey);
-  return { document: rows[0], stream };
+  const stream = await storage.get(document.storageKey);
+  return { document, stream };
 }
 
 // ---- mutate ---------------------------------------------------------

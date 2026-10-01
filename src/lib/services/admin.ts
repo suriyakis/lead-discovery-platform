@@ -2,7 +2,7 @@
 // canSuperAdmin(ctx) before doing anything; failure to do so is the same
 // security mistake as forgetting workspace_id in a query.
 
-import { and, count, desc, eq, isNull, sql, sum, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNull, lt, lte, sql, sum, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users, type User } from '@/lib/db/schema/auth';
 import {
@@ -633,9 +633,10 @@ export async function updateUserProfile(
 }
 
 /**
- * Super-admin add: drop a user into any workspace at any role. Bypasses
- * the workspace-admin gate that the regular `users.addMember` enforces,
- * and accepts `owner` as a role (the regular path doesn't).
+ * Super-admin add: drop a user into any workspace at any role. Unlike
+ * the regular `users.addMember`, it needs no membership in the target
+ * workspace (the regular path acts on ctx.workspaceId and lets only
+ * owners grant `owner`).
  */
 export async function adminAddUserToWorkspace(
   ctx: WorkspaceContext,
@@ -682,7 +683,7 @@ export async function adminAddUserToWorkspace(
 }
 
 /**
- * Super-admin set-member-role. The regular workspace.ts setMemberRole
+ * Super-admin set-member-role. The regular role change in users.ts
  * scopes the query by ctx.workspaceId — that's wrong when a super-admin
  * is editing a workspace they don't belong to. This variant takes the
  * target workspaceId explicitly.
@@ -1208,7 +1209,10 @@ export interface AuditAcrossWorkspacesFilter {
   workspaceId?: bigint;
   kind?: string;
   since?: Date;
+  /** Inclusive upper bound. */
   until?: Date;
+  /** Exclusive upper bound: what a minute-precision "Until" input needs. */
+  before?: Date;
   limit?: number;
 }
 
@@ -1222,12 +1226,12 @@ export async function listAuditAcrossWorkspaces(
     conds.push(eq(auditLog.workspaceId, filter.workspaceId));
   }
   if (filter.kind) conds.push(eq(auditLog.kind, filter.kind));
-  if (filter.since) {
-    conds.push(sql`${auditLog.createdAt} >= ${filter.since}`);
-  }
-  if (filter.until) {
-    conds.push(sql`${auditLog.createdAt} <= ${filter.until}`);
-  }
+  // gte/lte encode the Date through the column. A Date inside a raw sql``
+  // template reaches postgres.js unencoded and crashes the query
+  // (src/tests/sql-date-binding.test.ts guards against that).
+  if (filter.since) conds.push(gte(auditLog.createdAt, filter.since));
+  if (filter.until) conds.push(lte(auditLog.createdAt, filter.until));
+  if (filter.before) conds.push(lt(auditLog.createdAt, filter.before));
   const limit = Math.min(filter.limit ?? 100, 1000);
   return db
     .select()

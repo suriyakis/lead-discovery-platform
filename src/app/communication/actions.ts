@@ -21,6 +21,7 @@ import {
   safeSyncOne,
   unmarkSpam,
 } from '@/lib/services/mail';
+import { affectedNote, parseSelectedIds as parseIds, retrySummary } from '@/lib/mail-bulk-actions';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 const FILTER_KEYS = [
@@ -55,26 +56,6 @@ function backToFolderError(formData: FormData, msg: string): never {
   const params = makeRedirectParams(formData);
   params.set('error', msg);
   redirect(`/communication?${params.toString()}`);
-}
-
-function parseIds(formData: FormData): bigint[] {
-  const out: bigint[] = [];
-  for (const raw of formData.getAll('ids')) {
-    const s = String(raw);
-    if (!/^\d+$/.test(s)) continue;
-    try {
-      out.push(BigInt(s));
-    } catch {
-      // skip
-    }
-  }
-  return out;
-}
-
-function affectedNote(verb: string, n: number): string {
-  if (n === 0) return `No messages ${verb} (nothing was selected or eligible).`;
-  if (n === 1) return `1 message ${verb}.`;
-  return `${n} messages ${verb}.`;
 }
 
 export async function trashSelected(formData: FormData): Promise<void> {
@@ -156,23 +137,7 @@ export async function retrySelected(formData: FormData): Promise<void> {
   const c = await getWorkspaceContext();
   const ids = parseIds(formData);
   try {
-    const r = await retrySend(c, ids);
-    const parts: string[] = [];
-    if (r.retried.length > 0)
-      parts.push(
-        r.retried.length === 1
-          ? '1 message resent'
-          : `${r.retried.length} messages resent`,
-      );
-    if (r.skippedHardBounce.length > 0)
-      parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
-    if (r.skippedIneligible.length > 0)
-      parts.push(`${r.skippedIneligible.length} ineligible`);
-    if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);
-    backToFolder(
-      formData,
-      parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.',
-    );
+    backToFolder(formData, retrySummary(await retrySend(c, ids)));
   } catch (err) {
     if (isNextRedirectError(err)) throw err;
     backToFolderError(

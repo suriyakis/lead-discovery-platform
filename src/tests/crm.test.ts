@@ -22,6 +22,7 @@ import {
   listCrmConnections,
   listSyncEntries,
   pushLeadToCrm,
+  restoreCrmConnection,
   testCrmConnection,
   updateCrmConnection,
 } from '@/lib/services/crm';
@@ -221,6 +222,80 @@ describe('crm connection CRUD', () => {
       .from(crmConnections)
       .where(eq(crmConnections.id, c.id));
     expect(reloaded[0]!.status).toBe('active');
+  });
+
+  // ia:F-08 / I115: a test used to overwrite the status with
+  // active/failing, which silently un-archived the connection.
+  it('testCrmConnection refuses an archived connection and leaves it archived', async () => {
+    const s = await setup();
+    const owner = ctx(s.workspaceA, s.ownerA);
+    const c = await createCrmConnection(owner, { system: 'csv', name: 'X' });
+    await archiveCrmConnection(owner, c.id);
+    let called = false;
+    const connector: ICRMConnector = {
+      id: 'fake',
+      async push(): Promise<SyncResult> {
+        throw new Error('not used');
+      },
+      async testConnection() {
+        called = true;
+        return { ok: true };
+      },
+    };
+
+    await expect(testCrmConnection(owner, c.id, connector)).rejects.toMatchObject({
+      code: 'archived',
+    });
+
+    expect(called).toBe(false);
+    const [row] = await db.select().from(crmConnections).where(eq(crmConnections.id, c.id));
+    expect(row!.status).toBe('archived');
+  });
+
+  it('testCrmConnection reports a connector that cannot be built as a failed test', async () => {
+    const s = await setup();
+    const owner = ctx(s.workspaceA, s.ownerA);
+    // HubSpot with no stored token: the connector refuses to build.
+    const c = await createCrmConnection(owner, { system: 'hubspot', name: 'No token' });
+
+    const res = await testCrmConnection(owner, c.id);
+
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/token/);
+    const [row] = await db.select().from(crmConnections).where(eq(crmConnections.id, c.id));
+    expect(row!.status).toBe('failing');
+    expect(row!.lastError).toMatch(/token/);
+  });
+
+  it('restoreCrmConnection makes an archived connection active again (admin-only, workspace-scoped)', async () => {
+    const s = await setup();
+    const owner = ctx(s.workspaceA, s.ownerA);
+    const c = await createCrmConnection(owner, { system: 'csv', name: 'X' });
+    await archiveCrmConnection(owner, c.id);
+    await db
+      .update(crmConnections)
+      .set({ lastError: 'HTTP 401' })
+      .where(eq(crmConnections.id, c.id));
+
+    await expect(
+      restoreCrmConnection(ctx(s.workspaceA, s.ownerA, 'member'), c.id),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+    await expect(
+      restoreCrmConnection(ctx(s.workspaceB, s.ownerB), c.id),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    const restored = await restoreCrmConnection(owner, c.id);
+    expect(restored.status).toBe('active');
+    expect(restored.lastError).toBeNull();
+
+    // Restoring a connection that is not archived changes nothing.
+    await db
+      .update(crmConnections)
+      .set({ status: 'failing', lastError: 'HTTP 500' })
+      .where(eq(crmConnections.id, c.id));
+    const again = await restoreCrmConnection(owner, c.id);
+    expect(again.status).toBe('failing');
+    expect(again.lastError).toBe('HTTP 500');
   });
 });
 

@@ -106,9 +106,12 @@ interface IStorage {
   get(key: string): Promise<Readable>;
   delete(key: string): Promise<void>;
   signedUrl(key: string, options?: SignedUrlOptions): Promise<string>;
+  exists(key: string): Promise<boolean>;
 }
 ```
-Local-filesystem implementation now; S3-compatible (Hetzner Object Storage / B2 / Wasabi / R2) later.
+Local-filesystem implementation (`STORAGE_PROVIDER=local`, used in production today) and an S3-compatible one (Hetzner Object Storage / B2 / Wasabi / R2 / MinIO). `get()` rejects with `StorageObjectNotFoundError` when the key holds nothing.
+
+**Browsers never get a storage URL.** Workspace files go out through authenticated route handlers: they resolve the `WorkspaceContext`, let the owning service find the object inside that workspace, and return `storageDownloadResponse()` (`src/lib/storage/download.ts`: attachment, sanitised filename, `Cache-Control: private, no-store`, `nosniff`). Today those routes are `GET /api/documents/[id]/download` (`streamDocument`, any workspace role) and `GET /api/crm/exports/[file]` (`streamCsvExport`, write roles). A key in another workspace answers 404, the same as a missing one. `LocalFileStorage.signedUrl()` throws `StorageUrlUnavailableError`, because a `file://` path cannot be opened by a browser. S3 presigned URLs stay available for future server-to-server use, but pages do not link to them: a presigned link works for anyone who holds it and carries the UUID key as its filename.
 
 ## API design
 

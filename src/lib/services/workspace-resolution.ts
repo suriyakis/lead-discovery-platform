@@ -2,7 +2,7 @@
 // so tests (and any non-request code path) can exercise the selection
 // logic without importing next-auth.
 
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users } from '@/lib/db/schema/auth';
 import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
@@ -29,7 +29,9 @@ export class NoWorkspaceError extends Error {
  *      mode showed the admin's products/leads while claiming to be in the
  *      target — a cross-tenant confusion bug.) A stale pointer to a
  *      deleted workspace is cleared and falls through.
- *   3. First membership.
+ *   3. The user's oldest membership (workspace_members.created_at, then
+ *      id). Deterministic, so every page, the dashboard and the header
+ *      switcher (listMyWorkspaces marks this same workspace active) agree.
  *
  * Normal users NEVER get branch 2 — a non-member activeWorkspaceId is
  * ignored, preserving the tenant-isolation invariant.
@@ -41,11 +43,17 @@ export async function resolveWorkspaceContextForUser(
   // Phase 23: filter out archived workspaces — they're "off" until a
   // super-admin restores them. super_admin sees archived ones too so the
   // restore action is reachable.
+  //
+  // Oldest membership first (id breaks ties between rows written in one
+  // transaction) so the step-3 fallback is deterministic. With no ORDER
+  // BY, Postgres returned rows in heap order, and the fallback workspace
+  // could differ from one request to the next (audit I042, ia:F-05).
   const memberships = isSuperAdminUser
     ? await db
         .select({ workspaceId: workspaceMembers.workspaceId, role: workspaceMembers.role })
         .from(workspaceMembers)
         .where(eq(workspaceMembers.userId, userId))
+        .orderBy(asc(workspaceMembers.createdAt), asc(workspaceMembers.id))
     : await db
         .select({ workspaceId: workspaceMembers.workspaceId, role: workspaceMembers.role })
         .from(workspaceMembers)
@@ -55,7 +63,8 @@ export async function resolveWorkspaceContextForUser(
             eq(workspaceMembers.userId, userId),
             eq(workspaces.status, 'active'),
           ),
-        );
+        )
+        .orderBy(asc(workspaceMembers.createdAt), asc(workspaceMembers.id));
 
   const userRows = await db
     .select({ activeWorkspaceId: users.activeWorkspaceId })
@@ -101,7 +110,7 @@ export async function resolveWorkspaceContextForUser(
       .where(eq(users.id, userId));
   }
 
-  // 3. First membership.
+  // 3. Oldest membership (see the ORDER BY above).
   if (memberships.length === 0) throw new NoWorkspaceError();
   const first = memberships[0]!;
   return makeWorkspaceContext({

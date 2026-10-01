@@ -296,11 +296,31 @@ export async function resolveProviderKey(
 ): Promise<ResolvedProviderKey | null> {
   const workspaceVal = await getSecret(ctx, secretKey);
   if (workspaceVal) return { key: workspaceVal, source: 'workspace' };
+  const platform = await resolvePlatformProviderKey(secretKey, envVarName);
+  return platform ? { key: platform.key, source: 'platform' } : null;
+}
+
+export interface ResolvedPlatformProviderKey {
+  key: string;
+  /** 'console' = saved on /admin/providers (platform_secrets);
+   *  'env' = the server env var. */
+  source: 'console' | 'env';
+}
+
+/**
+ * Platform-only key resolution: console secret, then the env var. It
+ * never reads a workspace secret, so it answers "what key does every
+ * workspace WITHOUT its own key run on". The /admin/providers checks use
+ * it: resolving through a workspace would let a tenant's BYOK key pass
+ * the test while the platform key is broken (I124).
+ */
+export async function resolvePlatformProviderKey(
+  secretKey: string,
+  envVarName: string,
+): Promise<ResolvedPlatformProviderKey | null> {
   const platformDbVal = await getPlatformSecret(secretKey);
-  if (platformDbVal) return { key: platformDbVal, source: 'platform' };
-  const platformVal = process.env[envVarName];
-  if (platformVal && platformVal.trim().length > 0) {
-    return { key: platformVal.trim(), source: 'platform' };
-  }
+  if (platformDbVal) return { key: platformDbVal, source: 'console' };
+  const envVal = process.env[envVarName]?.trim();
+  if (envVal) return { key: envVal, source: 'env' };
   return null;
 }

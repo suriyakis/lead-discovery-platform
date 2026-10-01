@@ -862,6 +862,118 @@ export function _setAIProviderForTests(provider: IAIProvider | null): void {
   cached = provider;
 }
 
+// ---- platform default (admin console) ------------------------------------
+
+/** The vendors getPlatformAIProvider can build an AI provider for. Their
+ *  key locations come from the shared platform key catalogue. */
+const PLATFORM_AI_VENDORS: ReadonlySet<string> = new Set([
+  'openai',
+  'anthropic',
+  'gemini',
+  'deepseek',
+]);
+
+export interface PlatformAIProviderResolution {
+  /** Vendor the platform tier resolves for the `ai` capability. */
+  vendor: string;
+  /** How it was chosen: console default, AI_PROVIDER env, or auto-detect. */
+  vendorSource: 'platform' | 'env' | 'default';
+  /** Configured model (console, then AI_MODEL env), vendor-compatible.
+   *  undefined = the adapter's built-in default, which `provider.model`
+   *  then names. */
+  configuredModel: string | undefined;
+  /** Where the platform key lives; null for the keyless mock or when the
+   *  platform has no key for the vendor. */
+  keySource: 'console' | 'env' | null;
+  /** Env var that would hold the key (for messages); null for mock. */
+  keyEnvVar: string | null;
+  /** Ready adapter, or null when the vendor needs a key the platform does
+   *  not have. Not metered: there is no workspace to bill. */
+  provider: IAIProvider | null;
+}
+
+/**
+ * The AI provider a workspace WITHOUT its own selection or BYOK key runs
+ * on: platform vendor (console → AI_PROVIDER env → auto-detect), platform
+ * model (console → AI_MODEL env, vendor-compatible, the same resolution
+ * as the /admin/providers status table) and the platform key (console →
+ * env). It takes no context on purpose: the admin console tests the
+ * platform default with it, and the admin's current workspace (its
+ * provider override or BYOK key) must not leak in (I124). For the same
+ * reason it ignores the `_setAIProviderForTests` stub.
+ */
+export async function getPlatformAIProvider(): Promise<PlatformAIProviderResolution> {
+  const { resolvePlatformProvider, resolveTieredModel } = await import(
+    '@/lib/services/provider-settings'
+  );
+  const active = await resolvePlatformProvider('ai', process.env.AI_PROVIDER);
+  const vendor = active.id;
+  const vendorSource = active.source;
+  if (vendor === 'mock') {
+    return {
+      vendor,
+      vendorSource,
+      configuredModel: undefined,
+      keySource: null,
+      keyEnvVar: null,
+      provider: new MockAIProvider(),
+    };
+  }
+  const { platformKeyForVendor } = await import('@/lib/platform-provider-keys');
+  const keyMeta = PLATFORM_AI_VENDORS.has(vendor) ? platformKeyForVendor(vendor) : null;
+  if (!keyMeta) {
+    throw new Error(`Unknown AI provider id from the platform cascade: ${vendor}`);
+  }
+  const configuredModel = await resolveTieredModel('ai', vendor, null, process.env.AI_MODEL);
+  const { resolvePlatformProviderKey } = await import('@/lib/services/secrets');
+  const resolved = await resolvePlatformProviderKey(keyMeta.secretKey, keyMeta.envVar);
+  if (!resolved) {
+    return {
+      vendor,
+      vendorSource,
+      configuredModel,
+      keySource: null,
+      keyEnvVar: keyMeta.envVar,
+      provider: null,
+    };
+  }
+  const apiKey = resolved.key;
+  let provider: IAIProvider;
+  if (vendor === 'openai') {
+    provider = new OpenAIAIProvider({
+      apiKey,
+      model: configuredModel,
+      baseUrl: process.env.OPENAI_BASE_URL,
+    });
+  } else if (vendor === 'anthropic') {
+    provider = new AnthropicAIProvider({
+      apiKey,
+      model: configuredModel,
+      baseUrl: process.env.ANTHROPIC_BASE_URL,
+    });
+  } else if (vendor === 'gemini') {
+    provider = new GeminiAIProvider({
+      apiKey,
+      model: configuredModel,
+      baseUrl: process.env.GEMINI_BASE_URL,
+    });
+  } else {
+    provider = new DeepSeekAIProvider({
+      apiKey,
+      model: configuredModel,
+      baseUrl: process.env.DEEPSEEK_BASE_URL,
+    });
+  }
+  return {
+    vendor,
+    vendorSource,
+    configuredModel,
+    keySource: resolved.source,
+    keyEnvVar: keyMeta.envVar,
+    provider,
+  };
+}
+
 /**
  * Construct a SPECIFIC AI provider regardless of the workspace's
  * selected default. Used by features that need cross-vendor model

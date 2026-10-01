@@ -37,7 +37,7 @@ import {
   researchLead,
 } from '@/lib/services/lead-research';
 import { Languages, Sparkles, Trash2 } from 'lucide-react';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type {
   CloseReason,
   PipelineState,
@@ -96,28 +96,8 @@ export default async function PipelineLeadDetail({
   const recentSyncs = await listSyncEntries(ctx, { leadId: lead.id, limit: 10 });
 
   // Phase 18: surface threads attached to this lead's contact so the user
-  // can pick which thread to push as notes.
-  const leadThreads = await db
-    .select({ thread: mailThreads })
-    .from(mailThreads)
-    .innerJoin(
-      contactAssociations,
-      and(
-        eq(contactAssociations.entityType, 'mail_thread'),
-        sql`${contactAssociations.entityId} = ${mailThreads.id}::text`,
-      ),
-    )
-    .innerJoin(
-      contactAssociations as never,
-      and(
-        eq(contactAssociations.entityType, 'qualified_lead'),
-        sql`${contactAssociations.entityId} = ${lead.id}::text`,
-      ),
-    )
-    .where(eq(mailThreads.workspaceId, ctx.workspaceId))
-    .limit(20);
-  void leadThreads;
-  // Simpler approach: fetch every thread the lead's contact is attached to.
+  // can pick which thread to push as notes: every mail_thread association
+  // whose contact is also associated with this lead.
   const threadAssocs = await db
     .select()
     .from(contactAssociations)

@@ -207,6 +207,12 @@ describe('workspace membership (admin)', () => {
 
   it('cannot demote the last owner', async () => {
     const s = await setup();
+    // The sole owner may not re-role themselves at all, so a super-admin
+    // is the actor that reaches the last-owner guard.
+    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    await expect(
+      setMemberRole(god, s.ownerA, 'admin'),
+    ).rejects.toMatchObject({ code: 'conflict', message: 'cannot demote the last owner' });
     const owner = ctx(s.workspaceA, s.ownerA, 'owner');
     await expect(
       setMemberRole(owner, s.ownerA, 'admin'),

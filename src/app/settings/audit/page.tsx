@@ -2,13 +2,16 @@
 //
 // Shows what changed in this workspace, newest first. Admin-gated. Filters:
 //   - kind (multi-select dropdown of distinct kinds present in this workspace)
-//   - since / until (datetime-local inputs, optional)
+//   - since / until (datetime-local inputs, optional), read in the
+//     viewer's time zone (the form's hidden `tz` field); timestamps are
+//     shown in the same zone
 //   - limit (10..1000)
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
+import { ViewerTimeZoneField } from '@/components/ViewerTimeZoneField';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -21,13 +24,26 @@ import { listAuditEvents } from '@/lib/services/audit';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { users } from '@/lib/db/schema/auth';
+import {
+  formatDateTimeInZone,
+  parseDateTimeLocal,
+  resolveTimeZone,
+  toDateTimeLocalValue,
+  untilExclusiveEnd,
+} from '@/lib/time-zone';
 
 const ALLOWED_LIMITS = [25, 50, 100, 250, 500] as const;
 
 export default async function WorkspaceAuditPage({
   searchParams,
 }: {
-  searchParams: Promise<{ kind?: string; since?: string; until?: string; limit?: string }>;
+  searchParams: Promise<{
+    kind?: string;
+    since?: string;
+    until?: string;
+    tz?: string;
+    limit?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -52,8 +68,13 @@ export default async function WorkspaceAuditPage({
   }
 
   const kindFilter = sp.kind?.trim() || undefined;
-  const since = parseDateInput(sp.since);
-  const until = parseDateInput(sp.until);
+  const requestedZone = resolveTimeZone(sp.tz);
+  const timeZone = requestedZone ?? 'UTC';
+  const since = parseDateTimeLocal(sp.since, timeZone) ?? undefined;
+  const until = parseDateTimeLocal(sp.until, timeZone) ?? undefined;
+  // Until covers its whole minute: the list shows seconds, so "until
+  // 13:00" must keep an event stamped 13:00:40.
+  const before = untilExclusiveEnd(sp.until, timeZone) ?? undefined;
   const limit =
     sp.limit && /^\d+$/.test(sp.limit)
       ? Number(sp.limit)
@@ -65,7 +86,7 @@ export default async function WorkspaceAuditPage({
     listAuditEvents(ctx, {
       kind: kindFilter,
       since,
-      until,
+      before,
       limit: safeLimit,
     }),
     db
@@ -116,7 +137,7 @@ export default async function WorkspaceAuditPage({
           <input
             type="datetime-local"
             name="since"
-            defaultValue={toLocalInput(since)}
+            defaultValue={since ? toDateTimeLocalValue(since, timeZone) : ''}
           />
         </label>
         <label>
@@ -124,7 +145,7 @@ export default async function WorkspaceAuditPage({
           <input
             type="datetime-local"
             name="until"
-            defaultValue={toLocalInput(until)}
+            defaultValue={until ? toDateTimeLocalValue(until, timeZone) : ''}
           />
         </label>
         <label>
@@ -137,8 +158,10 @@ export default async function WorkspaceAuditPage({
             ))}
           </select>
         </label>
+        <ViewerTimeZoneField current={requestedZone} />
         <button type="submit">Apply</button>
       </form>
+      <p className="muted">Times are in {timeZone}.</p>
 
       <section>
         {events.length === 0 ? (
@@ -152,7 +175,9 @@ export default async function WorkspaceAuditPage({
               return (
                 <li key={e.id.toString()}>
                   <div>
-                    <span className="muted">{e.createdAt.toLocaleString()}</span>{' '}
+                    <span className="muted">
+                      {formatDateTimeInZone(e.createdAt, timeZone)}
+                    </span>{' '}
                     <strong>{e.kind}</strong>
                     {e.entityType ? (
                       <span className="muted">
@@ -180,17 +205,4 @@ export default async function WorkspaceAuditPage({
       </section>
     </AppShell>
   );
-}
-
-function parseDateInput(raw: string | undefined): Date | undefined {
-  if (!raw) return undefined;
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
-function toLocalInput(d: Date | undefined): string {
-  if (!d) return '';
-  // datetime-local input expects YYYY-MM-DDTHH:mm — strip timezone.
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

@@ -56,6 +56,8 @@ export default async function DocumentDetail({
 
   const { document, url } = detail;
   const isArchived = document.status === 'archived';
+  // Storage key and checksum are operator detail: admins only.
+  const isAdmin = canAdminWorkspace(ctx);
 
   // Knowledge sources that reference this document
   const allKs = await listKnowledgeSources(ctx, { kind: 'document', limit: 1000 });
@@ -133,15 +135,19 @@ export default async function DocumentDetail({
             </dd>
             <dt>Size</dt>
             <dd>{document.sizeBytes.toLocaleString()} bytes</dd>
-            <dt>SHA-256</dt>
-            <dd>
-              <code>{document.sha256.slice(0, 16)}…</code>
-            </dd>
-            <dt>Storage</dt>
-            <dd>
-              <code>{document.storageProvider}</code>:{' '}
-              <code>{document.storageKey}</code>
-            </dd>
+            {isAdmin ? (
+              <>
+                <dt>SHA-256</dt>
+                <dd>
+                  <code>{document.sha256.slice(0, 16)}…</code>
+                </dd>
+                <dt>Storage</dt>
+                <dd>
+                  <code>{document.storageProvider}</code>:{' '}
+                  <code>{document.storageKey}</code>
+                </dd>
+              </>
+            ) : null}
             <dt>Uploaded</dt>
             <dd>{document.createdAt.toLocaleString()}</dd>
             {document.tags.length > 0 ? (
@@ -156,14 +162,18 @@ export default async function DocumentDetail({
         {!isArchived ? (
           <section>
             <h2>Download</h2>
-            <p className="muted">
-              The link below uses the storage provider&apos;s URL strategy
-              (presigned for S3, file:// for local).
-            </p>
             <p>
-              <a href={url} target="_blank" rel="noreferrer" className="primary-btn">
+              {/* A plain link to the authenticated download route. Not
+                  next/link: it would prefetch the API route. The response
+                  is an attachment, so the browser saves the file and stays
+                  on this page; a failed download redirects back here (or
+                  to /documents) with the reason as ?error=. */}
+              <a href={url} className="primary-btn">
                 Download {document.filename}
               </a>
+            </p>
+            <p className="muted small">
+              The link works only for signed-in members of this workspace.
             </p>
           </section>
         ) : null}
@@ -251,7 +261,7 @@ export default async function DocumentDetail({
           )}
         </section>
 
-        {canAdminWorkspace(ctx) ? (
+        {isAdmin ? (
           <section>
             <h2>Admin</h2>
             {isArchived ? (

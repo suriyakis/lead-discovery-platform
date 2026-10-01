@@ -13,6 +13,7 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { approveReviewItem } from '@/lib/services/review';
 import {
   OnboardingError,
+  claimOnboardingStart,
   getOnboardingState,
   markOnboardingComplete,
   markOnboardingStarted,
@@ -348,11 +349,69 @@ describe('markOnboardingStarted', () => {
       .update(workspaces)
       .set({ onboardingStatus: 'completed' })
       .where(eq(workspaces.id, s.workspaceA));
-    await markOnboardingStarted({ workspaceId: s.workspaceA });
+    expect(await markOnboardingStarted({ workspaceId: s.workspaceA })).toBe(false);
     const [ws] = await db
       .select()
       .from(workspaces)
       .where(eq(workspaces.id, s.workspaceA));
     expect(ws!.onboardingStatus).toBe('completed');
+  });
+
+  it('reports true only for the call that made the move', async () => {
+    const s = await setup();
+    const results = await Promise.all([
+      markOnboardingStarted({ workspaceId: s.workspaceA }),
+      markOnboardingStarted({ workspaceId: s.workspaceA }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await markOnboardingStarted({ workspaceId: s.workspaceA })).toBe(false);
+  });
+});
+
+// ia:F-05: the dashboard redirects to /onboarding only when this claim
+// succeeds, so it decides who can use up the first-run redirect.
+describe('claimOnboardingStart', () => {
+  async function statusOf(workspaceId: bigint) {
+    const [ws] = await db
+      .select({ s: workspaces.onboardingStatus })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId));
+    return ws!.s;
+  }
+
+  it.each(['owner', 'admin'] as const)('lets an %s claim it once', async (role) => {
+    const s = await setup();
+    expect(await claimOnboardingStart(ctx(s.workspaceA, s.ownerA, role))).toBe(true);
+    expect(await statusOf(s.workspaceA)).toBe('in_progress');
+    expect(await claimOnboardingStart(ctx(s.workspaceA, s.ownerA, role))).toBe(false);
+  });
+
+  it.each(['manager', 'member', 'viewer'] as const)(
+    'never lets a %s claim it, and leaves the status pending',
+    async (role) => {
+      const s = await setup();
+      expect(await claimOnboardingStart(ctx(s.workspaceA, s.ownerA, role))).toBe(false);
+      expect(await statusOf(s.workspaceA)).toBe('pending');
+    },
+  );
+
+  it('does not let a super-admin in god mode claim a tenant wizard', async () => {
+    const s = await setup();
+    const root = await seedUser({ email: 'root@test.local', role: 'super_admin' });
+    expect(
+      await claimOnboardingStart(ctx(s.workspaceA, root, 'super_admin')),
+    ).toBe(false);
+    expect(await statusOf(s.workspaceA)).toBe('pending');
+  });
+
+  it('lets a super-admin claim the wizard of a workspace they belong to', async () => {
+    const root = await seedUser({ email: 'root@test.local', role: 'super_admin' });
+    const own = await seedWorkspace({ name: 'Root home', ownerUserId: root });
+    await db
+      .update(workspaces)
+      .set({ onboardingStatus: 'pending' })
+      .where(eq(workspaces.id, own));
+    expect(await claimOnboardingStart(ctx(own, root, 'super_admin'))).toBe(true);
+    expect(await statusOf(own)).toBe('in_progress');
   });
 });

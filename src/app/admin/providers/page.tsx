@@ -5,6 +5,7 @@ import {
   AuthRequiredError,
   NoWorkspaceError,
   getWorkspaceContext,
+  requirePlatformAdmin,
 } from '@/lib/services/auth-context';
 import { isSuperAdmin } from '@/lib/services/context';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -14,7 +15,6 @@ import {
   listPlatformSecretKeys,
   setPlatformSecret,
 } from '@/lib/services/secrets';
-import { getAIProviderForCtx } from '@/lib/ai';
 import {
   AI_MODELS,
   ALLOWED_AI_PROVIDERS,
@@ -23,7 +23,7 @@ import {
   ALLOWED_SEARCH_PROVIDERS,
   ALLOWED_VECTOR_STORAGE_PROVIDERS,
   RESEARCH_MODELS,
-  detectSystemDefaultProvider,
+  resolvePlatformProvider,
   type ProviderCapability,
   type ResolvedProvider,
 } from '@/lib/services/provider-settings';
@@ -33,66 +33,20 @@ import {
   getPlatformSettings,
   setPlatformSettings,
 } from '@/lib/services/platform-settings';
-
-/** Catalogue of platform-level provider keys the console manages. The
- *  secretKey doubles as the workspace-BYOK key name, so the resolver's
- *  workspace → platform(db) → env order applies uniformly. */
-const PROVIDERS = [
-  {
-    secretKey: 'anthropic.apiKey',
-    envVar: 'ANTHROPIC_API_KEY',
-    name: 'Anthropic (Claude)',
-    role: 'AI drafting, conversation review — the default AI provider.',
-  },
-  {
-    secretKey: 'openai.apiKey',
-    envVar: 'OPENAI_API_KEY',
-    name: 'OpenAI',
-    role: 'Embeddings (semantic search over knowledge + lessons); optional AI provider.',
-  },
-  {
-    secretKey: 'gemini.apiKey',
-    envVar: 'GEMINI_API_KEY',
-    name: 'Google Gemini',
-    role: 'Grounded web search — the engine behind lead discovery — and research.',
-  },
-  {
-    secretKey: 'deepseek.apiKey',
-    envVar: 'DEEPSEEK_API_KEY',
-    name: 'DeepSeek',
-    role: 'Cost-efficient AI — the default for high-volume qualification.',
-  },
-  {
-    secretKey: 'mistral.apiKey',
-    envVar: 'MISTRAL_API_KEY',
-    name: 'Mistral (OCR)',
-    role: 'OCR for scanned PDFs — auto-selected when a PDF has no text layer.',
-  },
-  {
-    secretKey: 'serpapi.apiKey',
-    envVar: 'SERPAPI_KEY',
-    name: 'SerpAPI',
-    role: 'Alternative web-search backend (optional).',
-  },
-  {
-    secretKey: 'perplexity.apiKey',
-    envVar: 'PERPLEXITY_API_KEY',
-    name: 'Perplexity',
-    role: 'Alternative research backend (optional).',
-  },
-] as const;
-
-/** Complete capability → env-fallback map for the Health table. Rows
- *  Vendor → key-location metadata for the platform-status table. */
-const VENDOR_KEY_META: Record<string, { secretKey: string; envVar: string }> = {
-  anthropic: { secretKey: 'anthropic.apiKey', envVar: 'ANTHROPIC_API_KEY' },
-  openai: { secretKey: 'openai.apiKey', envVar: 'OPENAI_API_KEY' },
-  gemini: { secretKey: 'gemini.apiKey', envVar: 'GEMINI_API_KEY' },
-  deepseek: { secretKey: 'deepseek.apiKey', envVar: 'DEEPSEEK_API_KEY' },
-  mistral: { secretKey: 'mistral.apiKey', envVar: 'MISTRAL_API_KEY' },
-  serpapi: { secretKey: 'serpapi.apiKey', envVar: 'SERPAPI_KEY' },
-  perplexity: { secretKey: 'perplexity.apiKey', envVar: 'PERPLEXITY_API_KEY' },
-};
+// The catalogue of platform keys the console manages
+// (src/lib/platform-provider-keys.ts, re-exported by the live checks of
+// PC-02). Each secretKey doubles as the workspace BYOK key name, so the
+// runtime's workspace → console → env order applies to it. The status
+// table reads each vendor's key location from the same catalogue.
+import { platformKeyForVendor } from '@/lib/platform-provider-keys';
+import {
+  PLATFORM_PROVIDER_KEYS as PROVIDERS,
+  PlatformProviderKeySchema,
+  checkPlatformAIProvider,
+  checkPlatformProviderKey,
+  describePlatformAICheck,
+  describePlatformKeyCheck,
+} from '@/lib/services/platform-provider-checks';
 
 /** Capabilities shown in the platform-status table, in display order. */
 const STATUS_CAPABILITIES: ReadonlyArray<{
@@ -159,15 +113,11 @@ export default async function AdminProvidersPage({
     // provider when neither is set.
     qualification: undefined,
   };
+  // Same resolver the runtime uses below the workspace tier, and the one
+  // "Test platform AI default" uses, so the table and the test agree.
   const effective = {} as Record<ProviderCapability, ResolvedProvider>;
   for (const cap of Object.keys(ENV_SELECTORS) as ProviderCapability[]) {
-    const dbVal = defaults[`${cap}.provider`];
-    const envVal = ENV_SELECTORS[cap]?.trim();
-    effective[cap] = dbVal
-      ? { id: dbVal, source: 'platform' }
-      : envVal
-        ? { id: envVal, source: 'env' }
-        : await detectSystemDefaultProvider(cap);
+    effective[cap] = await resolvePlatformProvider(cap, ENV_SELECTORS[cap]);
   }
   const sourceLabel = (r: ResolvedProvider) =>
     r.source === 'platform'
@@ -273,108 +223,44 @@ export default async function AdminProvidersPage({
     }
   }
 
+  // Both live checks below test the PLATFORM tier only (I124): the key
+  // saved here, else the server env var, and the platform default
+  // vendor/model shown in the status table. They never resolve the
+  // admin's current workspace, so a tenant's own key or provider override
+  // cannot make a broken platform key look healthy.
   async function testAI() {
     'use server';
-    const c = await getWorkspaceContext();
-    if (!isSuperAdmin(c)) redirect('/dashboard');
+    await requirePlatformAdmin();
+    let target: string;
     try {
-      const provider = await getAIProviderForCtx(c, 'ai.generate');
-      const health = await provider.healthCheck();
-      const m = health.ok
-        ? `AI provider OK: ${provider.id} (${provider.model})`
-        : `AI provider FAILED: ${provider.id} — ${health.detail ?? 'no detail'}`;
-      redirect(`/admin/providers?${health.ok ? 'msg' : 'err'}=${encodeURIComponent(m)}`);
+      const r = describePlatformAICheck(await checkPlatformAIProvider());
+      target = `/admin/providers?${r.ok ? 'msg' : 'err'}=${encodeURIComponent(r.message)}`;
     } catch (err) {
-      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'test failed';
-      redirect(`/admin/providers?err=${encodeURIComponent(m)}`);
+      target = `/admin/providers?err=${encodeURIComponent(`Platform AI default: ${m.slice(0, 300)}`)}`;
     }
+    redirect(target);
   }
 
-  // Per-vendor key check: a cheap live call with the key the cascade
-  // resolves for THIS vendor — independent of which capability is
-  // currently pointed at it. "Test active AI provider" alone left
-  // non-active vendors (DeepSeek on qualification, Mistral on OCR,
-  // search backends) undetectable until a production call failed.
+  // Per-vendor key check: a cheap live call with this vendor's platform
+  // key, independent of which capability currently points at it. Testing
+  // only the active AI provider left the other vendors (DeepSeek on
+  // qualification, Mistral on OCR, search backends) undetectable until a
+  // production call failed.
   async function testVendorKey(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
-    if (!isSuperAdmin(c)) redirect('/dashboard');
-    const secretKey = String(formData.get('secretKey') ?? '');
-    const spec = PROVIDERS.find((p) => p.secretKey === secretKey);
-    if (!spec) redirect('/admin/providers?err=Unknown+provider');
+    await requirePlatformAdmin();
+    const parsed = PlatformProviderKeySchema.safeParse(formData.get('secretKey'));
+    if (!parsed.success) redirect('/admin/providers?err=Unknown+provider');
+    let target: string;
     try {
-      const { resolveProviderKey } = await import('@/lib/services/secrets');
-      const resolved = await resolveProviderKey(c, spec!.secretKey, spec!.envVar);
-      if (!resolved) {
-        redirect(
-          `/admin/providers?err=${encodeURIComponent(`${spec!.name}: no key configured (console or env).`)}`,
-        );
-      }
-      const key = resolved!.key;
-      let ok = false;
-      let detail = '';
-      if (secretKey === 'anthropic.apiKey') {
-        const { AnthropicAIProvider } = await import('@/lib/ai');
-        const h = await new AnthropicAIProvider({ apiKey: key, model: 'claude-haiku-4-5' }).healthCheck();
-        ok = h.ok;
-        detail = h.detail ?? '';
-      } else if (secretKey === 'openai.apiKey') {
-        const { OpenAIAIProvider } = await import('@/lib/ai');
-        const h = await new OpenAIAIProvider({ apiKey: key, model: 'gpt-4o-mini' }).healthCheck();
-        ok = h.ok;
-        detail = h.detail ?? '';
-      } else if (secretKey === 'deepseek.apiKey') {
-        const { DeepSeekAIProvider } = await import('@/lib/ai');
-        const h = await new DeepSeekAIProvider({ apiKey: key }).healthCheck();
-        ok = h.ok;
-        detail = h.detail ?? '';
-      } else if (secretKey === 'gemini.apiKey') {
-        const { GeminiAIProvider } = await import('@/lib/ai/gemini');
-        const h = await new GeminiAIProvider({ apiKey: key }).healthCheck();
-        ok = h.ok;
-        detail = h.detail ?? '';
-      } else if (secretKey === 'mistral.apiKey') {
-        // Free key validation — the models listing needs auth but bills nothing.
-        const res = await fetch('https://api.mistral.ai/v1/models', {
-          headers: { Authorization: `Bearer ${key}` },
-        });
-        ok = res.ok;
-        if (!res.ok) detail = `HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`;
-      } else if (secretKey === 'serpapi.apiKey') {
-        const res = await fetch(
-          `https://serpapi.com/account.json?api_key=${encodeURIComponent(key)}`,
-        );
-        ok = res.ok;
-        if (!res.ok) detail = `HTTP ${res.status}`;
-      } else if (secretKey === 'perplexity.apiKey') {
-        const res = await fetch('https://api.perplexity.ai/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`,
-          },
-          body: JSON.stringify({
-            model: 'sonar',
-            messages: [{ role: 'user', content: 'ping' }],
-            max_tokens: 1,
-          }),
-        });
-        ok = res.ok;
-        if (!res.ok) detail = `HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`;
-      }
-      const src = resolved!.source === 'workspace' ? 'workspace BYOK' : 'console/env';
-      const m = ok
-        ? `${spec!.name} key OK (${src}).`
-        : `${spec!.name} key FAILED (${src}) — ${detail || 'no detail'}`;
-      redirect(`/admin/providers?${ok ? 'msg' : 'err'}=${encodeURIComponent(m)}`);
+      const r = describePlatformKeyCheck(await checkPlatformProviderKey(parsed.data));
+      target = `/admin/providers?${r.ok ? 'msg' : 'err'}=${encodeURIComponent(r.message)}`;
     } catch (err) {
-      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'test failed';
-      redirect(
-        `/admin/providers?err=${encodeURIComponent(`${spec!.name}: ${m.slice(0, 300)}`)}`,
-      );
+      target = `/admin/providers?err=${encodeURIComponent(`${parsed.data}: ${m.slice(0, 300)}`)}`;
     }
+    redirect(target);
   }
 
   return (
@@ -459,7 +345,7 @@ export default async function AdminProvidersPage({
                     <button
                       type="submit"
                       className="ghost-btn"
-                      title="Runs a minimal live call against this vendor with the currently-resolved key"
+                      title="Runs a minimal live call against this vendor with the platform key (console key, else server env var). Workspace keys (BYOK) are never used here."
                     >
                       Test key
                     </button>
@@ -628,7 +514,7 @@ export default async function AdminProvidersPage({
                       };
                 }
               }
-              const keyMeta = VENDOR_KEY_META[resolved.id];
+              const keyMeta = platformKeyForVendor(resolved.id);
               const keyState = !keyMeta
                 ? { text: 'no key needed', ok: true }
                 : storedByKey.has(keyMeta.secretKey)
@@ -687,10 +573,12 @@ export default async function AdminProvidersPage({
         </table>
         <form action={testAI} className="action-row" style={{ marginTop: '0.75rem' }}>
           <button type="submit" className="ghost-btn">
-            Test active AI provider
+            Test platform AI default
           </button>
           <span className="muted small" style={{ alignSelf: 'center' }}>
-            Live 1-token call with the key the AI capability resolves to.
+            Live 1-token call to the AI provider and model in the table above,
+            with the platform key. Your current workspace&apos;s own
+            selection and keys are not used.
           </span>
         </form>
         <p className="muted small">

@@ -223,13 +223,14 @@ export default async function NewKnowledgeSourcePage({
 
           <label>
             <span>Attach to products (Ctrl/Cmd-click for multiple)</span>
-            <select name="productProfileIds" multiple size={Math.min(8, Math.max(3, products.length))}>
+            <select
+              name="productProfileIds"
+              multiple
+              size={Math.min(8, Math.max(3, products.length))}
+              defaultValue={preselectedProduct ? [preselectedProduct] : []}
+            >
               {products.map((p) => (
-                <option
-                  key={p.id.toString()}
-                  value={p.id.toString()}
-                  selected={p.id.toString() === preselectedProduct}
-                >
+                <option key={p.id.toString()} value={p.id.toString()}>
                   {p.name}
                 </option>
               ))}
