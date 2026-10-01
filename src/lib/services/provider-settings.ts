@@ -313,14 +313,33 @@ export async function resolveActiveProvider(
   if (wsValue && wsValue.trim()) {
     return { id: wsValue.trim(), source: 'workspace' };
   }
-  // Platform default set from /admin/providers — beats the env var so the
-  // console is the live source of truth without a redeploy.
+  return resolvePlatformProvider(capability, envFallback);
+}
+
+/**
+ * The platform tier of the cascade on its own: what a capability runs on
+ * for a workspace that has NOT picked its own provider. Platform default
+ * set from /admin/providers (beats the env var, so the console is the
+ * live source of truth without a redeploy) → env selector → auto-detect.
+ * The admin console shows and tests exactly this; it never consults a
+ * workspace (I124).
+ */
+export async function resolvePlatformProvider(
+  capability: ProviderCapability,
+  envFallback: string | undefined,
+): Promise<PlatformResolvedProvider> {
   const { getPlatformSetting } = await import('./platform-settings');
   const platformValue = await getPlatformSetting(`${capability}.provider`);
   if (platformValue) return { id: platformValue, source: 'platform' };
   const envVal = envFallback?.trim();
   if (envVal) return { id: envVal, source: 'env' };
-  return detectSystemDefaultProvider(capability);
+  const detected = await detectSystemDefaultProvider(capability);
+  return { id: detected.id, source: 'default' };
+}
+
+/** A provider resolved WITHOUT the workspace tier. */
+export interface PlatformResolvedProvider extends ResolvedProvider {
+  source: Exclude<ResolvedProvider['source'], 'workspace'>;
 }
 
 /**
