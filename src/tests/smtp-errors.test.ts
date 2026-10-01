@@ -78,6 +78,13 @@ describe('classifySmtpError — sender-side failures never name a recipient', ()
     ['550 5.4.1 recipient address rejected: access denied (Exchange Online)', rcptRejected([['anna@target.com', '550 5.4.1 Recipient address rejected: Access denied. AS(201806281)']]), 'rejected'],
     ['550 5.7.1 client host blocked (blocklist) at RCPT', rcptRejected([['anna@target.com', '550 5.7.1 Service unavailable; Client host [203.0.113.5] blocked using zen.spamhaus.org']]), 'rejected'],
     ['550 5.1.8 sender address rejected at RCPT', rcptRejected([['anna@target.com', '550 5.1.8 <sales@nulife.pl>: Sender address rejected: Domain not found']]), 'rejected'],
+    // Postfix checks sender restrictions at RCPT TO (smtpd_delay_reject=yes):
+    // reject_unlisted_sender answers with a 5.1.x code about OUR address.
+    ['550 5.1.0 sender address rejected: user unknown, at RCPT (Postfix)', rcptRejected([['anna@target.com', '550 5.1.0 <sales@nulife.pl>: Sender address rejected: User unknown in virtual mailbox table']]), 'rejected'],
+    ['550 5.1.1 sender address rejected, at RCPT', rcptRejected([['anna@target.com', '550 5.1.1 <sales@nulife.pl>: Sender address rejected']]), 'rejected'],
+    ['550 5.1.0 sender rejected, single RCPT error without rejectedErrors', smtpError('EENVELOPE', 'RCPT TO', '550 5.1.0 <sales@nulife.pl>: Sender address rejected: User unknown in local recipient table', { rejected: ['anna@target.com'] }), 'rejected'],
+    ['550 5.1.1 user unknown naming another address (not the recipient)', rcptRejected([['anna@target.com', '550 5.1.1 <sales@nulife.pl>: User unknown in virtual mailbox table']]), 'rejected'],
+    ['550 5.1.1 recipient rejected by policy (sender-side wording wins)', rcptRejected([['anna@target.com', '550 5.1.1 <anna@target.com>: Recipient address rejected: blocked by policy']]), 'rejected'],
     ['553 5.1.7 bad sender address syntax at RCPT', rcptRejected([['anna@target.com', '553 5.1.7 The sender address <sales@> is not a valid RFC-5321 address']]), 'rejected'],
     ['552 5.2.2 mailbox full (permanent) at RCPT', rcptRejected([['anna@target.com', '552 5.2.2 Mailbox full']]), 'rejected'],
     ['550 generic "mailbox unavailable" at RCPT', rcptRejected([['anna@target.com', '550 Requested action not taken: mailbox unavailable']]), 'rejected'],
@@ -99,22 +106,23 @@ describe('classifySmtpError — sender-side failures never name a recipient', ()
 });
 
 describe('classifySmtpError — recipient hard rejections at RCPT TO', () => {
-  const hard: Array<[string, string]> = [
-    ['550 5.1.1 user unknown', '550 5.1.1 <anna@target.com>: Recipient address rejected: User unknown in virtual mailbox table'],
-    ['550-5.1.1 Gmail multi-line', "550-5.1.1 The email account that you tried to reach does not exist. Please try double-checking"],
-    ['550 5.1.10 null MX', '550 5.1.10 RESOLVER.ADR.RecipientNotFound; Recipient not found by SMTP address lookup'],
-    ['553 5.1.3 bad destination syntax', '553 5.1.3 <anna@target..com>: Recipient address rejected: bad syntax'],
-    ['550 5.1.2 bad destination system', '550 5.1.2 <anna@target.invalid>: Host or domain name not found'],
-    ['550 5.2.1 mailbox disabled', '550 5.2.1 The email account that you tried to reach is disabled'],
-    ['550 user unknown, no enhanced code', '550 <anna@target.com>... User unknown'],
-    ['550 no such user, no enhanced code', '550 No such user here'],
-    ['550 5.0.0 with user-unknown text', '550 5.0.0 <anna@target.com>: User unknown'],
+  // [name, recipient as sent, server reply]
+  const hard: Array<[string, string, string]> = [
+    ['550 5.1.1 user unknown', 'Anna@Target.com', '550 5.1.1 <anna@target.com>: Recipient address rejected: User unknown in virtual mailbox table'],
+    ['550-5.1.1 Gmail multi-line', 'Anna@Target.com', "550-5.1.1 The email account that you tried to reach does not exist. Please try double-checking"],
+    ['550 5.1.10 null MX', 'Anna@Target.com', '550 5.1.10 RESOLVER.ADR.RecipientNotFound; Recipient not found by SMTP address lookup'],
+    ['553 5.1.3 bad destination syntax', 'anna@target..com', '553 5.1.3 <anna@target..com>: Recipient address rejected: bad syntax'],
+    ['550 5.1.2 bad destination system', 'anna@target.invalid', '550 5.1.2 <anna@target.invalid>: Host or domain name not found'],
+    ['550 5.2.1 mailbox disabled', 'Anna@Target.com', '550 5.2.1 The email account that you tried to reach is disabled'],
+    ['550 user unknown, no enhanced code', 'Anna@Target.com', '550 <anna@target.com>... User unknown'],
+    ['550 no such user, no enhanced code', 'Anna@Target.com', '550 No such user here'],
+    ['550 5.0.0 with user-unknown text', 'Anna@Target.com', '550 5.0.0 <anna@target.com>: User unknown'],
   ];
-  for (const [name, response] of hard) {
+  for (const [name, recipient, response] of hard) {
     it(`${name} → recipient_hard for that address`, () => {
-      const c = classifySmtpError(rcptRejected([['Anna@Target.com', response]]), ONE);
+      const c = classifySmtpError(rcptRejected([[recipient, response]]), [recipient]);
       expect(c.kind).toBe('recipient_hard');
-      expect(c.hardRejectedRecipients).toEqual(['anna@target.com']);
+      expect(c.hardRejectedRecipients).toEqual([recipient.toLowerCase()]);
       expect(c.command).toBe('RCPT TO');
     });
   }
@@ -174,6 +182,42 @@ describe('enhanced status + stored failure text', () => {
     expect(isRecipientHardRejection(null, '550 5.2.1 disabled')).toBe(true);
   });
 
+  it('isRecipientHardRejection: a 5.1.x reply about the sender is never about the recipient', () => {
+    expect(
+      isRecipientHardRejection(
+        550,
+        '550 5.1.0 <sales@nulife.pl>: Sender address rejected: User unknown in virtual mailbox table',
+        'anna@target.com',
+      ),
+    ).toBe(false);
+    // Sender wording alone is enough, even without a recipient to compare.
+    expect(
+      isRecipientHardRejection(550, '550 5.1.1 <sales@nulife.pl>: Sender address rejected'),
+    ).toBe(false);
+    // A named address must be the recipient.
+    expect(
+      isRecipientHardRejection(550, '550 5.1.1 <other@target.com>: User unknown', 'anna@target.com'),
+    ).toBe(false);
+    expect(
+      isRecipientHardRejection(550, '550 5.1.1 <Anna@Target.com>: User unknown', 'anna@target.com'),
+    ).toBe(true);
+  });
+
+  it('hardRejectedFromPartial ignores sender-side refusals on an accepted send', () => {
+    expect(
+      hardRejectedFromPartial(
+        [
+          {
+            address: 'anna@target.com',
+            responseCode: 550,
+            response: '550 5.1.0 <sales@nulife.pl>: Sender address rejected: User unknown',
+          },
+        ],
+        ONE,
+      ),
+    ).toEqual([]);
+  });
+
   it('reads stored failure reasons the way Retry needs', () => {
     expect(
       isRecipientHardBounceText(
@@ -184,6 +228,11 @@ describe('enhanced status + stored failure text', () => {
     expect(isRecipientHardBounceText('535 Invalid login: 535 5.7.8 authentication failed')).toBe(false);
     expect(isRecipientHardBounceText('SMTP error: 554 transaction failed')).toBe(false);
     expect(isRecipientHardBounceText('421 4.7.0 try later')).toBe(false);
+    expect(
+      isRecipientHardBounceText(
+        "550 Can't send mail - all recipients were rejected: 550 5.1.0 <sales@nulife.pl>: Sender address rejected: User unknown",
+      ),
+    ).toBe(false);
     expect(isRecipientHardBounceText(null)).toBe(false);
   });
 });

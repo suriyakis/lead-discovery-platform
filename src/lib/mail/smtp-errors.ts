@@ -6,8 +6,13 @@
 // stage with a permanent "this address does not exist / is disabled"
 // answer (enhanced status 5.1.x other than the sender-address codes
 // 5.1.7 / 5.1.8, or 5.2.1; or a 550-class reply whose text says the user
-// is unknown when no enhanced code is given). Everything else is about
-// us or about the moment, never about the recipient:
+// is unknown when no enhanced code is given) — and the reply is about
+// THAT recipient: it does not talk about the sender / policy, and when it
+// names an <address> one of them is the recipient. Postfix answers
+// sender restrictions at RCPT TO (smtpd_delay_reject=yes), so
+// "550 5.1.0 <from@us>: Sender address rejected: User unknown" arrives
+// there with a 5.1.x code and must not suppress anyone. Everything else
+// is about us or about the moment, never about the recipient:
 //   - EAUTH / 530 / 534 / 535: our login was refused → the mailbox is
 //     failing, not the prospect;
 //   - connection errors (refused, timeout, TLS, DNS): no reply at all;
@@ -100,19 +105,39 @@ const USER_UNKNOWN_RE = new RegExp(
 const SENDER_SIDE_RE =
   /relay|spam|block|blacklist|blocklist|denylist|policy|reputation|authenticat|rate limit|too many|spf|dkim|dmarc|reverse dns|\brdns\b|sender|not permitted|access denied/i;
 
+/** <local@domain> tokens in a reply (lower-cased), e.g. Postfix's
+ *  "550 5.1.1 <anna@target.com>: Recipient address rejected". */
+const BRACKETED_ADDRESS_RE = /<([^<>\s@]+@[^<>\s]+)>/g;
+
+function bracketedAddresses(text: string): string[] {
+  return Array.from(text.matchAll(BRACKETED_ADDRESS_RE), (m) => normalize(m[1]!));
+}
+
 /**
  * Does this single-recipient reply say the address does not exist / is
  * disabled? Only permanent (5xx) replies qualify; the enhanced code wins
  * when present, the text is a fallback for servers that send none (or the
  * uninformative 5.0.0).
+ *
+ * Whatever the code, a reply that talks about the sender / policy
+ * (SENDER_SIDE_RE) is not about the recipient, and when `recipient` is
+ * given a reply that names <addresses> must name that one. Both bias
+ * towards NOT suppressing: a missed dead address bounces again next
+ * time, a wrongly suppressed prospect is lost for good.
  */
 export function isRecipientHardRejection(
   responseCode: number | null | undefined,
   response: string | null | undefined,
+  recipient?: string | null,
 ): boolean {
   const text = response ?? '';
   const code = responseCode ?? leadingCode(text);
   if (code === null || code < 500 || code >= 600) return false;
+  if (SENDER_SIDE_RE.test(text)) return false;
+  if (recipient) {
+    const named = bracketedAddresses(text);
+    if (named.length > 0 && !named.includes(normalize(recipient))) return false;
+  }
 
   const enhanced = parseEnhancedStatus(text);
   if (enhanced && enhanced !== '5.0.0') {
@@ -125,7 +150,6 @@ export function isRecipientHardRejection(
   }
 
   if (code !== 550 && code !== 551 && code !== 553) return false;
-  if (SENDER_SIDE_RE.test(text)) return false;
   return USER_UNKNOWN_RE.test(text);
 }
 
@@ -213,7 +237,7 @@ export function classifySmtpError(
     const hard = unique(
       rejections
         .filter((r) => wanted.has(r.address))
-        .filter((r) => isRecipientHardRejection(r.responseCode, r.response))
+        .filter((r) => isRecipientHardRejection(r.responseCode, r.response, r.address))
         .map((r) => r.address),
     );
     if (hard.length > 0) {
@@ -260,7 +284,7 @@ export function hardRejectedFromPartial(
     rejected
       .map((r) => ({ ...r, address: normalize(r.address) }))
       .filter((r) => wanted.has(r.address))
-      .filter((r) => isRecipientHardRejection(r.responseCode, r.response))
+      .filter((r) => isRecipientHardRejection(r.responseCode, r.response, r.address))
       .map((r) => r.address),
   );
 }
