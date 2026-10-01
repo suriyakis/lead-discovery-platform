@@ -292,7 +292,8 @@ export async function listWorkspaceMembers(
 //   - the last owner can be neither demoted nor removed.
 // Each change runs in one transaction that first locks the workspace
 // row, so two concurrent changes cannot both pass the last-owner check,
-// and writes its audit row before it commits.
+// and writes its audit row on that same transaction, so the change and
+// its audit row commit (or roll back) together on one connection.
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -335,10 +336,10 @@ function parseMemberRole(role: unknown): WorkspaceMemberRole {
 
 /**
  * Lock the workspace row until the transaction ends, serialising member
- * changes in this workspace. FOR NO KEY UPDATE, not FOR UPDATE: the
- * audit_log insert (recordAuditEvent, on its own pooled connection) and
- * any other FK insert take FOR KEY SHARE on this row, which FOR UPDATE
- * would block, deadlocking the transaction against its own audit write.
+ * changes in this workspace. FOR NO KEY UPDATE, not FOR UPDATE: inserts
+ * that reference this row from other connections (audit rows, leads,
+ * jobs) take FOR KEY SHARE on it, which FOR UPDATE would block for the
+ * whole member change.
  */
 async function lockWorkspaceMembership(tx: Tx, workspaceId: bigint): Promise<void> {
   const rows = await tx
@@ -417,12 +418,16 @@ export async function setMemberRole(
         'invariant_violation',
       );
     }
-    await recordAuditEvent(ctx, {
-      kind: 'user.set_member_role',
-      entityType: 'workspace_member',
-      entityId: updated.id,
-      payload: { targetUserId, role: nextRole, prior: existing.role },
-    });
+    await recordAuditEvent(
+      ctx,
+      {
+        kind: 'user.set_member_role',
+        entityType: 'workspace_member',
+        entityId: updated.id,
+        payload: { targetUserId, role: nextRole, prior: existing.role },
+      },
+      tx,
+    );
     return updated;
   });
 }
@@ -452,12 +457,16 @@ export async function removeMember(
           eq(workspaceMembers.id, existing.id),
         ),
       );
-    await recordAuditEvent(ctx, {
-      kind: 'user.remove_member',
-      entityType: 'workspace_member',
-      entityId: existing.id,
-      payload: { targetUserId, role: existing.role },
-    });
+    await recordAuditEvent(
+      ctx,
+      {
+        kind: 'user.remove_member',
+        entityType: 'workspace_member',
+        entityId: existing.id,
+        payload: { targetUserId, role: existing.role },
+      },
+      tx,
+    );
   });
 }
 
@@ -497,12 +506,16 @@ export async function addMember(
         'invariant_violation',
       );
     }
-    await recordAuditEvent(ctx, {
-      kind: 'user.add_member',
-      entityType: 'workspace_member',
-      entityId: created.id,
-      payload: { targetUserId, role: newRole },
-    });
+    await recordAuditEvent(
+      ctx,
+      {
+        kind: 'user.add_member',
+        entityType: 'workspace_member',
+        entityId: created.id,
+        payload: { targetUserId, role: newRole },
+      },
+      tx,
+    );
     return created;
   });
 }

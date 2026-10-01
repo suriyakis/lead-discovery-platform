@@ -11,6 +11,13 @@ export interface AuditEventInput {
 }
 
 /**
+ * Where an audit row is written: the shared pool (`db`, the default) or
+ * an open transaction. Pass the transaction when the audit row must
+ * commit or roll back together with the change it records.
+ */
+export type AuditExecutor = Pick<typeof db, 'insert'>;
+
+/**
  * Record an audit event tied to a workspace + user. Append-only.
  *
  * The context only needs `workspaceId` and `userId`. We accept a partial
@@ -20,6 +27,7 @@ export interface AuditEventInput {
 export async function recordAuditEvent(
   ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
   event: AuditEventInput,
+  executor: AuditExecutor = db,
 ): Promise<AuditLogEntry> {
   const row: NewAuditLogEntry = {
     workspaceId: ctx.workspaceId,
@@ -29,7 +37,7 @@ export async function recordAuditEvent(
     entityId: serializeEntityId(event.entityId),
     payload: (event.payload ?? {}) as NewAuditLogEntry['payload'],
   };
-  const inserted = await db.insert(auditLog).values(row).returning();
+  const inserted = await executor.insert(auditLog).values(row).returning();
   if (!inserted[0]) {
     throw new Error('audit_log insert returned no row');
   }

@@ -22,6 +22,7 @@ import type { ReactNode } from 'react';
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
+import { recordAuditEvent } from '@/lib/services/audit';
 import { workspaceMembers, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import {
   type WorkspaceContext,
@@ -314,6 +315,44 @@ describe('owners and super-admins manage owners', () => {
     const f = await setup();
     const updated = await setMemberRole(ctx(f, f.owner, 'owner'), f.owner2, 'owner');
     expect(updated.role).toBe('owner');
+    expect(await memberAudit(f)).toEqual([]);
+  });
+});
+
+describe('audit rows commit together with the member change', () => {
+  it('add, re-role and remove write their audit row on the change transaction, not the pool', async () => {
+    const f = await setup();
+    const owner = ctx(f, f.owner, 'owner');
+    // Every write of a member change goes through its transaction; a
+    // db.insert here would be the audit row on a second connection.
+    const poolInsert = vi.spyOn(db, 'insert');
+    try {
+      await addMember(owner, f.outsider, 'member');
+      await setMemberRole(owner, f.outsider, 'manager');
+      await removeMember(owner, f.outsider);
+      expect(poolInsert).not.toHaveBeenCalled();
+    } finally {
+      poolInsert.mockRestore();
+    }
+    expect((await memberAudit(f)).map((r) => r.kind)).toEqual([
+      'user.add_member',
+      'user.set_member_role',
+      'user.remove_member',
+    ]);
+  });
+
+  it('an audit row written on a transaction that rolls back is gone with it', async () => {
+    const f = await setup();
+    await expect(
+      db.transaction(async (tx) => {
+        await recordAuditEvent(
+          ctx(f, f.owner, 'owner'),
+          { kind: 'user.add_member', entityType: 'workspace_member', entityId: 1 },
+          tx,
+        );
+        throw new Error('roll back');
+      }),
+    ).rejects.toThrow('roll back');
     expect(await memberAudit(f)).toEqual([]);
   });
 });
