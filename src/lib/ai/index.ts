@@ -10,6 +10,7 @@
 // `getAIProviderForCtx(ctx)` to honor a workspace-supplied BYOK key.
 
 import { createHash } from 'node:crypto';
+import { platformKeyForVendor } from '@/lib/platform-provider-keys';
 import { GeminiAIProvider } from './gemini';
 import type { ZodSchema } from 'zod';
 
@@ -864,13 +865,9 @@ export function _setAIProviderForTests(provider: IAIProvider | null): void {
 
 // ---- platform default (admin console) ------------------------------------
 
-/** Platform key location per AI vendor (console secret name, env var). */
-const AI_VENDOR_PLATFORM_KEYS: Record<string, { secretKey: string; envVar: string }> = {
-  openai: { secretKey: 'openai.apiKey', envVar: 'OPENAI_API_KEY' },
-  anthropic: { secretKey: 'anthropic.apiKey', envVar: 'ANTHROPIC_API_KEY' },
-  gemini: { secretKey: 'gemini.apiKey', envVar: 'GEMINI_API_KEY' },
-  deepseek: { secretKey: 'deepseek.apiKey', envVar: 'DEEPSEEK_API_KEY' },
-};
+/** The vendors getPlatformAIProvider can build an AI provider for. Their
+ *  key locations come from the shared platform key catalogue. */
+const PLATFORM_AI_VENDORS: ReadonlySet<string> = new Set(['openai', 'anthropic', 'gemini', 'deepseek']);
 
 export interface PlatformAIProviderResolution {
   /** Vendor the platform tier resolves for the `ai` capability. */
@@ -918,7 +915,7 @@ export async function getPlatformAIProvider(): Promise<PlatformAIProviderResolut
       provider: new MockAIProvider(),
     };
   }
-  const keyMeta = AI_VENDOR_PLATFORM_KEYS[vendor];
+  const keyMeta = PLATFORM_AI_VENDORS.has(vendor) ? platformKeyForVendor(vendor) : null;
   if (!keyMeta) {
     throw new Error(`Unknown AI provider id from the platform cascade: ${vendor}`);
   }

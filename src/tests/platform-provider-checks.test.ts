@@ -20,6 +20,7 @@ import { platformSecrets, workspaceSecrets } from '@/lib/db/schema/secrets';
 import { workspaceProviderSettings } from '@/lib/db/schema/workspaces';
 import { MockAIProvider, _setAIProviderForTests, getPlatformAIProvider } from '@/lib/ai';
 import { encryptValue } from '@/lib/services/crypto';
+import { platformKeyForVendor } from '@/lib/platform-provider-keys';
 import {
   PLATFORM_PROVIDER_KEYS,
   PlatformProviderKeySchema,
@@ -218,6 +219,30 @@ describe('checkPlatformProviderKey', () => {
     expect(PLATFORM_PROVIDER_KEYS.map((p) => p.secretKey).sort()).toEqual(
       [...PlatformProviderKeySchema.options].sort(),
     );
+  });
+
+  // One catalogue serves the key cards, the status table's Key column and
+  // getPlatformAIProvider (review of PC-02: they were three copies).
+  it('maps every vendor to its own key, once, and keyless vendors to null', () => {
+    const vendors = PLATFORM_PROVIDER_KEYS.map((p) => p.vendor);
+    expect(new Set(vendors).size).toBe(vendors.length);
+    for (const p of PLATFORM_PROVIDER_KEYS) {
+      expect(p.secretKey).toBe(`${p.vendor}.apiKey`);
+      expect(platformKeyForVendor(p.vendor)).toEqual({ secretKey: p.secretKey, envVar: p.envVar });
+    }
+    for (const keyless of ['mock', 'pgvector', 'openai_vector_store', 'cohere']) {
+      expect(platformKeyForVendor(keyless)).toBeNull();
+    }
+  });
+
+  it('the providers page and the AI module keep no copy of the key map', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    for (const file of ['src/app/admin/providers/page.tsx', 'src/lib/ai/index.ts']) {
+      const text = readFileSync(path.join(repoRoot, file), 'utf8');
+      // A hand-kept map pairs a key name with its env var on one line.
+      expect(text, file).not.toMatch(/secretKey:\s*'[a-z]+\.apiKey',\s*envVar:/);
+      expect(text, file).toMatch(/platformKeyForVendor\(/);
+    }
   });
 
   it.each(PlatformProviderKeySchema.options)(

@@ -33,10 +33,12 @@ import {
   getPlatformSettings,
   setPlatformSettings,
 } from '@/lib/services/platform-settings';
-// The catalogue of platform keys the console manages lives with the live
-// checks (platform-only key resolution, PC-02). Each secretKey doubles as
-// the workspace BYOK key name, so the runtime's workspace → console → env
-// order applies to it.
+// The catalogue of platform keys the console manages
+// (src/lib/platform-provider-keys.ts, re-exported by the live checks of
+// PC-02). Each secretKey doubles as the workspace BYOK key name, so the
+// runtime's workspace → console → env order applies to it. The status
+// table reads each vendor's key location from the same catalogue.
+import { platformKeyForVendor } from '@/lib/platform-provider-keys';
 import {
   PLATFORM_PROVIDER_KEYS as PROVIDERS,
   PlatformProviderKeySchema,
@@ -45,18 +47,6 @@ import {
   describePlatformAICheck,
   describePlatformKeyCheck,
 } from '@/lib/services/platform-provider-checks';
-
-/** Complete capability → env-fallback map for the Health table. Rows
- *  Vendor → key-location metadata for the platform-status table. */
-const VENDOR_KEY_META: Record<string, { secretKey: string; envVar: string }> = {
-  anthropic: { secretKey: 'anthropic.apiKey', envVar: 'ANTHROPIC_API_KEY' },
-  openai: { secretKey: 'openai.apiKey', envVar: 'OPENAI_API_KEY' },
-  gemini: { secretKey: 'gemini.apiKey', envVar: 'GEMINI_API_KEY' },
-  deepseek: { secretKey: 'deepseek.apiKey', envVar: 'DEEPSEEK_API_KEY' },
-  mistral: { secretKey: 'mistral.apiKey', envVar: 'MISTRAL_API_KEY' },
-  serpapi: { secretKey: 'serpapi.apiKey', envVar: 'SERPAPI_KEY' },
-  perplexity: { secretKey: 'perplexity.apiKey', envVar: 'PERPLEXITY_API_KEY' },
-};
 
 /** Capabilities shown in the platform-status table, in display order. */
 const STATUS_CAPABILITIES: ReadonlyArray<{
@@ -524,7 +514,7 @@ export default async function AdminProvidersPage({
                       };
                 }
               }
-              const keyMeta = VENDOR_KEY_META[resolved.id];
+              const keyMeta = platformKeyForVendor(resolved.id);
               const keyState = !keyMeta
                 ? { text: 'no key needed', ok: true }
                 : storedByKey.has(keyMeta.secretKey)

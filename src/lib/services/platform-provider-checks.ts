@@ -12,77 +12,23 @@
 // the vendor refused (HTTP 401/403). PC-07 will raise a critical
 // incident on that; until then the console shows it in the error banner.
 
-import { z } from 'zod';
 import { getPlatformAIProvider } from '@/lib/ai';
+import {
+  PLATFORM_PROVIDER_KEYS,
+  PlatformProviderKeySchema,
+  type PlatformProviderKeySpec,
+  type PlatformProviderSecretKey,
+} from '@/lib/platform-provider-keys';
 import { resolvePlatformProviderKey } from './secrets';
 
-export const PlatformProviderKeySchema = z.enum([
-  'anthropic.apiKey',
-  'openai.apiKey',
-  'gemini.apiKey',
-  'deepseek.apiKey',
-  'mistral.apiKey',
-  'serpapi.apiKey',
-  'perplexity.apiKey',
-]);
-export type PlatformProviderSecretKey = z.infer<typeof PlatformProviderKeySchema>;
-
-export interface PlatformProviderKeySpec {
-  /** Console secret name. It doubles as the workspace BYOK key name, so
-   *  the runtime resolver's workspace → console → env order applies. */
-  secretKey: PlatformProviderSecretKey;
-  /** Server env var used when no console key is saved. */
-  envVar: string;
-  name: string;
-  /** One-line description of what the platform uses this vendor for. */
-  role: string;
-}
-
-/** The platform provider keys the console manages, in display order. */
-export const PLATFORM_PROVIDER_KEYS: ReadonlyArray<PlatformProviderKeySpec> = [
-  {
-    secretKey: 'anthropic.apiKey',
-    envVar: 'ANTHROPIC_API_KEY',
-    name: 'Anthropic (Claude)',
-    role: 'AI drafting, conversation review — the default AI provider.',
-  },
-  {
-    secretKey: 'openai.apiKey',
-    envVar: 'OPENAI_API_KEY',
-    name: 'OpenAI',
-    role: 'Embeddings (semantic search over knowledge + lessons); optional AI provider.',
-  },
-  {
-    secretKey: 'gemini.apiKey',
-    envVar: 'GEMINI_API_KEY',
-    name: 'Google Gemini',
-    role: 'Grounded web search — the engine behind lead discovery — and research.',
-  },
-  {
-    secretKey: 'deepseek.apiKey',
-    envVar: 'DEEPSEEK_API_KEY',
-    name: 'DeepSeek',
-    role: 'Cost-efficient AI — the default for high-volume qualification.',
-  },
-  {
-    secretKey: 'mistral.apiKey',
-    envVar: 'MISTRAL_API_KEY',
-    name: 'Mistral (OCR)',
-    role: 'OCR for scanned PDFs — auto-selected when a PDF has no text layer.',
-  },
-  {
-    secretKey: 'serpapi.apiKey',
-    envVar: 'SERPAPI_KEY',
-    name: 'SerpAPI',
-    role: 'Alternative web-search backend (optional).',
-  },
-  {
-    secretKey: 'perplexity.apiKey',
-    envVar: 'PERPLEXITY_API_KEY',
-    name: 'Perplexity',
-    role: 'Alternative research backend (optional).',
-  },
-];
+// The key catalogue is shared with the status table and the AI module;
+// re-exported here so callers of the checks keep one import.
+export {
+  PLATFORM_PROVIDER_KEYS,
+  PlatformProviderKeySchema,
+  type PlatformProviderKeySpec,
+  type PlatformProviderSecretKey,
+};
 
 export type PlatformKeySource = 'console' | 'env';
 
