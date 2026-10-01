@@ -51,6 +51,9 @@ jobs:
       STORAGE_PROVIDER: local
       STORAGE_LOCAL_ROOT: ./storage
       NEXT_TELEMETRY_DISABLED: '1'
+      # Turns on /test-only/error-boundary (app) and the smoke test that
+      # expects it to render app/error.tsx (runner). 404 everywhere else.
+      ENABLE_TEST_ROUTES: '1'
     steps:
       - uses: actions/checkout@v4
 

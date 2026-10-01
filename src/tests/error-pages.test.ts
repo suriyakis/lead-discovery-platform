@@ -1,7 +1,9 @@
 // DS-04 backstops: the branded error, global-error and not-found pages.
-// Rendered to static markup — no browser, no Next server. The e2e smoke
-// test covers them end to end via /does-not-exist and the test-only
-// /test-only/error-boundary probe.
+// Rendered to static markup — no browser, no Next server — so this file
+// checks what the components render, not that Next serves them. That part
+// is the "branded backstop pages" block in e2e/smoke.spec.ts: /does-not-exist
+// → 404 + not-found.tsx, and (with ENABLE_TEST_ROUTES=1 on the app and the
+// runner) /test-only/error-boundary → 500 + error.tsx.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';

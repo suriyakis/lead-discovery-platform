@@ -6,7 +6,9 @@
 // and at phone width the document may not be wider than the viewport
 // (DS-03: no sideways page scroll on any route). Defects already tracked
 // elsewhere are tolerated via e2e/known-issues.json and show up as
-// `known-issue` annotations in the report.
+// `known-issue` annotations in the report. It also checks that Next serves
+// the branded 404 and error pages (DS-04), and a few phone/desktop layout
+// details (DS-03).
 //
 // Needs a running app on BASE_URL seeded by scripts/seed-demo.ts, with
 // SEED_DEMO_PASSWORD set to the password the seed used — see
@@ -132,6 +134,56 @@ test.describe('every route renders', () => {
       expect(unexpected, 'uncaught errors in the page').toEqual([]);
     });
   }
+});
+
+// DS-04: Next must actually serve the branded backstops — the Vitest
+// render tests (src/tests/error-pages.test.ts) can't show that wiring.
+test.describe('branded backstop pages', () => {
+  test('an unknown URL gets the branded 404', async ({ page }) => {
+    const response = await visit(page, '/does-not-exist');
+    expect(response?.status(), 'HTTP status of /does-not-exist').toBe(404);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText("We couldn't find that page");
+    await expect(page.locator('main.status-page .status-card')).toBeVisible();
+    await expect(page.locator('.brand-header')).toHaveCount(1);
+    await expect(page.getByRole('link', { name: 'Go to your dashboard' })).toHaveAttribute(
+      'href',
+      '/dashboard',
+    );
+  });
+
+  test('signed out, an unknown URL still gets the branded 404', async ({ browser, baseURL }) => {
+    // A fresh context: no session cookie (the 404 page never looks one up).
+    const context = await browser.newContext({ baseURL });
+    try {
+      const page = await context.newPage();
+      const response = await visit(page, '/does-not-exist');
+      expect(response?.status()).toBe(404);
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText(
+        "We couldn't find that page",
+      );
+      await expect(page.locator('main.status-page .status-card')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('a page that throws renders app/error.tsx', async ({ page }) => {
+    test.skip(
+      process.env.ENABLE_TEST_ROUTES !== '1',
+      'needs the app (and this runner) started with ENABLE_TEST_ROUTES=1',
+    );
+    const response = await visit(page, '/test-only/error-boundary');
+    expect(response?.status(), 'HTTP status of the throwing probe').toBe(500);
+    const card = page.locator('main.status-page .status-card');
+    await expect(card.getByRole('heading', { level: 1 })).toHaveText('Something went wrong');
+    await expect(card.getByRole('button', { name: 'Try again' })).toBeVisible();
+    await expect(card.getByRole('link', { name: 'Contact support' })).toHaveAttribute(
+      'href',
+      '/support',
+    );
+    // The branded card never echoes the thrown message.
+    await expect(card).not.toContainText('test-only error boundary probe');
+  });
 });
 
 /** Left/right edges of the one element `selector` matches. */

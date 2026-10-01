@@ -54,8 +54,11 @@ export const EXTRA_PATHS: ReadonlyArray<string> = [
 
 /** Patterns the smoke test deliberately does not visit, and why. */
 export const SKIPPED_PATTERNS: Readonly<Record<string, string>> = {
+  // It can't pass the generic "status < 500" visit by design. The
+  // "branded backstop pages" block in e2e/smoke.spec.ts visits it with its
+  // own expectations (500 + app/error.tsx) when ENABLE_TEST_ROUTES=1.
   '/test-only/error-boundary':
-    'throws on purpose (404 unless ENABLE_TEST_ROUTES=1); covered by src/tests/error-pages.test.ts',
+    'throws on purpose (404 unless ENABLE_TEST_ROUTES=1); visited by the "branded backstop pages" smoke tests',
 };
 
 /**

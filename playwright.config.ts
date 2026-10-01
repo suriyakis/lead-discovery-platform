@@ -4,8 +4,14 @@
 //   DATABASE_URL=postgres://lead:lead@localhost:5432/lead_e2e pnpm db:migrate
 //   DATABASE_URL=… SEED_DEMO_PASSWORD=… pnpm db:seed-demo
 //   DATABASE_URL=… SCHEDULE_BACKGROUND_JOBS=0 AUTH_URL=http://localhost:3200 \
-//     pnpm exec next dev -p 3200          (or next build && next start -p 3200)
-//   BASE_URL=http://localhost:3200 SEED_DEMO_PASSWORD=… pnpm test:e2e
+//     ENABLE_TEST_ROUTES=1 pnpm exec next dev -p 3200   (or next build && next start -p 3200)
+//   BASE_URL=http://localhost:3200 SEED_DEMO_PASSWORD=… ENABLE_TEST_ROUTES=1 pnpm test:e2e
+//
+// ENABLE_TEST_ROUTES=1 on both sides turns on /test-only/error-boundary
+// and the smoke test that expects it to render app/error.tsx; without it
+// that one test is skipped. Known issues marked devServerOnly are only
+// tolerated against `next dev` — the runner assumes that unless CI is set
+// (CI runs `next start`); E2E_SERVER=dev|prod overrides.
 //
 // Browsers: `pnpm exec playwright install chromium` once per machine.
 
