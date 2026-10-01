@@ -272,6 +272,7 @@ describe('drainQueue', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'anna@target.com',
       reason: 'unsubscribe',
+      source: 'manual',
     });
     await enqueueDraft(ctx(s.workspaceA, s.ownerA), {
       draftId: draft.id,

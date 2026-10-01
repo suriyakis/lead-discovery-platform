@@ -257,7 +257,11 @@ describe('analyseReply (DB-backed)', { timeout: 15000 }, () => {
       .select()
       .from(suppressionList)
       .where(eq(suppressionList.workspaceId, s.workspaceA));
-    expect(supps.find((e) => e.value === 'anna@target.com')).toBeTruthy();
+    const supp = supps.find((e) => e.value === 'anna@target.com');
+    expect(supp).toBeTruthy();
+    // F-03: automatic adds carry their provenance.
+    expect(supp!.source).toBe('reply');
+    expect(supp!.sourceRef).toBe(`mail_message:${messageId}`);
     if (leadId) {
       const reloadedLead = await db
         .select()
@@ -278,7 +282,10 @@ describe('analyseReply (DB-backed)', { timeout: 15000 }, () => {
       .select()
       .from(suppressionList)
       .where(eq(suppressionList.workspaceId, s.workspaceA));
-    expect(supps.find((e) => e.reason === 'bounce_hard')).toBeTruthy();
+    const supp = supps.find((e) => e.reason === 'bounce_hard');
+    expect(supp).toBeTruthy();
+    expect(supp!.source).toBe('reply');
+    expect(supp!.sourceRef).toBe(`mail_message:${messageId}`);
   });
 
   it('redirect auto-creates the extracted contact', async () => {

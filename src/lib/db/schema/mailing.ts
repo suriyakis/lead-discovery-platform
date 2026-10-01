@@ -410,6 +410,33 @@ export const suppressionKind = pgEnum('suppression_kind', [
   'company',
 ]);
 
+/**
+ * F-03: provenance — which path produced the suppression that is
+ * currently in force on a row.
+ *
+ *   unsubscribe_link — the recipient used our unsubscribe link/header
+ *   reply            — the inbound reply classifier (heuristic, inferred)
+ *   dsn              — a delivery-status notification (bounce report)
+ *   smtp             — the SMTP server rejected the recipient at send time
+ *   manual           — an operator added it on /mailbox/suppression
+ *   import           — an operator-supplied list import
+ *   legacy_auto      — backfill: pre-F-03 row whose note shows the
+ *                      reply-classifier auto path wrote it
+ *   legacy_unknown   — backfill: pre-F-03 row of unknown origin. Also the
+ *                      column default, so any writer that forgets to
+ *                      declare provenance is labelled honestly.
+ */
+export const suppressionSource = pgEnum('suppression_source', [
+  'unsubscribe_link',
+  'reply',
+  'dsn',
+  'smtp',
+  'manual',
+  'import',
+  'legacy_auto',
+  'legacy_unknown',
+]);
+
 export const suppressionList = pgTable(
   'suppression_list',
   {
@@ -429,6 +456,23 @@ export const suppressionList = pgTable(
     note: text('note'),
     /** Soft suppressions can have a TTL after which they expire. */
     expiresAt: timestamp('expires_at', { mode: 'date', withTimezone: true }),
+
+    /** F-03: provenance of the suppression currently in force (see
+        suppressionSource). Every add — including ones that do not win the
+        merge — is recorded with its own source in the 'suppression.add'
+        audit event; this column holds the winner's. */
+    source: suppressionSource('source').notNull().default('legacy_unknown'),
+    /** F-03: pointer to the evidence, e.g. `mail_message:123` for the
+        message that triggered an automatic add. Free text for imports. */
+    sourceRef: text('source_ref'),
+    /** F-03: rows are revoked, never deleted, so provenance and history
+        survive. A revoked row does not suppress; a new add re-activates
+        it (same row, revoked_* cleared). */
+    revokedAt: timestamp('revoked_at', { mode: 'date', withTimezone: true }),
+    revokedBy: text('revoked_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    revokeReason: text('revoke_reason'),
 
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
@@ -457,6 +501,7 @@ export type SuppressionEntry = typeof suppressionList.$inferSelect;
 export type NewSuppressionEntry = typeof suppressionList.$inferInsert;
 export type SuppressionReason = (typeof suppressionReason.enumValues)[number];
 export type SuppressionKind = (typeof suppressionKind.enumValues)[number];
+export type SuppressionSource = (typeof suppressionSource.enumValues)[number];
 
 /**
  * Phase 20: per-workspace auto-action toggles for classified inbound mail.

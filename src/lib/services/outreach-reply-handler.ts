@@ -172,6 +172,8 @@ export async function handleClassifiedReply(
           kind: 'email',
           value: msg.fromAddress,
           reason: action.reason === 'unsubscribe' ? 'unsubscribe' : 'bounce_hard',
+          source: 'reply',
+          sourceRef: `mail_message:${msg.id}`,
           note: `auto-suppressed by outreach handler from message ${msg.id}`,
         });
       } catch (err) {

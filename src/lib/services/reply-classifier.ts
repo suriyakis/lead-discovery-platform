@@ -409,6 +409,8 @@ async function applyAutoActions(
         kind: 'email',
         value: msg.fromAddress,
         reason: 'unsubscribe',
+        source: 'reply',
+        sourceRef: `mail_message:${msg.id}`,
         note: `auto-suppressed from message ${msg.id}`,
       });
     } catch (err) {
@@ -435,6 +437,8 @@ async function applyAutoActions(
         kind: 'email',
         value: msg.fromAddress,
         reason: 'bounce_hard',
+        source: 'reply',
+        sourceRef: `mail_message:${msg.id}`,
         note: `auto-suppressed from message ${msg.id}`,
       });
     } catch (err) {

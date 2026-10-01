@@ -53,7 +53,7 @@ import {
   addSuppression,
   isSuppressed,
   listSuppressions,
-  removeSuppression,
+  revokeSuppression,
 } from '@/lib/services/suppression';
 import {
   createSignature,
@@ -128,6 +128,7 @@ describe('suppression list', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'No.Send@Example.com',
       reason: 'unsubscribe',
+      source: 'manual',
     });
     expect(await isSuppressed(ctx(s.workspaceA, s.ownerA), 'no.send@example.com')).toBe(true);
     expect(await isSuppressed(ctx(s.workspaceA, s.ownerA), 'NO.SEND@example.com')).toBe(true);
@@ -138,6 +139,7 @@ describe('suppression list', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'temp@example.com',
       reason: 'bounce_soft',
+      source: 'manual',
       expiresAt: new Date(Date.now() - 60_000), // 1 minute ago
     });
     expect(await isSuppressed(ctx(s.workspaceA, s.ownerA), 'temp@example.com')).toBe(false);
@@ -145,36 +147,51 @@ describe('suppression list', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'future@example.com',
       reason: 'bounce_soft',
+      source: 'manual',
       expiresAt: new Date(Date.now() + 60_000),
     });
     expect(await isSuppressed(ctx(s.workspaceA, s.ownerA), 'future@example.com')).toBe(true);
   });
 
-  it('addSuppression upserts on the address', async () => {
+  it('addSuppression upserts on the address (a stronger add upgrades the row)', async () => {
     const s = await setup();
     const a = await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'x@example.com',
-      reason: 'manual',
+      reason: 'bounce_soft',
+      source: 'smtp',
+      note: 'mailbox full',
+      expiresAt: new Date(Date.now() + 60_000),
     });
     const b = await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'x@example.com',
       reason: 'unsubscribe',
+      source: 'manual',
       note: 'updated',
     });
     expect(a.address).toBe('x@example.com');
     expect(b.id).toBe(a.id);
     expect(b.reason).toBe('unsubscribe');
+    expect(b.source).toBe('manual');
     expect(b.note).toBe('updated');
+    expect(b.expiresAt).toBeNull();
   });
 
-  it('removeSuppression deletes the row', async () => {
+  it('revokeSuppression (by address) lifts the suppression but keeps the row', async () => {
     const s = await setup();
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'x@example.com',
       reason: 'manual',
+      source: 'manual',
     });
-    await removeSuppression(ctx(s.workspaceA, s.ownerA), 'X@Example.com');
+    await revokeSuppression(
+      ctx(s.workspaceA, s.ownerA),
+      { kind: 'email', value: 'X@Example.com' },
+      'added by mistake',
+    );
     expect(await isSuppressed(ctx(s.workspaceA, s.ownerA), 'x@example.com')).toBe(false);
+    const rows = await db.select().from(suppressionList);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.revokedAt).toBeInstanceOf(Date);
   });
 
   it('does not leak across workspaces', async () => {
@@ -182,6 +199,7 @@ describe('suppression list', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'x@example.com',
       reason: 'manual',
+      source: 'manual',
     });
     expect(await isSuppressed(ctx(s.workspaceB, s.ownerB), 'x@example.com')).toBe(false);
     const listB = await listSuppressions(ctx(s.workspaceB, s.ownerB));
@@ -194,6 +212,7 @@ describe('suppression list', () => {
       addSuppression(ctx(s.workspaceA, s.ownerA, 'viewer'), {
         address: 'x@example.com',
         reason: 'manual',
+        source: 'manual',
       }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
@@ -659,6 +678,7 @@ describe('sendMessage', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'lead@target.com',
       reason: 'unsubscribe',
+      source: 'manual',
     });
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
@@ -898,6 +918,7 @@ describe('isolation', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'spam@x.com',
       reason: 'manual',
+      source: 'manual',
     });
 
     // Workspace B sees nothing
