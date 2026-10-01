@@ -4,7 +4,7 @@
 // page module (so they never close over page-local helpers).
 
 import { redirect } from 'next/navigation';
-import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { requireActionContext } from '@/lib/action-context';
 import {
   REPLY_AUTO_ACTION_KEYS,
   ReplyAutoActionsError,
@@ -16,10 +16,13 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 /**
  * Save the four reply auto-action switches. The form always posts every
  * switch; an unchecked checkbox is absent from the FormData, i.e. off.
- * The service enforces admin-only and writes the audit event.
+ * The service enforces admin-only and writes the audit event. A stale
+ * session (signed out, inactive, no workspace) redirects like every other
+ * Phase 0 action instead of reaching the error page; resolved outside the
+ * try, since requireActionContext() redirects by throwing.
  */
 export async function saveReplyAutoActions(formData: FormData): Promise<void> {
-  const ctx = await getWorkspaceContext();
+  const ctx = await requireActionContext();
   const input: UpdateReplyAutoActionsInput = {};
   for (const key of REPLY_AUTO_ACTION_KEYS) {
     input[key] = formData.get(key) === 'on';

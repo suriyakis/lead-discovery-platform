@@ -17,6 +17,7 @@ import {
   removeMemberAction,
 } from '@/app/settings/members/actions';
 import { saveFollowUp } from '@/app/settings/outreach/follow-up-actions';
+import { saveReplyAutoActions } from '@/app/settings/outreach/actions';
 import {
   archiveCrmConnectionAction,
   restoreCrmConnectionAction,
@@ -59,13 +60,15 @@ function form(fields: Record<string, string> = {}): FormData {
   return fd;
 }
 
-/** Every action added or moved by the hotfixes lane, with input that
- *  gets past any parsing done before the context is resolved. */
+/** Every workspace action added or moved by the Phase 0 lanes (hotfixes,
+ *  and mail-safety's reply auto-actions), with input that gets past any
+ *  parsing done before the context is resolved. */
 const ACTIONS: ReadonlyArray<[string, () => Promise<unknown>]> = [
   ['settings/members add', () => addMemberAction(form({ userId: 'u', role: 'member' }))],
   ['settings/members change role', () => changeMemberRoleAction(form({ userId: 'u', role: 'member' }))],
   ['settings/members remove', () => removeMemberAction(form({ userId: 'u' }))],
   ['settings/outreach follow-up', () => saveFollowUp(form())],
+  ['settings/outreach reply auto-actions', () => saveReplyAutoActions(form())],
   ['settings/crm save', () => saveCrmConnectionAction('1', form({ name: 'CRM' }))],
   ['settings/crm test', () => testCrmConnectionAction('1')],
   ['settings/crm archive', () => archiveCrmConnectionAction('1')],
