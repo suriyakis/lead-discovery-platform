@@ -103,6 +103,9 @@ describe('ghost buttons on any element (DS-02 item 2, I152)', () => {
     'pagination link': `<nav class="pagination"><span class="pagination-actions"><a id="t" class="ghost-btn" href="?page=2">Next →</a></span></nav>`,
     'pagination disabled span': `<span class="pagination-actions"><span id="t" class="ghost-btn is-disabled">← Prev</span></span>`,
     'mail filter bar': `<form class="mail-filters"><a id="t" class="ghost-btn" href="/x">Reset</a></form>`,
+    // admin/users: the per-user "Edit profile + memberships →" link.
+    'profile list (admin users)': `<ul class="profile-list"><li><form class="inline-form"><button type="submit">Apply</button><a id="t" class="ghost-btn" href="/admin/users/u1">Edit profile + memberships →</a></form></li></ul>`,
+    'lead row': `<ul class="profile-list"><li><div class="lead-row"><strong>Acme</strong><a id="t" class="ghost-btn" href="/x">Open</a></div></li></ul>`,
   };
 
   for (const [name, html] of Object.entries(contexts)) {
@@ -115,6 +118,42 @@ describe('ghost buttons on any element (DS-02 item 2, I152)', () => {
       expect(boxHeightPx(win)).toBeGreaterThanOrEqual(32);
     });
   }
+
+  it('list and row link rules style title links only, never button links', () => {
+    const $ = load(`
+      <ul class="profile-list"><li>
+        <div class="lead-row">
+          <a id="title" href="/admin/users/u1">Ada Lovelace</a>
+          <a id="ghost" class="ghost-btn" href="/admin/users/u1">Edit profile + memberships →</a>
+          <a id="cta" class="primary-btn" href="/admin/users/u1/invite">Invite</a>
+        </div>
+      </li></ul>`);
+    // The title link keeps the list's look...
+    expect(styleOf($, '#title', rules, 'color')).toBe('var(--brand-fg)');
+    expect(styleOf($, '#title', rules, 'font-size')).toBe('1rem');
+    expect(styleOf($, '#title', rules, 'font-weight')).toBe('600');
+    // ...the ghost link is the same muted 0.875rem ghost as everywhere else...
+    const ghost = cascade($, '#ghost', rules);
+    expect(ghost.get('color')?.value).toBe('var(--brand-muted)');
+    expect(ghost.get('font-size')?.value).toBe('0.875rem');
+    expect(ghost.get('font-weight')).toBeUndefined();
+    // ...and the primary CTA keeps its label colour and weight.
+    const cta = cascade($, '#cta', rules);
+    expect(cta.get('color')?.value).toBe('var(--brand-primary-foreground)');
+    expect(cta.get('font-size')?.value).toBe('0.875rem');
+    expect(cta.get('font-weight')?.value).toBe('500');
+    // :hover can't be matched here, so check the hover rules by hand.
+    const contextual = rules.filter((r) =>
+      r.selectors.some((s) => /^\.(profile-list|lead-row) a\b/.test(s)),
+    );
+    expect(contextual.length).toBeGreaterThanOrEqual(3);
+    for (const r of contextual) {
+      for (const s of r.selectors) {
+        expect(s, 'exclude the button links').toContain(':where(:not(.primary-btn, .ghost-btn))');
+        expect(specificity(s)[1], s).toBeLessThanOrEqual(2);
+      }
+    }
+  });
 
   it('a <button class="ghost-btn"> resolves exactly as before', () => {
     const $ = load(`<form><button id="t" class="ghost-btn" type="submit">Sign out</button></form>`);

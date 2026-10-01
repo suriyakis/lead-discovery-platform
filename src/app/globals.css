@@ -912,14 +912,18 @@ code {
   background: oklch(0.21 0.02 250 / 0.5);
 }
 
-.profile-list a {
+/* Item title links — not the button links next to them ("Manage",
+   "Edit profile + memberships →"): at (0,1,1) this rule beat .ghost-btn
+   and .primary-btn (0,1,0) and drew them in bright 1rem text. Same
+   :where() exclusion as .page-header a, so the specificity is unchanged. */
+.profile-list a:where(:not(.primary-btn, .ghost-btn)) {
   color: var(--brand-fg);
   text-decoration: none;
   font-weight: 500;
   font-size: 1rem;
 }
 
-.profile-list a:hover {
+.profile-list a:where(:not(.primary-btn, .ghost-btn)):hover {
   color: var(--brand-accent-teal);
   text-decoration: none;
 }
@@ -2801,7 +2805,8 @@ code {
   margin-bottom: 0.25rem;
 }
 
-.lead-row a {
+/* Title links only; button links keep their own weight (see .profile-list a). */
+.lead-row a:where(:not(.primary-btn, .ghost-btn)) {
   font-weight: 600;
 }
 
