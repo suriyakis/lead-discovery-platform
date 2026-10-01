@@ -183,9 +183,8 @@ describe('LocalFileStorage', () => {
     await expect(storage.put('a/../../escape', Buffer.from('x'))).rejects.toThrow(/escapes root/);
   });
 
-  it('signedUrl returns a file:// URL for the local impl', async () => {
+  it('signedUrl refuses for the local impl (no file:// URLs)', async () => {
     await storage.put('s.txt', Buffer.from('x'));
-    const url = await storage.signedUrl('s.txt');
-    expect(url.startsWith('file://')).toBe(true);
+    await expect(storage.signedUrl('s.txt')).rejects.toThrow(/cannot hand out a browser URL/);
   });
 });

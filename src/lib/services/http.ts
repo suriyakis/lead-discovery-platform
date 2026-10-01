@@ -1,7 +1,14 @@
 import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
-import { AuthRequiredError, NoWorkspaceError } from './auth-context';
+import { StorageObjectNotFoundError } from '@/lib/storage/errors';
+import {
+  AccountInactiveError,
+  AuthRequiredError,
+  NoWorkspaceError,
+} from './auth-context';
 import { WorkspaceContextError } from './context';
+import { CrmServiceError } from './crm';
+import { DocumentServiceError } from './documents';
 import { ProductProfileServiceError } from './product-profile';
 import { WorkspaceServiceError } from './workspace';
 
@@ -16,6 +23,12 @@ import { WorkspaceServiceError } from './workspace';
 export function errorResponse(err: unknown): NextResponse {
   if (err instanceof AuthRequiredError) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (err instanceof AccountInactiveError) {
+    return NextResponse.json(
+      { error: 'Your account is not active yet' },
+      { status: 403 },
+    );
   }
   if (err instanceof NoWorkspaceError) {
     return NextResponse.json(
@@ -34,10 +47,21 @@ export function errorResponse(err: unknown): NextResponse {
   }
   if (
     err instanceof ProductProfileServiceError ||
-    err instanceof WorkspaceServiceError
+    err instanceof WorkspaceServiceError ||
+    err instanceof DocumentServiceError ||
+    err instanceof CrmServiceError
   ) {
     const status = mapErrorCode(err.code);
     return NextResponse.json({ error: err.message, code: err.code }, { status });
+  }
+  if (err instanceof StorageObjectNotFoundError) {
+    // A row that points at bytes which are gone is a storage problem, not
+    // a bad request: log the key for the operator, never send it out.
+    console.error(`[api] stored object missing: ${err.key}`);
+    return NextResponse.json(
+      { error: 'The stored file is missing', code: 'file_missing' },
+      { status: 404 },
+    );
   }
 
   console.error('[api] unhandled error:', err);

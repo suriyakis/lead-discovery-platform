@@ -6,12 +6,19 @@
 //
 // The interface is intentionally narrow. We add `list` / `copy` / etc. when
 // a real caller needs them.
+//
+// Browsers never get a storage URL for workspace files. Bytes go out through
+// authenticated app routes that check the workspace and stream `get()`
+// (see ./download.ts): /api/documents/[id]/download and
+// /api/crm/exports/[file]. That works the same on both backends, gives the
+// right filename, and a link copied out of the workspace stays useless.
 
-import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, rm, stat } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { mkdir, open, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { StorageObjectNotFoundError, StorageUrlUnavailableError } from './errors';
 
 export interface StorageMeta {
   contentType?: string;
@@ -21,15 +28,21 @@ export interface StorageMeta {
 
 export interface SignedUrlOptions {
   expiresInSeconds?: number;
-  /** Content-Disposition forced on the response. Local impl ignores. */
+  /** Content-Disposition forced on the response (S3 only). */
   download?: boolean;
 }
+
+export { StorageObjectNotFoundError, StorageUrlUnavailableError };
 
 export interface IStorage {
   readonly id: string;
   put(key: string, body: Buffer | Readable, meta?: StorageMeta): Promise<void>;
+  /** Rejects with StorageObjectNotFoundError when nothing is stored under
+   *  `key`, so a caller can answer 404 before it starts sending a body. */
   get(key: string): Promise<Readable>;
   delete(key: string): Promise<void>;
+  /** A URL the object can be fetched from without the app (S3 presign or a
+   *  public base URL). Backends without one throw StorageUrlUnavailableError. */
   signedUrl(key: string, options?: SignedUrlOptions): Promise<string>;
   exists(key: string): Promise<boolean>;
 }
@@ -53,7 +66,19 @@ export class LocalFileStorage implements IStorage {
 
   async get(key: string): Promise<Readable> {
     const target = this.resolve(key);
-    return createReadStream(target);
+    // Open first so a missing file rejects HERE. createReadStream() alone
+    // reports ENOENT later, as a stream error, after a route has already
+    // sent 200 and its headers.
+    let handle;
+    try {
+      handle = await open(target, 'r');
+    } catch (err) {
+      if (isNoEntry(err)) throw new StorageObjectNotFoundError(key);
+      throw err;
+    }
+    // autoClose (the default) closes the handle when the stream ends or is
+    // destroyed, e.g. when a client aborts a download.
+    return handle.createReadStream();
   }
 
   async delete(key: string): Promise<void> {
@@ -62,8 +87,12 @@ export class LocalFileStorage implements IStorage {
   }
 
   async signedUrl(key: string, _options: SignedUrlOptions = {}): Promise<string> {
-    // Local impl returns a file:// URL. Production paths use S3 presigned URLs.
-    return `file://${this.resolve(key)}`;
+    // This used to return file://<server path>. A browser cannot open that
+    // (it points at the server's disk), and it printed the server's storage
+    // path into the page. Validate the key so a bad one still fails loudly,
+    // then refuse: callers link to an authenticated route instead.
+    this.resolve(key);
+    throw new StorageUrlUnavailableError(this.id);
   }
 
   async exists(key: string): Promise<boolean> {
@@ -71,14 +100,7 @@ export class LocalFileStorage implements IStorage {
       await stat(this.resolve(key));
       return true;
     } catch (err) {
-      if (
-        err !== null &&
-        typeof err === 'object' &&
-        'code' in err &&
-        (err as { code?: string }).code === 'ENOENT'
-      ) {
-        return false;
-      }
+      if (isNoEntry(err)) return false;
       throw err;
     }
   }
@@ -91,6 +113,15 @@ export class LocalFileStorage implements IStorage {
     }
     return path.join(this.root, normalized);
   }
+}
+
+function isNoEntry(err: unknown): boolean {
+  return (
+    err !== null &&
+    typeof err === 'object' &&
+    'code' in err &&
+    (err as { code?: string }).code === 'ENOENT'
+  );
 }
 
 // ---- factory -----------------------------------------------------------

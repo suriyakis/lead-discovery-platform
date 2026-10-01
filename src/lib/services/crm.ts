@@ -4,6 +4,7 @@
 
 import { and, asc, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import type { Readable } from 'node:stream';
 import { db } from '@/lib/db/client';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import {
@@ -42,7 +43,11 @@ import {
   type ICRMConnector,
   type SyncResult,
 } from '@/lib/crm';
-import { getStorage, type IStorage } from '@/lib/storage';
+import {
+  StorageObjectNotFoundError,
+  getStorage,
+  type IStorage,
+} from '@/lib/storage';
 
 export class CrmServiceError extends Error {
   public readonly code: string;
@@ -712,8 +717,31 @@ export interface BulkExportInput {
 export interface BulkExportResult {
   csv: string;
   storageKey: string;
+  /** The export's file name inside this workspace's exports folder. */
+  fileName: string;
+  /** Download link (csvExportDownloadPath) the caller can offer. */
   url: string;
   rowCount: number;
+}
+
+// `leads-<epoch ms>-<8 hex>.csv`, exactly what exportLeadsToCsv writes.
+// Anything else is refused before it can reach a storage key.
+const CSV_EXPORT_FILE_RE = /^leads-\d{1,16}-[0-9a-f]{8}\.csv$/;
+
+/** True for a file name exportLeadsToCsv could have produced. */
+export function isCsvExportFileName(value: unknown): value is string {
+  return typeof value === 'string' && CSV_EXPORT_FILE_RE.test(value);
+}
+
+/** The authenticated download link for a CSV export of the caller's
+ *  workspace. The route re-derives the storage key from the session's
+ *  workspace, so the link is useless outside that workspace. */
+export function csvExportDownloadPath(fileName: string): string {
+  return `/api/crm/exports/${encodeURIComponent(fileName)}`;
+}
+
+function csvExportKey(workspaceId: bigint, fileName: string): string {
+  return `workspaces/${workspaceId}/exports/${fileName}`;
 }
 
 export async function exportLeadsToCsv(
@@ -742,9 +770,9 @@ export async function exportLeadsToCsv(
   const csv = rowsToCsv(records);
 
   const storage = storageOverride ?? getStorage();
-  const key = `workspaces/${ctx.workspaceId}/exports/leads-${Date.now()}-${randomUUID().slice(0, 8)}.csv`;
+  const fileName = `leads-${Date.now()}-${randomUUID().slice(0, 8)}.csv`;
+  const key = csvExportKey(ctx.workspaceId, fileName);
   await storage.put(key, Buffer.from(csv, 'utf8'), { contentType: 'text/csv' });
-  const url = await storage.signedUrl(key, { download: true });
 
   await recordAuditEvent(ctx, {
     kind: 'crm.export_csv',
@@ -757,7 +785,36 @@ export async function exportLeadsToCsv(
     },
   });
 
-  return { csv, storageKey: key, url, rowCount: records.length };
+  return {
+    csv,
+    storageKey: key,
+    fileName,
+    url: csvExportDownloadPath(fileName),
+    rowCount: records.length,
+  };
+}
+
+/**
+ * Stream a CSV export back for GET /api/crm/exports/[file]. Same
+ * permission as creating one. The key is built from ctx.workspaceId, so
+ * another workspace's file name resolves to nothing here: `not_found`,
+ * the same as a name that never existed.
+ */
+export async function streamCsvExport(
+  ctx: WorkspaceContext,
+  fileName: string,
+  storageOverride?: IStorage,
+): Promise<{ fileName: string; stream: Readable }> {
+  if (!canWrite(ctx)) throw permissionDenied('crm.export_csv');
+  if (!isCsvExportFileName(fileName)) throw notFound('csv export');
+  const storage = storageOverride ?? getStorage();
+  try {
+    const stream = await storage.get(csvExportKey(ctx.workspaceId, fileName));
+    return { fileName, stream };
+  } catch (err) {
+    if (err instanceof StorageObjectNotFoundError) throw notFound('csv export');
+    throw err;
+  }
 }
 
 // ---- read ---------------------------------------------------------

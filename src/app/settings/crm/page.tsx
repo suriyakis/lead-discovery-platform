@@ -8,8 +8,12 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { listCrmConnections } from '@/lib/services/crm';
-import { exportLeadsToCsv } from '@/lib/services/crm';
+import {
+  csvExportDownloadPath,
+  exportLeadsToCsv,
+  isCsvExportFileName,
+  listCrmConnections,
+} from '@/lib/services/crm';
 import { SettingsNav } from '@/components/SettingsNav';
 import type { CrmConnection } from '@/lib/db/schema/crm';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -17,11 +21,15 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 export default async function CrmSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ message?: string; error?: string; download?: string }>;
+  searchParams: Promise<{ message?: string; error?: string; file?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
   const sp = await searchParams;
+  // Only an export file name goes through the query string, never a URL:
+  // the link is rebuilt from it, so a crafted ?file= cannot point the
+  // "Download CSV" link anywhere else.
+  const exportFile = isCsvExportFileName(sp.file) ? sp.file : null;
 
   let connections: CrmConnection[] = [];
   try {
@@ -42,7 +50,7 @@ export default async function CrmSettingsPage({
       const result = await exportLeadsToCsv(c, {});
       const params = new URLSearchParams({
         message: `Exported ${result.rowCount} leads`,
-        download: result.url,
+        file: result.fileName,
       });
       redirect(`/settings/crm?${params.toString()}`);
     } catch (err) {
@@ -69,12 +77,10 @@ export default async function CrmSettingsPage({
         {sp.message ? (
           <p className="form-message">
             {sp.message}
-            {sp.download ? (
+            {exportFile ? (
               <>
                 {' '}
-                <a href={sp.download} target="_blank" rel="noreferrer">
-                  Download CSV
-                </a>
+                <a href={csvExportDownloadPath(exportFile)}>Download CSV</a>
               </>
             ) : null}
           </p>
@@ -84,9 +90,9 @@ export default async function CrmSettingsPage({
         <section>
           <h2>Quick CSV export</h2>
           <p className="muted">
-            Export every qualified lead in this workspace as a CSV. The file
-            is written to storage and the download link below is presigned (or
-            file:// in dev).
+            Export every qualified lead in this workspace as a CSV. The
+            download link only works for signed-in members of this workspace
+            who can export leads.
           </p>
           <form action={exportNow}>
             <button type="submit">Export all leads as CSV</button>

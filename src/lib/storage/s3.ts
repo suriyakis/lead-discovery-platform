@@ -27,6 +27,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'node:stream';
+import { StorageObjectNotFoundError } from './errors';
 import type { IStorage, SignedUrlOptions, StorageMeta } from './index';
 
 export interface S3StorageConfig {
@@ -102,9 +103,15 @@ export class S3Storage implements IStorage {
   }
 
   async get(key: string): Promise<Readable> {
-    const result = await this.client.send(
-      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
-    );
+    let result;
+    try {
+      result = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+    } catch (err) {
+      if (isNotFound(err)) throw new StorageObjectNotFoundError(key);
+      throw err;
+    }
     if (!result.Body) {
       throw new Error(`s3: GetObject returned empty body for ${key}`);
     }
