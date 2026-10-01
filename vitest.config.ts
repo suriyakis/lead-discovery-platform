@@ -9,16 +9,19 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     include: ['src/tests/**/*.test.ts'],
-    // DB-backed test files share a single `lead_test` database and each
+    // DB-backed test files share a single test database and each
     // truncates in beforeEach. Run files sequentially so they don't race;
-    // within a file, tests still run in declaration order.
+    // within a file, tests still run in declaration order. Two concurrent
+    // `pnpm test` runs against the SAME database deadlock in truncateAll —
+    // give each parallel checkout its own TEST_DATABASE_URL (its name must
+    // still contain `lead_test`, e.g. .../lead_test_wt2).
     fileParallelism: false,
     // Tests run against a dedicated lead_test database. Set up once via the
     // globalSetup; per-file truncate via beforeEach in the suites that need it.
     globalSetup: ['./src/tests/setup-global.ts'],
     env: {
       // Override DATABASE_URL before any module import that reads it.
-      DATABASE_URL: 'postgres://lead:lead@localhost:5432/lead_test',
+      DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgres://lead:lead@localhost:5432/lead_test',
       // Auth.js complains if AUTH_SECRET is missing even in tests that don't
       // exercise auth — populate with a deterministic non-secret.
       AUTH_SECRET: 'test-secret-deterministic-not-for-production-use-only-tests',
