@@ -8,7 +8,6 @@
 // So a browser navigation gets a 303 back to a page with a readable
 // ?error= flash; fetch() and scripts keep the JSON from errorResponse().
 
-import { STALE_SESSION_REDIRECTS } from '@/lib/action-context';
 import { AccountInactiveError, AuthRequiredError, NoWorkspaceError } from '@/lib/services/auth-context';
 import { errorResponse } from '@/lib/services/http';
 
@@ -51,11 +50,10 @@ export async function downloadErrorResponse(
 ): Promise<Response> {
   const failure = errorResponse(err);
   if (!isBrowserNavigation(req)) return failure;
-  if (err instanceof AuthRequiredError) return seeOther(STALE_SESSION_REDIRECTS.authRequired);
-  if (err instanceof AccountInactiveError) {
-    return seeOther(STALE_SESSION_REDIRECTS.accountInactive);
-  }
-  if (err instanceof NoWorkspaceError) return seeOther(STALE_SESSION_REDIRECTS.noWorkspace);
+  // The same targets as requireActionContext (src/lib/action-context.ts).
+  if (err instanceof AuthRequiredError) return seeOther('/');
+  if (err instanceof AccountInactiveError) return seeOther('/pending');
+  if (err instanceof NoWorkspaceError) return seeOther('/dashboard');
   const page = pageFor({ status: failure.status, code: await errorCode(failure) });
   const sep = page.path.includes('?') ? '&' : '?';
   return seeOther(`${page.path}${sep}error=${encodeURIComponent(page.error)}`);

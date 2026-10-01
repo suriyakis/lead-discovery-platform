@@ -10,7 +10,6 @@
 // `getAIProviderForCtx(ctx)` to honor a workspace-supplied BYOK key.
 
 import { createHash } from 'node:crypto';
-import { platformKeyForVendor } from '@/lib/platform-provider-keys';
 import { GeminiAIProvider } from './gemini';
 import type { ZodSchema } from 'zod';
 
@@ -867,7 +866,12 @@ export function _setAIProviderForTests(provider: IAIProvider | null): void {
 
 /** The vendors getPlatformAIProvider can build an AI provider for. Their
  *  key locations come from the shared platform key catalogue. */
-const PLATFORM_AI_VENDORS: ReadonlySet<string> = new Set(['openai', 'anthropic', 'gemini', 'deepseek']);
+const PLATFORM_AI_VENDORS: ReadonlySet<string> = new Set([
+  'openai',
+  'anthropic',
+  'gemini',
+  'deepseek',
+]);
 
 export interface PlatformAIProviderResolution {
   /** Vendor the platform tier resolves for the `ai` capability. */
@@ -915,6 +919,7 @@ export async function getPlatformAIProvider(): Promise<PlatformAIProviderResolut
       provider: new MockAIProvider(),
     };
   }
+  const { platformKeyForVendor } = await import('@/lib/platform-provider-keys');
   const keyMeta = PLATFORM_AI_VENDORS.has(vendor) ? platformKeyForVendor(vendor) : null;
   if (!keyMeta) {
     throw new Error(`Unknown AI provider id from the platform cascade: ${vendor}`);

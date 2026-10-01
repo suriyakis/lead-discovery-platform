@@ -10,7 +10,7 @@
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db/client';
-import { STALE_SESSION_REDIRECTS, requireActionContext } from '@/lib/action-context';
+import { requireActionContext } from '@/lib/action-context';
 import {
   addMemberAction,
   changeMemberRoleAction,
@@ -125,17 +125,17 @@ describe('lane actions redirect a stale session instead of erroring', () => {
   it.each(ACTIONS)('%s: no workspace -> /dashboard', async (_name, run) => {
     const user = await seedUser({ email: 'alone@test.local' });
     signInAs(user);
-    expect(await expectRedirect(run)).toBe(STALE_SESSION_REDIRECTS.noWorkspace);
+    expect(await expectRedirect(run)).toBe('/dashboard');
   });
 
   it.each(ACTIONS)('%s: account suspended -> /pending', async (_name, run) => {
     const owner = await seedUser({ email: 'owner@test.local', accountStatus: 'suspended' });
     await seedWorkspace({ name: 'Acme', ownerUserId: owner });
     signInAs(owner, 'suspended');
-    expect(await expectRedirect(run)).toBe(STALE_SESSION_REDIRECTS.accountInactive);
+    expect(await expectRedirect(run)).toBe('/pending');
   });
 
   it.each(ACTIONS)('%s: signed out -> /', async (_name, run) => {
-    expect(await expectRedirect(run)).toBe(STALE_SESSION_REDIRECTS.authRequired);
+    expect(await expectRedirect(run)).toBe('/');
   });
 });
