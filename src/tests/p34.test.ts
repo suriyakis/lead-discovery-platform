@@ -80,8 +80,11 @@ describe('registerRepeatableJobs', () => {
       q.enqueue('outreach.drain.tick', {}),
       q.enqueue('mail.imap.tick', {}),
     ]);
-    // Yield twice — handlers run on microtask + DB hits.
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait for the registered handlers to finish (they hit the DB, which
+    // can take well over 100 ms on a loaded machine). A job whose handler
+    // is missing never joins the queue's chain, so drain() does not wait
+    // for it and it is still reported as pending below.
+    await q.drain();
     for (const id of ids) {
       const status = await q.status(id);
       expect(status.state === 'succeeded' || status.state === 'failed').toBe(true);
