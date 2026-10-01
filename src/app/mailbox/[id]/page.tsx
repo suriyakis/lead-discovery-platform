@@ -41,6 +41,7 @@ import {
   type HolidayCountry,
 } from '@/lib/i18n/holidays';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { formatUtc } from '@/lib/format-utc';
 
 export default async function MailboxDetail({
   params,
@@ -121,7 +122,7 @@ export default async function MailboxDetail({
       const m =
         outcome.kind === 'failing'
           ? `Sync failed — the mailbox is failing: ${outcome.message}`
-          : `Sync failed (${outcome.consecutiveFailures} in a row; automatic syncs wait until ${outcome.nextSyncAfter.toLocaleString()}): ${outcome.message}`;
+          : `Sync failed (${outcome.consecutiveFailures} in a row; automatic syncs wait until ${formatUtc(outcome.nextSyncAfter)}): ${outcome.message}`;
       redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -412,7 +413,7 @@ export default async function MailboxDetail({
                 <>
                   This mailbox has been failing since{' '}
                   <time dateTime={mailbox.failingSince.toISOString()}>
-                    {mailbox.failingSince.toLocaleString()}
+                    {formatUtc(mailbox.failingSince)}
                   </time>
                 </>
               ) : (
@@ -444,7 +445,7 @@ export default async function MailboxDetail({
                   {' '}
                   at{' '}
                   <time dateTime={mailbox.lastErrorAt.toISOString()}>
-                    {mailbox.lastErrorAt.toLocaleString()}
+                    {formatUtc(mailbox.lastErrorAt)}
                   </time>
                 </>
               ) : null}
@@ -456,7 +457,7 @@ export default async function MailboxDetail({
             <p className="muted small">
               {autoSync
                 ? mailbox.imapNextSyncAfter
-                  ? `The next automatic check is after ${mailbox.imapNextSyncAfter.toLocaleString()}. `
+                  ? `The next automatic check is after ${formatUtc(mailbox.imapNextSyncAfter)}. `
                   : 'It is checked again on the next IMAP tick. '
                 : 'IMAP auto-sync is off for this workspace, so nothing re-checks it automatically. '}
               Test again checks SMTP and IMAP now and makes the mailbox active when both pass;
@@ -485,7 +486,7 @@ export default async function MailboxDetail({
                 {mailbox.lastSyncedAt ? (
                   <>
                     <dt>Last sync</dt>
-                    <dd>{mailbox.lastSyncedAt.toLocaleString()}</dd>
+                    <dd>{formatUtc(mailbox.lastSyncedAt)}</dd>
                   </>
                 ) : null}
               </>
@@ -498,7 +499,7 @@ export default async function MailboxDetail({
                   {mailbox.lastErrorAt ? (
                     <span className="muted">
                       {' '}
-                      · <time dateTime={mailbox.lastErrorAt.toISOString()}>{mailbox.lastErrorAt.toLocaleString()}</time>
+                      · <time dateTime={mailbox.lastErrorAt.toISOString()}>{formatUtc(mailbox.lastErrorAt)}</time>
                     </span>
                   ) : null}
                 </dd>
@@ -512,7 +513,7 @@ export default async function MailboxDetail({
                   {mailbox.imapNextSyncAfter ? (
                     <span className="muted">
                       {' '}
-                      · next retry {mailbox.imapNextSyncAfter.toLocaleString()}
+                      · next retry {formatUtc(mailbox.imapNextSyncAfter)}
                     </span>
                   ) : null}
                 </dd>

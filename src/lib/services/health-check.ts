@@ -16,6 +16,7 @@
 import { and, asc, count, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
+import { formatUtc } from '@/lib/format-utc';
 import { connectorRecipes, connectorRuns } from '@/lib/db/schema/connectors';
 import {
   workspaceHealthReports,
@@ -71,10 +72,6 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 // ---- rule findings --------------------------------------------------
 
 /** "2026-05-08 14:03 UTC" — findings are stored text, read later. */
-function formatUtc(d: Date): string {
-  return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
-
 export async function collectRuleFindings(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<HealthFinding[]> {
