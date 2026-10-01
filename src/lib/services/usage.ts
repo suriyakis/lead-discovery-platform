@@ -1,6 +1,7 @@
 import { and, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { usageLog, type NewUsageLogEntry, type UsageLogEntry } from '@/lib/db/schema/audit';
+import { tokenTransactions } from '@/lib/db/schema/tokens';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { costCentsToTokens } from '@/lib/billing/tokens';
 import { debitTokens } from './token-ledger';
@@ -205,5 +206,65 @@ export async function summarizeUsageByKeySource(
     totalUnits: typeof r.totalUnits === 'bigint' ? r.totalUnits : BigInt(r.totalUnits),
     totalCostCents: Number(r.totalCostCents),
     eventCount: Number(r.eventCount),
+  }));
+}
+
+export interface TokenDebitSummaryRow {
+  kind: string;
+  provider: string;
+  keySource: string; // same buckets as UsageByKeySourceRow.keySource
+  /** Tokens taken from the wallet for these events (positive). */
+  tokens: bigint;
+}
+
+/**
+ * Tokens debited from the workspace wallet for the usage events in a
+ * range, grouped like summarizeUsageByKeySource. This is what the
+ * customer actually paid; the cents columns above are the platform's
+ * provider cost, which only super-admins should see.
+ *
+ * Each debit row carries the usage_log id it charged
+ * (payload.usageLogId, written by maybeDebitForUsage), so debits are
+ * joined back to their events and the range filters on the event time.
+ * The totals therefore line up row for row with the usage summaries.
+ * Events that debited nothing (mock, BYOK, billing-exempt, zero cost)
+ * have no row here.
+ */
+export async function summarizeTokenDebits(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  range: UsageSummaryRange = {},
+): Promise<TokenDebitSummaryRow[]> {
+  const conds: SQL[] = [eq(usageLog.workspaceId, ctx.workspaceId)];
+  if (range.since) conds.push(gte(usageLog.createdAt, range.since));
+  if (range.until) conds.push(lte(usageLog.createdAt, range.until));
+
+  const keySource = sql<string>`coalesce(${usageLog.payload}->>'keySource', '(unspecified)')`;
+  const rows = await db
+    .select({
+      kind: usageLog.kind,
+      provider: usageLog.provider,
+      keySource,
+      // Debits are stored as negative deltas.
+      tokens: sql<bigint>`coalesce(sum(-${tokenTransactions.delta}), 0)::bigint`,
+    })
+    .from(usageLog)
+    .innerJoin(
+      tokenTransactions,
+      and(
+        eq(tokenTransactions.workspaceId, usageLog.workspaceId),
+        eq(tokenTransactions.kind, 'usage'),
+        // Raw SQL: the link lives in a jsonb field, which the builder
+        // cannot compare against a bigint column.
+        sql`${tokenTransactions.payload}->>'usageLogId' = ${usageLog.id}::text`,
+      ),
+    )
+    .where(and(...conds))
+    .groupBy(usageLog.kind, usageLog.provider, keySource);
+
+  return rows.map((r) => ({
+    kind: r.kind,
+    provider: r.provider,
+    keySource: String(r.keySource),
+    tokens: typeof r.tokens === 'bigint' ? r.tokens : BigInt(r.tokens),
   }));
 }

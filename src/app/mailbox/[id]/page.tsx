@@ -22,13 +22,7 @@ import {
   countMessagesByFolder,
   isHardBounce,
   listMessages,
-  markAsSpam,
-  moveToTrash,
-  permanentlyDelete,
-  restoreFromTrash,
-  retrySend,
   syncInbound,
-  unmarkSpam,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
@@ -38,6 +32,14 @@ import {
   type HolidayCountry,
 } from '@/lib/i18n/holidays';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import {
+  deleteMailboxMessages,
+  restoreMailboxMessages,
+  retryMailboxMessages,
+  spamMailboxMessages,
+  trashMailboxMessages,
+  unspamMailboxMessages,
+} from './actions';
 
 export default async function MailboxDetail({
   params,
@@ -180,128 +182,17 @@ export default async function MailboxDetail({
   }
 
   // ---- P61-06 bulk actions on the folder view ----
-  function backToFolder(formData: FormData, message: string) {
-    const folder = String(formData.get('folder') ?? 'inbox');
-    const q = String(formData.get('q') ?? '');
-    const params = new URLSearchParams({ folder });
-    if (q) params.set('q', q);
-    params.set('message', message);
-    redirect(`/mailbox/${id}?${params.toString()}`);
-  }
-  function backToFolderError(formData: FormData, message: string) {
-    const folder = String(formData.get('folder') ?? 'inbox');
-    const q = String(formData.get('q') ?? '');
-    const params = new URLSearchParams({ folder });
-    if (q) params.set('q', q);
-    params.set('error', message);
-    redirect(`/mailbox/${id}?${params.toString()}`);
-  }
-  function parseIds(formData: FormData): bigint[] {
-    const out: bigint[] = [];
-    for (const raw of formData.getAll('ids')) {
-      const s = String(raw);
-      if (!/^\d+$/.test(s)) continue;
-      try {
-        out.push(BigInt(s));
-      } catch {
-        // skip
-      }
-    }
-    return out;
-  }
-  function affectedNote(verb: string, n: number): string {
-    if (n === 0) return `No messages ${verb} (nothing was selected or eligible).`;
-    if (n === 1) return `1 message ${verb}.`;
-    return `${n} messages ${verb}.`;
-  }
-
-  async function trashSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await moveToTrash(c, ids);
-      backToFolder(formData, affectedNote('moved to trash', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'trash failed');
-    }
-  }
-  async function restoreSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await restoreFromTrash(c, ids);
-      backToFolder(formData, affectedNote('restored', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'restore failed');
-    }
-  }
-  async function spamSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await markAsSpam(c, ids, 'manual');
-      backToFolder(formData, affectedNote('flagged as spam', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'mark-spam failed');
-    }
-  }
-  async function unspamSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await unmarkSpam(c, ids);
-      backToFolder(formData, affectedNote('un-flagged', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'unmark failed');
-    }
-  }
-  async function deleteSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await permanentlyDelete(c, ids);
-      backToFolder(formData, affectedNote('permanently deleted', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'delete failed');
-    }
-  }
-  async function retrySelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await retrySend(c, ids);
-      const parts: string[] = [];
-      if (r.retried.length > 0)
-        parts.push(
-          r.retried.length === 1
-            ? '1 message resent'
-            : `${r.retried.length} messages resent`,
-        );
-      if (r.skippedHardBounce.length > 0)
-        parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
-      if (r.skippedIneligible.length > 0)
-        parts.push(`${r.skippedIneligible.length} ineligible`);
-      if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);
-      backToFolder(
-        formData,
-        parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.',
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'retry failed');
-    }
-  }
+  // The actions live in ./actions.ts ("use server"), bound to this
+  // mailbox. Inline actions here must not call local helper functions:
+  // Next serialises an inline action's closure and functions can't be
+  // serialised (audit X4 — the bulk buttons failed in production).
+  const mailboxIdArg = id.toString();
+  const trashSelected = trashMailboxMessages.bind(null, mailboxIdArg);
+  const restoreSelected = restoreMailboxMessages.bind(null, mailboxIdArg);
+  const spamSelected = spamMailboxMessages.bind(null, mailboxIdArg);
+  const unspamSelected = unspamMailboxMessages.bind(null, mailboxIdArg);
+  const deleteSelected = deleteMailboxMessages.bind(null, mailboxIdArg);
+  const retrySelected = retryMailboxMessages.bind(null, mailboxIdArg);
 
   async function saveSendingPolicy(formData: FormData) {
     'use server';

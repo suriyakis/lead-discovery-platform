@@ -289,24 +289,40 @@ export default async function BillingPage({
                   </span>
                 ) : null}
               </dd>
-              <dt>Stripe customer</dt>
-              <dd>
-                {ws.stripeCustomerId ? (
-                  <code>{ws.stripeCustomerId}</code>
-                ) : (
-                  <span className="muted">not provisioned yet</span>
-                )}
-              </dd>
-              <dt>Stripe subscription</dt>
-              <dd>
-                {ws.stripeSubscriptionId ? (
-                  <code>{ws.stripeSubscriptionId}</code>
-                ) : (
-                  <span className="muted">no active subscription</span>
-                )}
-              </dd>
             </dl>
           </div>
+
+          {/* Stripe object ids are for admins talking to support or
+              Stripe, not for every member (audit I173, ia:F-02). */}
+          {isAdmin ? (
+            <details style={{ marginTop: '1rem' }}>
+              <summary>Details</summary>
+              <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                <tbody>
+                  <tr>
+                    <th scope="row">Stripe customer</th>
+                    <td>
+                      {ws.stripeCustomerId ? (
+                        <code>{ws.stripeCustomerId}</code>
+                      ) : (
+                        <span className="muted">not provisioned yet</span>
+                      )}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Stripe subscription</th>
+                    <td>
+                      {ws.stripeSubscriptionId ? (
+                        <code>{ws.stripeSubscriptionId}</code>
+                      ) : (
+                        <span className="muted">no active subscription</span>
+                      )}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </details>
+          ) : null}
 
           {isAdmin && stripeConfigured && ws.stripeCustomerId ? (
             <form action={openPortal} className="action-row" style={{ marginTop: '1rem' }}>
