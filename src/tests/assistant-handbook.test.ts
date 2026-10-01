@@ -111,7 +111,8 @@ describe('assistant handbook — content truth', () => {
     const f = flat(autopilot);
     // Both pause switches, and what each one really stops.
     expect(f).toContain('stops autopilot runs only');
-    expect(f).toContain('[/mailbox/queue]) stops the send queue only');
+    // ia:F-02 (hotfixes fb131d8): the queue's pause is owners/admins only.
+    expect(f).toContain('(owners and admins, on [/mailbox/queue]) stops the send queue only');
     expect(f).toContain('every 5 minutes');
     expect(f).toContain('Starter and Pro');
   });
@@ -155,8 +156,15 @@ describe('assistant handbook — content truth', () => {
     expect(at.length).toBeGreaterThan(0);
     for (const i of at) {
       expect(window(HANDBOOK_SOURCE, i, 120)).toContain('[/mailbox/queue]');
+      expect(flat(window(HANDBOOK_SOURCE, i, 200))).toContain('owners and admins change them');
       expect(window(HANDBOOK_SOURCE, i, 400)).not.toContain('/settings/outreach');
     }
+  });
+
+  it('describes /settings/usage the way the page shows it, not as a cost breakdown', () => {
+    const f = flat(HANDBOOK_SOURCE);
+    expect(f).not.toContain('cost breakdown');
+    expect(f).toContain('owners and admins also see the tokens charged');
   });
 
   // ia:F-03 (mail-safety, migration 0062) made the reply auto-actions

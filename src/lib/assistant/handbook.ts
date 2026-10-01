@@ -102,7 +102,8 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
 8. SENDING: queued emails go out from a mailbox after a suppression
    check, a geography re-check, the mailbox's sending policy, the domain
    cooldown and the daily limit. The workspace send caps (daily email
-   limit, domain cooldown, send delays) live on [/mailbox/queue]. Each
+   limit, domain cooldown, send delays) live on [/mailbox/queue]: owners
+   and admins change them there, everyone else sees a summary. Each
    mailbox's own limits (max per day and per hour, per recipient domain,
    business window, timezone, weekends and holidays) are on that
    mailbox's page, opened from [/mailbox]. {H-06} A held queue entry
@@ -176,8 +177,9 @@ generate + enqueue switches; they change the same settings as
 The two pause switches — what each really stops:
 - Autopilot "Emergency pause" ([/autopilot]) stops autopilot runs only.
   Emails already in the send queue keep going out. {H-09}
-- Send-queue "Emergency pause" ([/mailbox/queue]) stops the send queue
-  only. Autopilot keeps writing, approving and queueing drafts. {H-10}
+- Send-queue "Emergency pause" (owners and admins, on [/mailbox/queue])
+  stops the send queue only. Autopilot keeps writing, approving and
+  queueing drafts. {H-10}
 - Neither one stops follow-ups, replies or emails you send by hand,
   crawl schedules, or mailbox sync. A PAUSED mailbox sends nothing and
   is not synced (its queued emails fail instead of waiting); pause one
@@ -273,8 +275,10 @@ evidence chain.
 - [/settings/members]: invite teammates and set their roles (admins).
 - [/settings/crm]: CRM connections, plus a CSV export of every pipeline
   lead.
-- [/settings/usage]: cost breakdown. [/settings/audit]: who changed what
-  (admins). [/settings/account]: your name and password.
+- [/settings/usage]: usage events and units per kind of work and
+  provider over a chosen range; owners and admins also see the tokens
+  charged for them (as on [/settings/billing]). [/settings/audit]: who
+  changed what (admins). [/settings/account]: your name and password.
 - [/health]: the weekly health report — empty wallet, missing product
   or mailbox, recipes without a target country, failed runs, review
   backlog, stale drafts, follow-ups awaiting approval, plus an AI review
@@ -303,7 +307,8 @@ notification. Available to every member, including viewers.
   from [/pipeline])? (3) is it really in the queue on [/mailbox/queue]?
   Hand-approved drafts can't be queued from the draft page yet (Known
   limitations, I002). (4) is the send-queue Emergency pause on
-  ([/mailbox/queue])? For autopilot drafts also check the master switch
+  ([/mailbox/queue]; an owner or admin switches it off)? For autopilot
+  drafts also check the master switch
   and the Emergency pause on [/autopilot]. (5) has the daily email limit
   been reached, or is a domain cooldown or the mailbox's business window
   holding it (the queue entry shows why)? (6) is the mailbox paused or

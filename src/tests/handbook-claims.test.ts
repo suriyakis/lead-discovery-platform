@@ -5,12 +5,16 @@
 // handbook no longer makes.
 //
 // The pins sit together, one describe block per owning service, so the
-// handbook's guarantees read in one place. If one of these fails because
-// you changed the behaviour on purpose, rewrite the handbook sentence that
-// carries the same tag in the same PR — the in-app guide quotes it to
-// operators word for word.
+// handbook's guarantees read in one place. (The AP-01 spec asked for each
+// pin in its owning service's suite; they are kept here instead because
+// Phase 0 lanes edit those suites in parallel. The coverage check scans
+// every *.test.ts, so a pin can move into its service's suite later
+// without other changes.) If one of these fails because you changed the
+// behaviour on purpose, rewrite the handbook sentence that carries the
+// same tag in the same PR — the in-app guide quotes it to operators word
+// for word.
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/connectors/mock';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,7 +66,15 @@ import {
 } from '@/lib/services/pipeline';
 import { approveOutreachDraft, generateOutreachDraft } from '@/lib/services/outreach';
 import { createMailbox, updateMailbox } from '@/lib/services/mailbox';
-import { drainQueue, enqueueDraft, updateSendSettings } from '@/lib/services/outreach-queue';
+import {
+  drainQueue,
+  enqueueDraft,
+  getSendSettings,
+  updateSendSettings,
+} from '@/lib/services/outreach-queue';
+import { saveSendSettingsAction } from '@/app/mailbox/queue/actions';
+import { workspaceMembers } from '@/lib/db/schema/workspaces';
+import { expectRedirect } from './helpers/next-render';
 import {
   runOnce,
   updateAutopilotSettings,
@@ -97,6 +109,19 @@ import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 const SRC = path.resolve(__dirname, '..');
 /** Each pin runs a real mock discovery (+ drafting/sending); give it room. */
 const DB_TEST_TIMEOUT_MS = 30_000;
+
+// Server actions are called with a plain session instead of Auth.js;
+// getWorkspaceContext() stays real, so the role comes from
+// workspace_members exactly as in production (same harness as
+// mailbox-queue.test.ts).
+const session = vi.hoisted(() => ({
+  current: null as null | { user: { id: string; role: 'member'; accountStatus: 'active' } },
+}));
+vi.mock('@/lib/auth', () => ({ auth: async () => session.current }));
+
+function signInAs(userId: string): void {
+  session.current = { user: { id: userId, role: 'member', accountStatus: 'active' } };
+}
 
 // ---- harness -------------------------------------------------------
 
@@ -286,6 +311,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   _setAIProviderForTests(null);
+  session.current = null;
 });
 
 afterAll(async () => {
@@ -408,25 +434,47 @@ describe('send queue', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(entry.toAddresses).toEqual(['anna@target.com']);
   });
 
-  it('[handbook H-06] workspace send caps are send settings edited on /mailbox/queue; mailbox limits sit on the mailbox page', async () => {
-    const queuePage = readSrc('app/mailbox/queue/page.tsx');
-    expect(queuePage).toContain('updateSendSettings');
-    expect(queuePage).toContain('dailyEmailLimit');
-    expect(queuePage).toContain('domainCooldownHours');
-    const outreachSettings = readSrc('app/settings/outreach/page.tsx');
-    expect(outreachSettings).not.toContain('updateSendSettings');
-    expect(outreachSettings).not.toContain('dailyEmailLimit');
-    const mailboxPage = readSrc('app/mailbox/[id]/page.tsx');
-    expect(mailboxPage).toContain('Sending policy');
-    expect(mailboxPage).toContain('Max per day');
-
-    // And the cap is enforced by the queue.
+  it('[handbook H-06] the send caps are saved by the /mailbox/queue action, by owners and admins only, and the queue enforces them; mailbox limits sit on the mailbox page', async () => {
     const s = await setup();
     await queuedEmail(s);
-    await updateSendSettings(ctx(s), { dailyEmailLimit: 0 });
+    const before = await getSendSettings(ctx(s));
+    const capsForm = (dailyEmailLimit: string) => {
+      const fd = new FormData();
+      fd.set('dailyEmailLimit', dailyEmailLimit);
+      fd.set('domainCooldownHours', String(before.domainCooldownHours));
+      fd.set('defaultDelayMode', before.defaultDelayMode);
+      fd.set('fixedDelayMinutes', String(before.fixedDelayMinutes));
+      fd.set('randomDelayMinMinutes', String(before.randomDelayMinMinutes));
+      fd.set('randomDelayMaxMinutes', String(before.randomDelayMaxMinutes));
+      return fd;
+    };
+
+    // A member's save on /mailbox/queue is refused and changes nothing…
+    const memberId = await seedUser({ email: `hb-member-${seq}@test.local` });
+    await db
+      .insert(workspaceMembers)
+      .values({ workspaceId: s.workspaceId, userId: memberId, role: 'member' });
+    signInAs(memberId);
+    const refused = await expectRedirect(() => saveSendSettingsAction(capsForm('0')));
+    expect(new URL(refused, 'http://app.test').searchParams.get('error')).toBeTruthy();
+    expect((await getSendSettings(ctx(s))).dailyEmailLimit).toBe(before.dailyEmailLimit);
+
+    // …an admin's save sets the cap, and the queue holds the email.
+    signInAs(s.adminId);
+    const saved = await expectRedirect(() => saveSendSettingsAction(capsForm('0')));
+    expect(new URL(saved, 'http://app.test').pathname).toBe('/mailbox/queue');
+    expect((await getSendSettings(ctx(s))).dailyEmailLimit).toBe(0);
     const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
     expect(r.sent).toBe(0);
     expect((await queueRows(s))[0]!.status).toBe('queued');
+
+    // That action is the only place in the app that saves send settings
+    // (nothing on /settings/outreach does).
+    expect(filesContaining('app', 'updateSendSettings(')).toEqual(['app/mailbox/queue/actions.ts']);
+    // Each mailbox's own limits are on its page.
+    const mailboxPage = readSrc('app/mailbox/[id]/page.tsx');
+    expect(mailboxPage).toContain('Sending policy');
+    expect(mailboxPage).toContain('Max per day');
   });
 
   it('[handbook H-22] without a reviewed translation the queue translates at send time, unreviewed', async () => {
