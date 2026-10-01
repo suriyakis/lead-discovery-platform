@@ -6,18 +6,19 @@
 // rendered as in-app links.
 //
 // On failure (AP-02) the question goes back into the input, the
-// unanswered bubble is removed and a Retry button resends it; the rules
-// live in src/lib/assistant/panel-state.ts.
+// unanswered bubble is removed and a Retry button resends it. The state
+// machine (panelReducer) and the ask itself (runAsk) live in
+// src/lib/assistant/panel-state.ts; AssistantPanelView only renders a
+// state, so tests can drive the same flow and render it without a DOM.
 
-import { useRef, useState } from 'react';
+import { useReducer, useRef, useState, type RefObject } from 'react';
 import Link from 'next/link';
 import { HelpCircle, RotateCcw, Send, X } from 'lucide-react';
 import {
-  historyToSend,
-  settleAsk,
-  type AskFailure,
-  type AssistantReplyBody,
-  type Turn,
+  INITIAL_PANEL_STATE,
+  panelReducer,
+  runAsk,
+  type PanelState,
 } from '@/lib/assistant/panel-state';
 
 /** Render "[/path]" handbook references as links, everything else as text. */
@@ -40,55 +41,35 @@ function AnswerText({ text }: { text: string }) {
   );
 }
 
-export function AssistantPanel() {
-  const [open, setOpen] = useState(false);
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<(AskFailure & { question: string }) | null>(null);
-  const listRef = useRef<HTMLDivElement | null>(null);
+export interface AssistantPanelViewProps {
+  open: boolean;
+  state: PanelState;
+  onOpen: () => void;
+  onClose: () => void;
+  onInput: (value: string) => void;
+  onSubmit: () => void;
+  onRetry: (question: string) => void;
+  listRef?: RefObject<HTMLDivElement | null>;
+}
 
-  async function ask(retryQuestion?: string) {
-    const question = (retryQuestion ?? input).trim();
-    if (!question || busy) return;
-    const prior = turns;
-    setBusy(true);
-    setFailure(null);
-    // A Retry leaves anything newly typed in the input alone.
-    if (retryQuestion === undefined || input.trim() === question) setInput('');
-    setTurns([...prior, { role: 'user', content: question }]);
-    let status: number | null = null;
-    let body: AssistantReplyBody | null = null;
-    try {
-      const res = await fetch('/api/assistant', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, history: historyToSend(prior) }),
-      });
-      status = res.status;
-      body = (await res.json().catch(() => null)) as AssistantReplyBody | null;
-    } catch {
-      status = null; // never reached the server
-    }
-    const outcome = settleAsk(prior, question, status, body);
-    setTurns(outcome.turns);
-    if (outcome.ok) {
-      queueMicrotask(() => {
-        listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-      });
-    } else {
-      // Hand the question back unless something new was typed meanwhile.
-      setInput((current) => (current.trim() ? current : outcome.input));
-      setFailure({ ...outcome.failure, question });
-    }
-    setBusy(false);
-  }
+/** The panel for a given state. No state of its own. */
+export function AssistantPanelView({
+  open,
+  state,
+  onOpen,
+  onClose,
+  onInput,
+  onSubmit,
+  onRetry,
+  listRef,
+}: AssistantPanelViewProps) {
+  const { turns, input, busy, failure } = state;
 
   if (!open) {
     return (
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={onOpen}
         title="Ask the platform — how-to help and diagnosis"
         style={{
           position: 'fixed',
@@ -144,7 +125,7 @@ export function AssistantPanel() {
         </strong>
         <button
           type="button"
-          onClick={() => setOpen(false)}
+          onClick={onClose}
           className="ghost-btn"
           style={{ padding: '0.15rem 0.4rem' }}
           aria-label="Close"
@@ -176,6 +157,7 @@ export function AssistantPanel() {
         {turns.map((t, i) => (
           <div
             key={i}
+            data-turn={t.role}
             style={{
               alignSelf: t.role === 'user' ? 'flex-end' : 'flex-start',
               maxWidth: '90%',
@@ -201,7 +183,7 @@ export function AssistantPanel() {
               <button
                 type="button"
                 className="ghost-btn"
-                onClick={() => void ask(failure.question)}
+                onClick={() => onRetry(failure.question)}
                 disabled={busy}
               >
                 <RotateCcw className="lucide" aria-hidden="true" /> Retry
@@ -214,7 +196,7 @@ export function AssistantPanel() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void ask();
+          onSubmit();
         }}
         style={{
           display: 'flex',
@@ -226,7 +208,7 @@ export function AssistantPanel() {
         <input
           type="text"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => onInput(e.target.value)}
           placeholder="Ask anything about the platform…"
           style={{ flex: 1 }}
           maxLength={2000}
@@ -236,5 +218,33 @@ export function AssistantPanel() {
         </button>
       </form>
     </div>
+  );
+}
+
+export function AssistantPanel() {
+  const [open, setOpen] = useState(false);
+  const [state, dispatch] = useReducer(panelReducer, INITIAL_PANEL_STATE);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  async function ask(retryQuestion?: string) {
+    const outcome = await runAsk(state, dispatch, retryQuestion);
+    if (outcome?.ok) {
+      queueMicrotask(() => {
+        listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+      });
+    }
+  }
+
+  return (
+    <AssistantPanelView
+      open={open}
+      state={state}
+      onOpen={() => setOpen(true)}
+      onClose={() => setOpen(false)}
+      onInput={(value) => dispatch({ type: 'input', value })}
+      onSubmit={() => void ask()}
+      onRetry={(question) => void ask(question)}
+      listRef={listRef}
+    />
   );
 }

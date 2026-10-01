@@ -1,6 +1,7 @@
 // Conversation rules for the "Ask the platform" panel (AP-02), kept pure
 // so they are unit-testable without a DOM. AssistantPanel.tsx is a thin
-// view over these.
+// view over these: its state lives in panelReducer and every ask runs
+// through runAsk, so the tests drive exactly what the panel runs.
 //
 // The failure contract (I135/I136):
 //   - the question goes back into the input, so nothing has to be retyped;
@@ -123,4 +124,101 @@ export function settleAsk(
     input: question,
     failure: describeFailure(status, body),
   };
+}
+
+// ---- the panel's state machine ---------------------------------------
+
+export interface PanelState {
+  turns: Turn[];
+  input: string;
+  busy: boolean;
+  /** The last failure, with the question Retry would resend. */
+  failure: (AskFailure & { question: string }) | null;
+}
+
+export const INITIAL_PANEL_STATE: PanelState = {
+  turns: [],
+  input: '',
+  busy: false,
+  failure: null,
+};
+
+export type PanelAction =
+  | { type: 'input'; value: string }
+  | { type: 'submit'; question: string; retry: boolean }
+  | { type: 'settled'; question: string; outcome: AskOutcome };
+
+export function panelReducer(state: PanelState, action: PanelAction): PanelState {
+  switch (action.type) {
+    case 'input':
+      return { ...state, input: action.value };
+    case 'submit':
+      return {
+        ...state,
+        busy: true,
+        failure: null,
+        // A Retry leaves anything newly typed in the input alone.
+        input: !action.retry || state.input.trim() === action.question ? '' : state.input,
+        // The optimistic bubble; 'settled' replaces the whole list.
+        turns: [...state.turns, { role: 'user', content: action.question }],
+      };
+    case 'settled':
+      if (action.outcome.ok) {
+        return { ...state, busy: false, failure: null, turns: action.outcome.turns };
+      }
+      return {
+        ...state,
+        busy: false,
+        // No orphan: the unanswered bubble is dropped.
+        turns: action.outcome.turns,
+        // Hand the question back unless something new was typed meanwhile
+        // (the reducer sees the latest input, not the one at submit time).
+        input: state.input.trim() ? state.input : action.outcome.input,
+        failure: { ...action.outcome.failure, question: action.question },
+      };
+  }
+}
+
+/** One round trip to /api/assistant. Never throws: a network failure is
+ *  settled like any other failure. */
+export async function postQuestion(
+  question: string,
+  prior: ReadonlyArray<Turn>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AskOutcome> {
+  let status: number | null = null;
+  let body: AssistantReplyBody | null = null;
+  try {
+    const res = await fetchImpl('/api/assistant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, history: historyToSend(prior) }),
+    });
+    status = res.status;
+    body = (await res.json().catch(() => null)) as AssistantReplyBody | null;
+  } catch {
+    status = null; // never reached the server
+  }
+  return settleAsk(prior, question, status, body);
+}
+
+/**
+ * One ask exactly as the panel runs it: pick the question (the input, or
+ * `retryQuestion` for Retry), show it optimistically, POST it, settle.
+ * `state` is the panel state the click saw. Returns null when there was
+ * nothing to ask (empty input, or a request already in flight).
+ */
+export async function runAsk(
+  state: PanelState,
+  dispatch: (action: PanelAction) => void,
+  retryQuestion?: string,
+  fetchImpl?: typeof fetch,
+): Promise<AskOutcome | null> {
+  const question = (retryQuestion ?? state.input).trim();
+  if (!question || state.busy) return null;
+  const prior = state.turns;
+  dispatch({ type: 'submit', question, retry: retryQuestion !== undefined });
+  const outcome = await postQuestion(question, prior, fetchImpl);
+  dispatch({ type: 'settled', question, outcome });
+  return outcome;
 }
