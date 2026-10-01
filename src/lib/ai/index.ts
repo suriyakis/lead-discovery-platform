@@ -462,19 +462,24 @@ export class AnthropicAIProvider implements IAIProvider {
   }
 
   estimateCost(usage: AIUsage): number {
-    // Anthropic pricing (July 2026), $/1M in / out:
-    //   Haiku 4.5:  $1 / $5    Sonnet 5 & 4.6: $3 / $15
-    //   Opus 5/4.x: $5 / $25   Fable 5: $10 / $50
-    // Tier by model-name substring; unknown Claude models bill at
-    // Sonnet rates (the middle tier — least-wrong default).
+    // Anthropic pricing (Sept 2026), $/1M in / out:
+    //   Haiku 4.5:      $1 / $5     Sonnet 5 / 5.5: $2 / $10
+    //   Sonnet 4.6/4.x: $3 / $15    Opus 5.5:       $4 / $20
+    //   Opus 5 / 4.x:   $5 / $25    Fable / Mythos: $10 / $50
+    // Tier by model-name substring; unknown Claude models bill at the
+    // Sonnet 4.x rate (the middle tier — least-wrong default).
     const m = usage.model.toLowerCase();
     const [inputRate, outputRate] = m.includes('haiku')
       ? [0.001, 0.005]
-      : m.includes('opus')
-        ? [0.005, 0.025]
-        : m.includes('fable') || m.includes('mythos')
-          ? [0.01, 0.05]
-          : [0.003, 0.015];
+      : /opus-5[-.]5/.test(m)
+        ? [0.004, 0.02]
+        : m.includes('opus')
+          ? [0.005, 0.025]
+          : m.includes('fable') || m.includes('mythos')
+            ? [0.01, 0.05]
+            : /sonnet-5/.test(m)
+              ? [0.002, 0.01]
+              : [0.003, 0.015];
     return (usage.inputTokens / 1000) * inputRate + (usage.outputTokens / 1000) * outputRate;
   }
 

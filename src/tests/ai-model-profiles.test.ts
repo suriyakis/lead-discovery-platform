@@ -425,3 +425,25 @@ describe('with `reasoning`: Gemini', () => {
     expect(refused.kind).toBe('refusal');
   });
 });
+
+describe('Anthropic cost estimates (rate table — owner sign-off)', () => {
+  const MILLION = { inputTokens: 1e6, outputTokens: 1e6 };
+  const anthropic = new AnthropicAIProvider({ apiKey: 'k' });
+
+  it.each([
+    ['claude-sonnet-5', 12], // $2 + $10
+    ['claude-sonnet-5-5', 12],
+    ['claude-opus-5-5', 24], // $4 + $20
+    ['claude-opus-5', 30], // $5 + $25
+    ['claude-opus-4-8', 30],
+    ['claude-sonnet-4-6', 18], // $3 + $15
+    ['claude-haiku-4-5', 6], // $1 + $5
+    ['claude-fable-5-1', 60], // $10 + $50
+  ])('Anthropic %s: 1M in + 1M out = $%d', (model, dollars) => {
+    expect(anthropic.estimateCost({ model, ...MILLION })).toBeCloseTo(dollars, 9);
+  });
+
+  it('estimateCost({model: claude-sonnet-5, 1M/1M}) equals 12', () => {
+    expect(anthropic.estimateCost({ model: 'claude-sonnet-5', ...MILLION })).toBe(12);
+  });
+});
