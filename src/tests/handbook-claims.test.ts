@@ -17,6 +17,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/connectors/mock';
 import fs from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -92,7 +94,15 @@ import {
   switchesOf,
   updateReplyAutoActions,
 } from '@/lib/services/reply-auto-actions';
-import { isSuppressed, recordUnsubscribeByToken } from '@/lib/services/suppression';
+import { isSuppressed } from '@/lib/services/suppression';
+import { confirmUnsubscribe } from '@/lib/services/unsubscribe';
+import { GET as unsubscribeLinkGet } from '@/app/api/unsubscribe/[token]/route';
+import { auditLog } from '@/lib/db/schema/audit';
+import { archiveDocument, uploadDocument } from '@/lib/services/documents';
+import { LocalFileStorage, _setStorageForTests } from '@/lib/storage';
+import { GET as downloadDocument } from '@/app/api/documents/[id]/download/route';
+import { addMember, removeMember, setAccountStatus, setMemberRole } from '@/lib/services/users';
+import { adjustTokens } from '@/lib/services/token-ledger';
 import { notifications } from '@/lib/db/schema/notifications';
 import type { InboundMessage, OutboundMessage, SendResult } from '@/lib/mail';
 import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
@@ -105,6 +115,7 @@ import { askAssistant } from '@/lib/services/assistant';
 import { getTokenWallet } from '@/lib/services/token-ledger';
 import { recordUsage } from '@/lib/services/usage';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx } from './helpers/platform';
 
 const SRC = path.resolve(__dirname, '..');
 /** Each pin runs a real mock discovery (+ drafting/sending); give it room. */
@@ -906,6 +917,9 @@ async function leadThreadWithReply(
       toAddresses: ['sales@nulife.pl'],
       subject: 'Re: Concrete sealing',
       bodyText: body,
+      // What the IMAP sync stores for a message whose In-Reply-To names
+      // one of our sends (flow:F-01); only such mail is classified.
+      outreachRelevance: 'prospect_reply',
     })
     .returning();
   const { product, items } = await discover(s);
@@ -942,7 +956,7 @@ async function replyClassOf(messageId: bigint) {
 }
 
 describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
-  it('[handbook H-17] every inbound message gets exactly one of the ten reply classes', () => {
+  it('[handbook H-17] a reply to our outreach gets exactly one of the ten reply classes', () => {
     const samples: Record<ReplyClass, string> = {
       unsubscribe: 'Please unsubscribe me from this list.',
       bounce: 'Delivery failed: the recipient address was rejected.',
@@ -961,7 +975,7 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(classifyReply('').type).toBe('irrelevant');
   });
 
-  it('[handbook H-18] reply auto-actions are admin-only switches on /settings/outreach, off by default; the unsubscribe link and SMTP rejections suppress regardless', async () => {
+  it('[handbook H-18] reply auto-actions are admin-only switches on /settings/outreach, off by default, acting only on replies to our outreach (bounce not yet); the confirmed unsubscribe page and recipient rejections suppress regardless', async () => {
     const s = await setup();
     const mailbox = await makeMailbox(s);
 
@@ -991,8 +1005,9 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     ]);
     expect(filesContaining('components', 'updateReplyAutoActions')).toEqual([]);
 
-    // Switched on by an admin: unsubscribe and bounce replies suppress the
-    // sender and close the lead.
+    // Switched on by an admin: an unsubscribe reply suppresses the sender
+    // and closes the lead. The bounce switch is not active yet (F-32):
+    // nobody is suppressed or closed from a bounce.
     await updateReplyAutoActions(adminCtx(s), {
       autoSuppressUnsubscribe: true,
       autoSuppressBounce: true,
@@ -1008,8 +1023,19 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
       'Delivery failed: the recipient address was rejected.',
     );
     await analyseReply(ctx(s), bounce.messageId);
-    expect(await isSuppressed(ctx(s), 'piotr@other.com')).toBe(true);
-    expect(await leadState(bounce.leadId)).toBe('closed');
+    expect(await isSuppressed(ctx(s), 'piotr@other.com')).toBe(false);
+    expect(await leadState(bounce.leadId)).toBe('relevant');
+    // They act only on replies to our outreach: the same words in mail
+    // that is not one are not even classified.
+    const stray = await leadThreadWithReply(s, mailbox.id, 'news@letters.example', 'Please unsubscribe me.');
+    await db
+      .update(mailMessages)
+      .set({ outreachRelevance: 'bulk' })
+      .where(eq(mailMessages.id, stray.messageId));
+    await analyseReply(ctx(s), stray.messageId);
+    expect(await replyClassOf(stray.messageId)).toBeNull();
+    expect(await isSuppressed(ctx(s), 'news@letters.example')).toBe(false);
+    expect(await leadState(stray.leadId)).toBe('relevant');
     // A negative reply still does nothing: its own switch is off.
     const no = await leadThreadWithReply(s, mailbox.id, 'ewa@third.com', 'Thanks, but we are not interested.');
     await analyseReply(ctx(s), no.messageId);
@@ -1034,14 +1060,32 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
       bodyText: 'Hello',
       trackingToken: token,
     });
-    await recordUnsubscribeByToken(token);
+    // Opening the link (GET) only shows the confirmation page…
+    const page = await unsubscribeLinkGet(new Request(`http://app.test/api/unsubscribe/${token}`), {
+      params: Promise.resolve({ token }),
+    });
+    expect(page.status).toBe(200);
+    expect(await isSuppressed(ctx(s), 'link@target.com')).toBe(false);
+    // …confirming it there (the page's POST) suppresses.
+    await confirmUnsubscribe(token);
     expect(await isSuppressed(ctx(s), 'link@target.com')).toBe(true);
-    // …and a rejection by the mail server while sending.
+    // …and the mail server refusing the recipient as non-existent while
+    // sending (nodemailer's EENVELOPE at RCPT TO, flow:F-05)…
     class RejectingProvider extends MockMailProvider {
+      constructor(private readonly err: () => Error) {
+        super();
+      }
       override async send(_message: OutboundMessage): Promise<SendResult> {
-        throw Object.assign(new Error('550 5.1.1 mailbox unavailable'), { responseCode: 550 });
+        throw this.err();
       }
     }
+    const smtpError = (code: string, command: string, response: string) =>
+      Object.assign(new Error(`${code} failed: ${response}`), {
+        code,
+        command,
+        response,
+        responseCode: Number(response.slice(0, 3)),
+      });
     await expect(
       sendMessage(ctx(s), {
         mode: 'one_to_one',
@@ -1049,10 +1093,28 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
         to: [{ address: 'gone@target.com' }],
         subject: 'Hi',
         text: 'manual',
-        providerOverride: new RejectingProvider(),
+        providerOverride: new RejectingProvider(() =>
+          smtpError('EENVELOPE', 'RCPT TO', '550 5.1.1 <gone@target.com>: Recipient address rejected: User unknown'),
+        ),
       }),
     ).rejects.toThrow(/550/);
     expect(await isSuppressed(ctx(s), 'gone@target.com')).toBe(true);
+    // …while a refused login suppresses nobody and marks the mailbox failing.
+    await expect(
+      sendMessage(ctx(s), {
+        mode: 'one_to_one',
+        mailboxId: mailbox.id,
+        to: [{ address: 'kept@target.com' }],
+        subject: 'Hi',
+        text: 'manual',
+        providerOverride: new RejectingProvider(() =>
+          smtpError('EAUTH', 'AUTH PLAIN', '535 5.7.8 Error: authentication failed'),
+        ),
+      }),
+    ).rejects.toThrow(/535/);
+    expect(await isSuppressed(ctx(s), 'kept@target.com')).toBe(false);
+    const [box] = await db.select().from(mailboxes).where(eq(mailboxes.id, mailbox.id));
+    expect(box!.status).toBe('failing');
   });
 });
 
@@ -1078,14 +1140,21 @@ function newsletter(uid: number, from: string): InboundMessage {
 }
 
 describe('inbound sync — classification of non-replies', { timeout: DB_TEST_TIMEOUT_MS }, () => {
-  it('[handbook H-25] a synced newsletter is classified as if it were a reply and notifies; it suppresses its sender only while auto-suppress is on', async () => {
+  it('[handbook H-25] only mail that answers our outreach is classified and notifies; a synced newsletter is filed with no class, notification or suppression, whatever the switches say', async () => {
     const s = await setup();
     const mailbox = await makeMailbox(s, { imap: true });
     const provider = new MockMailProvider();
+    const repliedNotes = () =>
+      db
+        .select()
+        .from(notifications)
+        .where(and(eq(notifications.workspaceId, s.workspaceId), eq(notifications.kind, 'lead.replied')));
 
+    // Auto-suppress on: the setting that did the X1 damage.
+    await updateReplyAutoActions(adminCtx(s), { autoSuppressUnsubscribe: true });
     provider.enqueueInbound(newsletter(1, 'news@letters.example'));
     await syncInbound(ctx(s), mailbox.id, provider);
-    const [msg] = await db
+    const [news] = await db
       .select()
       .from(mailMessages)
       .where(
@@ -1094,21 +1163,169 @@ describe('inbound sync — classification of non-replies', { timeout: DB_TEST_TI
           eq(mailMessages.fromAddress, 'news@letters.example'),
         ),
       );
-    expect(msg!.inReplyTo ?? null).toBeNull();
-    expect(msg!.replyClassification).toBe('unsubscribe');
-    const replied = await db
-      .select()
-      .from(notifications)
-      .where(and(eq(notifications.workspaceId, s.workspaceId), eq(notifications.kind, 'lead.replied')));
-    expect(replied).toHaveLength(1);
-    // The switches are off by default: the sender is not suppressed…
+    expect(news).toBeDefined();
+    expect(news!.outreachRelevance).toBe('bulk');
+    expect(news!.replyClassification).toBeNull();
+    expect(await repliedNotes()).toHaveLength(0);
     expect(await isSuppressed(ctx(s), 'news@letters.example')).toBe(false);
 
-    // …but with auto-suppress on, the next newsletter's sender is.
-    await updateReplyAutoActions(adminCtx(s), { autoSuppressUnsubscribe: true });
-    provider.enqueueInbound(newsletter(2, 'digest@other.example'));
+    // A reply to one of our emails is classified and notifies.
+    const sent = await sendMessage(ctx(s), {
+      mode: 'sequence',
+      mailboxId: mailbox.id,
+      to: [{ address: 'anna@target.com' }],
+      subject: 'Concrete sealing',
+      text: 'Who handles waterproofing at your firm?',
+      providerOverride: provider,
+    });
+    const [ours] = await db.select().from(mailMessages).where(eq(mailMessages.id, sent.id));
+    provider.enqueueInbound({
+      uid: 2,
+      messageId: '<anna-1@target.com>',
+      inReplyTo: ours!.messageId,
+      references: [ours!.messageId!],
+      from: { address: 'anna@target.com', name: 'Anna' },
+      to: [{ address: 'sales@nulife.pl' }],
+      cc: [],
+      subject: 'Re: Concrete sealing',
+      textBody: 'We are interested in learning more.',
+      htmlBody: null,
+      receivedAt: new Date(Date.now() + 2000),
+      headers: {},
+      attachments: [],
+    });
     await syncInbound(ctx(s), mailbox.id, provider);
-    expect(await isSuppressed(ctx(s), 'digest@other.example')).toBe(true);
+    const [reply] = await db
+      .select()
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, s.workspaceId),
+          eq(mailMessages.messageId, '<anna-1@target.com>'),
+        ),
+      );
+    expect(reply!.outreachRelevance).toBe('prospect_reply');
+    expect(reply!.replyClassification).toBe('interest');
+    expect(await repliedNotes()).toHaveLength(1);
+  });
+});
+
+// ---- personal mail, members, documents, error pages, platform ------
+
+describe('Phase 0 claims from the other lanes', { timeout: DB_TEST_TIMEOUT_MS }, () => {
+  it('[handbook H-26] mail you write yourself goes out without the unsubscribe link; cold sequence mail carries it', async () => {
+    const s = await setup();
+    const mailbox = await makeMailbox(s);
+    const provider = new MockMailProvider();
+    await sendMessage(ctx(s), {
+      mode: 'one_to_one',
+      mailboxId: mailbox.id,
+      to: [{ address: 'anna@target.com' }],
+      subject: 'Following our call',
+      text: 'Hello Anna, as promised.',
+      providerOverride: provider,
+    });
+    await sendMessage(ctx(s), {
+      mode: 'sequence',
+      mailboxId: mailbox.id,
+      to: [{ address: 'olga@target.com' }],
+      subject: 'Concrete sealing',
+      text: 'Who handles waterproofing at your firm?',
+      providerOverride: provider,
+    });
+    const [personal, cold] = provider.sent.map((r) => r.message);
+    expect(personal!.text).not.toContain('/api/unsubscribe/');
+    expect(personal!.headers?.['List-Unsubscribe']).toBeUndefined();
+    expect(cold!.headers?.['List-Unsubscribe']).toContain('/api/unsubscribe/');
+  });
+
+  it('[handbook H-27] only an owner grants, changes or removes the owner role; nobody re-roles themselves; the last owner stays', async () => {
+    const s = await setup();
+    const extra = await seedUser({ email: `hb-extra-${seq}@test.local` });
+    // An admin cannot hand out, change or remove the owner role…
+    await expect(addMember(adminCtx(s), extra, 'owner')).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    await expect(setMemberRole(adminCtx(s), s.ownerId, 'member')).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    await expect(removeMember(adminCtx(s), s.ownerId)).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    // …but manages every other role.
+    await addMember(adminCtx(s), extra, 'member');
+    expect((await setMemberRole(adminCtx(s), extra, 'viewer')).role).toBe('viewer');
+    // Nobody changes their own role, owners included.
+    await expect(setMemberRole(ctx(s), s.ownerId, 'admin')).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    // The last owner can be neither demoted nor removed…
+    await expect(removeMember(ctx(s), s.ownerId)).rejects.toMatchObject({ code: 'conflict' });
+    // …and an owner can make someone else an owner.
+    expect((await setMemberRole(ctx(s), extra, 'owner')).role).toBe('owner');
+  });
+
+  it('[handbook H-28] Download sends the file to any member, viewers included; an archived document sends the browser back to its page', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'hb-download-'));
+    _setStorageForTests(new LocalFileStorage(root));
+    try {
+      const s = await setup();
+      const viewer = await seedUser({ email: `hb-viewer-${seq}@test.local` });
+      await db
+        .insert(workspaceMembers)
+        .values({ workspaceId: s.workspaceId, userId: viewer, role: 'viewer' });
+      const { document } = await uploadDocument(ctx(s), {
+        filename: 'price-list.txt',
+        mimeType: 'text/plain',
+        body: Buffer.from('Sealer: 12 EUR per m2'),
+      });
+      const get = (headers: Record<string, string> = {}) =>
+        downloadDocument(
+          new Request(`http://app.test/api/documents/${document.id}/download`, { headers }),
+          { params: Promise.resolve({ id: document.id.toString() }) },
+        );
+
+      signInAs(viewer);
+      const ok = await get();
+      expect(ok.status).toBe(200);
+      expect(Buffer.from(await ok.arrayBuffer()).toString()).toBe('Sealer: 12 EUR per m2');
+
+      await archiveDocument(ctx(s), document.id);
+      const back = await get({ 'sec-fetch-mode': 'navigate', accept: 'text/html' });
+      expect(back.status).toBe(303);
+      const to = new URL(back.headers.get('location') ?? '', 'http://app.test');
+      expect(to.pathname).toBe(`/documents/${document.id}`);
+      expect(to.searchParams.get('error')).toMatch(/archived/);
+    } finally {
+      _setStorageForTests(null);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('[handbook H-29] a failing page shows Try again, the dashboard and support with a reference code; an unknown address shows a not-found page', () => {
+    const error = readSrc('app/error.tsx');
+    expect(error).toContain("'Try again'");
+    expect(error).toContain('href="/dashboard"');
+    expect(error).toContain('href="/support"');
+    expect(error).toContain('Reference <code>{error.digest}</code>');
+    const notFound = readSrc('app/not-found.tsx');
+    expect(notFound).toContain('404');
+    expect(notFound).toContain('href="/dashboard"');
+    expect(notFound).toContain('href="/support"');
+  });
+
+  it("[handbook H-30] no impersonation; a platform admin's change to a workspace is audited there under their own id, platform events never are", async () => {
+    const s = await setup();
+    const root = await seedUser({ email: `hb-root-${seq}@test.local`, role: 'super_admin' });
+    await adjustTokens(platformCtx(root), s.workspaceId, 100, 'goodwill');
+    await setAccountStatus(platformCtx(root), s.adminId, 'suspended', 'handbook pin');
+    const rows = await db.select().from(auditLog).where(eq(auditLog.userId, root));
+    const byKind = new Map(rows.map((r) => [r.kind, r]));
+    expect(byKind.get('tokens.adjust')?.workspaceId).toBe(s.workspaceId);
+    expect(byKind.get('user.set_account_status')?.workspaceId).toBeNull();
+    // Nothing in the app can act as another user.
+    expect(filesContaining('app', 'mpersonat')).toEqual([]);
+    expect(filesContaining('lib/services', 'startImpersonation')).toEqual([]);
   });
 });
 
