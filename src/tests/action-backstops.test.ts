@@ -19,6 +19,8 @@ import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/cont
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { archiveReviewItem } from '@/lib/services/review';
 import { preauthorizeEmail } from '@/lib/services/users';
+import { renderToStaticMarkup } from 'react-dom/server';
+import ReviewDetailPage from '@/app/review/[id]/page';
 import * as reviewActions from '@/app/review/[id]/actions';
 import * as recipeActions from '@/app/connectors/[id]/recipes/[recipeId]/actions';
 import * as adminWorkspaceActions from '@/app/admin/workspaces/[id]/actions';
@@ -43,6 +45,15 @@ vi.mock('@/lib/services/auth-context', () => {
     },
   };
 });
+
+// For rendering the review detail page itself: the next-auth session and
+// the app chrome (AppShell is async and reads the session on its own).
+vi.mock('@/lib/auth', () => ({
+  auth: async () => (session.ctx ? { user: { id: session.ctx.userId } } : null),
+}));
+vi.mock('@/components/AppShell', () => ({
+  AppShell: ({ children }: { children?: unknown }) => children,
+}));
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -262,6 +273,50 @@ describe('review detail actions', () => {
     actAs(null);
     const to = await redirectOf(reviewActions.flagReviewItemAction(s.itemId.toString()));
     expect(to.pathname).toBe('/');
+  });
+});
+
+describe('review detail page by role', () => {
+  async function renderItem(id: bigint): Promise<string> {
+    const element = await ReviewDetailPage({
+      params: Promise.resolve({ id: id.toString() }),
+      searchParams: Promise.resolve({}),
+    });
+    return renderToStaticMarkup(element);
+  }
+
+  it('a viewer sees the item and a read-only note, but no Approve, Reject or other write controls', async () => {
+    const s = await setup();
+    actAs(s.viewer);
+    const html = await renderItem(s.itemId);
+    expect(html).toContain(`Item ${s.itemId}`);
+    expect(html).toMatch(/Read-only — your role in this workspace can view review items/);
+    for (const control of [
+      'approve-form',
+      'reject-form',
+      'comment-form',
+      'generate-draft-form',
+      '>Approve</button>',
+      '>Reject</button>',
+      '>Ignore</button>',
+      '>Flag for review</button>',
+      '>Archive</button>',
+    ]) {
+      expect(html, control).not.toContain(control);
+    }
+  });
+
+  it('a member gets the decision forms and no read-only note', async () => {
+    const s = await setup();
+    actAs(s.member);
+    const html = await renderItem(s.itemId);
+    expect(html).toContain('approve-form');
+    expect(html).toContain('>Approve</button>');
+    expect(html).toContain('reject-form');
+    expect(html).toContain('>Reject</button>');
+    expect(html).toContain('comment-form');
+    expect(html).not.toContain('Read-only');
+    expect(html).not.toContain('>Archive</button>'); // admin-only
   });
 });
 
