@@ -22,6 +22,7 @@ The system must remain useful even when AI and search providers are disabled. AI
 | AI providers | Abstraction layer; mock + real implementations | Required by the brief: app must run without paid AI |
 | Search providers | Abstraction layer; mock + real implementations | Same |
 | Tests | Vitest | Native ESM, fast, plays well with Next.js + Drizzle |
+| Browser smoke tests | Playwright (`e2e/`, `pnpm test:e2e`) | Every route at 1440px and 390px against a running app seeded by `scripts/seed-demo.ts`: status < 500, no uncaught page errors, no sideways scroll on a phone. The route list is derived from `src/app` (`e2e/routes.ts`) and checked by Vitest, so a new page can't drop out unnoticed |
 | Container | Docker, docker-compose | Hetzner-friendly, parity between dev and prod |
 | Reverse proxy | Nginx | Already deployed on the same host for other apps; well-understood |
 
@@ -120,6 +121,7 @@ Local-filesystem implementation (`STORAGE_PROVIDER=local`, used in production to
 - Services live under `src/lib/services/<module>/`. They take a typed `WorkspaceContext` as first arg.
 - Validation: Zod schemas at the API boundary. The service layer trusts its inputs (it has been validated and authorized).
 - Errors: services throw typed errors (e.g., `WorkspaceAccessDenied`, `ProductProfileNotFound`); route handlers translate them into HTTP responses.
+- Server (form) actions translate the same typed errors into a readable `?error=` / `?message=` flash with `describeActionError(err, [XxxServiceError, …])` from `src/lib/action-errors.ts`, which rethrows Next redirect/notFound throws and anything not listed. Each action decides what `not_found` / `conflict` mean for it (a repeated "end session" is a success; "connector inactive" is not). Unexpected errors fall through to the branded `src/app/error.tsx` (root-layout failures to `global-error.tsx`; unknown URLs and `notFound()` to `not-found.tsx`). Prefer module-scope actions in a `'use server'` file bound with `.bind(null, id)` — they are testable and cannot close over page-local helpers.
 
 ## Auth + session
 

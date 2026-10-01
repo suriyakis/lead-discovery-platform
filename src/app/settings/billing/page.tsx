@@ -25,6 +25,7 @@ import {
 import { canAdminWorkspace } from '@/lib/services/context';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import type { PlanId } from '@/lib/billing/plans';
+import { TableScroll } from '@/components/TableScroll';
 
 export default async function BillingPage({
   searchParams,
@@ -236,31 +237,33 @@ export default async function BillingPage({
           {recentTokenTx.length > 0 ? (
             <details style={{ marginTop: '1rem' }}>
               <summary>Recent token activity ({recentTokenTx.length})</summary>
-              <table className="data-table" style={{ marginTop: '0.5rem' }}>
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Change</th>
-                    <th>Balance after</th>
-                    <th>Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentTokenTx.map((t) => (
-                    <tr key={t.id.toString()}>
-                      <td>{t.createdAt.toLocaleString()}</td>
-                      <td className={t.delta > 0n ? 'delta-good' : 'delta-bad'}>
-                        {t.delta > 0n ? '+' : ''}
-                        {t.delta.toLocaleString()}
-                      </td>
-                      <td>{t.balanceAfter.toLocaleString()}</td>
-                      <td>
-                        <code>{t.kind}</code> · {t.reason}
-                      </td>
+              <TableScroll label="Token ledger">
+                <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>Change</th>
+                      <th>Balance after</th>
+                      <th>Reason</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {recentTokenTx.map((t) => (
+                      <tr key={t.id.toString()}>
+                        <td>{t.createdAt.toLocaleString()}</td>
+                        <td className={t.delta > 0n ? 'delta-good' : 'delta-bad'}>
+                          {t.delta > 0n ? '+' : ''}
+                          {t.delta.toLocaleString()}
+                        </td>
+                        <td>{t.balanceAfter.toLocaleString()}</td>
+                        <td>
+                          <code>{t.kind}</code> · {t.reason}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </TableScroll>
             </details>
           ) : null}
         </section>
@@ -297,30 +300,32 @@ export default async function BillingPage({
           {isAdmin ? (
             <details style={{ marginTop: '1rem' }}>
               <summary>Details</summary>
-              <table className="data-table" style={{ marginTop: '0.5rem' }}>
-                <tbody>
-                  <tr>
-                    <th scope="row">Stripe customer</th>
-                    <td>
-                      {ws.stripeCustomerId ? (
-                        <code>{ws.stripeCustomerId}</code>
-                      ) : (
-                        <span className="muted">not provisioned yet</span>
-                      )}
-                    </td>
-                  </tr>
-                  <tr>
-                    <th scope="row">Stripe subscription</th>
-                    <td>
-                      {ws.stripeSubscriptionId ? (
-                        <code>{ws.stripeSubscriptionId}</code>
-                      ) : (
-                        <span className="muted">no active subscription</span>
-                      )}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <TableScroll label="Stripe details">
+                <table className="data-table" style={{ marginTop: '0.5rem' }}>
+                  <tbody>
+                    <tr>
+                      <th scope="row">Stripe customer</th>
+                      <td>
+                        {ws.stripeCustomerId ? (
+                          <code>{ws.stripeCustomerId}</code>
+                        ) : (
+                          <span className="muted">not provisioned yet</span>
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <th scope="row">Stripe subscription</th>
+                      <td>
+                        {ws.stripeSubscriptionId ? (
+                          <code>{ws.stripeSubscriptionId}</code>
+                        ) : (
+                          <span className="muted">no active subscription</span>
+                        )}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </TableScroll>
             </details>
           ) : null}
 

@@ -33,7 +33,8 @@ const PAGE_SIZE = 25;
 function confidenceBadgeClass(conf: number): string {
   if (conf >= 75) return 'badge badge-good';
   if (conf < 40) return 'badge badge-bad';
-  return 'badge';
+  // Middle of the traffic light. A bare .badge is neutral now (I151).
+  return 'badge badge-warn';
 }
 
 /** Provenance badge: who taught the platform this rule. */

@@ -87,7 +87,11 @@ export default async function EditLessonPage({
   }
 
   const confidenceBadgeCls =
-    lesson.confidence >= 75 ? 'badge badge-good' : lesson.confidence < 40 ? 'badge badge-bad' : 'badge';
+    lesson.confidence >= 75
+      ? 'badge badge-good'
+      : lesson.confidence < 40
+        ? 'badge badge-bad'
+        : 'badge badge-warn';
   const productName = lesson.productProfileId
     ? products.find((p) => p.id === lesson.productProfileId)?.name ?? `product #${lesson.productProfileId.toString()}`
     : null;

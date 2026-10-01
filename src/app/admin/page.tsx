@@ -11,6 +11,7 @@ import { TokenError, adjustTokens } from '@/lib/services/token-ledger';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmTokenAdjustButton } from '@/components/ConfirmTokenAdjustButton';
 import { auditRowScopeHint, auditRowScopeLabel } from '@/lib/audit-scope';
+import { TableScroll } from '@/components/TableScroll';
 
 export default async function AdminPage({
   searchParams,
@@ -131,77 +132,79 @@ export default async function AdminPage({
 
         <section>
           <h2>Billing &amp; usage by workspace</h2>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Workspace</th>
-                <th>Plan / status</th>
-                <th>Token balance</th>
-                <th>Purchased</th>
-                <th>Spent</th>
-                <th>Cost 30d</th>
-                <th>Events 30d</th>
-                <th>Grant tokens</th>
-              </tr>
-            </thead>
-            <tbody>
-              {billingStats.map((s) => (
-                <tr key={s.workspaceId.toString()}>
-                  <td>
-                    <Link href={`/admin/workspaces/${s.workspaceId}`}>{s.name}</Link>
-                    {s.billingExempt ? <span className="badge" style={{ marginLeft: '0.4rem' }}>exempt</span> : null}
-                  </td>
-                  <td>
-                    {s.plan}{' '}
-                    <span className={s.subscriptionStatus === 'active' ? 'badge badge-good' : 'badge'}>
-                      {s.subscriptionStatus}
-                    </span>
-                  </td>
-                  <td className={!s.billingExempt && s.tokenBalance <= 0n ? 'delta-bad' : ''}>
-                    {s.tokenBalance.toLocaleString()}
-                  </td>
-                  <td>{s.tokensPurchased.toLocaleString()}</td>
-                  <td>{s.tokensSpent.toLocaleString()}</td>
-                  <td>€{(s.usageCostCents30d / 100).toFixed(2)}</td>
-                  <td>{s.usageEvents30d}</td>
-                  <td>
-                    <form
-                      action={quickGrantTokens}
-                      style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}
-                    >
-                      <input type="hidden" name="workspaceId" value={s.workspaceId.toString()} />
-                      <input
-                        type="number"
-                        name="tokens"
-                        step={1}
-                        required
-                        placeholder="±tokens"
-                        style={{ width: '6.5rem' }}
-                        aria-label={`Tokens to grant to ${s.name}`}
-                      />
-                      <input
-                        type="text"
-                        name="reason"
-                        placeholder="reason"
-                        maxLength={200}
-                        style={{ width: '8rem' }}
-                        aria-label="Reason"
-                      />
-                      <ConfirmTokenAdjustButton
-                        className="ghost-btn"
-                        workspaceName={s.name}
-                        workspaceSlug={s.slug}
-                        balance={s.tokenBalance.toString()}
-                        billingExempt={s.billingExempt}
-                      >
-                        Apply
-                      </ConfirmTokenAdjustButton>
-                    </form>
-                  </td>
+          <TableScroll label="Billing and usage by workspace">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Workspace</th>
+                  <th>Plan / status</th>
+                  <th>Token balance</th>
+                  <th>Purchased</th>
+                  <th>Spent</th>
+                  <th>Cost 30d</th>
+                  <th>Events 30d</th>
+                  <th>Grant tokens</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {billingStats.map((s) => (
+                  <tr key={s.workspaceId.toString()}>
+                    <td>
+                      <Link href={`/admin/workspaces/${s.workspaceId}`}>{s.name}</Link>
+                      {s.billingExempt ? <span className="badge" style={{ marginLeft: '0.4rem' }}>exempt</span> : null}
+                    </td>
+                    <td>
+                      {s.plan}{' '}
+                      <span className={s.subscriptionStatus === 'active' ? 'badge badge-good' : 'badge'}>
+                        {s.subscriptionStatus}
+                      </span>
+                    </td>
+                    <td className={!s.billingExempt && s.tokenBalance <= 0n ? 'delta-bad' : ''}>
+                      {s.tokenBalance.toLocaleString()}
+                    </td>
+                    <td>{s.tokensPurchased.toLocaleString()}</td>
+                    <td>{s.tokensSpent.toLocaleString()}</td>
+                    <td>€{(s.usageCostCents30d / 100).toFixed(2)}</td>
+                    <td>{s.usageEvents30d}</td>
+                    <td>
+                      <form
+                        action={quickGrantTokens}
+                        style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}
+                      >
+                        <input type="hidden" name="workspaceId" value={s.workspaceId.toString()} />
+                        <input
+                          type="number"
+                          name="tokens"
+                          step={1}
+                          required
+                          placeholder="±tokens"
+                          style={{ width: '6.5rem' }}
+                          aria-label={`Tokens to grant to ${s.name}`}
+                        />
+                        <input
+                          type="text"
+                          name="reason"
+                          placeholder="reason"
+                          maxLength={200}
+                          style={{ width: '8rem' }}
+                          aria-label="Reason"
+                        />
+                        <ConfirmTokenAdjustButton
+                          className="ghost-btn"
+                          workspaceName={s.name}
+                          workspaceSlug={s.slug}
+                          balance={s.tokenBalance.toString()}
+                          billingExempt={s.billingExempt}
+                        >
+                          Apply
+                        </ConfirmTokenAdjustButton>
+                      </form>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
           <p className="muted small">
             Positive adds, negative deducts; every adjustment lands in the
             workspace&apos;s token ledger with your user id and the reason.

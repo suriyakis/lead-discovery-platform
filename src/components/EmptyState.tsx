@@ -1,6 +1,11 @@
 // Empty-state placeholder used across list pages. Gives the operator a
 // next-step hint + optional CTA so an empty page doesn't feel like a
 // dead end.
+//
+// Styled by the shared dark-theme `.empty-state` pattern in globals.css
+// (the same box /mailbox, /communication/follow-ups and signatures use).
+// It used to carry inline light-theme colours — a milky slab with
+// low-contrast text on the dark UI (I150).
 
 import Link from 'next/link';
 
@@ -16,25 +21,13 @@ export function EmptyState({
   ctaHref?: string;
 }>) {
   return (
-    <div
-      style={{
-        padding: '2rem 1.5rem',
-        textAlign: 'center',
-        borderRadius: '0.6rem',
-        border: '1px dashed oklch(0.85 0 0)',
-        background: 'oklch(0.99 0 0 / 0.4)',
-      }}
-    >
-      <p style={{ margin: 0, fontWeight: 600, fontSize: '1.05em' }}>{title}</p>
-      <p className="muted" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
-        {hint}
-      </p>
+    <div className="empty-state">
+      <p className="empty-state-title">{title}</p>
+      <p className="muted">{hint}</p>
       {ctaLabel && ctaHref ? (
-        <div style={{ marginTop: '1rem' }}>
-          <Link href={ctaHref} className="primary-btn">
-            {ctaLabel}
-          </Link>
-        </div>
+        <Link href={ctaHref} className="primary-btn">
+          {ctaLabel}
+        </Link>
       ) : null}
     </div>
   );

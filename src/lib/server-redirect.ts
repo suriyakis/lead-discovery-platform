@@ -4,7 +4,9 @@
  *
  * Next.js implements `redirect()` and `notFound()` by throwing a special
  * error with a `digest` field beginning with `NEXT_REDIRECT` /
- * `NEXT_NOT_FOUND`. A naïve `try { ... redirect('/ok') } catch { ... }`
+ * `NEXT_HTTP_ERROR_FALLBACK` (Next 15's notFound()/forbidden()/
+ * unauthorized(); Next ≤14 used `NEXT_NOT_FOUND`, still accepted).
+ * A naïve `try { ... redirect('/ok') } catch { ... }`
  * catches the redirect throw and routes it through the error path,
  * producing the classic "save succeeds in DB but UI flashes FAILED" bug.
  *
@@ -22,5 +24,9 @@ export function isNextRedirectError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const digest = (err as { digest?: unknown }).digest;
   if (typeof digest !== 'string') return false;
-  return digest.startsWith('NEXT_REDIRECT') || digest.startsWith('NEXT_NOT_FOUND');
+  return (
+    digest.startsWith('NEXT_REDIRECT') ||
+    digest.startsWith('NEXT_HTTP_ERROR_FALLBACK;') ||
+    digest.startsWith('NEXT_NOT_FOUND')
+  );
 }

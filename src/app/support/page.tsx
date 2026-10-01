@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { LifeBuoy } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { SupportStatusBadge } from '@/components/SupportStatusBadge';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -102,9 +103,7 @@ export default async function SupportPage({
                     ) : null}
                   </div>
                   <div className="meta">
-                    <span className={t.status === 'open' ? 'badge' : 'badge muted'}>
-                      {t.status}
-                    </span>
+                    <SupportStatusBadge status={t.status} audience="customer" />
                     <span>last activity {t.lastMessageAt.toLocaleString()}</span>
                   </div>
                 </li>

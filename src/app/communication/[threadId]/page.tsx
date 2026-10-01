@@ -290,14 +290,10 @@ export default async function CommunicationDetail({
           {baseSubject}
         </span>
       </nav>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.6fr)',
-          gap: '1rem',
-          alignItems: 'flex-start',
-        }}
-      >
+      {/* Three columns on desktop, one stacked column below 900px
+          (.thread-layout in globals.css — an inline grid could not
+          respond to the viewport, I059). */}
+      <div className="thread-layout">
         {/* Left: contact + product + lead info */}
         <section className="profile-list-card" style={{ padding: '1rem' }}>
           <h2 style={{ marginTop: 0, fontSize: '1rem' }}>
@@ -747,14 +743,7 @@ function renderMessageBody(m: MailMessage) {
   }
 
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: '0.6rem',
-        marginTop: '0.4rem',
-      }}
-    >
+    <div className="thread-bilingual">
       <div>
         <div className="muted" style={{ fontSize: '0.72em', marginBottom: '0.1rem' }}>
           {primaryLabel}

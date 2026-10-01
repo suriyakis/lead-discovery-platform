@@ -15,6 +15,7 @@ import {
   summarizeUsage,
   summarizeUsageByKeySource,
 } from '@/lib/services/usage';
+import { TableScroll } from '@/components/TableScroll';
 
 const RANGES = [
   { key: 'today' as const, label: 'Today', ms: 24 * 60 * 60 * 1000 },
@@ -130,38 +131,40 @@ export default async function UsagePage({
         {totals.length > 0 ? (
           <section>
             <h2>By kind / provider</h2>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Kind</th>
-                  <th>Provider</th>
-                  <th className="num">Events</th>
-                  <th className="num">Units</th>
-                  {showTokens ? <th className="num">Tokens charged</th> : null}
-                  {showProviderCost ? <th className="num">Est. provider cost</th> : null}
-                </tr>
-              </thead>
-              <tbody>
-                {totals.map((row, i) => (
-                  <tr key={i}>
-                    <td>
-                      <code>{row.kind}</code>
-                    </td>
-                    <td>{row.provider}</td>
-                    <td className="num">{row.eventCount.toLocaleString()}</td>
-                    <td className="num">{row.totalUnits.toString()}</td>
-                    {showTokens ? (
-                      <td className="num">
-                        {(tokensByKind.get(rowKey(row.kind, row.provider)) ?? 0n).toLocaleString()}
-                      </td>
-                    ) : null}
-                    {showProviderCost ? (
-                      <td className="num">${(row.totalCostCents / 100).toFixed(2)}</td>
-                    ) : null}
+            <TableScroll label="Usage by kind and provider">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Kind</th>
+                    <th>Provider</th>
+                    <th className="num">Events</th>
+                    <th className="num">Units</th>
+                    {showTokens ? <th className="num">Tokens charged</th> : null}
+                    {showProviderCost ? <th className="num">Est. provider cost</th> : null}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {totals.map((row, i) => (
+                    <tr key={i}>
+                      <td>
+                        <code>{row.kind}</code>
+                      </td>
+                      <td>{row.provider}</td>
+                      <td className="num">{row.eventCount.toLocaleString()}</td>
+                      <td className="num">{row.totalUnits.toString()}</td>
+                      {showTokens ? (
+                        <td className="num">
+                          {(tokensByKind.get(rowKey(row.kind, row.provider)) ?? 0n).toLocaleString()}
+                        </td>
+                      ) : null}
+                      {showProviderCost ? (
+                        <td className="num">${(row.totalCostCents / 100).toFixed(2)}</td>
+                      ) : null}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
           </section>
         ) : null}
 
@@ -174,52 +177,54 @@ export default async function UsagePage({
               <span className="badge">Platform</span> = the platform&apos;s key: usage
               is charged in tokens. <code>mock</code> = test provider, no cost.
             </p>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Kind</th>
-                  <th>Provider</th>
-                  <th>Key source</th>
-                  <th className="num">Events</th>
-                  {showTokens ? <th className="num">Tokens charged</th> : null}
-                  {showProviderCost ? <th className="num">Est. provider cost</th> : null}
-                </tr>
-              </thead>
-              <tbody>
-                {byKey.map((row, i) => (
-                  <tr key={i}>
-                    <td>
-                      <code>{row.kind}</code>
-                    </td>
-                    <td>{row.provider}</td>
-                    <td>
-                      <span
-                        className={
-                          row.keySource === 'workspace'
-                            ? 'badge badge-good'
-                            : row.keySource === 'platform'
-                              ? 'badge'
-                              : 'badge badge-bad'
-                        }
-                      >
-                        {row.keySource}
-                      </span>
-                    </td>
-                    <td className="num">{row.eventCount.toLocaleString()}</td>
-                    {showTokens ? (
-                      <td className="num">
-                        {(
-                          tokensByKeySource.get(rowKey(row.kind, row.provider, row.keySource)) ?? 0n
-                        ).toLocaleString()}
-                      </td>
-                    ) : null}
-                    {showProviderCost ? (
-                      <td className="num">${(row.totalCostCents / 100).toFixed(2)}</td>
-                    ) : null}
+            <TableScroll label="Usage by key source">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Kind</th>
+                    <th>Provider</th>
+                    <th>Key source</th>
+                    <th className="num">Events</th>
+                    {showTokens ? <th className="num">Tokens charged</th> : null}
+                    {showProviderCost ? <th className="num">Est. provider cost</th> : null}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {byKey.map((row, i) => (
+                    <tr key={i}>
+                      <td>
+                        <code>{row.kind}</code>
+                      </td>
+                      <td>{row.provider}</td>
+                      <td>
+                        <span
+                          className={
+                            row.keySource === 'workspace'
+                              ? 'badge badge-good'
+                              : row.keySource === 'platform'
+                                ? 'badge'
+                                : 'badge badge-bad'
+                          }
+                        >
+                          {row.keySource}
+                        </span>
+                      </td>
+                      <td className="num">{row.eventCount.toLocaleString()}</td>
+                      {showTokens ? (
+                        <td className="num">
+                          {(
+                            tokensByKeySource.get(rowKey(row.kind, row.provider, row.keySource)) ?? 0n
+                          ).toLocaleString()}
+                        </td>
+                      ) : null}
+                      {showProviderCost ? (
+                        <td className="num">${(row.totalCostCents / 100).toFixed(2)}</td>
+                      ) : null}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
           </section>
         ) : null}
       </AppShell>

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "X3",
+    "check": "status",
+    "paths": ["/pipeline/1"],
+    "note": "/pipeline/[id] answers 500 for every lead: a dead query joins contact_associations twice ('Alias … is already used'). Fixed by the Phase 0 lane that deletes the block (flow:F-02 / ia:F-02 / AP-01); remove this entry with it."
+  },
+  {
+    "id": "I115",
+    "check": "pageerror",
+    "match": ["Hydration failed", "Minified React error #418"],
+    "paths": ["/settings/crm/1"],
+    "note": "The Test-connection <form> is nested inside the Save <form>, which React cannot hydrate (dev: 'Hydration failed…'; production build: 'Minified React error #418'). Fixed by DS-04 item 5; remove this entry with it."
+  },
+  {
+    "id": "X5",
+    "check": "pageerror",
+    "match": "Hydration failed",
+    "paths": [
+      "/drafts",
+      "/leads",
+      "/pipeline",
+      "/pipeline?view=kanban",
+      "/review",
+      "/communication/follow-ups"
+    ],
+    "devServerOnly": true,
+    "note": "Intermittent server/client mismatch under `next dev` only (the client expects .app-shell where it finds .brand-header), seen on exactly these routes and on the base commit too; a later review run with 2 repeats did not reproduce it. A production build reports it to the console, not as a page error, so it is not tolerated against `next start` (CI). Pre-existing; DS-04. Delete the entry once it stops reproducing."
+  }
+]

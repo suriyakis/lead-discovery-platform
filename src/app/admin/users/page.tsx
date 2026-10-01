@@ -13,7 +13,6 @@ import {
   listAllUsers,
   listPreauthorizedEmails,
   preauthorizeEmail,
-  revokePreauthorize,
   setAccountStatus,
 } from '@/lib/services/users';
 import { db } from '@/lib/db/client';
@@ -23,6 +22,7 @@ import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { accountStatusConfirms, revokePreauthConfirm } from '@/lib/confirm-copy';
+import { revokePreauthorizationAction } from './actions';
 
 export default async function AdminUsersPage({
   searchParams,
@@ -79,14 +79,6 @@ export default async function AdminUsersPage({
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users?error=${encodeURIComponent(m)}`);
     }
-  }
-
-  async function revoke(formData: FormData) {
-    'use server';
-    const c = await requirePlatformAdmin();
-    const id = String(formData.get('id') ?? '');
-    await revokePreauthorize(c, id);
-    redirect('/admin/users?message=Revoked');
   }
 
   async function createPwUser(formData: FormData) {
@@ -235,7 +227,7 @@ export default async function AdminUsersPage({
                   ) : null}
                 </div>
                 {!p.consumedAt ? (
-                  <form action={revoke} style={{ marginTop: '0.5rem' }}>
+                  <form action={revokePreauthorizationAction} style={{ marginTop: '0.5rem' }}>
                     <input type="hidden" name="id" value={p.id} />
                     <ConfirmFormButton
                       className="ghost-btn"

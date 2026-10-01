@@ -754,7 +754,7 @@ export default async function MailboxDetail({
                 placeholder={mailbox.fromAddress}
                 autoComplete="off"
                 required
-                style={{ minWidth: '18rem' }}
+                style={{ width: '18rem', maxWidth: '100%' }}
               />
               <button type="submit" className="ghost-btn">
                 Delete permanently

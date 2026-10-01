@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
+import { SupportStatusBadge } from '@/components/SupportStatusBadge';
 import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
@@ -67,9 +68,7 @@ export default async function AdminSupportThreadPage({
         Workspace{' '}
         <Link href={`/admin/workspaces/${thread.workspaceId}`}>{workspaceName}</Link>{' '}
         · started {thread.createdAt.toLocaleString()} ·{' '}
-        <span className={thread.status === 'open' ? 'badge' : 'badge muted'}>
-          {thread.status}
-        </span>
+        <SupportStatusBadge status={thread.status} audience="admin" />
       </p>
 
       {sp.err ? <p className="form-error">{sp.err}</p> : null}

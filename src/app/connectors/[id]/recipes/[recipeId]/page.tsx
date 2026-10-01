@@ -23,10 +23,10 @@ import {
   deleteRecipe,
   getConnectorRow,
   getRecipe,
-  startRun,
   updateRecipe,
 } from '@/lib/services/connector-run';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { runRecipeNowAction } from './actions';
 
 function parseJsonOrEmpty(raw: string, label: string): Record<string, unknown> {
   const trimmed = raw.trim();
@@ -84,22 +84,8 @@ export default async function RecipeDetailPage({
 
   const canEdit = canWrite(ctx);
 
-  async function runNow(): Promise<void> {
-    'use server';
-    const c = await getWorkspaceContext();
-    try {
-      const { run } = await startRun(c, { connectorId, recipeId });
-      redirect(`/connectors/${connectorId}/runs/${run.id}`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      if (err instanceof ConnectorServiceError) {
-        redirect(
-          `/connectors/${connectorId}/recipes/${recipeId}?error=${encodeURIComponent(err.code)}`,
-        );
-      }
-      throw err;
-    }
-  }
+  // Lives in ./actions.ts (typed error handling, testable); bound here.
+  const runNow = runRecipeNowAction.bind(null, connectorId.toString(), recipeId.toString());
 
   async function save(formData: FormData): Promise<void> {
     'use server';

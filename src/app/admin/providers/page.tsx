@@ -32,6 +32,7 @@ import {
   getPlatformSettings,
   setPlatformSettings,
 } from '@/lib/services/platform-settings';
+import { TableScroll } from '@/components/TableScroll';
 // The catalogue of platform keys the console manages
 // (src/lib/platform-provider-keys.ts, re-exported by the live checks of
 // PC-02). Each secretKey doubles as the workspace BYOK key name, so the
@@ -315,7 +316,7 @@ export default async function AdminProvidersPage({
                       type="password"
                       autoComplete="off"
                       placeholder="paste API key"
-                      style={{ minWidth: '20rem' }}
+                      style={{ width: '20rem', maxWidth: '100%' }}
                       required
                     />
                   </label>
@@ -438,7 +439,7 @@ export default async function AdminProvidersPage({
             />
           </fieldset>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+          <div className="provider-defaults-grid">
             {(
               [
                 ['embedding.provider', 'Embeddings', ALLOWED_EMBEDDING_PROVIDERS, 'embedding'],
@@ -482,94 +483,96 @@ export default async function AdminProvidersPage({
           it resolved to has a key. Use each vendor card&apos;s
           &ldquo;Test key&rdquo; above for a live check.
         </p>
-        <table className="data-table" style={{ marginTop: '0.75rem', maxWidth: '52rem' }}>
-          <thead>
-            <tr>
-              <th>Capability</th>
-              <th>Provider</th>
-              <th>Model</th>
-              <th>Chosen via</th>
-              <th>Key</th>
-            </tr>
-          </thead>
-          <tbody>
-            {STATUS_CAPABILITIES.map(({ cap, label, hasModel }) => {
-              const resolved = effective[cap];
-              // EFFECTIVE model, exactly as the runtime resolves it:
-              // configured value (console/env, vendor-compatible) or the
-              // vendor adapter's concrete built-in — never a vague
-              // "provider default".
-              let model: { id: string; builtin: boolean } | null = null;
-              if (hasModel) {
-                if (cap === 'embedding') {
-                  model = { id: EMBEDDING_BUILTIN_MODEL, builtin: true };
-                } else {
-                  const configured = effectiveModels[cap];
-                  model = configured
-                    ? { id: configured, builtin: false }
-                    : {
-                        id: VENDOR_BUILTIN_MODELS[resolved.id] ?? 'vendor default',
-                        builtin: true,
-                      };
+        <TableScroll label="Platform status">
+          <table className="data-table" style={{ marginTop: '0.75rem', maxWidth: '52rem' }}>
+            <thead>
+              <tr>
+                <th>Capability</th>
+                <th>Provider</th>
+                <th>Model</th>
+                <th>Chosen via</th>
+                <th>Key</th>
+              </tr>
+            </thead>
+            <tbody>
+              {STATUS_CAPABILITIES.map(({ cap, label, hasModel }) => {
+                const resolved = effective[cap];
+                // EFFECTIVE model, exactly as the runtime resolves it:
+                // configured value (console/env, vendor-compatible) or the
+                // vendor adapter's concrete built-in — never a vague
+                // "provider default".
+                let model: { id: string; builtin: boolean } | null = null;
+                if (hasModel) {
+                  if (cap === 'embedding') {
+                    model = { id: EMBEDDING_BUILTIN_MODEL, builtin: true };
+                  } else {
+                    const configured = effectiveModels[cap];
+                    model = configured
+                      ? { id: configured, builtin: false }
+                      : {
+                          id: VENDOR_BUILTIN_MODELS[resolved.id] ?? 'vendor default',
+                          builtin: true,
+                        };
+                  }
                 }
-              }
-              const keyMeta = platformKeyForVendor(resolved.id);
-              const keyState = !keyMeta
-                ? { text: 'no key needed', ok: true }
-                : storedByKey.has(keyMeta.secretKey)
+                const keyMeta = platformKeyForVendor(resolved.id);
+                const keyState = !keyMeta
+                  ? { text: 'no key needed', ok: true }
+                  : storedByKey.has(keyMeta.secretKey)
+                    ? { text: 'console', ok: true }
+                    : process.env[keyMeta.envVar]?.trim()
+                      ? { text: 'env var', ok: true }
+                      : { text: 'MISSING', ok: false };
+                return (
+                  <tr key={cap}>
+                    <td>{label}</td>
+                    <td><code>{resolved.id}</code></td>
+                    <td>
+                      {model ? (
+                        <>
+                          <code>{model.id}</code>
+                          {model.builtin ? (
+                            <span className="muted small"> (built-in)</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td className="muted small">{sourceLabel(resolved)}</td>
+                    <td>
+                      <span className={keyState.ok ? 'badge badge-good' : 'badge badge-bad'}>
+                        {keyState.text}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {(() => {
+                const keyState = storedByKey.has('mistral.apiKey')
                   ? { text: 'console', ok: true }
-                  : process.env[keyMeta.envVar]?.trim()
+                  : process.env.MISTRAL_API_KEY?.trim()
                     ? { text: 'env var', ok: true }
                     : { text: 'MISSING', ok: false };
-              return (
-                <tr key={cap}>
-                  <td>{label}</td>
-                  <td><code>{resolved.id}</code></td>
-                  <td>
-                    {model ? (
-                      <>
-                        <code>{model.id}</code>
-                        {model.builtin ? (
-                          <span className="muted small"> (built-in)</span>
-                        ) : null}
-                      </>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td className="muted small">{sourceLabel(resolved)}</td>
-                  <td>
-                    <span className={keyState.ok ? 'badge badge-good' : 'badge badge-bad'}>
-                      {keyState.text}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-            {(() => {
-              const keyState = storedByKey.has('mistral.apiKey')
-                ? { text: 'console', ok: true }
-                : process.env.MISTRAL_API_KEY?.trim()
-                  ? { text: 'env var', ok: true }
-                  : { text: 'MISSING', ok: false };
-              return (
-                <tr>
-                  <td>OCR — scanned PDFs</td>
-                  <td><code>mistral</code></td>
-                  <td><code>{process.env.MISTRAL_OCR_MODEL?.trim() || 'mistral-ocr-latest'}</code></td>
-                  <td className="muted small">
-                    fixed — auto-routes whenever a PDF has no text layer
-                  </td>
-                  <td>
-                    <span className={keyState.ok ? 'badge badge-good' : 'badge badge-bad'}>
-                      {keyState.text}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })()}
-          </tbody>
-        </table>
+                return (
+                  <tr>
+                    <td>OCR — scanned PDFs</td>
+                    <td><code>mistral</code></td>
+                    <td><code>{process.env.MISTRAL_OCR_MODEL?.trim() || 'mistral-ocr-latest'}</code></td>
+                    <td className="muted small">
+                      fixed — auto-routes whenever a PDF has no text layer
+                    </td>
+                    <td>
+                      <span className={keyState.ok ? 'badge badge-good' : 'badge badge-bad'}>
+                        {keyState.text}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })()}
+            </tbody>
+          </table>
+        </TableScroll>
         <form action={testAI} className="action-row" style={{ marginTop: '0.75rem' }}>
           <button type="submit" className="ghost-btn">
             Test platform AI default

@@ -564,7 +564,8 @@ const CONFIRMED_ACTIONS: ReadonlyArray<{ file: string; actions: readonly string[
     file: 'src/app/admin/workspaces/[id]/page.tsx',
     actions: ['grantTokens', 'setExemptState', 'archive', 'restore', 'removeUser'],
   },
-  { file: 'src/app/admin/users/page.tsx', actions: ['setStatus', 'revoke'] },
+  // Revoke moved to ./actions.ts (DS-04 backstops); the form still confirms.
+  { file: 'src/app/admin/users/page.tsx', actions: ['setStatus', 'revokePreauthorizationAction'] },
   {
     file: 'src/app/admin/users/[id]/page.tsx',
     actions: ['changeStatus', 'changePlatformRole', 'removeFromWorkspace'],

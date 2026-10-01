@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { adminListSupportThreads } from '@/lib/services/support';
+import { SupportStatusBadge } from '@/components/SupportStatusBadge';
+import { TableScroll } from '@/components/TableScroll';
 
 export default async function AdminSupportPage({
   searchParams,
@@ -42,39 +44,39 @@ export default async function AdminSupportPage({
           No support threads{statusFilter ? ` with status ${statusFilter}` : ''}.
         </p>
       ) : (
-        <table className="data-table" style={{ marginTop: '1rem' }}>
-          <thead>
-            <tr>
-              <th>Subject</th>
-              <th>Workspace</th>
-              <th>Status</th>
-              <th>Last activity</th>
-            </tr>
-          </thead>
-          <tbody>
-            {threads.map((t) => (
-              <tr key={t.id.toString()}>
-                <td>
-                  <Link href={`/admin/support/${t.id}`}>{t.subject}</Link>
-                  {t.adminUnread ? (
-                    <span className="admin-nav-badge" style={{ marginLeft: '0.5rem' }}>
-                      new
-                    </span>
-                  ) : null}
-                </td>
-                <td>
-                  {t.workspaceName} <span className="muted">/{t.workspaceSlug}</span>
-                </td>
-                <td>
-                  <span className={t.status === 'open' ? 'badge' : 'badge muted'}>
-                    {t.status}
-                  </span>
-                </td>
-                <td>{t.lastMessageAt.toLocaleString()}</td>
+        <TableScroll label="Support threads">
+          <table className="data-table" style={{ marginTop: '1rem' }}>
+            <thead>
+              <tr>
+                <th>Subject</th>
+                <th>Workspace</th>
+                <th>Status</th>
+                <th>Last activity</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {threads.map((t) => (
+                <tr key={t.id.toString()}>
+                  <td>
+                    <Link href={`/admin/support/${t.id}`}>{t.subject}</Link>
+                    {t.adminUnread ? (
+                      <span className="admin-nav-badge" style={{ marginLeft: '0.5rem' }}>
+                        new
+                      </span>
+                    ) : null}
+                  </td>
+                  <td>
+                    {t.workspaceName} <span className="muted">/{t.workspaceSlug}</span>
+                  </td>
+                  <td>
+                    <SupportStatusBadge status={t.status} audience="admin" />
+                  </td>
+                  <td>{t.lastMessageAt.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </div>
   );

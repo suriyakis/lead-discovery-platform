@@ -152,15 +152,9 @@ export function SignaturesWorkspace({
       </div>
 
       {mode.kind === 'browsing' ? (
-        // Browsing: two-column workspace (list left, preview + raw right).
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
-            gap: '1rem',
-            alignItems: 'flex-start',
-          }}
-        >
+        // Browsing: two-column workspace (list left, preview + raw right),
+        // stacked below 900px (.signatures-browse in globals.css).
+        <div className="signatures-browse">
           <div>
             <SignatureList
               signatures={signatures}
