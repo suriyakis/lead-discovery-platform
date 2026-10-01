@@ -201,16 +201,20 @@ export function renderPlanMarkdown(
     L.push(`### R3 · Inbound-only contacts (${w.r3.length}; own domain first)`, '');
     L.push(
       'Archive and tag `inbound-auto`. Own-domain colleagues default to **keep**. ' +
-        'Contacts with notes, tags, a lead, outbound mail or any other link are never listed.',
+        'Origin `inbound_sender` = created for the sender of bulk/unrelated mail; ' +
+        '`redirect_target` = extracted from the text of bulk/unrelated mail by the old ' +
+        'auto-redirect. Contacts with notes, tags, a lead, outbound mail or any other link ' +
+        'are never listed.',
       '',
     );
     L.push(
       ...table(
-        ['Id', 'Own domain', 'Contact', 'Inbound msgs', 'Default', 'Why'],
+        ['Id', 'Own domain', 'Contact', 'Origin', 'Inbound msgs', 'Default', 'Why'],
         w.r3.map((r) => [
           r.contactId,
           r.ownDomain,
           r.email,
+          r.origin,
           r.inboundMessages,
           r.defaultDecision,
           r.why,

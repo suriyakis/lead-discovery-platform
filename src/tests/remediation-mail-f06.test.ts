@@ -928,6 +928,115 @@ describe('mail remediation: dry run', { timeout: 60000 }, () => {
   });
 });
 
+// ============ R3: contacts the old auto-redirect extracted ============
+
+/** A contact linked to threads only as the old auto-redirect left it
+ *  (relation 'redirect_target'), plus optional sender links. */
+async function redirectContact(
+  ws: bigint,
+  email: string,
+  links: { redirect?: bigint[]; sender?: bigint[] },
+): Promise<bigint> {
+  const [c] = await db.insert(contacts).values({ workspaceId: ws, email }).returning();
+  for (const [relation, threads] of [
+    ['redirect_target', links.redirect ?? []],
+    ['inbound_sender', links.sender ?? []],
+  ] as const) {
+    for (const t of threads) {
+      await db.insert(contactAssociations).values({
+        workspaceId: ws,
+        contactId: c!.id,
+        entityType: 'mail_thread',
+        entityId: t.toString(),
+        relation,
+      });
+    }
+  }
+  return c!.id;
+}
+
+describe('mail remediation: R3 covers auto-redirect contacts', { timeout: 90000 }, () => {
+  it('lists redirect_target contacts from bulk/unrelated threads, archives them and reverts', async () => {
+    const fx = await seedFixture();
+    // Extracted from a bulk newsletter's text → archive.
+    const fromNewsletter = await redirectContact(fx.ws, 'deal-desk@deals.example', {
+      redirect: [fx.thread.promo!],
+    });
+    // Own-domain address extracted from a bulk mail → keep by default.
+    const ownDomain = await redirectContact(fx.ws, 'ops@ecobeton.pl', {
+      redirect: [fx.thread.medium!],
+    });
+    // Sender of bulk mail AND extracted from another newsletter → 'both'.
+    const both = await redirectContact(fx.ws, 'weekly@news.example', {
+      sender: [fx.thread.parser!],
+      redirect: [fx.thread.nl!],
+    });
+    // Extracted from a real prospect reply → never listed.
+    const fromProspect = await redirectContact(fx.ws, 'buyer@target.example', {
+      redirect: [fx.thread.out!],
+    });
+    // Its thread has no inbound mail to judge → never listed.
+    const emptyThread = await newThread(fx.ws, fx.mailbox, 'empty');
+    const noEvidence = await redirectContact(fx.ws, 'ghost@nowhere.example', {
+      redirect: [emptyThread],
+    });
+
+    const plan = await dryRun();
+    const w = ws(plan, fx.ws);
+    const r3 = new Map(w.r3.map((r) => [r.contactId, r]));
+    expect(r3.get(fromNewsletter.toString())).toMatchObject({
+      origin: 'redirect_target',
+      defaultDecision: 'archive',
+      ownDomain: null,
+      inboundMessages: 1,
+      relevance: { bulk: 1 },
+    });
+    expect(r3.get(fromNewsletter.toString())!.why).toContain('auto-extracted (redirect)');
+    expect(r3.get(ownDomain.toString())).toMatchObject({
+      origin: 'redirect_target',
+      defaultDecision: 'keep',
+    });
+    expect(r3.get(both.toString())).toMatchObject({
+      origin: 'both',
+      defaultDecision: 'archive',
+      inboundMessages: 2,
+    });
+    expect(r3.has(fromProspect.toString())).toBe(false);
+    expect(r3.has(noEvidence.toString())).toBe(false);
+    // The original sender contacts keep their origin.
+    expect(r3.get(fx.contact.promo!.toString())!.origin).toBe('inbound_sender');
+    expect(w.r3).toHaveLength(11);
+    expect(w.checks.inboundOnlyContacts).toBe(11);
+    const md = renderPlanMarkdown(plan, { report: 'r.json', decisions: 'd.csv' });
+    expect(md).toContain('| Origin |');
+
+    const before = await snapshot();
+    const result = await applyMailPlan({
+      report: plan,
+      decisionsCsv: renderDecisionsCsv(plan),
+      actor: await actor(),
+    });
+    expect(result.status).toBe('applied');
+    expect(result.categories).toMatchObject({ R3: { changed: 9 } });
+    expect(result.keptByDecision.r3).toBe(3);
+    // Only the kept own-domain rows are still listed after the apply.
+    expect(result.post!.inboundOnlyContacts).toBe(3);
+    expect(result.post!.visibleInboundAutoContacts).toBe(0);
+
+    const status = async (id: bigint) =>
+      (await db.select().from(contacts).where(eq(contacts.id, id)))[0]!;
+    expect(await status(fromNewsletter)).toMatchObject({ status: 'archived', tags: ['inbound-auto'] });
+    expect(await status(both)).toMatchObject({ status: 'archived', tags: ['inbound-auto'] });
+    expect((await status(ownDomain)).status).toBe('active');
+    expect((await status(fromProspect)).status).toBe('active');
+    expect((await status(noEvidence)).status).toBe('active');
+
+    const reverted = await revertRun(plan.batchId, { actor: await actor() });
+    expect(reverted).toMatchObject({ status: 'reverted', conflicts: [] });
+    expect(await snapshot()).toEqual(before);
+  });
+});
+
 // ============ apply / revert ========================================
 
 describe('mail remediation: apply and revert', { timeout: 90000 }, () => {

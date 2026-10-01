@@ -19,7 +19,7 @@ reviewed plan and can be reverted.
 | R1a | Wrong suppressions  | every `suppression.add` in the row's audit history was the reply classifier, and every source message is bulk/unrelated                 | **revoke** (`revoke_reason` "remediation 2026-10 X1")                       | per row, default revoke          |
 | R1b | Other suppressions  | any manual / link / import / send-time add, no audit trail, or a prospect message                                                       | keep                                                                        | per row, default keep            |
 | R2  | Reply labels        | bulk/unrelated inbound carrying `reply_classification` / confidence / date / extracted e-mails                                          | clear                                                                       | per workspace                    |
-| R3  | Junk contacts       | active, only `inbound_sender` thread links, never an outbound recipient, no lead, empty notes and tags, all inbound mail bulk/unrelated | **archive** + tag `inbound-auto`                                            | per row; own-domain default keep |
+| R3  | Junk contacts       | active, only `inbound_sender` and/or `redirect_target` thread links (column Origin), never an outbound recipient, no lead, empty notes and tags; the mail from them and the inbound mail on their redirect threads all bulk/unrelated | **archive** + tag `inbound-auto`                                            | per row; own-domain default keep |
 | R4  | False notifications | `lead.replied` on a thread with no outbound message                                                                                     | delete (whole row logged)                                                   | per workspace                    |
 | R5  | Zero-impact checks  | thread states, auto-closes, learning events, reply drafts from non-prospect mail; queued sends to addresses R1 would un-suppress        | report only (a queued send **blocks** R1)                                   | –                                |
 | R6  | Feature flags       | every `feature_flags` row and what F-07 will do with it                                                                                 | report only — **sign off before F-07 deploys**                              | owner                            |
@@ -90,7 +90,9 @@ database.
    ```
    Expected on the 2026-10-01 data: R1a ≈ 143 (110 unsubscribe + 33
    bounce_hard, ≈ 141 addresses, own-domain rows listed first), R1b listed
-   (expected 0), R3 ≈ 221, R4 ≥ 359. Send `report.md` to the owner through a
+   (expected 0), R3 ≈ 221 sender contacts plus the auto-redirect contacts
+   extracted from the ~17 inbound messages classified `redirect` (Origin
+   `redirect_target` / `both`), R4 ≥ 359. Send `report.md` to the owner through a
    private channel.
 4. The owner edits `decisions.csv` (column `decision`) and signs off R6
    (needed before F-07 deploys).

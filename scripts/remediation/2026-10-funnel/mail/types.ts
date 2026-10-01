@@ -12,7 +12,7 @@ export const SCRIPT = '2026-10-funnel';
 export const MODULE = 'mail';
 /** Bump when the plan shape or a selector changes: a report made by an
  *  older version can then no longer be applied. */
-export const MAIL_PLAN_VERSION = 1;
+export const MAIL_PLAN_VERSION = 2;
 
 /** revoke_reason on every suppression this remediation lifts. */
 export const REVOKE_REASON = 'remediation 2026-10 X1';
@@ -90,11 +90,19 @@ export interface R2Row {
   label: string | null;
 }
 
+/** How a listed R3 contact came to exist: the old sync created it for the
+ *  sender of an inbound message (inbound_sender), the old auto-redirect
+ *  extracted it from an inbound message's text (redirect_target), or both. */
+export type R3Origin = 'inbound_sender' | 'redirect_target' | 'both';
+
 /** R3: an inbound-only contact created from bulk / unrelated mail. */
 export interface R3Row {
   contactId: string;
   email: string;
   ownDomain: string | null;
+  origin: R3Origin;
+  /** The inbound messages behind it: mail FROM it (inbound_sender) and
+   *  the inbound mail on threads it was extracted from (redirect_target). */
   inboundMessages: number;
   relevance: Partial<Record<OutreachRelevance, number>>;
   defaultDecision: 'archive' | 'keep';

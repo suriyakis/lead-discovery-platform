@@ -18,10 +18,14 @@
 //       smtp add, no trail, a prospect message) is R1b → keep by default.
 //       The legacy note is only a cross-check.
 //   R2  bulk / unrelated inbound rows carrying reply labels → clear them.
-//   R3  active contacts whose only associations are inbound_sender threads,
-//       never an outbound recipient, no lead, empty notes and tags, and
-//       whose inbound mail is all bulk / unrelated → archive + tag
-//       'inbound-auto'; own-domain colleagues default to keep.
+//   R3  active contacts whose only associations are mail_thread links of
+//       relation inbound_sender (the old sync's sender contacts) and/or
+//       redirect_target (the old auto-redirect's contacts extracted from
+//       message text), never an outbound recipient, no lead, empty notes
+//       and tags, and whose evidence is all bulk / unrelated: the mail FROM
+//       them and, per redirect_target thread, every inbound message on it
+//       → archive + tag 'inbound-auto'; own-domain colleagues default to
+//       keep.
 //   R4  lead.replied notifications on threads with no outbound → delete.
 
 import { and, asc, eq, gt, gte, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
@@ -73,6 +77,7 @@ import {
   type R0Row,
   type R1Row,
   type R2Row,
+  type R3Origin,
   type R3Row,
   type R4Row,
   type R7Row,
@@ -663,22 +668,37 @@ async function planR3(
     .select({
       contactId: contactAssociations.contactId,
       entityType: contactAssociations.entityType,
+      entityId: contactAssociations.entityId,
       relation: contactAssociations.relation,
     })
     .from(contactAssociations)
-    .where(eq(contactAssociations.workspaceId, ws.id));
-  const byContact = new Map<string, Array<{ entityType: string; relation: string | null }>>();
+    .where(eq(contactAssociations.workspaceId, ws.id))
+    .orderBy(asc(contactAssociations.id));
+  type Link = { entityType: string; entityId: string; relation: string | null };
+  const byContact = new Map<string, Link[]>();
   for (const a of assoc) {
     const key = a.contactId.toString();
     byContact.set(key, [...(byContact.get(key) ?? []), a]);
   }
 
   const inbound = await db
-    .select({ id: mailMessages.id, from: sql<string>`lower(${mailMessages.fromAddress})` })
+    .select({
+      id: mailMessages.id,
+      from: sql<string>`lower(${mailMessages.fromAddress})`,
+      threadId: mailMessages.threadId,
+    })
     .from(mailMessages)
     .where(and(eq(mailMessages.workspaceId, ws.id), eq(mailMessages.direction, 'inbound')));
   const bySender = new Map<string, string[]>();
-  for (const m of inbound) bySender.set(m.from, [...(bySender.get(m.from) ?? []), m.id.toString()]);
+  const byThread = new Map<string, string[]>();
+  for (const m of inbound) {
+    const id = m.id.toString();
+    bySender.set(m.from, [...(bySender.get(m.from) ?? []), id]);
+    if (m.threadId !== null) {
+      const t = m.threadId.toString();
+      byThread.set(t, [...(byThread.get(t) ?? []), id]);
+    }
+  }
 
   const candidates = await db
     .select({ id: contacts.id, email: contacts.email, notes: contacts.notes, tags: contacts.tags })
@@ -686,31 +706,58 @@ async function planR3(
     .where(and(eq(contacts.workspaceId, ws.id), eq(contacts.status, 'active')))
     .orderBy(asc(contacts.id));
 
+  const isSenderLink = (a: Link) =>
+    a.entityType === 'mail_thread' && a.relation === 'inbound_sender';
+  const isRedirectLink = (a: Link) =>
+    a.entityType === 'mail_thread' && a.relation === 'redirect_target';
+
   const out: R3Row[] = [];
   for (const c of candidates) {
     const id = c.id.toString();
     const email = c.email.trim().toLowerCase();
     const links = byContact.get(id) ?? [];
-    const isSenderLink = (a: { entityType: string; relation: string | null }) =>
-      a.entityType === 'mail_thread' && a.relation === 'inbound_sender';
-    if (!links.some(isSenderLink) || !links.every(isSenderLink)) continue;
+    if (links.length === 0 || !links.every((a) => isSenderLink(a) || isRedirectLink(a))) continue;
     if ((c.notes ?? '').trim() !== '' || c.tags.length > 0) continue;
     if (outbound.recipients.has(email) || outbound.contactIds.has(id) || leadEmails.has(email))
       continue;
-    const messages = bySender.get(email) ?? [];
+
+    // Evidence. A sender link needs mail FROM the contact; a redirect link
+    // needs inbound mail on its thread (the message it was extracted
+    // from). Missing evidence keeps the contact off the list.
+    const fromSender = links.some(isSenderLink) ? (bySender.get(email) ?? []) : [];
+    if (links.some(isSenderLink) && fromSender.length === 0) continue;
+    const redirectThreads = links.filter(isRedirectLink).map((a) => a.entityId);
+    if (redirectThreads.some((t) => (byThread.get(t) ?? []).length === 0)) continue;
+    const messages = [
+      ...new Set([...fromSender, ...redirectThreads.flatMap((t) => byThread.get(t) ?? [])]),
+    ];
     if (messages.length === 0) continue;
     const rel = messages.map((m) => ws.relevance.get(m) ?? null);
     if (rel.some((r) => r === null || !NON_PROSPECT.has(r))) continue;
+
+    const origin: R3Origin =
+      fromSender.length > 0 && redirectThreads.length > 0
+        ? 'both'
+        : redirectThreads.length > 0
+          ? 'redirect_target'
+          : 'inbound_sender';
     const own = ws.own.match(email);
     const counts = countBy(rel as OutreachRelevance[]);
+    const source =
+      origin === 'inbound_sender'
+        ? `inbound-only sender of ${describeCounts(counts)} mail`
+        : origin === 'redirect_target'
+          ? `auto-extracted (redirect) from ${describeCounts(counts)} mail`
+          : `sender of / auto-extracted from ${describeCounts(counts)} mail`;
     out.push({
       contactId: id,
       email,
       ownDomain: own,
+      origin,
       inboundMessages: messages.length,
       relevance: counts,
       defaultDecision: own ? 'keep' : 'archive',
-      why: own ? `own domain: ${own}` : `inbound-only sender of ${describeCounts(counts)} mail`,
+      why: own ? `own domain: ${own}` : source,
     });
   }
   return out.sort(
@@ -1148,7 +1195,7 @@ export function planHashInput(plan: Pick<MailPlan, 'version' | 'options' | 'work
         r.source,
       ]),
       r2: w.r2.map((r) => r.messageId),
-      r3: w.r3.map((r) => [r.contactId, r.email, r.defaultDecision]),
+      r3: w.r3.map((r) => [r.contactId, r.email, r.origin, r.defaultDecision]),
       r4: w.r4.map((r) => r.notificationId),
       r7: w.r7.map((r) => r.mailboxId),
       r8: w.r8.tokens,
