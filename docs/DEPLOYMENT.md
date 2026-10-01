@@ -158,6 +158,10 @@ If you must edit something on the server:
 
 The point is not to forbid emergency edits; the point is to never let them silently diverge.
 
+### Data remediation
+
+Bad production data is never fixed with ad-hoc SQL. It is fixed with a versioned script under `scripts/remediation/` (dry run → owner review → `--apply` → optional `--revert`), run from the host checkout with a pg_dump taken first. The first one, `scripts/remediation/2026-10-funnel/` (flow:F-06), has its runbook in its README. Reports carry personal data: they stay in the git-ignored `remediation-reports/` and are never committed.
+
 ### Emergency log
 
 ```

@@ -378,7 +378,8 @@ export type AutoTranslateOutcome =
   | 'skipped:no_body'
   | 'skipped:not_inbound'
   | 'skipped:disabled'
-  | 'skipped:not_found';
+  | 'skipped:not_found'
+  | 'skipped:not_outreach';
 
 /**
  * Best-effort auto-translate for an inbound message. Wired into
@@ -389,6 +390,10 @@ export type AutoTranslateOutcome =
  *   - AUTO_TRANSLATE_INBOUND=0 in env disables globally.
  *   - Outbound messages and rows that already have body_text_en are
  *     no-ops.
+ *   - flow:F-01: mail labelled bulk / unrelated / bounce is never
+ *     auto-translated (newsletters were billing the AI). persistInbound
+ *     only calls this for prospect replies and auto-replies; the check
+ *     here guards other callers. Manual translation is unaffected.
  *   - The heuristic language detector runs first. If it reads the body
  *     as English or can't decide (too short / mixed), we skip — both
  *     conditions cost nothing and matter most because most B2B inbound
@@ -417,6 +422,13 @@ export async function maybeAutoTranslateInbound(
     .limit(1);
   if (!row) return 'skipped:not_found';
   if (row.direction !== 'inbound') return 'skipped:not_inbound';
+  if (
+    row.outreachRelevance === 'bulk' ||
+    row.outreachRelevance === 'unrelated' ||
+    row.outreachRelevance === 'bounce'
+  ) {
+    return 'skipped:not_outreach';
+  }
   if (!row.bodyText || !row.bodyText.trim()) return 'skipped:no_body';
   if (row.bodyTextNative && row.bodyTextNative.trim())
     return 'skipped:already_translated';

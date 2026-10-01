@@ -1,4 +1,5 @@
-// Localized unsubscribe footer appended to every outbound email. Static
+// Localized unsubscribe footer appended to every sequence email (cold
+// first touches and follow-ups — flow:F-05; one-to-one mail has none). Static
 // strings (no AI call, deterministic) keyed by ISO language, falling back
 // to English. The footer language follows the email's target language so a
 // foreign-language body doesn't carry an English footer.
@@ -57,4 +58,10 @@ export function getUnsubscribeFooter(
 ): UnsubscribeFooter {
   const base = (lang ?? 'en').toLowerCase().split('-')[0] ?? 'en';
   return FOOTER_STRINGS[base] ?? EN;
+}
+
+/** Every localized footer prompt line — lets inbound processing recognise
+ *  (and strip) our own footer when a reply quotes it (flow:F-01). */
+export function allUnsubscribeFooterPrompts(): string[] {
+  return Array.from(new Set(Object.values(FOOTER_STRINGS).map((f) => f.prompt)));
 }

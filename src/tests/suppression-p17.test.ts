@@ -7,7 +7,7 @@ import {
   isSuppressed,
   listSuppressions,
   recordBounce,
-  removeSuppression,
+  revokeSuppression,
 } from '@/lib/services/suppression';
 import { renderSignatureHtml, renderSignatureText } from '@/lib/services/signatures';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
@@ -52,6 +52,7 @@ describe('suppression kinds (email/domain/company)', () => {
       kind: 'domain',
       value: 'BlockedCo.com',
       reason: 'manual',
+      source: 'manual',
     });
     expect(
       await isSuppressed(ctx(s.workspaceA, s.ownerA), 'anyone@blockedco.com'),
@@ -71,6 +72,7 @@ describe('suppression kinds (email/domain/company)', () => {
       kind: 'company',
       value: 'Acme Inc',
       reason: 'manual',
+      source: 'manual',
     });
     expect(
       await isSuppressed(ctx(s.workspaceA, s.ownerA), 'anna@personal.com'),
@@ -86,6 +88,7 @@ describe('suppression kinds (email/domain/company)', () => {
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'No.Send@Example.com',
       reason: 'unsubscribe',
+      source: 'manual',
     });
     expect(
       await isSuppressed(ctx(s.workspaceA, s.ownerA), 'no.send@example.com'),
@@ -99,6 +102,7 @@ describe('suppression kinds (email/domain/company)', () => {
         kind: 'domain',
         value: 'not_a_domain',
         reason: 'manual',
+        source: 'manual',
       }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
@@ -109,10 +113,12 @@ describe('suppression kinds (email/domain/company)', () => {
       kind: 'domain',
       value: 'a.com',
       reason: 'manual',
+      source: 'manual',
     });
     await addSuppression(ctx(s.workspaceA, s.ownerA), {
       address: 'x@b.com',
       reason: 'manual',
+      source: 'manual',
     });
     const onlyDomains = await listSuppressions(
       ctx(s.workspaceA, s.ownerA),
@@ -121,16 +127,24 @@ describe('suppression kinds (email/domain/company)', () => {
     expect(onlyDomains.map((e) => e.value)).toEqual(['a.com']);
   });
 
-  it('removeSuppression accepts a row id', async () => {
+  it('revokeSuppression accepts a row id and hides the row from the default list', async () => {
     const s = await setup();
     const e = await addSuppression(ctx(s.workspaceA, s.ownerA), {
       kind: 'domain',
       value: 'gone.com',
       reason: 'manual',
+      source: 'manual',
     });
-    await removeSuppression(ctx(s.workspaceA, s.ownerA), e.id);
+    await revokeSuppression(ctx(s.workspaceA, s.ownerA), e.id, 'domain sold');
     const list = await listSuppressions(ctx(s.workspaceA, s.ownerA));
     expect(list).toHaveLength(0);
+    const withRevoked = await listSuppressions(ctx(s.workspaceA, s.ownerA), {
+      includeRevoked: true,
+    });
+    expect(withRevoked.map((r) => r.revokeReason)).toEqual(['domain sold']);
+    expect(
+      await isSuppressed(ctx(s.workspaceA, s.ownerA), 'anyone@gone.com'),
+    ).toBe(false);
   });
 });
 
@@ -144,6 +158,7 @@ describe('recordBounce', () => {
     const all = await listSuppressions(ctx(s.workspaceA, s.ownerA));
     expect(all[0]!.expiresAt).toBe(null);
     expect(all[0]!.reason).toBe('bounce_hard');
+    expect(all[0]!.source).toBe('smtp');
   });
 
   it('soft bounce sets a 7-day TTL', async () => {
@@ -156,6 +171,7 @@ describe('recordBounce', () => {
     expect(ttl).toBeGreaterThan(6 * 24 * 60 * 60 * 1000);
     expect(ttl).toBeLessThan(8 * 24 * 60 * 60 * 1000);
     expect(all[0]!.reason).toBe('bounce_soft');
+    expect(all[0]!.source).toBe('smtp');
   });
 });
 

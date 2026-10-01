@@ -12,6 +12,7 @@ import {
   notifications,
   type Notification,
 } from '@/lib/db/schema/notifications';
+import { workspaceMembers } from '@/lib/db/schema/workspaces';
 import type { WorkspaceContext } from './context';
 
 export interface NotifyInput {
@@ -53,6 +54,106 @@ export async function notify(
       err instanceof Error ? err.message : err,
     );
     return null;
+  }
+}
+
+const ADMIN_KEY_SEPARATOR = ':user:';
+
+/** Dedupe key of one admin's copy of a notifyWorkspaceAdmins() alert:
+ *  the unread-dedupe index is per (workspace, key), so each recipient
+ *  needs a key of their own. */
+export function adminDedupeKey(dedupeKey: string, userId: string): string {
+  return `${dedupeKey}${ADMIN_KEY_SEPARATOR}${userId}`;
+}
+
+/**
+ * flow:F-04: an alert for the people who can act on it — one targeted row
+ * per workspace owner / admin (members, managers and viewers do not see
+ * it). With a dedupeKey each admin's copy dedupes on its own
+ * (adminDedupeKey), so one admin reading theirs never silences another's,
+ * and the next occurrence re-notifies exactly the admins who have read
+ * theirs. Falls back to a workspace-wide row when the workspace has no
+ * owner / admin member, so the alert is never dropped. Best-effort like
+ * notify(): returns the rows created ([] on dedupe or failure).
+ */
+export async function notifyWorkspaceAdmins(
+  workspaceId: bigint,
+  input: Omit<NotifyInput, 'userId'>,
+): Promise<Notification[]> {
+  try {
+    const admins = await db
+      .select({ userId: workspaceMembers.userId })
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, workspaceId),
+          inArray(workspaceMembers.role, ['owner', 'admin']),
+        ),
+      )
+      .orderBy(workspaceMembers.userId);
+    if (admins.length === 0) {
+      const row = await notify(workspaceId, input);
+      return row ? [row] : [];
+    }
+    return await db
+      .insert(notifications)
+      .values(
+        admins.map((a) => ({
+          workspaceId,
+          userId: a.userId,
+          kind: input.kind,
+          title: input.title.slice(0, 300),
+          body: input.body?.slice(0, 1000) ?? null,
+          href: input.href ?? null,
+          dedupeKey: input.dedupeKey ? adminDedupeKey(input.dedupeKey, a.userId) : null,
+        })),
+      )
+      .onConflictDoNothing()
+      .returning();
+  } catch (err) {
+    console.error(
+      '[notifications] notifyWorkspaceAdmins failed:',
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
+}
+
+/**
+ * flow:F-04: the condition a dedupeKey'd notification announced is over
+ * (e.g. a failing mailbox recovered). Marks its unread rows read — the
+ * workspace-wide one and every admin's copy (adminDedupeKey) — so the
+ * bell stops showing a stale alarm, and so the NEXT occurrence notifies
+ * again instead of being swallowed by the dedupe index. Best-effort like
+ * notify(): returns the number of rows resolved, 0 on failure.
+ */
+export async function resolveNotifications(
+  workspaceId: bigint,
+  dedupeKey: string,
+): Promise<number> {
+  const adminPrefix = `${dedupeKey}${ADMIN_KEY_SEPARATOR}`;
+  try {
+    const rows = await db
+      .update(notifications)
+      .set({ readAt: new Date() })
+      .where(
+        and(
+          eq(notifications.workspaceId, workspaceId),
+          or(
+            eq(notifications.dedupeKey, dedupeKey),
+            sql`left(${notifications.dedupeKey}, ${adminPrefix.length}) = ${adminPrefix}`,
+          ),
+          isNull(notifications.readAt),
+        ),
+      )
+      .returning({ id: notifications.id });
+    return rows.length;
+  } catch (err) {
+    console.error(
+      '[notifications] resolve failed:',
+      err instanceof Error ? err.message : err,
+    );
+    return 0;
   }
 }
 

@@ -6,6 +6,8 @@
 //
 // Real adapters land in ./smtp-imap.ts (lazy-imported by the factory).
 
+import type { InboundRelevanceSignals } from './relevance';
+
 export interface MailAddress {
   address: string;
   name?: string;
@@ -35,6 +37,13 @@ export interface SendResult {
   messageId: string;
   /** Provider raw response for audit. */
   raw?: string;
+  /** flow:F-05 — recipients the server refused while accepting the
+   *  message for the others (per-recipient RCPT TO replies). */
+  rejected?: ReadonlyArray<{
+    address: string;
+    responseCode: number | null;
+    response: string | null;
+  }>;
 }
 
 export interface InboundMessage {
@@ -49,8 +58,14 @@ export interface InboundMessage {
   textBody: string | null;
   htmlBody: string | null;
   receivedAt: Date;
-  /** Decoded headers for audit. */
+  /** Headers for audit, JSON-safe: lower-cased name → unfolded value (an
+   *  array when the header repeats). */
   headers: Record<string, string | string[]>;
+  /** flow:F-01 — relevance signals captured from the raw message at parse
+   *  time (List-*, Precedence, Auto-Submitted, ESP markers, the parsed
+   *  delivery-status report …). Absent for providers that cannot see the
+   *  raw message (the mock); the service then derives them from `headers`. */
+  relevanceSignals?: InboundRelevanceSignals;
   attachments: Array<{
     filename: string;
     contentType: string;
@@ -66,9 +81,18 @@ export interface FetchInboundOptions {
   limit?: number;
 }
 
+/** One side of a connection test. `authFailed` (flow:F-04) is set when the
+ *  server refused the login, so callers can back off harder without
+ *  re-parsing the text. */
+export interface ConnectionCheck {
+  ok: boolean;
+  detail?: string;
+  authFailed?: boolean;
+}
+
 export interface ConnectionTestResult {
-  smtp: { ok: boolean; detail?: string };
-  imap: { ok: boolean; detail?: string } | null;
+  smtp: ConnectionCheck;
+  imap: ConnectionCheck | null;
 }
 
 export interface MailboxConfig {

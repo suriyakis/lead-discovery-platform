@@ -87,6 +87,9 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   try {
     const sent = await sendMessage(ctx, {
+      // flow:F-05: an operator's reply in a thread is personal mail — no
+      // bulk unsubscribe footer, no List-Unsubscribe headers.
+      mode: 'one_to_one',
       mailboxId: parsed.mailboxId,
       to: [{ address: parsed.to }],
       subject: useTranslation

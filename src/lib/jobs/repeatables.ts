@@ -7,7 +7,9 @@
 //   outreach.drain.tick    every 30 sec → for each active workspace, drain
 //                                          the send queue
 //   mail.imap.tick         every 2 min  → for each active mailbox with IMAP,
-//                                          call mail.syncInbound(ctx, mb.id)
+//                                          mail.safeSyncOne(ctx, mb); failing
+//                                          mailboxes get a slow re-check
+//                                          instead (flow:F-04, runImapTick)
 //   outreach.follow_up.tick every 1 h    → Phase 58: for each active
 //                                          workspace with followUpEnabled,
 //                                          process pending follow-ups whose
@@ -16,7 +18,7 @@
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
 
-import { and, eq, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
@@ -26,17 +28,13 @@ import {
 } from '@/lib/services/context';
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
-import { purgeOldTrashUnattended, safeSyncOne, syncInbound } from '@/lib/services/mail';
+import { purgeOldTrashUnattended, safeSyncOne } from '@/lib/services/mail';
 import { processDueCrawlPlans } from '@/lib/services/crawl-engine';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
 import { processDueHealthChecks } from '@/lib/services/health-check';
-import {
-  classifyImapError,
-  computeBackoffMs,
-  nextSyncAfterEmpty,
-} from '@/lib/services/imap-backoff';
+import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
 import { getJobQueue, type JobHandler } from './index';
 
 export const AUTOPILOT_TICK_MS = 5 * 60 * 1000;
@@ -116,52 +114,95 @@ const handleDrainTick: JobHandler = async () => {
   return { workspaces: wss.length, totalSent, totalSkipped, failed };
 };
 
-const handleImapTick: JobHandler = async () => {
-  // Active workspaces only. Inner loop selects each workspace's IMAP-
-  // enabled, status=active mailboxes whose cooldown gate has elapsed.
-  // P61-23: workspaces with imapAutoSyncEnabled=false skip auto-sync
-  // entirely (operator only ever pulls via the manual Sync button).
+/**
+ * mail.imap.tick. flow:F-04 makes it two passes:
+ *
+ *  1. Every active workspace, also with IMAP auto-sync off: failing
+ *     mailboxes with no re-check gate yet are adopted
+ *     (adoptUntrackedFailingMailboxes, no network) — each gets its gate
+ *     and the deduped mailbox.failing notification, so prod's two silent
+ *     failing mailboxes (X7) are announced by the first tick after deploy.
+ *  2. Workspaces with IMAP auto-sync on (P61-23: off means the operator
+ *     only pulls via the manual Sync button), mailboxes whose gate has
+ *     passed: active ones with IMAP are synced, failing ones (with or
+ *     without IMAP) get their SMTP + IMAP re-check. Both through
+ *     safeSyncOne, so every failure leaves a non-null gate.
+ *
+ * Exported for tests (deterministic, unlike enqueue-and-wait).
+ */
+export async function runImapTick(now: Date = new Date()): Promise<{
+  mailboxesSynced: number;
+  failed: number;
+  skipped: number;
+  markedFailing: number;
+  rechecked: number;
+  recovered: number;
+  adopted: number;
+}> {
   const wss = await db
     .select()
     .from(workspaces)
-    .where(
-      and(
-        eq(workspaces.status, 'active'),
-        eq(workspaces.imapAutoSyncEnabled, true),
-      ),
-    );
+    .where(eq(workspaces.status, 'active'));
+
+  let adopted = 0;
+  for (const ws of wss) {
+    try {
+      adopted += await adoptUntrackedFailingMailboxes(ownerCtx(ws.id, ws.ownerUserId));
+    } catch (err) {
+      console.error(
+        `[imap.tick] workspace=${ws.id} adopting failing mailboxes failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   let synced = 0;
   let failed = 0;
   let skipped = 0;
   let markedFailing = 0;
-  const now = new Date();
+  let rechecked = 0;
+  let recovered = 0;
   for (const ws of wss) {
+    if (!ws.imapAutoSyncEnabled) continue;
     const mbs = await db
       .select()
       .from(mailboxes)
       .where(
         and(
           eq(mailboxes.workspaceId, ws.id),
-          eq(mailboxes.status, 'active'),
+          inArray(mailboxes.status, ['active', 'failing']),
           or(
             isNull(mailboxes.imapNextSyncAfter),
             lte(mailboxes.imapNextSyncAfter, now),
           ),
         ),
       );
-    const eligible = mbs.filter((m) => m.imapHost);
+    const eligible = mbs.filter((m) => m.status === 'failing' || m.imapHost);
     skipped += mbs.length - eligible.length;
     if (eligible.length === 0) continue;
     const ctx = ownerCtx(ws.id, ws.ownerUserId);
     for (const mb of eligible) {
-      const outcome = await safeSyncOne(ctx, mb);
+      if (mb.status === 'failing') rechecked++;
+      let outcome: Awaited<ReturnType<typeof safeSyncOne>>;
+      try {
+        outcome = await safeSyncOne(ctx, mb);
+      } catch (err) {
+        // A DB error, not a mailbox one — one bad row must not stop the tick.
+        failed++;
+        console.error(
+          `[imap.tick] workspace=${ws.id} mailbox=${mb.id} sync crashed:`,
+          err instanceof Error ? err.message : err,
+        );
+        continue;
+      }
       if (outcome.kind === 'synced') {
         synced++;
-      } else if (outcome.kind === 'auth_failed') {
+        if (outcome.recovered) recovered++;
+      } else if (outcome.kind === 'failing') {
         failed++;
-        markedFailing++;
+        if (mb.status === 'active') markedFailing++;
         console.error(
-          `[imap.tick] workspace=${ws.id} mailbox=${mb.id} auth-or-stuck-failed: ${outcome.message}`,
+          `[imap.tick] workspace=${ws.id} mailbox=${mb.id} failing (next check ${outcome.nextSyncAfter?.toISOString() ?? 'n/a'}): ${outcome.message}`,
         );
       } else {
         failed++;
@@ -171,8 +212,18 @@ const handleImapTick: JobHandler = async () => {
       }
     }
   }
-  return { mailboxesSynced: synced, failed, skipped, markedFailing };
-};
+  return {
+    mailboxesSynced: synced,
+    failed,
+    skipped,
+    markedFailing,
+    rechecked,
+    recovered,
+    adopted,
+  };
+}
+
+const handleImapTick: JobHandler = () => runImapTick();
 
 const handleFollowUpTick: JobHandler = async () => {
   // Phase 58: every active workspace with follow-ups enabled. The

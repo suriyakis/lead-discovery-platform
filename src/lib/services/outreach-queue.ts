@@ -8,7 +8,7 @@
 // worker is a thin wrapper around drainQueue() that any deployment can
 // schedule (left out of the service layer to keep tests clean).
 
-import { and, asc, count, eq, gte, lte, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   outreachDrafts,
@@ -18,9 +18,11 @@ import {
   type OutreachQueueEntry,
   type OutreachQueueStatus,
   type OutreachSendSettings,
+  type OutreachStage,
   type SendDelayMode,
 } from '@/lib/db/schema/outreach';
-import { mailMessages } from '@/lib/db/schema/mailing';
+import { mailMessages, mailboxes } from '@/lib/db/schema/mailing';
+import { classifySmtpError } from '@/lib/mail/smtp-errors';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
@@ -29,7 +31,7 @@ import {
   canWrite,
   type WorkspaceContext,
 } from './context';
-import { sendMessage } from './mail';
+import { sendMessage, type SendMode } from './mail';
 import { prepareOutboundDualBody } from './language-resolution';
 import { isSuppressed } from './suppression';
 import {
@@ -512,6 +514,16 @@ async function processEntry(
       }
     }
 
+    // flow:F-05: a mailbox marked failing (a refused SMTP login, or the
+    // IMAP auto-pause — then nobody reads the replies) holds its queue: no
+    // repeated failed logins against the provider's rate limit / fail2ban,
+    // and no entry turns 'failed' for a problem that is ours. The entry
+    // goes out once the mailbox is reactivated.
+    if (await isMailboxFailing(ctx, entry.mailboxId)) {
+      await holdEntry(entry, now, MAILBOX_FAILING_HOLD_REASON);
+      return 'skipped';
+    }
+
     // Phase 43: per-mailbox sending policy. Checks business window
     // (timezone-aware), daily/hourly counters, and per-domain 24h cap.
     // On a denial we re-queue with scheduledSendAt=retryAfter and set
@@ -617,8 +629,11 @@ async function processEntry(
       }
     }
 
-    // Send.
+    // Send. flow:F-05: cold first touches are sequence mail (unsubscribe
+    // footer + List-Unsubscribe); a draft answering the prospect's reply
+    // is one-to-one.
     const sendInput: Parameters<typeof sendMessage>[1] = {
+      mode: await sendModeForEntry(ctx, entry),
       mailboxId: entry.mailboxId,
       to: entry.toAddresses.map((address) => ({ address })),
       cc: entry.ccAddresses.length > 0
@@ -661,16 +676,130 @@ async function processEntry(
     }
     return 'sent';
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // flow:F-05: a refused SMTP login is the mailbox's problem (sendMessage
+    // has marked it failing), not this entry's — keep it queued behind the
+    // failing-mailbox hold instead of failing it.
+    if (classifySmtpError(err, entry.toAddresses).kind === 'auth') {
+      await holdEntry(
+        entry,
+        now,
+        `${MAILBOX_FAILING_HOLD_REASON} Last error: ${message}`.slice(0, 2000),
+      );
+      return 'skipped';
+    }
     await db
       .update(outreachQueue)
       .set({
         status: 'failed',
-        lastError: err instanceof Error ? err.message : String(err),
+        lastError: message,
         updatedAt: new Date(),
       })
       .where(eq(outreachQueue.id, entry.id));
     return 'failed';
   }
+}
+
+// ---- recipient opt-out (flow:F-05) --------------------------------
+
+/**
+ * Cancel every still-queued entry addressed to `address` (any of its
+ * to-addresses, case-insensitive) — used when that recipient unsubscribes.
+ * Entries already being sent are left alone; sendMessage's suppression
+ * check stops them. Returns the cancelled ids; the caller audits.
+ */
+export async function cancelQueuedForRecipient(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  address: string,
+  reason: string,
+): Promise<bigint[]> {
+  const normalized = address.trim().toLowerCase();
+  if (!normalized) return [];
+  const rows = await db
+    .update(outreachQueue)
+    .set({ status: 'cancelled', lastError: reason.slice(0, 2000), updatedAt: new Date() })
+    .where(
+      and(
+        eq(outreachQueue.workspaceId, ctx.workspaceId),
+        eq(outreachQueue.status, 'queued'),
+        // Raw SQL: case-insensitive membership in the to_addresses text[]
+        // (one scalar parameter, no JS array splat).
+        sql`EXISTS (SELECT 1 FROM unnest(${outreachQueue.toAddresses}) AS rcpt(addr) WHERE lower(rcpt.addr) = ${normalized})`,
+      ),
+    )
+    .returning({ id: outreachQueue.id });
+  return rows.map((r) => r.id);
+}
+
+// ---- send mode + failing-mailbox hold (flow:F-05) -----------------
+
+/**
+ * A draft is one-to-one when it answers a prospect's reply: it was
+ * triggered by an inbound message and is past the discovery stage. A
+ * discovery draft is a first touch — cold, or an intro to a referred
+ * contact — and is sequence mail even when a reply triggered it.
+ */
+export function sendModeForDraft(draft: {
+  stage: OutreachStage;
+  triggeredByMessageId: bigint | null;
+}): SendMode {
+  return draft.triggeredByMessageId !== null && draft.stage !== 'discovery'
+    ? 'one_to_one'
+    : 'sequence';
+}
+
+async function sendModeForEntry(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  entry: OutreachQueueEntry,
+): Promise<SendMode> {
+  if (!entry.draftId) return 'sequence';
+  const [draft] = await db
+    .select({
+      stage: outreachDrafts.stage,
+      triggeredByMessageId: outreachDrafts.triggeredByMessageId,
+    })
+    .from(outreachDrafts)
+    .where(
+      and(
+        eq(outreachDrafts.workspaceId, ctx.workspaceId),
+        eq(outreachDrafts.id, entry.draftId),
+      ),
+    )
+    .limit(1);
+  return draft ? sendModeForDraft(draft) : 'sequence';
+}
+
+/** How long a held entry waits before the drain looks at it again. Keeps
+ *  held entries from filling every drain batch. */
+export const MAILBOX_FAILING_HOLD_MS = 30 * 60 * 1000;
+export const MAILBOX_FAILING_HOLD_REASON =
+  'Held: the mailbox is failing (see its last error). Fix it under Edit settings and Reactivate — this send then goes out.';
+
+async function isMailboxFailing(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ status: mailboxes.status })
+    .from(mailboxes)
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
+    .limit(1);
+  return row?.status === 'failing';
+}
+
+/** Put a claimed entry back to 'queued' (undoing the claim's attempt
+ *  bump) and look at it again after MAILBOX_FAILING_HOLD_MS. */
+async function holdEntry(entry: OutreachQueueEntry, now: Date, reason: string): Promise<void> {
+  await db
+    .update(outreachQueue)
+    .set({
+      status: 'queued',
+      attemptCount: entry.attemptCount,
+      scheduledSendAt: new Date(now.getTime() + MAILBOX_FAILING_HOLD_MS),
+      lastError: reason,
+      updatedAt: new Date(),
+    })
+    .where(eq(outreachQueue.id, entry.id));
 }
 
 // ---- internals ----------------------------------------------------

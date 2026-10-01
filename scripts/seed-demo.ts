@@ -2905,13 +2905,15 @@ async function seedRest(ctx: RestCtx): Promise<void> {
 
   // ======================= suppression =======================
   await db.insert(s.suppressionList).values([
-    { workspaceId: A, kind: 'email', address: 'marek.dabrowski@izolbud-slask.example.pl', value: 'marek.dabrowski@izolbud-slask.example.pl', reason: 'bounce_hard', note: 'Auto: 550 5.1.1 user unknown', createdBy: null, createdAt: ago(19, 4) },
-    { workspaceId: A, kind: 'email', address: 'alessandro.greco@termoimpianti-sud.example.it', value: 'alessandro.greco@termoimpianti-sud.example.it', reason: 'unsubscribe', note: 'Auto: unsubscribe reply', createdBy: null, createdAt: ago(11, 1) },
-    { workspaceId: A, kind: 'email', address: 'thomas.richter@hansa-daemmtechnik.example.de', value: 'thomas.richter@hansa-daemmtechnik.example.de', reason: 'manual', note: 'Asked for no further emails (framework until 2028)', createdBy: ADMIN_ID, createdAt: ago(14) },
-    { workspaceId: A, kind: 'domain', address: 'competitor-insulation.example.com', value: 'competitor-insulation.example.com', reason: 'manual', note: 'Competitor — never contact', createdBy: ADMIN_ID, createdAt: ago(30) },
-    { workspaceId: A, kind: 'company', address: 'leeds city council', value: 'leeds city council', reason: 'manual', note: 'Public body — reach via contractors only', createdBy: MEMBER_ID, createdAt: ago(18) },
-    { workspaceId: A, kind: 'email', address: 'noreply@tenders.example.co.uk', value: 'noreply@tenders.example.co.uk', reason: 'complaint', note: 'Feed sender, not a person', createdBy: MEMBER_ID, createdAt: ago(17) },
-    { workspaceId: A, kind: 'email', address: 'buyer@wessex-passivefire.example.co.uk', value: 'buyer@wessex-passivefire.example.co.uk', reason: 'bounce_soft', note: 'Mailbox full — retry after expiry', expiresAt: ahead(4), createdBy: null, createdAt: ago(3, 6) },
+    { workspaceId: A, kind: 'email', address: 'marek.dabrowski@izolbud-slask.example.pl', value: 'marek.dabrowski@izolbud-slask.example.pl', reason: 'bounce_hard', source: 'smtp', note: 'Auto: 550 5.1.1 user unknown', createdBy: null, createdAt: ago(19, 4) },
+    { workspaceId: A, kind: 'email', address: 'alessandro.greco@termoimpianti-sud.example.it', value: 'alessandro.greco@termoimpianti-sud.example.it', reason: 'unsubscribe', source: 'reply', note: 'Auto: unsubscribe reply', createdBy: null, createdAt: ago(11, 1) },
+    { workspaceId: A, kind: 'email', address: 'thomas.richter@hansa-daemmtechnik.example.de', value: 'thomas.richter@hansa-daemmtechnik.example.de', reason: 'manual', source: 'manual', note: 'Asked for no further emails (framework until 2028)', createdBy: ADMIN_ID, createdAt: ago(14) },
+    { workspaceId: A, kind: 'domain', address: 'competitor-insulation.example.com', value: 'competitor-insulation.example.com', reason: 'manual', source: 'manual', note: 'Competitor — never contact', createdBy: ADMIN_ID, createdAt: ago(30) },
+    { workspaceId: A, kind: 'company', address: 'leeds city council', value: 'leeds city council', reason: 'manual', source: 'manual', note: 'Public body — reach via contractors only', createdBy: MEMBER_ID, createdAt: ago(18) },
+    { workspaceId: A, kind: 'email', address: 'noreply@tenders.example.co.uk', value: 'noreply@tenders.example.co.uk', reason: 'complaint', source: 'manual', note: 'Feed sender, not a person', createdBy: MEMBER_ID, createdAt: ago(17) },
+    { workspaceId: A, kind: 'email', address: 'buyer@wessex-passivefire.example.co.uk', value: 'buyer@wessex-passivefire.example.co.uk', reason: 'bounce_soft', source: 'smtp', note: 'Mailbox full — retry after expiry', expiresAt: ahead(4), createdBy: null, createdAt: ago(3, 6) },
+    // F-03: a pre-provenance automatic entry an admin revoked (kept as history).
+    { workspaceId: A, kind: 'email', address: 'newsletter@insulation-weekly.example.com', value: 'newsletter@insulation-weekly.example.com', reason: 'unsubscribe', source: 'legacy_auto', note: 'Auto-suppressed by the reply classifier (pre-provenance)', createdBy: null, createdAt: ago(24), revokedAt: ago(2), revokedBy: ADMIN_ID, revokeReason: 'Newsletter footer matched "unsubscribe" — not an opt-out' },
   ]);
 
   // ======================= CRM =======================
@@ -3348,7 +3350,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     { workspaceId: A, userId: ADMIN_ID, kind: 'secret.set', entityType: 'workspace_secret', entityId: 'mailbox.smtpPassword', payload: { scope: 'mailbox' }, createdAt: ago(34) },
     { workspaceId: A, userId: ADMIN_ID, kind: 'provider_settings.update', entityType: 'workspace', entityId: A.toString(), payload: { aiProvider: 'openai', qualificationProvider: 'gemini' }, createdAt: ago(18) },
     { workspaceId: A, userId: ADMIN_ID, kind: 'outreach.send_settings.update', entityType: 'workspace', entityId: A.toString(), payload: { dailyEmailLimit: 60, domainCooldownHours: 48 }, createdAt: ago(12) },
-    { workspaceId: A, userId: ADMIN_ID, kind: 'reply.auto_actions.update', entityType: 'workspace', entityId: A.toString(), payload: { autoCloseNegative: true }, createdAt: ago(15) },
+    { workspaceId: A, userId: ADMIN_ID, kind: 'reply_auto_actions.changed', entityType: 'workspace', entityId: A.toString(), payload: { changes: { autoSuppressUnsubscribe: { from: false, to: true }, autoSuppressBounce: { from: false, to: true }, autoCloseNegative: { from: false, to: true } }, after: { autoSuppressUnsubscribe: true, autoSuppressBounce: true, autoCloseNegative: true, autoExtractRedirects: true } }, createdAt: ago(15) },
     ...(goodwill !== null
       ? [{ workspaceId: A, userId: ADMIN_ID, kind: 'tokens.adjust', entityType: 'workspace', entityId: A.toString(), payload: { delta: goodwill.toString(), reason: 'Goodwill credit — failed PL crawl (rate limit)' }, createdAt: ago(9, 2) }]
       : []),

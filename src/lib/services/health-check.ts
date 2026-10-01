@@ -3,8 +3,8 @@
 //
 //   1. RULE FINDINGS — deterministic audit of configuration + operations:
 //      empty wallet, recipes without a target country, mock search, no
-//      mailbox, failed runs, review backlog, stale drafts, pending
-//      follow-up approvals.
+//      mailbox, each failing mailbox, failed runs, review backlog, stale
+//      drafts, pending follow-up approvals.
 //   2. COMMUNICATION REVIEW — the AI reads a sample of recent outbound
 //      conversations and judges them the way a recipient would: is the
 //      flow natural? does it repeat itself? does it contradict earlier
@@ -13,9 +13,10 @@
 // The result is persisted as a report (score 0–100 + advice) and, when
 // anything is wrong, a warning notification linking to /health.
 
-import { and, count, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
+import { formatUtc } from '@/lib/format-utc';
 import { connectorRecipes, connectorRuns } from '@/lib/db/schema/connectors';
 import {
   workspaceHealthReports,
@@ -29,6 +30,7 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
+import { summarizeMailboxFailure } from './mailbox';
 import { notify } from './notifications';
 import { getTokenWallet, hasTokens } from './token-ledger';
 
@@ -69,6 +71,30 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 
 // ---- rule findings --------------------------------------------------
 
+/** "2026-05-08 14:03 UTC" — findings are stored text, read later. */
+/**
+ * flow:F-04: what "no active mailbox" means depends on why. Only a
+ * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
+ * follow-up processOne check); sends through a PAUSED one are refused
+ * and the queue entries / follow-ups that come due are marked failed.
+ */
+export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean): string {
+  const why = anyFailing && anyPaused ? 'failing or paused' : anyFailing ? 'failing' : 'paused';
+  const parts = [`No mailbox is active (each one is ${why}) — no replies are read.`];
+  if (anyFailing) {
+    parts.push(
+      'Outreach and follow-ups queued on a failing mailbox are held until it works again.',
+    );
+  }
+  if (anyPaused) {
+    parts.push(
+      'Outreach and follow-ups that come due on a paused mailbox are marked failed, not held — ' +
+        're-enable it before they are due.',
+    );
+  }
+  return parts.join(' ');
+}
+
 export async function collectRuleFindings(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<HealthFinding[]> {
@@ -100,17 +126,57 @@ export async function collectRuleFindings(
     });
   }
 
-  const [mbs] = await db
-    .select({ c: count() })
+  // flow:F-04 (I095): one finding per failing mailbox, by name, linking
+  // to it — not only "no active mailbox", which missed one failing box
+  // among several and said the wrong thing about what still works.
+  const mbs = await db
+    .select({
+      id: mailboxes.id,
+      name: mailboxes.name,
+      status: mailboxes.status,
+      lastError: mailboxes.lastError,
+      lastErrorAt: mailboxes.lastErrorAt,
+      failingSince: mailboxes.failingSince,
+      smtpHost: mailboxes.smtpHost,
+      smtpPort: mailboxes.smtpPort,
+      imapHost: mailboxes.imapHost,
+      imapPort: mailboxes.imapPort,
+    })
     .from(mailboxes)
-    .where(and(eq(mailboxes.workspaceId, wsId), eq(mailboxes.status, 'active')));
-  if (Number(mbs?.c ?? 0) === 0) {
+    .where(and(eq(mailboxes.workspaceId, wsId), ne(mailboxes.status, 'archived')))
+    .orderBy(asc(mailboxes.id));
+  for (const mb of mbs.filter((m) => m.status === 'failing')) {
+    const summary = summarizeMailboxFailure(mb);
+    const since = mb.failingSince ? ` since ${formatUtc(mb.failingSince)}` : '';
+    const when = mb.lastErrorAt ? ` (${formatUtc(mb.lastErrorAt)})` : '';
     findings.push({
       severity: 'warning',
-      code: 'mailbox.none',
-      message: 'No active mailbox — approved drafts cannot be sent.',
-      href: '/mailbox/new',
+      code: 'mailbox.failing',
+      message:
+        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice}` +
+        ` Last error${when}: ${(mb.lastError ?? 'unknown').slice(0, 300)}`,
+      href: `/mailbox/${mb.id}`,
     });
+  }
+  if (!mbs.some((m) => m.status === 'active')) {
+    findings.push(
+      mbs.length === 0
+        ? {
+            severity: 'warning',
+            code: 'mailbox.none',
+            message: 'No mailbox is connected — nothing can be sent and no replies are read.',
+            href: '/mailbox/new',
+          }
+        : {
+            severity: 'warning',
+            code: 'mailbox.none',
+            message: noActiveMailboxMessage(
+              mbs.some((m) => m.status === 'failing'),
+              mbs.some((m) => m.status === 'paused'),
+            ),
+            href: '/mailbox',
+          },
+    );
   }
 
   const recipes = await db

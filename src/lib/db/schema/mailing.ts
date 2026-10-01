@@ -71,6 +71,15 @@ export const mailboxes = pgTable(
     lastSyncedAt: timestamp('last_synced_at', { mode: 'date', withTimezone: true }),
     /** Last error message from a failing send/receive. Cleared on success. */
     lastError: text('last_error'),
+    /** flow:F-04: when lastError happened (updatedAt moves on any edit, so
+     *  it cannot date the error). Cleared with lastError. */
+    lastErrorAt: timestamp('last_error_at', { mode: 'date', withTimezone: true }),
+    /** flow:F-04: when the current 'failing' episode began. Set on the
+     *  transition into 'failing', kept while it stays failing, cleared on
+     *  recovery / reactivation. Drives the re-check backoff (the longer a
+     *  mailbox has been failing, the longer the wait, capped) and the
+     *  "failing since" copy. Meaningless unless status = 'failing'. */
+    failingSince: timestamp('failing_since', { mode: 'date', withTimezone: true }),
     /** Phase 51: consecutive IMAP tick failures since the last success.
      *  Drives exponential backoff so a stale-password mailbox doesn't
      *  pound the upstream server every 2 minutes (fail2ban bait). */
@@ -78,7 +87,9 @@ export const mailboxes = pgTable(
       .notNull()
       .default(0),
     /** Phase 51: when the next IMAP tick is allowed. Set to now + 2^n*2min
-     *  on transient failure (cap 60 min); cleared on success. */
+     *  on transient failure (cap 60 min); cleared on success. flow:F-04:
+     *  never NULL while 'failing' — it is when the tick may re-check the
+     *  connection (1 h, or 6 h after a refused login, growing to 24 h). */
     imapNextSyncAfter: timestamp('imap_next_sync_after', {
       mode: 'date',
       withTimezone: true,
@@ -182,6 +193,21 @@ export const mailStatus = pgEnum('mail_status', [
   'received', // inbound only
 ]);
 
+/**
+ * flow:F-01 — is an inbound message about our outreach? Set at sync time by
+ * services/inbound-relevance.ts (pure decision in lib/mail/relevance.ts).
+ * Only prospect_reply / auto_reply / bounce may trigger reply side effects
+ * (classification, auto-actions, contacts, translation, notifications).
+ * NULL = outbound, or inbound synced before F-01 and not yet backfilled.
+ */
+export const outreachRelevance = pgEnum('outreach_relevance', [
+  'prospect_reply',
+  'auto_reply',
+  'bounce',
+  'bulk',
+  'unrelated',
+]);
+
 export const mailMessages = pgTable(
   'mail_messages',
   {
@@ -241,6 +267,12 @@ export const mailMessages = pgTable(
     sourceDraftId: bigint('source_draft_id', { mode: 'bigint' }),
     /** Phase 16: optional FK to the resolved contact (matched on send / inbound parse). */
     contactId: bigint('contact_id', { mode: 'bigint' }),
+    /** flow:F-01: relevance of an inbound message to our outreach (null on
+        outbound and on not-yet-backfilled legacy inbound). */
+    outreachRelevance: outreachRelevance('outreach_relevance'),
+    /** flow:F-01: the signals + evidence behind outreachRelevance
+        (InboundRelevanceSignals plus `evidence`), snake_case keys. */
+    relevanceSignals: jsonb('relevance_signals'),
     /** Phase 20: classification of inbound replies (null on outbound). */
     replyClassification: text('reply_classification'),
     replyClassificationConfidence: smallint('reply_classification_confidence'),
@@ -311,6 +343,16 @@ export const mailMessages = pgTable(
       table.mailboxId,
       table.status,
     ),
+    // flow:F-01: "does this In-Reply-To / References / DSN id belong to one
+    // of OUR messages?" is matched case-insensitively (I008 b).
+    workspaceOutboundLowerMessageIdIdx: index('mail_messages_ws_outbound_lower_message_id_idx')
+      .on(table.workspaceId, sql`lower(${table.messageId})`)
+      .where(sql`${table.direction} = 'outbound'`),
+    // flow:F-01: inbound lists / backfill filter on relevance.
+    workspaceRelevanceIdx: index('mail_messages_ws_relevance_idx').on(
+      table.workspaceId,
+      table.outreachRelevance,
+    ),
   }),
 );
 
@@ -318,6 +360,7 @@ export type MailMessage = typeof mailMessages.$inferSelect;
 export type NewMailMessage = typeof mailMessages.$inferInsert;
 export type MailDirection = (typeof mailDirection.enumValues)[number];
 export type MailStatus = (typeof mailStatus.enumValues)[number];
+export type MailOutreachRelevance = (typeof outreachRelevance.enumValues)[number];
 
 /**
  * `signatures` — saved signature blocks. A mailbox can have a default
@@ -410,6 +453,33 @@ export const suppressionKind = pgEnum('suppression_kind', [
   'company',
 ]);
 
+/**
+ * F-03: provenance — which path produced the suppression that is
+ * currently in force on a row.
+ *
+ *   unsubscribe_link — the recipient used our unsubscribe link/header
+ *   reply            — the inbound reply classifier (heuristic, inferred)
+ *   dsn              — a delivery-status notification (bounce report)
+ *   smtp             — the SMTP server rejected the recipient at send time
+ *   manual           — an operator added it on /mailbox/suppression
+ *   import           — an operator-supplied list import
+ *   legacy_auto      — backfill: pre-F-03 row whose note shows the
+ *                      reply-classifier auto path wrote it
+ *   legacy_unknown   — backfill: pre-F-03 row of unknown origin. Also the
+ *                      column default, so any writer that forgets to
+ *                      declare provenance is labelled honestly.
+ */
+export const suppressionSource = pgEnum('suppression_source', [
+  'unsubscribe_link',
+  'reply',
+  'dsn',
+  'smtp',
+  'manual',
+  'import',
+  'legacy_auto',
+  'legacy_unknown',
+]);
+
 export const suppressionList = pgTable(
   'suppression_list',
   {
@@ -429,6 +499,23 @@ export const suppressionList = pgTable(
     note: text('note'),
     /** Soft suppressions can have a TTL after which they expire. */
     expiresAt: timestamp('expires_at', { mode: 'date', withTimezone: true }),
+
+    /** F-03: provenance of the suppression currently in force (see
+        suppressionSource). Every add — including ones that do not win the
+        merge — is recorded with its own source in the 'suppression.add'
+        audit event; this column holds the winner's. */
+    source: suppressionSource('source').notNull().default('legacy_unknown'),
+    /** F-03: pointer to the evidence, e.g. `mail_message:123` for the
+        message that triggered an automatic add. Free text for imports. */
+    sourceRef: text('source_ref'),
+    /** F-03: rows are revoked, never deleted, so provenance and history
+        survive. A revoked row does not suppress; a new add re-activates
+        it (same row, revoked_* cleared). */
+    revokedAt: timestamp('revoked_at', { mode: 'date', withTimezone: true }),
+    revokedBy: text('revoked_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    revokeReason: text('revoke_reason'),
 
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
@@ -457,18 +544,23 @@ export type SuppressionEntry = typeof suppressionList.$inferSelect;
 export type NewSuppressionEntry = typeof suppressionList.$inferInsert;
 export type SuppressionReason = (typeof suppressionReason.enumValues)[number];
 export type SuppressionKind = (typeof suppressionKind.enumValues)[number];
+export type SuppressionSource = (typeof suppressionSource.enumValues)[number];
 
 /**
  * Phase 20: per-workspace auto-action toggles for classified inbound mail.
+ * Edited by workspace admins on /settings/outreach (ia:F-03); see
+ * services/reply-auto-actions.ts. The suppression/close switches default
+ * to OFF since migration 0062 (X1: the classifier also runs on mail that
+ * is not a reply to our outreach).
  */
 export const replyAutoActions = pgTable('reply_auto_actions', {
   workspaceId: bigint('workspace_id', { mode: 'bigint' })
     .primaryKey()
     .references(() => workspaces.id, { onDelete: 'cascade' }),
   /** auto-suppress + close the lead on bounce. */
-  autoSuppressBounce: boolean('auto_suppress_bounce').notNull().default(true),
+  autoSuppressBounce: boolean('auto_suppress_bounce').notNull().default(false),
   /** auto-suppress + close the lead on unsubscribe. */
-  autoSuppressUnsubscribe: boolean('auto_suppress_unsubscribe').notNull().default(true),
+  autoSuppressUnsubscribe: boolean('auto_suppress_unsubscribe').notNull().default(false),
   /** auto-close lead on a negative classification. */
   autoCloseNegative: boolean('auto_close_negative').notNull().default(false),
   /** auto-create new contacts from extracted emails on redirect replies. */

@@ -1688,6 +1688,44 @@ button.primary-btn {
   flex-shrink: 0;
 }
 
+/* Config-card callouts (ia:F-03 reply auto-actions). Neutral by default,
+ * amber for a warning — both from the brand tokens. */
+.config-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--brand-border);
+  background: var(--brand-card-elevated);
+  border-radius: 0.6rem;
+}
+
+.config-callout > .lucide {
+  color: var(--brand-accent-teal);
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+}
+
+.config-callout-warn {
+  border-color: color-mix(in oklch, var(--brand-accent-amber) 40%, transparent);
+  background: color-mix(in oklch, var(--brand-accent-amber) 8%, transparent);
+}
+
+.config-callout-warn > .lucide,
+.config-callout-warn .config-row-title {
+  color: var(--brand-accent-amber);
+}
+
+/* Read-only switches (non-admins see settings they cannot change). */
+.config-switch:has(.config-switch-input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.config-switch-input:disabled {
+  cursor: not-allowed;
+}
+
 /* ---- Form layout ---- */
 .card-form {
   background: var(--brand-card);
