@@ -1,13 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
-import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   AdminServiceError,
   adminAddUserToWorkspace,
@@ -15,14 +9,11 @@ import {
   adminSetMemberRole,
   archiveWorkspace,
   deleteWorkspace,
-  endImpersonation,
   listFeatureFlags,
-  listImpersonationSessions,
   restoreWorkspace,
   setBillingExempt,
   setFeatureFlag,
   setWorkspaceDefault,
-  startImpersonation,
   updateWorkspaceProfile,
 } from '@/lib/services/admin';
 import {
@@ -52,30 +43,11 @@ export default async function AdminWorkspaceDetail({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ message?: string; error?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const { id: idStr } = await params;
   if (!/^\d+$/.test(idStr)) redirect('/admin');
   const targetWorkspaceId = BigInt(idStr);
   const sp = await searchParams;
-
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (isNextRedirectError(err)) throw err;
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) redirect('/admin');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) {
-    return (
-      <div className="dashboard-wrap">
-          <h1>Admin</h1>
-          <p className="form-error">Super-admin only.</p>
-        </div>
-    );
-  }
 
   const wsRows = await db
     .select()
@@ -91,7 +63,7 @@ export default async function AdminWorkspaceDetail({
     .innerJoin(users, eq(users.id, workspaceMembers.userId))
     .where(eq(workspaceMembers.workspaceId, targetWorkspaceId));
 
-  const flags = await listFeatureFlags(ctx, targetWorkspaceId);
+  const flags = await listFeatureFlags(pctx, targetWorkspaceId);
   const flagByKey = new Map(flags.map((f) => [f.key, f]));
 
   // Billing + usage snapshot for THIS workspace. Both reads are
@@ -104,14 +76,9 @@ export default async function AdminWorkspaceDetail({
   const usageTotalCents = usage30d.reduce((acc, r) => acc + r.totalCostCents, 0);
   const tokenTx = await listTokenTransactions(targetScope, { limit: 20 });
 
-  const myImps = await listImpersonationSessions(ctx, { activeOnly: false });
-  const activeMine = myImps.find(
-    (s) => s.actorUserId === ctx.userId && s.endedAt === null,
-  );
-
   async function grantTokens(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const raw = String(formData.get('tokens') ?? '').trim();
     const reason = String(formData.get('reason') ?? '').trim() || 'manual adjustment';
     const tokens = Number(raw);
@@ -132,7 +99,7 @@ export default async function AdminWorkspaceDetail({
 
   async function toggleExempt() {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const rows = await db
       .select({ exempt: workspaces.billingExempt })
       .from(workspaces)
@@ -148,37 +115,9 @@ export default async function AdminWorkspaceDetail({
     }
   }
 
-  async function startImp(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const targetUserId = String(formData.get('targetUserId') ?? '');
-    const reason = String(formData.get('reason') ?? '');
-    try {
-      await startImpersonation(c, {
-        targetUserId,
-        targetWorkspaceId,
-        reason,
-      });
-      redirect(`/admin/workspaces/${idStr}?message=Impersonation+started`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m =
-        err instanceof AdminServiceError ? err.message : err instanceof Error ? err.message : 'failed';
-      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function endImp(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const sessionId = BigInt(String(formData.get('sessionId')));
-    await endImpersonation(c, sessionId);
-    redirect(`/admin/workspaces/${idStr}?message=Impersonation+ended`);
-  }
-
   async function toggleFlag(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const key = String(formData.get('key') ?? '');
     const enabled = formData.get('enabled') === 'on';
     await setFeatureFlag(c, {
@@ -193,7 +132,7 @@ export default async function AdminWorkspaceDetail({
 
   async function saveProfile(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const name = String(formData.get('name') ?? '').trim();
     const slug = String(formData.get('slug') ?? '').trim().toLowerCase();
     try {
@@ -211,7 +150,7 @@ export default async function AdminWorkspaceDetail({
 
   async function archive(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const reason = String(formData.get('reason') ?? '').trim() || null;
     try {
       await archiveWorkspace(c, targetWorkspaceId, reason);
@@ -225,7 +164,7 @@ export default async function AdminWorkspaceDetail({
 
   async function restore() {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     try {
       await restoreWorkspace(c, targetWorkspaceId);
       redirect(`/admin/workspaces/${idStr}?message=Workspace+restored`);
@@ -238,7 +177,7 @@ export default async function AdminWorkspaceDetail({
 
   async function toggleDefault(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const isDefault = formData.get('isDefault') === 'on';
     try {
       await setWorkspaceDefault(c, targetWorkspaceId, isDefault);
@@ -256,7 +195,7 @@ export default async function AdminWorkspaceDetail({
 
   async function destroy(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const confirm = String(formData.get('confirm') ?? '').trim();
     if (confirm !== ws.slug) {
       redirect(
@@ -277,7 +216,7 @@ export default async function AdminWorkspaceDetail({
 
   async function addUser(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const targetUserId = String(formData.get('targetUserId') ?? '');
     const role = String(formData.get('role') ?? 'member') as WorkspaceMemberRole;
     try {
@@ -292,7 +231,7 @@ export default async function AdminWorkspaceDetail({
 
   async function removeUser(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const targetUserId = String(formData.get('targetUserId') ?? '');
     try {
       await adminRemoveUserFromWorkspace(c, targetUserId, targetWorkspaceId);
@@ -306,7 +245,7 @@ export default async function AdminWorkspaceDetail({
 
   async function changeRole(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const targetUserId = String(formData.get('targetUserId') ?? '');
     const role = String(formData.get('role') ?? 'member') as WorkspaceMemberRole;
     try {
@@ -529,6 +468,12 @@ export default async function AdminWorkspaceDetail({
 
         <section>
           <h2>Members ({members.length})</h2>
+          <p className="muted">
+            To see this workspace the way its members do, leave the console
+            and pick &ldquo;{ws.name}&rdquo; under <strong>god mode</strong> in
+            the workspace switcher. Whatever you do there is logged in this
+            workspace under your own user id.
+          </p>
           <ul className="profile-list">
             {members.map(({ member, user }) => (
               <li key={member.id.toString()}>
@@ -563,19 +508,6 @@ export default async function AdminWorkspaceDetail({
                     </label>
                     <button type="submit">Apply</button>
                   </form>
-                  {!activeMine ? (
-                    <form action={startImp} className="inline-form">
-                      <input type="hidden" name="targetUserId" value={user.id} />
-                      <input
-                        type="text"
-                        name="reason"
-                        placeholder="Reason (audit trail)"
-                        required
-                        maxLength={200}
-                      />
-                      <button type="submit">Impersonate</button>
-                    </form>
-                  ) : null}
                   {member.role !== 'owner' || members.filter((m) => m.member.role === 'owner').length > 1 ? (
                     <form action={removeUser}>
                       <input type="hidden" name="targetUserId" value={user.id} />
@@ -620,23 +552,6 @@ export default async function AdminWorkspaceDetail({
             <p className="muted">All active users are already members.</p>
           )}
         </section>
-
-        {activeMine ? (
-          <section>
-            <h2>Your active impersonation</h2>
-            <p>
-              You are impersonating user{' '}
-              <code>{activeMine.targetUserId.slice(0, 12)}…</code> in workspace{' '}
-              {activeMine.targetWorkspaceId.toString()} · {activeMine.reason}
-            </p>
-            <form action={endImp}>
-              <input type="hidden" name="sessionId" value={activeMine.id.toString()} />
-              <button type="submit" className="ghost-btn">
-                End impersonation
-              </button>
-            </form>
-          </section>
-        ) : null}
 
         <section id="feature-flags">
           <h2>Feature flags</h2>

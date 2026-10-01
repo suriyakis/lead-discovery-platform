@@ -4,16 +4,8 @@
 // activity, support, security review.
 
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
-import { inArray, sql } from 'drizzle-orm';
-import { auth } from '@/lib/auth';
-import {
-  AccountInactiveError,
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { inArray } from 'drizzle-orm';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   distinctAuditKindsAcross,
   listAuditAcrossWorkspaces,
@@ -23,6 +15,9 @@ import { workspaces } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
 
 const ALLOWED_LIMITS = [50, 100, 250, 500, 1000] as const;
+
+/** `?workspace=platform` selects rows with workspace_id NULL. */
+const PLATFORM_SCOPE = 'platform';
 
 export default async function PlatformAuditPage({
   searchParams,
@@ -35,30 +30,17 @@ export default async function PlatformAuditPage({
     limit?: string;
   }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) {
-    return (
-      <div className="dashboard-wrap">
-        <h1>Audit log</h1>
-        <p className="form-error">Super-admin only.</p>
-      </div>
-    );
-  }
-
-  const workspaceFilter =
-    sp.workspace && /^\d+$/.test(sp.workspace) ? BigInt(sp.workspace) : undefined;
+  // '' = all, 'platform' = platform-scope rows only (workspace_id NULL),
+  // digits = one workspace.
+  const workspaceFilter: bigint | null | undefined =
+    sp.workspace === PLATFORM_SCOPE
+      ? null
+      : sp.workspace && /^\d+$/.test(sp.workspace)
+        ? BigInt(sp.workspace)
+        : undefined;
   const kindFilter = sp.kind?.trim() || undefined;
   const since = parseDateInput(sp.since);
   const until = parseDateInput(sp.until);
@@ -69,14 +51,14 @@ export default async function PlatformAuditPage({
     : 100;
 
   const [events, kinds, allWorkspaces] = await Promise.all([
-    listAuditAcrossWorkspaces(ctx, {
+    listAuditAcrossWorkspaces(pctx, {
       workspaceId: workspaceFilter,
       kind: kindFilter,
       since,
       until,
       limit: safeLimit,
     }),
-    distinctAuditKindsAcross(ctx),
+    distinctAuditKindsAcross(pctx),
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
   const wsById = new Map(allWorkspaces.map((w) => [w.id.toString(), w]));
@@ -100,15 +82,23 @@ export default async function PlatformAuditPage({
       </p>
       <h1>Platform audit log</h1>
       <p className="muted">
-        Audit events across every workspace. Each row is signed with the
-        actor user_id, regardless of which workspace it lands in.
+        Audit events across every workspace, plus platform-level events
+        (users, pre-authorisations, platform roles, provider keys and
+        settings) that belong to no workspace. Each row is signed with the
+        actor&apos;s user id.
       </p>
 
       <form className="leads-controls" method="get">
         <label>
           Workspace
-          <select name="workspace" defaultValue={workspaceFilter?.toString() ?? ''}>
+          <select
+            name="workspace"
+            defaultValue={
+              workspaceFilter === null ? PLATFORM_SCOPE : (workspaceFilter?.toString() ?? '')
+            }
+          >
             <option value="">All</option>
+            <option value={PLATFORM_SCOPE}>Platform (no workspace)</option>
             {allWorkspaces.map((w) => (
               <option key={w.id.toString()} value={w.id.toString()}>
                 {w.name}
@@ -170,7 +160,11 @@ export default async function PlatformAuditPage({
                 <li key={e.id.toString()}>
                   <div>
                     <span className="muted">{e.createdAt.toLocaleString()}</span>{' '}
-                    <code>ws:{w ? w.name : (e.workspaceId?.toString() ?? '—')}</code>{' '}
+                    <code>
+                      {e.workspaceId === null
+                        ? 'platform'
+                        : `ws:${w ? w.name : e.workspaceId.toString()}`}
+                    </code>{' '}
                     <strong>{e.kind}</strong>
                     {e.entityType ? (
                       <span className="muted">

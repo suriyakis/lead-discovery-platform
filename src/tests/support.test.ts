@@ -22,6 +22,7 @@ import {
   workspaceSupportUnreadCount,
 } from '@/lib/services/support';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -111,7 +112,7 @@ describe('customer side', () => {
       subject: 'Bug',
       body: 'It broke.',
     });
-    const adminCtx = ctx(s.workspaceA, s.admin, 'super_admin');
+    const adminCtx = platformCtx(s.admin);
     await adminGetSupportThread(adminCtx, t.id); // clears adminUnread
     await adminSetSupportThreadStatus(adminCtx, t.id, 'closed');
 
@@ -128,13 +129,13 @@ describe('admin side', () => {
     await createSupportThread(ctx(s.workspaceA, s.ownerA), { subject: 'From A', body: 'a' });
     await createSupportThread(ctx(s.workspaceB, s.ownerB), { subject: 'From B', body: 'b' });
 
-    const adminCtx = ctx(s.workspaceA, s.admin, 'super_admin');
+    const adminCtx = platformCtx(s.admin);
     const inbox = await adminListSupportThreads(adminCtx);
     expect(inbox).toHaveLength(2);
     expect(new Set(inbox.map((t) => t.workspaceName))).toEqual(new Set(['Sup A', 'Sup B']));
 
     await expect(
-      adminListSupportThreads(ctx(s.workspaceA, s.ownerA)),
+      adminListSupportThreads(smuggled(ctx(s.workspaceA, s.ownerA))),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
@@ -144,7 +145,7 @@ describe('admin side', () => {
       subject: 'Need help',
       body: 'help',
     });
-    const adminCtx = ctx(s.workspaceA, s.admin, 'super_admin');
+    const adminCtx = platformCtx(s.admin);
     await adminReplySupportThread(adminCtx, t.id, 'On it — try clearing the recipe country.');
 
     const { thread, messages } = await getSupportThread(ctx(s.workspaceA, s.ownerA), t.id);
@@ -172,7 +173,7 @@ describe('admin side', () => {
       subject: 'Counters',
       body: 'ping',
     });
-    const adminCtx = ctx(s.workspaceA, s.admin, 'super_admin');
+    const adminCtx = platformCtx(s.admin);
 
     expect(await adminSupportUnreadCount()).toBe(1);
     await adminGetSupportThread(adminCtx, t.id);
@@ -190,14 +191,14 @@ describe('admin side', () => {
       subject: 'Close me',
       body: 'x',
     });
-    const adminCtx = ctx(s.workspaceA, s.admin, 'super_admin');
+    const adminCtx = platformCtx(s.admin);
     const closed = await adminSetSupportThreadStatus(adminCtx, t.id, 'closed');
     expect(closed.status).toBe('closed');
     const reopened = await adminSetSupportThreadStatus(adminCtx, t.id, 'open');
     expect(reopened.status).toBe('open');
 
     await expect(
-      adminSetSupportThreadStatus(ctx(s.workspaceA, s.ownerA), t.id, 'closed'),
+      adminSetSupportThreadStatus(smuggled(ctx(s.workspaceA, s.ownerA)), t.id, 'closed'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });

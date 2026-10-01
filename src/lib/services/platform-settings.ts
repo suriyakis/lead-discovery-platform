@@ -9,7 +9,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { platformSettings } from '@/lib/db/schema/platform-settings';
 import { recordPlatformAuditEvent } from './audit';
-import { isSuperAdmin, type WorkspaceContext } from './context';
+import { isPlatformContext, type PlatformContext } from './platform-context';
 import {
   ALLOWED_AI_PROVIDERS,
   ALLOWED_EMBEDDING_PROVIDERS,
@@ -86,10 +86,10 @@ export async function getPlatformSetting(key: string): Promise<string | null> {
  * env / auto-detect); omitted keys are untouched. Values validated per key.
  */
 export async function setPlatformSettings(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   patch: Record<string, string | null>,
 ): Promise<void> {
-  if (!isSuperAdmin(ctx)) throw denied('platform_settings.update');
+  if (!isPlatformContext(pctx)) throw denied('platform_settings.update');
 
   const applied: Record<string, string | null> = {};
   for (const [key, raw] of Object.entries(patch)) {
@@ -104,16 +104,16 @@ export async function setPlatformSettings(
     if (!validator(value)) throw invalid(`invalid value for ${key}: ${value}`);
     await db
       .insert(platformSettings)
-      .values({ key, value, updatedByUserId: ctx.userId })
+      .values({ key, value, updatedByUserId: pctx.actorUserId })
       .onConflictDoUpdate({
         target: platformSettings.key,
-        set: { value, updatedByUserId: ctx.userId, updatedAt: new Date() },
+        set: { value, updatedByUserId: pctx.actorUserId, updatedAt: new Date() },
       });
     applied[key] = value;
   }
 
   if (Object.keys(applied).length > 0) {
-    await recordPlatformAuditEvent(ctx.userId, {
+    await recordPlatformAuditEvent(pctx.actorUserId, {
       kind: 'platform_settings.update',
       entityType: 'platform_settings',
       entityId: null,

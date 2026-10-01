@@ -1,10 +1,8 @@
 import { redirect } from 'next/navigation';
 import { KeyRound, ShieldCheck } from 'lucide-react';
-import { auth } from '@/lib/auth';
 import {
-  AuthRequiredError,
-  NoWorkspaceError,
   getWorkspaceContext,
+  requirePlatformAdmin,
 } from '@/lib/services/auth-context';
 import { isSuperAdmin } from '@/lib/services/context';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -127,21 +125,10 @@ export default async function AdminProvidersPage({
 }: {
   searchParams: Promise<{ msg?: string; err?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) redirect('/dashboard');
-
-  const stored = await listPlatformSecretKeys(ctx);
+  const stored = await listPlatformSecretKeys(pctx);
   const storedByKey = new Map(stored.map((s) => [s.key, s]));
   const defaults = await getPlatformSettings();
 
@@ -199,7 +186,7 @@ export default async function AdminProvidersPage({
 
   async function saveKey(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const secretKey = String(formData.get('secretKey') ?? '');
     const value = String(formData.get('value') ?? '');
     if (!PROVIDERS.some((p) => p.secretKey === secretKey)) {
@@ -219,7 +206,7 @@ export default async function AdminProvidersPage({
 
   async function removeKey(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const secretKey = String(formData.get('secretKey') ?? '');
     if (!PROVIDERS.some((p) => p.secretKey === secretKey)) {
       redirect('/admin/providers?err=Unknown+provider');
@@ -238,7 +225,7 @@ export default async function AdminProvidersPage({
 
   async function saveDefaults(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const patch: Record<string, string | null> = {};
     for (const key of [
       'ai.provider',

@@ -206,7 +206,7 @@ These are sketched in the brief but **not implemented** in Phase 1. The data mod
 - **Mailing client** (Phase 10). Tables: `mailboxes`, `mail_messages`, `mail_threads`, `signatures`, `suppression_list`.
 - **Qualified leads pipeline** (Phase 11). Table: `qualified_leads` with extended state machine separating raw discovery, qualification, outreach, and CRM hand-over.
 - **CRM export** (Phase 13). Tables: `crm_connections`, `crm_sync_log`. Excel/CSV first, HubSpot/Pipedrive/Salesforce later.
-- **God Mode** (Phase 14). Platform-wide super admin views and impersonation. Audit-heavy.
+- **God Mode** (Phase 14). Platform-wide super admin views. Audit-heavy. Console services take a `PlatformContext` (see `docs/ARCHITECTURE.md`, Workspace-first rule 3). The Phase 14 impersonation control was a no-op and was removed (PC-03); `impersonation_sessions` is kept as history.
 - **Notifications** (later). In-app + email + Telegram/Slack.
 - **Billing** (later). Plan limits + usage caps.
 

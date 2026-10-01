@@ -20,6 +20,7 @@ import {
   setMemberRole,
 } from '@/lib/services/users';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -63,7 +64,7 @@ afterAll(async () => {
 describe('account status (super_admin)', () => {
   it('setAccountStatus suspends a user', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     const updated = await setAccountStatus(god, s.member1, 'suspended', 'too noisy');
     expect(updated.accountStatus).toBe('suspended');
     expect(updated.accountStatusReason).toBe('too noisy');
@@ -72,7 +73,7 @@ describe('account status (super_admin)', () => {
 
   it('cannot suspend yourself', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     await expect(
       setAccountStatus(god, s.godUser, 'suspended'),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -82,13 +83,13 @@ describe('account status (super_admin)', () => {
     const s = await setup();
     const owner = ctx(s.workspaceA, s.ownerA, 'owner');
     await expect(
-      setAccountStatus(owner, s.member1, 'suspended'),
+      setAccountStatus(smuggled(owner), s.member1, 'suspended'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
   it('listAllUsers can filter by status', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     await setAccountStatus(god, s.member1, 'suspended');
     const all = await listAllUsers(god);
     expect(all.length).toBeGreaterThanOrEqual(5);
@@ -102,7 +103,7 @@ describe('account status (super_admin)', () => {
 describe('pre-authorize', () => {
   it('preauthorizeEmail records the email + workspace + role', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     const entry = await preauthorizeEmail(god, {
       email: 'New.User@Example.com',
       workspaceId: s.workspaceA,
@@ -116,7 +117,7 @@ describe('pre-authorize', () => {
 
   it('re-preauthorizing the same email replaces the prior unconsumed entry', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     const a = await preauthorizeEmail(god, {
       email: 'x@example.com',
       workspaceId: s.workspaceA,
@@ -138,7 +139,7 @@ describe('pre-authorize', () => {
 
   it('preauthorizing an already-existing user lifts them to active', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     // member2 was seeded as 'active' by default; flip to pending first.
     await db
       .update(users)
@@ -156,7 +157,7 @@ describe('pre-authorize', () => {
 
   it('revokePreauthorize deletes an unconsumed entry', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     const entry = await preauthorizeEmail(god, {
       email: 'tmp@example.com',
     });
@@ -167,7 +168,7 @@ describe('pre-authorize', () => {
 
   it('rejects bad email shape', async () => {
     const s = await setup();
-    const god = ctx(s.workspaceA, s.godUser, 'super_admin');
+    const god = platformCtx(s.godUser);
     await expect(
       preauthorizeEmail(god, { email: 'not-an-email' }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
@@ -177,7 +178,7 @@ describe('pre-authorize', () => {
     const s = await setup();
     const owner = ctx(s.workspaceA, s.ownerA, 'owner');
     await expect(
-      preauthorizeEmail(owner, { email: 'x@example.com' }),
+      preauthorizeEmail(smuggled(owner), { email: 'x@example.com' }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });

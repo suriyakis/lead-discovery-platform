@@ -6,14 +6,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { UserAvatar } from '@/components/UserAvatar';
-import { auth } from '@/lib/auth';
-import {
-  AccountInactiveError,
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   UserServiceError,
   createPasswordUser,
@@ -34,38 +27,18 @@ export default async function AdminUsersPage({
 }: {
   searchParams: Promise<{ message?: string; error?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (isNextRedirectError(err)) throw err;
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) {
-    return (
-      <div className="dashboard-wrap">
-        <h1>Users</h1>
-        <p className="form-error">Super-admin only.</p>
-      </div>
-    );
-  }
-
   const [allUsers, preauths, allWorkspaces] = await Promise.all([
-    listAllUsers(ctx, { limit: 500 }),
-    listPreauthorizedEmails(ctx),
+    listAllUsers(pctx, { limit: 500 }),
+    listPreauthorizedEmails(pctx),
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
 
   async function setStatus(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const targetUserId = String(formData.get('userId') ?? '');
     const status = String(formData.get('status') ?? '') as AccountStatus;
     const reason = String(formData.get('reason') ?? '').trim() || null;
@@ -82,7 +55,7 @@ export default async function AdminUsersPage({
 
   async function preauth(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const email = String(formData.get('email') ?? '').trim();
     const wsRaw = String(formData.get('workspaceId') ?? '');
     const workspaceId = /^\d+$/.test(wsRaw) ? BigInt(wsRaw) : null;
@@ -99,7 +72,7 @@ export default async function AdminUsersPage({
 
   async function revoke(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const id = String(formData.get('id') ?? '');
     await revokePreauthorize(c, id);
     redirect('/admin/users?message=Revoked');
@@ -107,7 +80,7 @@ export default async function AdminUsersPage({
 
   async function createPwUser(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const email = String(formData.get('email') ?? '').trim();
     const password = String(formData.get('password') ?? '');
     const name = String(formData.get('name') ?? '').trim() || null;
@@ -255,7 +228,7 @@ export default async function AdminUsersPage({
         title="Pending review"
         emphasize
         users={allUsers.filter((u) => u.accountStatus === 'pending')}
-        sessionUserId={session.user.id}
+        sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No pending users."
       />
@@ -263,7 +236,7 @@ export default async function AdminUsersPage({
       <UserSection
         title="Active"
         users={allUsers.filter((u) => u.accountStatus === 'active')}
-        sessionUserId={session.user.id}
+        sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No active users."
       />
@@ -273,7 +246,7 @@ export default async function AdminUsersPage({
         users={allUsers.filter(
           (u) => u.accountStatus === 'suspended' || u.accountStatus === 'rejected',
         )}
-        sessionUserId={session.user.id}
+        sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No suspended or rejected users."
       />

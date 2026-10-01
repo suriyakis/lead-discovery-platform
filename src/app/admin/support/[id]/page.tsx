@@ -1,12 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   SupportServiceError,
@@ -22,26 +16,15 @@ export default async function AdminSupportThreadPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ err?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const { id: idStr } = await params;
   if (!/^\d+$/.test(idStr)) redirect('/admin/support');
   const id = BigInt(idStr);
   const sp = await searchParams;
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) redirect('/dashboard');
-
   let data;
   try {
-    data = await adminGetSupportThread(ctx, id);
+    data = await adminGetSupportThread(pctx, id);
   } catch (err) {
     if (err instanceof SupportServiceError && err.code === 'not_found') {
       redirect('/admin/support');
@@ -52,7 +35,7 @@ export default async function AdminSupportThreadPage({
 
   async function reply(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const body = String(formData.get('body') ?? '');
     try {
       await adminReplySupportThread(c, id, body);
@@ -66,7 +49,7 @@ export default async function AdminSupportThreadPage({
 
   async function setStatus(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const status = String(formData.get('status')) === 'closed' ? 'closed' : 'open';
     await adminSetSupportThreadStatus(c, id, status);
     redirect(`/admin/support/${id}`);

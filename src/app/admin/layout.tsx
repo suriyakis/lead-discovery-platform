@@ -1,18 +1,16 @@
 // Standalone console layout for every /admin/* route. Guards super-admin
-// access once (pages keep their own checks as defense in depth) and swaps
-// the workspace AppShell chrome for the distinct AdminShell topbar.
+// access once (pages and their server actions keep their own
+// requirePlatformAdmin() calls as defense in depth) and swaps the
+// workspace AppShell chrome for the distinct AdminShell topbar.
 
-import { redirect } from 'next/navigation';
 import { AdminShell } from '@/components/AdminShell';
-import { auth } from '@/lib/auth';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { adminSupportUnreadCount } from '@/lib/services/support';
 
 export default async function AdminLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
-  if (session.user.role !== 'super_admin') redirect('/dashboard');
+  await requirePlatformAdmin();
 
   let supportUnread = 0;
   try {

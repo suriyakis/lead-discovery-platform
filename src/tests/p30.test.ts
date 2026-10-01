@@ -14,6 +14,7 @@ import {
   verifyUserPassword,
 } from '@/lib/services/users';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -55,7 +56,7 @@ describe('createPasswordUser', () => {
   it('creates an active user with bcrypt-hashed password', async () => {
     const s = await setup();
     const u = await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       {
         email: 'new@example.com',
         password: 'sup3rsecret',
@@ -72,7 +73,7 @@ describe('createPasswordUser', () => {
   it('refuses non-super-admin', async () => {
     const s = await setup();
     await expect(
-      createPasswordUser(ctx(s.workspaceA, s.ownerA), {
+      createPasswordUser(smuggled(ctx(s.workspaceA, s.ownerA)), {
         email: 'x@example.com',
         password: 'secret123',
       }),
@@ -82,7 +83,7 @@ describe('createPasswordUser', () => {
   it('refuses duplicate email (case-insensitive)', async () => {
     const s = await setup();
     await expect(
-      createPasswordUser(ctx(s.workspaceA, s.superAdmin, 'super_admin'), {
+      createPasswordUser(platformCtx(s.superAdmin), {
         email: 'OWNERA@test.local',
         password: 'secret123',
       }),
@@ -92,7 +93,7 @@ describe('createPasswordUser', () => {
   it('refuses too-short password', async () => {
     const s = await setup();
     await expect(
-      createPasswordUser(ctx(s.workspaceA, s.superAdmin, 'super_admin'), {
+      createPasswordUser(platformCtx(s.superAdmin), {
         email: 'short@example.com',
         password: 'abc',
       }),
@@ -102,7 +103,7 @@ describe('createPasswordUser', () => {
   it('optionally adds the user to a workspace at the given role', async () => {
     const s = await setup();
     const u = await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       {
         email: 'with-ws@example.com',
         password: 'secret123',
@@ -125,7 +126,7 @@ describe('verifyUserPassword', () => {
   it('returns the user on a correct password', async () => {
     const s = await setup();
     await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { email: 'login@example.com', password: 'rightpass1' },
     );
     const u = await verifyUserPassword('login@example.com', 'rightpass1');
@@ -136,7 +137,7 @@ describe('verifyUserPassword', () => {
   it('returns null on wrong password', async () => {
     const s = await setup();
     await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { email: 'wrong@example.com', password: 'rightpass1' },
     );
     expect(
@@ -159,7 +160,7 @@ describe('verifyUserPassword', () => {
   it('refuses login when accountStatus is suspended', async () => {
     const s = await setup();
     await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       {
         email: 'suspended@example.com',
         password: 'rightpass1',
@@ -174,7 +175,7 @@ describe('verifyUserPassword', () => {
   it('case-insensitive email lookup', async () => {
     const s = await setup();
     await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { email: 'casetest@example.com', password: 'rightpass1' },
     );
     expect(
@@ -189,7 +190,7 @@ describe('setUserPassword', () => {
   it('rotates the hash and invalidates existing sessions', async () => {
     const s = await setup();
     const u = await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { email: 'rotate@example.com', password: 'oldpass11' },
     );
     // Plant a session.
@@ -199,7 +200,7 @@ describe('setUserPassword', () => {
       expires: new Date(Date.now() + 60_000),
     });
     await setUserPassword(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       u.id,
       'newpass123',
     );
@@ -216,26 +217,24 @@ describe('setUserPassword', () => {
     expect(left).toHaveLength(0);
   });
 
-  it('allows self-reset by non-admin', async () => {
+  it('is platform-only: a member resetting their own password is refused (self-service is changeOwnPassword)', async () => {
     const s = await setup();
     const u = await createPasswordUser(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { email: 'self@example.com', password: 'oldpass11' },
     );
-    await setUserPassword(
-      ctx(s.workspaceA, u.id, 'member'),
-      u.id,
-      'newpass123',
-    );
+    await expect(
+      setUserPassword(smuggled(ctx(s.workspaceA, u.id, 'member')), u.id, 'newpass123'),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
     expect(
-      await verifyUserPassword('self@example.com', 'newpass123'),
+      await verifyUserPassword('self@example.com', 'oldpass11'),
     ).not.toBeNull();
   });
 
   it('refuses to reset another user as non-admin', async () => {
     const s = await setup();
     await expect(
-      setUserPassword(ctx(s.workspaceA, s.ownerA), s.member, 'newpass123'),
+      setUserPassword(smuggled(ctx(s.workspaceA, s.ownerA)), s.member, 'newpass123'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });
@@ -251,7 +250,7 @@ describe('deleteUserGlobally', () => {
       expires: new Date(Date.now() + 60_000),
     });
     await deleteUserGlobally(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
     );
     const left = await db.select().from(users).where(eq(users.id, s.member));
@@ -267,7 +266,7 @@ describe('deleteUserGlobally', () => {
     const s = await setup();
     await expect(
       deleteUserGlobally(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.ownerA,
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -277,7 +276,7 @@ describe('deleteUserGlobally', () => {
     const s = await setup();
     await expect(
       deleteUserGlobally(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.superAdmin,
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -291,7 +290,7 @@ describe('deleteUserGlobally', () => {
     });
     await expect(
       deleteUserGlobally(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         other,
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -300,7 +299,7 @@ describe('deleteUserGlobally', () => {
   it('refuses non-super-admin', async () => {
     const s = await setup();
     await expect(
-      deleteUserGlobally(ctx(s.workspaceA, s.ownerA), s.member),
+      deleteUserGlobally(smuggled(ctx(s.workspaceA, s.ownerA)), s.member),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });

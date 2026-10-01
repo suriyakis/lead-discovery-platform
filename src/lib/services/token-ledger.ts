@@ -16,7 +16,8 @@ import {
   type TokenTransaction,
 } from '@/lib/db/schema/tokens';
 import { recordAuditEvent } from './audit';
-import { isSuperAdmin, type WorkspaceContext } from './context';
+import { type WorkspaceContext } from './context';
+import { isPlatformContext, type PlatformContext } from './platform-context';
 
 export class TokenError extends Error {
   public readonly code: string;
@@ -183,15 +184,16 @@ export async function debitTokens(
 
 /**
  * Super-admin manual adjustment (promo, refund, correction). Positive or
- * negative. Audit-logged with the acting user.
+ * negative. Audit-logged with the acting user against the TARGET
+ * workspace (the tenant whose wallet changed).
  */
 export async function adjustTokens(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
   tokens: number | bigint,
   reason: string,
 ): Promise<TokenTransaction> {
-  if (!isSuperAdmin(ctx)) {
+  if (!isPlatformContext(pctx)) {
     throw new TokenError('Permission denied: tokens.adjust', 'permission_denied');
   }
   const delta = BigInt(tokens);
@@ -200,10 +202,10 @@ export async function adjustTokens(
     tokens: delta < 0n ? -delta : delta,
     kind: 'adjustment',
     reason,
-    payload: { actorUserId: ctx.userId },
+    payload: { actorUserId: pctx.actorUserId },
   });
   await recordAuditEvent(
-    { ...ctx, workspaceId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'tokens.adjust',
       entityType: 'workspace',

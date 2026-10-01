@@ -14,14 +14,13 @@ import { users } from './auth';
 import { workspaces } from './workspaces';
 
 /**
- * `impersonation_sessions` — audit trail of every super-admin impersonation
- * "session". Phase 14 god-mode: a super_admin can act as a user inside a
- * workspace for diagnostics. Both start and end events live here.
- *
- * Active sessions have `ended_at IS NULL`. The Auth.js session callback
- * checks for an active row and overlays the target identity onto the
- * actor's session — but the original actor user_id is preserved on every
- * audit_log + pipeline_event so blame doesnt go missing.
+ * `impersonation_sessions` — HISTORY ONLY. Phase 14 recorded a row here
+ * each time a super-admin clicked "Impersonate", but nothing ever applied
+ * it: no session callback, resolver or middleware read this table, so the
+ * acting identity, role and workspace never changed (I047). The control and
+ * its service functions were removed in PC-03; no code writes or reads
+ * these rows any more. The table is kept, unchanged, for the history it
+ * holds until a real read-only "view as" feature is designed (PC-18).
  */
 export const impersonationSessions = pgTable(
   'impersonation_sessions',

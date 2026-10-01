@@ -1,12 +1,5 @@
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
-import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { adminListSupportThreads } from '@/lib/services/support';
 
 export default async function AdminSupportPage({
@@ -14,23 +7,12 @@ export default async function AdminSupportPage({
 }: {
   searchParams: Promise<{ status?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
-
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) redirect('/dashboard');
 
   const statusFilter =
     sp.status === 'open' || sp.status === 'closed' ? sp.status : undefined;
-  const threads = await adminListSupportThreads(ctx, { status: statusFilter });
+  const threads = await adminListSupportThreads(pctx, { status: statusFilter });
 
   return (
     <div className="dashboard-wrap">

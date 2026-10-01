@@ -12,6 +12,7 @@ import {
   moveUserBetweenWorkspaces,
 } from '@/lib/services/admin';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -57,13 +58,13 @@ describe('adminSetMemberRole', () => {
   it('promotes member to admin', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
       'member',
     );
     const m = await adminSetMemberRole(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
       s.member,
       'admin',
@@ -74,13 +75,13 @@ describe('adminSetMemberRole', () => {
   it('promotes to owner (super-admin can transfer)', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
       'member',
     );
     const m = await adminSetMemberRole(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
       s.member,
       'owner',
@@ -92,7 +93,7 @@ describe('adminSetMemberRole', () => {
     const s = await setup();
     await expect(
       adminSetMemberRole(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
         s.ownerA,
         'admin',
@@ -104,7 +105,7 @@ describe('adminSetMemberRole', () => {
     const s = await setup();
     await expect(
       adminSetMemberRole(
-        ctx(s.workspaceA, s.ownerA),
+        smuggled(ctx(s.workspaceA, s.ownerA)),
         s.workspaceA,
         s.ownerA,
         'admin',
@@ -116,7 +117,7 @@ describe('adminSetMemberRole', () => {
     const s = await setup();
     await expect(
       adminSetMemberRole(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
         s.member,
         'admin',
@@ -131,13 +132,13 @@ describe('moveUserBetweenWorkspaces', () => {
   it('removes from source + adds to destination atomically', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
       'member',
     );
     await moveUserBetweenWorkspaces(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
       s.workspaceB,
@@ -170,7 +171,7 @@ describe('moveUserBetweenWorkspaces', () => {
     const s = await setup();
     await expect(
       moveUserBetweenWorkspaces(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.ownerA,
         s.workspaceA,
         s.workspaceB,
@@ -181,20 +182,20 @@ describe('moveUserBetweenWorkspaces', () => {
   it('refuses if user is already a member of destination', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
       'member',
     );
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceB,
       'member',
     );
     await expect(
       moveUserBetweenWorkspaces(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.member,
         s.workspaceA,
         s.workspaceB,
@@ -206,7 +207,7 @@ describe('moveUserBetweenWorkspaces', () => {
     const s = await setup();
     await expect(
       moveUserBetweenWorkspaces(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.ownerA,
         s.workspaceA,
         s.workspaceA,
@@ -218,7 +219,7 @@ describe('moveUserBetweenWorkspaces', () => {
     const s = await setup();
     await expect(
       moveUserBetweenWorkspaces(
-        ctx(s.workspaceA, s.ownerA),
+        smuggled(ctx(s.workspaceA, s.ownerA)),
         s.member,
         s.workspaceA,
         s.workspaceB,

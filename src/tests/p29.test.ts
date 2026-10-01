@@ -3,15 +3,12 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import {
-  type WorkspaceContext,
-  makeWorkspaceContext,
-} from '@/lib/services/context';
-import {
   listMyWorkspaces,
   setActiveWorkspace,
 } from '@/lib/services/workspace';
 import { adminAddUserToWorkspace } from '@/lib/services/admin';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -34,20 +31,12 @@ async function setup(): Promise<Setup> {
   const workspaceC = await seedWorkspace({ name: 'C', ownerUserId: ownerBC });
   // Super-admin is a member of just workspaceA (e.g., their bootstrap one).
   await adminAddUserToWorkspace(
-    ctx(workspaceA, superAdmin, 'super_admin'),
+    platformCtx(superAdmin),
     superAdmin,
     workspaceA,
     'admin',
   );
   return { workspaceA, workspaceB, workspaceC, ownerA, ownerBC, superAdmin };
-}
-
-function ctx(
-  workspaceId: bigint,
-  userId: string,
-  role: WorkspaceContext['role'] = 'owner',
-): WorkspaceContext {
-  return makeWorkspaceContext({ workspaceId, userId, role });
 }
 
 beforeEach(async () => {

@@ -12,6 +12,7 @@ import {
   setSecret,
 } from '@/lib/services/secrets';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -264,11 +265,11 @@ describe('platform secrets', () => {
     const { setPlatformSecret, listPlatformSecretKeys, deletePlatformSecret } =
       await import('@/lib/services/secrets');
     const ownerCtx = ctx(s.workspaceA, s.ownerA, 'owner');
-    await expect(setPlatformSecret(ownerCtx, K, 'sk-x')).rejects.toThrow(/Permission denied/);
-    await expect(listPlatformSecretKeys(ownerCtx)).rejects.toThrow(/Permission denied/);
-    await expect(deletePlatformSecret(ownerCtx, K)).rejects.toThrow(/Permission denied/);
+    await expect(setPlatformSecret(smuggled(ownerCtx), K, 'sk-x')).rejects.toThrow(/Permission denied/);
+    await expect(listPlatformSecretKeys(smuggled(ownerCtx))).rejects.toThrow(/Permission denied/);
+    await expect(deletePlatformSecret(smuggled(ownerCtx), K)).rejects.toThrow(/Permission denied/);
 
-    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const sa = platformCtx(s.ownerA);
     await setPlatformSecret(sa, K, 'sk-platform-123');
     const listed = await listPlatformSecretKeys(sa);
     expect(listed.map((l) => l.key)).toContain(K);
@@ -277,7 +278,7 @@ describe('platform secrets', () => {
   it('resolution order: workspace BYOK > platform db > env', async () => {
     const s = await setup();
     const { setPlatformSecret, getPlatformSecret } = await import('@/lib/services/secrets');
-    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const sa = platformCtx(s.ownerA);
     const wsCtx = ctx(s.workspaceA, s.ownerA, 'owner');
 
     // env only
@@ -304,7 +305,7 @@ describe('platform secrets', () => {
   it('delete falls back to env; nothing configured resolves null', async () => {
     const s = await setup();
     const { setPlatformSecret, deletePlatformSecret } = await import('@/lib/services/secrets');
-    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const sa = platformCtx(s.ownerA);
     const wsCtx = ctx(s.workspaceA, s.ownerA, 'owner');
 
     await setPlatformSecret(sa, K, 'sk-platform');

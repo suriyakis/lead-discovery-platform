@@ -5,10 +5,12 @@
 //     customer-unread flag), reply (sets the admin-unread flag; reopens a
 //     closed thread — a customer must always be able to say "it's still
 //     broken").
-//   Admin side (super-admin only, /admin console): inbox across ALL
-//     workspaces, read (clears admin-unread), reply (sets customer-unread
-//     + drops a workspace notification linking to /support/<id>), close /
-//     reopen.
+//   Admin side (super-admin only, /admin console, PlatformContext): inbox
+//     across ALL workspaces, read (clears admin-unread), reply (sets
+//     customer-unread + drops a workspace notification linking to
+//     /support/<id>), close / reopen. Admin replies and status changes
+//     are audit-logged into the THREAD's workspace (the customer's own
+//     trail), never into whichever workspace the admin happens to be in.
 //
 // Any workspace member — including viewers — can contact support: asking
 // for help is not a write to workspace data.
@@ -24,7 +26,8 @@ import {
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
 import { recordAuditEvent } from './audit';
-import { isSuperAdmin, type WorkspaceContext } from './context';
+import { type WorkspaceContext } from './context';
+import { isPlatformContext, type PlatformContext } from './platform-context';
 
 export class SupportServiceError extends Error {
   public readonly code: string;
@@ -212,10 +215,10 @@ export interface AdminThreadRow extends SupportThread {
 }
 
 export async function adminListSupportThreads(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   filter: { status?: 'open' | 'closed' } = {},
 ): Promise<AdminThreadRow[]> {
-  if (!isSuperAdmin(ctx)) throw denied('support.admin.list');
+  if (!isPlatformContext(pctx)) throw denied('support.admin.list');
   const conds = filter.status ? [eq(supportThreads.status, filter.status)] : [];
   const rows = await db
     .select({
@@ -242,10 +245,10 @@ export interface AdminThreadDetail extends ThreadWithMessages {
 
 /** Read a thread (admin view, any workspace). Marks the admin side read. */
 export async function adminGetSupportThread(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   id: bigint,
 ): Promise<AdminThreadDetail> {
-  if (!isSuperAdmin(ctx)) throw denied('support.admin.read');
+  if (!isPlatformContext(pctx)) throw denied('support.admin.read');
   const rows = await db
     .select({ thread: supportThreads, workspaceName: workspaces.name })
     .from(supportThreads)
@@ -288,11 +291,11 @@ export async function adminGetSupportThread(
 
 /** Admin reply — notifies the customer workspace. */
 export async function adminReplySupportThread(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   id: bigint,
   body: string,
 ): Promise<SupportMessage> {
-  if (!isSuperAdmin(ctx)) throw denied('support.admin.reply');
+  if (!isPlatformContext(pctx)) throw denied('support.admin.reply');
   const text = validateBody(body);
   const rows = await db
     .select()
@@ -309,7 +312,7 @@ export async function adminReplySupportThread(
         threadId: id,
         workspaceId: thread.workspaceId,
         senderKind: 'admin',
-        senderUserId: ctx.userId,
+        senderUserId: pctx.actorUserId,
         body: text,
       })
       .returning();
@@ -337,33 +340,39 @@ export async function adminReplySupportThread(
     console.error('[support] notify failed:', err);
   }
 
-  await recordAuditEvent(ctx, {
-    kind: 'support.message.admin',
-    entityType: 'support_thread',
-    entityId: id,
-    payload: { workspaceId: thread.workspaceId.toString() },
-  });
+  await recordAuditEvent(
+    { workspaceId: thread.workspaceId, userId: pctx.actorUserId },
+    {
+      kind: 'support.message.admin',
+      entityType: 'support_thread',
+      entityId: id,
+      payload: { threadId: id.toString() },
+    },
+  );
   return message;
 }
 
 export async function adminSetSupportThreadStatus(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   id: bigint,
   status: 'open' | 'closed',
 ): Promise<SupportThread> {
-  if (!isSuperAdmin(ctx)) throw denied('support.admin.status');
+  if (!isPlatformContext(pctx)) throw denied('support.admin.status');
   const [updated] = await db
     .update(supportThreads)
     .set({ status, updatedAt: new Date() })
     .where(eq(supportThreads.id, id))
     .returning();
   if (!updated) throw notFound();
-  await recordAuditEvent(ctx, {
-    kind: `support.thread.${status === 'closed' ? 'close' : 'reopen'}`,
-    entityType: 'support_thread',
-    entityId: id,
-    payload: { workspaceId: updated.workspaceId.toString() },
-  });
+  await recordAuditEvent(
+    { workspaceId: updated.workspaceId, userId: pctx.actorUserId },
+    {
+      kind: `support.thread.${status === 'closed' ? 'close' : 'reopen'}`,
+      entityType: 'support_thread',
+      entityId: id,
+      payload: { threadId: id.toString() },
+    },
+  );
   return updated;
 }
 
