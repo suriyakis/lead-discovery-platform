@@ -3,12 +3,12 @@
 //   - answer with HTTP status < 500,
 //   - land on the page itself (proves the session worked), and
 //   - throw no uncaught error in the browser;
-// and at phone width the document may not be wider than the viewport
-// (DS-03: no sideways page scroll on any route). Defects already tracked
+// and the document may not be wider than the viewport (DS-03: no sideways
+// page scroll on any route, at either width). Defects already tracked
 // elsewhere are tolerated via e2e/known-issues.json and show up as
 // `known-issue` annotations in the report. It also checks that Next serves
-// the branded 404 and error pages (DS-04), and a few phone/desktop layout
-// details (DS-03).
+// the branded 404 and error pages (DS-04), a few phone/desktop layout
+// details (DS-03), and the DS-02 CSS acceptance measured in the browser.
 //
 // Needs a running app on BASE_URL seeded by scripts/seed-demo.ts, with
 // SEED_DEMO_PASSWORD set to the password the seed used — see
@@ -21,6 +21,8 @@ import { type KnownIssue, knownIssue, smokeRoutes } from './routes';
 const ADMIN_EMAIL = 'demo-admin@example.com';
 /** 390px viewport + 2px rounding slack. */
 const MOBILE_MAX_SCROLL_WIDTH = 392;
+/** 1440px viewport + 2px rounding slack. */
+const DESKTOP_MAX_SCROLL_WIDTH = 1442;
 
 /** Sign in once per worker via the team-login API; reuse the cookie. */
 const test = base.extend<object, { workerStorageState: string }>({
@@ -114,16 +116,18 @@ test.describe('every route renders', () => {
         route.landsOn,
       );
 
-      if (isMobile) {
+      {
+        // DS-03: no sideways page scroll on a phone, and none introduced at
+        // desktop width either.
         const { scrollWidth, offenders } = await measureOverflow(page);
-        const knownOverflow =
-          scrollWidth > MOBILE_MAX_SCROLL_WIDTH ? knownIssue(route.path, 'overflow') : undefined;
+        const max = isMobile ? MOBILE_MAX_SCROLL_WIDTH : DESKTOP_MAX_SCROLL_WIDTH;
+        const knownOverflow = scrollWidth > max ? knownIssue(route.path, 'overflow') : undefined;
         if (knownOverflow) tolerate(knownOverflow, `${scrollWidth}px wide`);
         else
           expect(
             scrollWidth,
-            `${route.path} is ${scrollWidth}px wide at 390px. Sticking out: ${offenders.join('; ') || 'n/a'}`,
-          ).toBeLessThanOrEqual(MOBILE_MAX_SCROLL_WIDTH);
+            `${route.path} is ${scrollWidth}px wide at ${max - 2}px. Sticking out: ${offenders.join('; ') || 'n/a'}`,
+          ).toBeLessThanOrEqual(max);
       }
 
       const unexpected = pageErrors.filter((message) => {
@@ -263,5 +267,140 @@ test.describe('desktop chrome is unchanged', () => {
       ADMIN_EMAIL,
     );
     await expect(page.locator('.brand-header details.header-account-menu')).toBeHidden();
+  });
+});
+
+// DS-02 acceptance measured in the browser. src/tests/legacy-css-defects.test.ts
+// checks the same rules through a CSS cascade model; this is the real thing.
+test.describe('legacy CSS fixes hold in the browser (DS-02)', () => {
+  test.skip(({ isMobile }) => isMobile, 'desktop-width checks');
+
+  /** The pages the DS-02 acceptance lists. */
+  const DS02_PAGES = [
+    '/products',
+    '/knowledge',
+    '/learning',
+    '/connectors',
+    '/connectors/1',
+    '/mailbox',
+    '/mailbox/1',
+    '/communication/follow-ups',
+    '/settings/crm',
+    '/settings/crm/1',
+  ];
+
+  test('page-header CTAs read at >= 4.5:1; every ghost link has a 1px border and a >= 32px box', async ({
+    page,
+  }) => {
+    let ctaCount = 0;
+    let ghostCount = 0;
+    for (const path of DS02_PAGES) {
+      await visit(page, path);
+      const found = await page.evaluate(() => {
+        // Let the browser turn any CSS colour (oklch, color-mix, …) into sRGB.
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const g = canvas.getContext('2d', { willReadFrequently: true })!;
+        const srgb = (css: string): number[] => {
+          g.clearRect(0, 0, 1, 1);
+          g.fillStyle = css;
+          g.fillRect(0, 0, 1, 1);
+          return Array.from(g.getImageData(0, 0, 1, 1).data);
+        };
+        const luminance = ([r, gr, b]: number[]) => {
+          const lin = (v: number) => {
+            const c = v / 255;
+            return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+          };
+          return 0.2126 * lin(r!) + 0.7152 * lin(gr!) + 0.0722 * lin(b!);
+        };
+        const contrast = (fg: string, bg: string) => {
+          const [a, b] = [luminance(srgb(fg)), luminance(srgb(bg))];
+          return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+        };
+        const shown = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+        };
+        const label = (el: Element) => (el.textContent ?? '').trim().slice(0, 40);
+        return {
+          ctas: Array.from(document.querySelectorAll('.page-header .primary-btn'))
+            .filter(shown)
+            .map((el) => {
+              const s = getComputedStyle(el);
+              return { label: label(el), ratio: contrast(s.color, s.backgroundColor), bgAlpha: srgb(s.backgroundColor)[3] };
+            }),
+          ghosts: Array.from(document.querySelectorAll('a.ghost-btn'))
+            .filter(shown)
+            .map((el) => {
+              const s = getComputedStyle(el);
+              return {
+                label: label(el),
+                border: `${s.borderTopWidth} ${s.borderTopStyle}`,
+                height: el.getBoundingClientRect().height,
+              };
+            }),
+        };
+      });
+      for (const cta of found.ctas) {
+        expect(cta.bgAlpha, `${path} CTA "${cta.label}" has an opaque fill`).toBe(255);
+        expect(cta.ratio, `${path} CTA "${cta.label}" contrast`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const ghost of found.ghosts) {
+        expect(ghost.border, `${path} ghost link "${ghost.label}" border`).toBe('1px solid');
+        expect(ghost.height, `${path} ghost link "${ghost.label}" height`).toBeGreaterThanOrEqual(32);
+      }
+      ctaCount += found.ctas.length;
+      ghostCount += found.ghosts.length;
+    }
+    // The seed renders both on these pages; zero would mean the selectors rotted.
+    expect(ctaCount).toBeGreaterThan(0);
+    expect(ghostCount).toBeGreaterThan(0);
+  });
+
+  test('after a 600px scroll the sidebar and the contacts toolbar sit below the header', async ({
+    page,
+  }) => {
+    await visit(page, '/contacts');
+    await page.evaluate(() => window.scrollTo(0, 600));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    const tops = await page.evaluate(() => {
+      const top = (sel: string) => document.querySelector(sel)?.getBoundingClientRect().top ?? null;
+      return {
+        scrollY: window.scrollY,
+        headerBottom: document.querySelector('.brand-header')?.getBoundingClientRect().bottom ?? null,
+        sidebar: top('aside.sidebar'),
+        toolbar: top('.contacts-toolbar'),
+      };
+    });
+    expect(tops.headerBottom).toBeGreaterThanOrEqual(56);
+    for (const key of ['sidebar', 'toolbar'] as const) {
+      expect(tops[key], `${key} rendered`).not.toBeNull();
+      expect(tops[key]!, `${key} top after scrolling ${tops.scrollY}px`).toBeGreaterThanOrEqual(56);
+    }
+  });
+
+  test('with reduced motion there are no running animations', async ({ page, browser, baseURL }) => {
+    const animations = (p: Page) =>
+      p.evaluate(() =>
+        document
+          .getAnimations()
+          .map((a) => (a as CSSAnimation).animationName ?? a.constructor.name),
+      );
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    for (const path of ['/dashboard', '/review', '/connectors']) {
+      await visit(page, path);
+      expect(await animations(page), `${path} animations`).toEqual([]);
+    }
+    // The signed-out landing page carries the pulsing hero badge.
+    const context = await browser.newContext({ baseURL, reducedMotion: 'reduce' });
+    try {
+      const landing = await context.newPage();
+      await visit(landing, '/');
+      expect(await animations(landing), '/ (signed out) animations').toEqual([]);
+    } finally {
+      await context.close();
+    }
   });
 });

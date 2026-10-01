@@ -720,6 +720,9 @@ button.signin-btn:hover {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  /* A 32px hit target even when a context shrinks the padding/font
+     (e.g. ".connector-template-foot .small" measured 31px in a browser). */
+  min-height: 2rem;
   border-width: 1px;
   border-style: solid;
   border-radius: var(--brand-radius);

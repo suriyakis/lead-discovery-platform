@@ -107,6 +107,9 @@ describe('ghost buttons on any element (DS-02 item 2, I152)', () => {
     // admin/users: the per-user "Edit profile + memberships →" link.
     'profile list (admin users)': `<ul class="profile-list"><li><form class="inline-form"><button type="submit">Apply</button><a id="t" class="ghost-btn" href="/admin/users/u1">Edit profile + memberships →</a></form></li></ul>`,
     'lead row': `<ul class="profile-list"><li><div class="lead-row"><strong>Acme</strong><a id="t" class="ghost-btn" href="/x">Open</a></div></li></ul>`,
+    // /connectors "Connector settings": a compact .small context (31px in
+    // Chromium before ghost links got a min-height).
+    'connector template foot (small)': `<div class="connector-template-foot"><a class="primary-btn small" href="/x">New recipe</a><a id="t" class="ghost-btn small" href="/x">Connector settings</a></div>`,
   };
 
   for (const [name, html] of Object.entries(contexts)) {
