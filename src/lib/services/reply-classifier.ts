@@ -7,16 +7,12 @@
 //   2. analyseReply(ctx, message, ai?): the service entry point. Uses the
 //      AI provider when supplied; otherwise falls back to classifyReply.
 //      Persists the result onto mail_messages and (optionally) triggers
-//      auto-actions per the workspace's reply_auto_actions row.
+//      auto-actions per the workspace's reply_auto_actions row (switches
+//      in reply-auto-actions.ts).
 
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import {
-  mailMessages,
-  replyAutoActions,
-  type MailMessage,
-  type ReplyAutoActions,
-} from '@/lib/db/schema/mailing';
+import { mailMessages, type MailMessage } from '@/lib/db/schema/mailing';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { contactAssociations } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
@@ -24,6 +20,7 @@ import { canWrite, type WorkspaceContext } from './context';
 import { upsertContact, attachContact } from './contacts';
 import { addSuppression } from './suppression';
 import { transition as pipelineTransition } from './pipeline';
+import { autoClosePayload, getReplyAutoActions } from './reply-auto-actions';
 import type { IAIProvider } from '@/lib/ai';
 
 export type ReplyClass =
@@ -316,76 +313,11 @@ export async function analyseReply(
 }
 
 // ---- auto-actions -------------------------------------------------
-
-export async function getReplyAutoActions(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-): Promise<ReplyAutoActions> {
-  const rows = await db
-    .select()
-    .from(replyAutoActions)
-    .where(eq(replyAutoActions.workspaceId, ctx.workspaceId))
-    .limit(1);
-  if (rows[0]) return rows[0];
-  await db
-    .insert(replyAutoActions)
-    .values({ workspaceId: ctx.workspaceId })
-    .onConflictDoNothing();
-  const reload = await db
-    .select()
-    .from(replyAutoActions)
-    .where(eq(replyAutoActions.workspaceId, ctx.workspaceId))
-    .limit(1);
-  if (!reload[0]) {
-    throw new Error('reply_auto_actions init returned no row');
-  }
-  return reload[0];
-}
-
-export interface UpdateReplyAutoActionsInput {
-  autoSuppressBounce?: boolean;
-  autoSuppressUnsubscribe?: boolean;
-  autoCloseNegative?: boolean;
-  autoExtractRedirects?: boolean;
-}
-
-export async function updateReplyAutoActions(
-  ctx: WorkspaceContext,
-  input: UpdateReplyAutoActionsInput,
-): Promise<ReplyAutoActions> {
-  if (!canWrite(ctx)) throw new Error('Permission denied: reply.auto_actions.update');
-  await getReplyAutoActions(ctx);
-  const updates: Partial<ReplyAutoActions> & { updatedAt: Date } = {
-    updatedAt: new Date(),
-    updatedBy: ctx.userId,
-  };
-  if (input.autoSuppressBounce !== undefined) {
-    updates.autoSuppressBounce = input.autoSuppressBounce;
-  }
-  if (input.autoSuppressUnsubscribe !== undefined) {
-    updates.autoSuppressUnsubscribe = input.autoSuppressUnsubscribe;
-  }
-  if (input.autoCloseNegative !== undefined) {
-    updates.autoCloseNegative = input.autoCloseNegative;
-  }
-  if (input.autoExtractRedirects !== undefined) {
-    updates.autoExtractRedirects = input.autoExtractRedirects;
-  }
-  const [updated] = await db
-    .update(replyAutoActions)
-    .set(updates)
-    .where(eq(replyAutoActions.workspaceId, ctx.workspaceId))
-    .returning();
-  if (!updated) {
-    throw new Error('reply_auto_actions update returned no row');
-  }
-  await recordAuditEvent(ctx, {
-    kind: 'reply.auto_actions.update',
-    entityType: 'workspace',
-    entityId: ctx.workspaceId,
-    payload: { ...input } as Record<string, unknown>,
-  });
-  return updated;
-}
+//
+// The switches (and their admin-only update) live in
+// reply-auto-actions.ts. Every side effect below runs only when its
+// switch is on; each lead close carries autoClosePayload() so the
+// settings page can count what the auto paths did.
 
 async function applyAutoActions(
   ctx: WorkspaceContext,
@@ -409,6 +341,8 @@ async function applyAutoActions(
         kind: 'email',
         value: msg.fromAddress,
         reason: 'unsubscribe',
+        source: 'reply',
+        sourceRef: `mail_message:${msg.id}`,
         note: `auto-suppressed from message ${msg.id}`,
       });
     } catch (err) {
@@ -421,6 +355,7 @@ async function applyAutoActions(
           closeReason: 'no_response',
           closeNote: 'unsubscribe',
           force: true,
+          payload: autoClosePayload('unsubscribe', msg.id),
         });
       } catch (err) {
         console.error('[reply-classifier] close on unsubscribe failed:', err);
@@ -435,6 +370,8 @@ async function applyAutoActions(
         kind: 'email',
         value: msg.fromAddress,
         reason: 'bounce_hard',
+        source: 'reply',
+        sourceRef: `mail_message:${msg.id}`,
         note: `auto-suppressed from message ${msg.id}`,
       });
     } catch (err) {
@@ -447,6 +384,7 @@ async function applyAutoActions(
           closeReason: 'wrong_fit',
           closeNote: 'bounce',
           force: true,
+          payload: autoClosePayload('bounce', msg.id),
         });
       } catch (err) {
         console.error('[reply-classifier] close on bounce failed:', err);
@@ -463,6 +401,7 @@ async function applyAutoActions(
           closeReason: 'lost',
           closeNote: 'negative reply',
           force: true,
+          payload: autoClosePayload('negative', msg.id),
         });
       } catch (err) {
         console.error('[reply-classifier] close on negative failed:', err);

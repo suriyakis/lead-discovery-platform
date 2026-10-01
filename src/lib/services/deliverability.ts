@@ -12,7 +12,7 @@
 //
 // Pure read service. No mutations, no audit-log entries.
 
-import { and, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   mailboxes,
@@ -227,7 +227,8 @@ export async function getDeliverabilityReport(
     return a.mailboxName.localeCompare(b.mailboxName);
   });
 
-  // Workspace-scoped suppression counts in window.
+  // Workspace-scoped suppression counts in window. Revoked rows (F-03)
+  // were judged wrong by an admin, so they don't count.
   const suppressionRows = await db
     .select({
       reason: suppressionList.reason,
@@ -238,6 +239,7 @@ export async function getDeliverabilityReport(
       and(
         eq(suppressionList.workspaceId, ctx.workspaceId),
         gte(suppressionList.createdAt, windowStart),
+        isNull(suppressionList.revokedAt),
       ),
     )
     .groupBy(suppressionList.reason);

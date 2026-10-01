@@ -46,6 +46,13 @@ import {
 } from '@/lib/services/mail';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import {
+  getReplyAutoActions,
+  getReplyAutoActionsImpact,
+  switchesOf,
+} from '@/lib/services/reply-auto-actions';
+import { ReplyAutoActionsCard } from './ReplyAutoActionsCard';
+import { saveReplyAutoActions } from './actions';
 
 const STEP_DESCRIPTORS = [
   'Gentle reminder',
@@ -81,11 +88,29 @@ export default async function OutreachSettingsPage({
     if (err instanceof NoWorkspaceError) redirect('/');
     throw err;
   }
+  // ia:F-03: everyone in the workspace can see what runs automatically on
+  // inbound mail; only admins can change it.
+  const replyAutoActions = switchesOf(await getReplyAutoActions(ctx));
+  const replyAutoActionsImpact = await getReplyAutoActionsImpact(ctx);
+
   if (!canAdminWorkspace(ctx)) {
     return (
       <AppShell>
-        <h1>Outreach defaults</h1>
-        <p className="form-error">Workspace-admin only.</p>
+        <p className="muted">
+          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/settings/integrations">Settings</Link> / Outreach
+        </p>
+        <h1 className="page-title">Outreach configuration</h1>
+        <p className="page-lede">
+          Only workspace admins can change outreach settings. The reply
+          auto-actions are shown read-only so you can see what happens
+          automatically to inbound mail.
+        </p>
+        {sp.error ? <p className="form-error">{sp.error}</p> : null}
+        <ReplyAutoActionsCard
+          switches={replyAutoActions}
+          impact={replyAutoActionsImpact}
+        />
       </AppShell>
     );
   }
@@ -385,6 +410,13 @@ export default async function OutreachSettingsPage({
           <button type="submit" className="primary-btn">Save reply settings</button>
         </div>
       </form>
+
+      {/* ---------- Reply auto-actions card (ia:F-03) ---------- */}
+      <ReplyAutoActionsCard
+        switches={replyAutoActions}
+        impact={replyAutoActionsImpact}
+        action={saveReplyAutoActions}
+      />
 
       {/* ---------- Follow-up card ---------- */}
       <form action={saveFollowUp} className="config-card">

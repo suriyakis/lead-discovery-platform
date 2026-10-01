@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   mailMessages,
@@ -10,7 +10,8 @@ import {
   contactAssociations,
   contacts,
 } from '@/lib/db/schema/contacts';
-import { qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { pipelineEvents, qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { outreachThreadState } from '@/lib/db/schema/outreach';
 import {
   type WorkspaceContext,
   makeWorkspaceContext,
@@ -18,9 +19,13 @@ import {
 import {
   analyseReply,
   classifyReply,
-  getReplyAutoActions,
-  updateReplyAutoActions,
+  type ReplyClassification,
 } from '@/lib/services/reply-classifier';
+import {
+  getReplyAutoActionsImpact,
+  updateReplyAutoActions,
+} from '@/lib/services/reply-auto-actions';
+import { handleClassifiedReply } from '@/lib/services/outreach-reply-handler';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 interface Setup {
@@ -116,7 +121,7 @@ async function seedSyntheticInbound(
   s: Setup,
   body: string,
   options: { withLead?: boolean } = {},
-): Promise<{ messageId: bigint; leadId: bigint | null }> {
+): Promise<{ messageId: bigint; leadId: bigint | null; threadId: bigint }> {
   const ws = s.workspaceA;
   // Mailbox row stub — needed because mail_message.mailbox_id is FK.
   const { mailboxes } = await import('@/lib/db/schema/mailing');
@@ -222,7 +227,30 @@ async function seedSyntheticInbound(
       entityId: lead!.id.toString(),
     });
   }
-  return { messageId: msg!.id, leadId };
+  return { messageId: msg!.id, leadId, threadId: thread!.id };
+}
+
+const unsubscribeVerdict: ReplyClassification = {
+  type: 'unsubscribe',
+  confidence: 70,
+  rationale: 'test',
+  extractedEmails: [],
+  suggestedAction: 'suppress',
+};
+
+async function suppressionsOf(workspaceId: bigint) {
+  return db
+    .select()
+    .from(suppressionList)
+    .where(eq(suppressionList.workspaceId, workspaceId));
+}
+
+async function leadState(leadId: bigint | null) {
+  const [row] = await db
+    .select()
+    .from(qualifiedLeads)
+    .where(eq(qualifiedLeads.id, leadId!));
+  return row!;
 }
 
 describe('analyseReply (DB-backed)', { timeout: 15000 }, () => {
@@ -245,40 +273,144 @@ describe('analyseReply (DB-backed)', { timeout: 15000 }, () => {
     expect(reloaded[0]!.replyClassifiedAt).toBeInstanceOf(Date);
   });
 
-  it('unsubscribe auto-suppresses the sender + closes the lead', async () => {
+  // ia:F-03: the suppression switches default to OFF (migration 0062).
+  it('autoSuppressUnsubscribe off (default): an unsubscribe-classified reply adds no suppression and leaves the lead open', async () => {
     const s = await setup();
+    const { messageId, leadId, threadId } = await seedSyntheticInbound(
+      s,
+      'please unsubscribe',
+      { withLead: true },
+    );
+    const verdict = await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
+    expect(verdict.type).toBe('unsubscribe');
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    expect((await leadState(leadId)).state).toBe('relevant');
+    // The outreach handler (which ran via analyseReply) left the thread open too.
+    const [state] = await db
+      .select()
+      .from(outreachThreadState)
+      .where(eq(outreachThreadState.threadId, threadId));
+    expect(state?.closedAt ?? null).toBeNull();
+  });
+
+  it('autoSuppressBounce off (default): a bounce-classified message adds no suppression', async () => {
+    const s = await setup();
+    const { messageId, leadId } = await seedSyntheticInbound(
+      s,
+      'Mailer-Daemon: undeliverable',
+      { withLead: true },
+    );
+    const verdict = await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
+    expect(verdict.type).toBe('bounce');
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    expect((await leadState(leadId)).state).toBe('relevant');
+  });
+
+  it('the outreach handler alone honours autoSuppressUnsubscribe=false (no suppression, no close)', async () => {
+    const s = await setup();
+    const { messageId, leadId, threadId } = await seedSyntheticInbound(
+      s,
+      'please unsubscribe',
+      { withLead: true },
+    );
+    const result = await handleClassifiedReply(
+      ctx(s.workspaceA, s.ownerA),
+      messageId,
+      unsubscribeVerdict,
+    );
+    expect(result.action).toEqual({ kind: 'close_and_suppress', reason: 'unsubscribe' });
+    expect(result.draftIds).toEqual([]);
+    expect(await suppressionsOf(s.workspaceA)).toHaveLength(0);
+    expect((await leadState(leadId)).state).toBe('relevant');
+    const [state] = await db
+      .select()
+      .from(outreachThreadState)
+      .where(eq(outreachThreadState.threadId, threadId));
+    expect(state!.closedAt).toBeNull();
+  });
+
+  it('the outreach handler alone suppresses + closes when autoSuppressUnsubscribe is on', async () => {
+    const s = await setup();
+    await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
+      autoSuppressUnsubscribe: true,
+    });
+    const { messageId, leadId, threadId } = await seedSyntheticInbound(
+      s,
+      'please unsubscribe',
+      { withLead: true },
+    );
+    await handleClassifiedReply(ctx(s.workspaceA, s.ownerA), messageId, unsubscribeVerdict);
+    const supps = await suppressionsOf(s.workspaceA);
+    expect(supps.map((e) => e.value)).toEqual(['anna@target.com']);
+    expect(supps[0]).toMatchObject({ source: 'reply', sourceRef: `mail_message:${messageId}` });
+    expect((await leadState(leadId)).state).toBe('closed');
+    const [state] = await db
+      .select()
+      .from(outreachThreadState)
+      .where(eq(outreachThreadState.threadId, threadId));
+    expect(state!.closedAt).toBeInstanceOf(Date);
+  });
+
+  it('autoSuppressUnsubscribe on: unsubscribe suppresses the sender, closes the lead, and both show in the impact count', async () => {
+    const s = await setup();
+    await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
+      autoSuppressUnsubscribe: true,
+    });
     const { messageId, leadId } = await seedSyntheticInbound(
       s,
       'please unsubscribe',
       { withLead: true },
     );
     await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
-    const supps = await db
+    const supp = (await suppressionsOf(s.workspaceA)).find(
+      (e) => e.value === 'anna@target.com',
+    );
+    expect(supp).toBeTruthy();
+    // F-03: automatic adds carry their provenance.
+    expect(supp!.source).toBe('reply');
+    expect(supp!.sourceRef).toBe(`mail_message:${messageId}`);
+    expect((await leadState(leadId)).state).toBe('closed');
+
+    // The close is tagged as automatic on its pipeline event…
+    const events = await db
       .select()
-      .from(suppressionList)
-      .where(eq(suppressionList.workspaceId, s.workspaceA));
-    expect(supps.find((e) => e.value === 'anna@target.com')).toBeTruthy();
-    if (leadId) {
-      const reloadedLead = await db
-        .select()
-        .from(qualifiedLeads)
-        .where(eq(qualifiedLeads.id, leadId));
-      expect(reloadedLead[0]!.state).toBe('closed');
-    }
+      .from(pipelineEvents)
+      .where(
+        and(
+          eq(pipelineEvents.qualifiedLeadId, leadId!),
+          eq(pipelineEvents.toState, 'closed'),
+        ),
+      );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({
+      replyAutoAction: 'unsubscribe',
+      sourceMessageId: messageId.toString(),
+    });
+    // …so the settings page can count it.
+    const impact = await getReplyAutoActionsImpact(ctx(s.workspaceA, s.ownerA));
+    expect(impact).toMatchObject({
+      suppressedAddresses: 1,
+      stillSuppressed: 1,
+      closedLeads: 1,
+    });
   });
 
-  it('bounce auto-suppresses', async () => {
+  it('autoSuppressBounce on: bounce suppresses the sender', async () => {
     const s = await setup();
+    await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
+      autoSuppressBounce: true,
+    });
     const { messageId } = await seedSyntheticInbound(
       s,
       'Mailer-Daemon: undeliverable',
     );
     await analyseReply(ctx(s.workspaceA, s.ownerA), messageId);
-    const supps = await db
-      .select()
-      .from(suppressionList)
-      .where(eq(suppressionList.workspaceId, s.workspaceA));
-    expect(supps.find((e) => e.reason === 'bounce_hard')).toBeTruthy();
+    const supp = (await suppressionsOf(s.workspaceA)).find(
+      (e) => e.reason === 'bounce_hard',
+    );
+    expect(supp).toBeTruthy();
+    expect(supp!.source).toBe('reply');
+    expect(supp!.sourceRef).toBe(`mail_message:${messageId}`);
   });
 
   it('redirect auto-creates the extracted contact', async () => {
@@ -334,25 +466,4 @@ describe('analyseReply (DB-backed)', { timeout: 15000 }, () => {
   });
 });
 
-// ============ settings =============================================
-
-describe('reply auto-actions settings', () => {
-  it('lazy-creates defaults', async () => {
-    const s = await setup();
-    const settings = await getReplyAutoActions(ctx(s.workspaceA, s.ownerA));
-    expect(settings.autoSuppressBounce).toBe(true);
-    expect(settings.autoSuppressUnsubscribe).toBe(true);
-    expect(settings.autoCloseNegative).toBe(false);
-    expect(settings.autoExtractRedirects).toBe(true);
-  });
-
-  it('updates persist + audit', async () => {
-    const s = await setup();
-    const updated = await updateReplyAutoActions(ctx(s.workspaceA, s.ownerA), {
-      autoCloseNegative: true,
-      autoExtractRedirects: false,
-    });
-    expect(updated.autoCloseNegative).toBe(true);
-    expect(updated.autoExtractRedirects).toBe(false);
-  });
-});
+// Settings authz / audit / impact / migration: reply-auto-actions.test.ts.
