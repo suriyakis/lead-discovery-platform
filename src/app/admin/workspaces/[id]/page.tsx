@@ -15,7 +15,6 @@ import {
   adminSetMemberRole,
   archiveWorkspace,
   deleteWorkspace,
-  endImpersonation,
   listFeatureFlags,
   listImpersonationSessions,
   restoreWorkspace,
@@ -36,8 +35,8 @@ import { db } from '@/lib/db/client';
 import { workspaces, workspaceMembers } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
 import { isNextRedirectError } from '@/lib/server-redirect';
-import { describeActionError, withFlash } from '@/lib/action-errors';
 import { TableScroll } from '@/components/TableScroll';
+import { endImpersonationAction } from './actions';
 
 const KNOWN_FEATURE_KEYS = [
   'crm.hubspot',
@@ -170,32 +169,8 @@ export default async function AdminWorkspaceDetail({
     }
   }
 
-  async function endImp(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const sessionIdRaw = String(formData.get('sessionId') ?? '');
-    if (!/^\d{1,19}$/.test(sessionIdRaw)) {
-      redirect(withFlash(`/admin/workspaces/${idStr}`, { error: 'Unknown impersonation session.' }));
-    }
-    try {
-      await endImpersonation(c, BigInt(sessionIdRaw));
-    } catch (err) {
-      // A double submit or a stale page: the session is already over
-      // (conflict) or gone (not_found) — the operator's goal is met.
-      const failure = describeActionError(err, [AdminServiceError], {
-        conflict: 'Impersonation already ended.',
-        not_found: 'That impersonation session no longer exists — nothing left to end.',
-      });
-      const settled = failure.code === 'conflict' || failure.code === 'not_found';
-      redirect(
-        withFlash(
-          `/admin/workspaces/${idStr}`,
-          settled ? { message: failure.message } : { error: failure.message },
-        ),
-      );
-    }
-    redirect(`/admin/workspaces/${idStr}?message=Impersonation+ended`);
-  }
+  // Module-scope action (./actions.ts): typed errors, double submit = success.
+  const endImp = endImpersonationAction.bind(null, idStr);
 
   async function toggleFlag(formData: FormData) {
     'use server';

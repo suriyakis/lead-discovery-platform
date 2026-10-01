@@ -7,23 +7,22 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/connectors/mock';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import { impersonationSessions } from '@/lib/db/schema/admin';
 import { preauthorizedEmails } from '@/lib/db/schema/auth';
 import { connectorRuns, connectors } from '@/lib/db/schema/connectors';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { reviewComments, reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
-import { describeActionError } from '@/lib/action-errors';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { startImpersonation } from '@/lib/services/admin';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { archiveReviewItem } from '@/lib/services/review';
-import {
-  UserServiceError,
-  preauthorizeEmail,
-  revokePreauthorize,
-} from '@/lib/services/users';
+import { preauthorizeEmail } from '@/lib/services/users';
 import * as reviewActions from '@/app/review/[id]/actions';
 import * as recipeActions from '@/app/connectors/[id]/recipes/[recipeId]/actions';
+import * as adminWorkspaceActions from '@/app/admin/workspaces/[id]/actions';
+import * as adminUserActions from '@/app/admin/users/actions';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 // ---- session stub ----------------------------------------------------------
@@ -319,23 +318,178 @@ describe('recipe Run now', () => {
 
 // ---- admin double submits ---------------------------------------------------
 
-describe('admin pre-authorisation revoke (double submit)', () => {
-  it('classifies a repeated revoke as not_found and a used invite as conflict', async () => {
-    const superId = await seedUser({ email: 'root@backstop.test', role: 'super_admin' });
-    const ws = await seedWorkspace({ name: 'Root', ownerUserId: superId });
-    const root = ctx(ws, superId, 'super_admin');
+interface AdminSetup {
+  ws: bigint;
+  root: WorkspaceContext;
+  /** Owner of the workspace, but not a super-admin. */
+  owner: WorkspaceContext;
+  memberId: string;
+}
 
-    const entry = await preauthorizeEmail(root, { email: 'new@backstop.test', workspaceId: ws, role: 'member' });
-    await revokePreauthorize(root, entry.id);
-    const again = await revokePreauthorize(root, entry.id).catch((e: unknown) => e);
-    expect(describeActionError(again, [UserServiceError]).code).toBe('not_found');
+async function adminSetup(): Promise<AdminSetup> {
+  const superId = await seedUser({ email: 'root@backstop.test', role: 'super_admin' });
+  const ownerId = await seedUser({ email: 'owner@backstop.test' });
+  const memberId = await seedUser({ email: 'member@backstop.test' });
+  const ws = await seedWorkspace({
+    name: 'Root',
+    ownerUserId: ownerId,
+    extraMembers: [
+      { userId: superId, role: 'admin' },
+      { userId: memberId, role: 'member' },
+    ],
+  });
+  return {
+    ws,
+    root: ctx(ws, superId, 'super_admin'),
+    owner: ctx(ws, ownerId, 'owner'),
+    memberId,
+  };
+}
 
-    const used = await preauthorizeEmail(root, { email: 'used@backstop.test', workspaceId: ws, role: 'member' });
+describe('admin End impersonation', () => {
+  async function endedAt(id: bigint): Promise<Date | null | undefined> {
+    const [row] = await db.select().from(impersonationSessions).where(eq(impersonationSessions.id, id));
+    return row?.endedAt;
+  }
+
+  it('ends the session, and a second submit is a notice, not a crash', async () => {
+    const s = await adminSetup();
+    const session = await startImpersonation(s.root, {
+      targetUserId: s.memberId,
+      targetWorkspaceId: s.ws,
+      reason: 'support ticket',
+    });
+    actAs(s.root);
+    const end = () =>
+      adminWorkspaceActions.endImpersonationAction(
+        s.ws.toString(),
+        form({ sessionId: session.id.toString() }),
+      );
+
+    const first = await redirectOf(end());
+    expect(first.pathname).toBe(`/admin/workspaces/${s.ws}`);
+    expect(first.searchParams.get('message')).toBe('Impersonation ended');
+    expect(await endedAt(session.id)).toBeInstanceOf(Date);
+
+    const second = await redirectOf(end());
+    expect(second.pathname).toBe(`/admin/workspaces/${s.ws}`);
+    expect(second.search).toBe('?message=Impersonation+already+ended.');
+    expect(second.searchParams.get('error')).toBeNull();
+  });
+
+  it('a session that no longer exists is a notice; a malformed id is an error', async () => {
+    const s = await adminSetup();
+    actAs(s.root);
+    const gone = await redirectOf(
+      adminWorkspaceActions.endImpersonationAction(s.ws.toString(), form({ sessionId: '987654' })),
+    );
+    expect(gone.searchParams.get('message')).toMatch(/no longer exists/);
+    expect(gone.searchParams.get('error')).toBeNull();
+
+    for (const sessionId of ['abc', '', '1; drop table', '9'.repeat(20)]) {
+      const bad = await redirectOf(
+        adminWorkspaceActions.endImpersonationAction(s.ws.toString(), form({ sessionId })),
+      );
+      expect(bad.pathname).toBe(`/admin/workspaces/${s.ws}`);
+      expect(bad.searchParams.get('error')).toBe('Unknown impersonation session.');
+    }
+
+    const badWorkspace = await redirectOf(
+      adminWorkspaceActions.endImpersonationAction('../users', form({ sessionId: '1' })),
+    );
+    expect(badWorkspace.pathname).toBe('/admin');
+  });
+
+  it('a workspace owner who is not a super-admin gets an error and the session stays open', async () => {
+    const s = await adminSetup();
+    const session = await startImpersonation(s.root, {
+      targetUserId: s.memberId,
+      targetWorkspaceId: s.ws,
+      reason: 'support ticket',
+    });
+    actAs(s.owner);
+    const to = await redirectOf(
+      adminWorkspaceActions.endImpersonationAction(
+        s.ws.toString(),
+        form({ sessionId: session.id.toString() }),
+      ),
+    );
+    expect(to.searchParams.get('error')).toMatch(/Only super-admins/);
+    expect(await endedAt(session.id)).toBeNull();
+  });
+
+  it('a stale form after sign-out goes to the sign-in page', async () => {
+    const s = await adminSetup();
+    actAs(null);
+    const to = await redirectOf(
+      adminWorkspaceActions.endImpersonationAction(s.ws.toString(), form({ sessionId: '1' })),
+    );
+    expect(to.pathname).toBe('/');
+  });
+});
+
+describe('admin pre-authorisation Revoke', () => {
+  async function preauthExists(id: string): Promise<boolean> {
+    const rows = await db.select().from(preauthorizedEmails).where(eq(preauthorizedEmails.id, id));
+    return rows.length > 0;
+  }
+
+  it('revokes, and a second submit says "Already revoked." as a notice', async () => {
+    const s = await adminSetup();
+    const entry = await preauthorizeEmail(s.root, {
+      email: 'new@backstop.test',
+      workspaceId: s.ws,
+      role: 'member',
+    });
+    actAs(s.root);
+    const revoke = () => adminUserActions.revokePreauthorizationAction(form({ id: entry.id }));
+
+    const first = await redirectOf(revoke());
+    expect(first.pathname).toBe('/admin/users');
+    expect(first.searchParams.get('message')).toBe('Revoked');
+    expect(await preauthExists(entry.id)).toBe(false);
+
+    const second = await redirectOf(revoke());
+    expect(second.pathname).toBe('/admin/users');
+    expect(second.search).toBe('?message=Already+revoked.');
+  });
+
+  it('an invite that was already used is a notice, and the row is kept', async () => {
+    const s = await adminSetup();
+    const used = await preauthorizeEmail(s.root, {
+      email: 'used@backstop.test',
+      workspaceId: s.ws,
+      role: 'member',
+    });
     await db
       .update(preauthorizedEmails)
       .set({ consumedAt: new Date() })
       .where(eq(preauthorizedEmails.id, used.id));
-    const consumed = await revokePreauthorize(root, used.id).catch((e: unknown) => e);
-    expect(describeActionError(consumed, [UserServiceError]).code).toBe('conflict');
+    actAs(s.root);
+    const to = await redirectOf(adminUserActions.revokePreauthorizationAction(form({ id: used.id })));
+    expect(to.searchParams.get('message')).toMatch(/already used.*signed up/);
+    expect(to.searchParams.get('error')).toBeNull();
+    expect(await preauthExists(used.id)).toBe(true);
+  });
+
+  it('a missing id and a non-super-admin get errors; nothing is deleted', async () => {
+    const s = await adminSetup();
+    const entry = await preauthorizeEmail(s.root, {
+      email: 'keep@backstop.test',
+      workspaceId: s.ws,
+      role: 'member',
+    });
+    actAs(s.root);
+    for (const id of ['', '   ', 'x'.repeat(65)]) {
+      const bad = await redirectOf(adminUserActions.revokePreauthorizationAction(form({ id })));
+      expect(bad.searchParams.get('error')).toBe('Unknown pre-authorisation.');
+    }
+
+    actAs(s.owner);
+    const denied = await redirectOf(
+      adminUserActions.revokePreauthorizationAction(form({ id: entry.id })),
+    );
+    expect(denied.searchParams.get('error')).toMatch(/Only super-admins/);
+    expect(await preauthExists(entry.id)).toBe(true);
   });
 });

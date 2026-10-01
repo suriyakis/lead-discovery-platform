@@ -20,7 +20,6 @@ import {
   listAllUsers,
   listPreauthorizedEmails,
   preauthorizeEmail,
-  revokePreauthorize,
   setAccountStatus,
 } from '@/lib/services/users';
 import { db } from '@/lib/db/client';
@@ -28,7 +27,7 @@ import { workspaces } from '@/lib/db/schema/workspaces';
 import type { AccountStatus } from '@/lib/db/schema/auth';
 import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { isNextRedirectError } from '@/lib/server-redirect';
-import { describeActionError, withFlash } from '@/lib/action-errors';
+import { revokePreauthorizationAction } from './actions';
 
 export default async function AdminUsersPage({
   searchParams,
@@ -96,29 +95,6 @@ export default async function AdminUsersPage({
       const m = err instanceof UserServiceError ? err.message : 'failed';
       redirect(`/admin/users?error=${encodeURIComponent(m)}`);
     }
-  }
-
-  async function revoke(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const id = String(formData.get('id') ?? '');
-    try {
-      await revokePreauthorize(c, id);
-    } catch (err) {
-      // Double submit / stale page. not_found: the row is already gone.
-      // conflict: it was consumed — the person signed up — so there is
-      // nothing left to revoke. Neither is a failure worth a red banner.
-      const failure = describeActionError(err, [UserServiceError], {
-        not_found: 'Already revoked.',
-        conflict:
-          'That pre-authorisation was already used — the person has signed up, so there is nothing left to revoke.',
-      });
-      const settled = failure.code === 'not_found' || failure.code === 'conflict';
-      redirect(
-        withFlash('/admin/users', settled ? { message: failure.message } : { error: failure.message }),
-      );
-    }
-    redirect('/admin/users?message=Revoked');
   }
 
   async function createPwUser(formData: FormData) {
@@ -254,7 +230,7 @@ export default async function AdminUsersPage({
                   ) : null}
                 </div>
                 {!p.consumedAt ? (
-                  <form action={revoke} style={{ marginTop: '0.5rem' }}>
+                  <form action={revokePreauthorizationAction} style={{ marginTop: '0.5rem' }}>
                     <input type="hidden" name="id" value={p.id} />
                     <button type="submit" className="ghost-btn">
                       Revoke
