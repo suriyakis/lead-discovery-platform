@@ -1077,7 +1077,7 @@ five lanes). Migrations 0061–0065 (all from #53) run host-side with
 - [x] **P0-21 (#52, DS-04:backstops, I078).** Branded `error.tsx` / `global-error.tsx` / `not-found.tsx`; typed action errors with flashes instead of crashes (review detail, recipe, admin Revoke).
 - [x] **P0-22 (#52, DS-02, I149).** Legacy CSS defect pack (CTAs, ghost links, badges, cards, support status badges).
 - [x] **P0-23 (#52, DS-03, I145).** No sideways page scroll on any route at 390 px; wide tables scroll in `TableScroll`; Playwright smoke over every route at 1440 and 390 px (`e2e/`, `pnpm test:e2e`).
-- [x] **P0-24 (integration).** Cross-lane seams reconciled on `phase0/integration`: providers console platform-only end to end (PENDING_EXCEPTIONS empty); one deterministic p34 suite; health check and guide describe F-04 failing mailboxes; handbook claims H-16/H-17/H-18/H-25 rewritten and H-26–H-30 added for the other lanes; one UTC formatter and flash builder; X3 and I115 removed from `e2e/known-issues.json`; seed-demo logs the real target database.
+- [x] **P0-24 (integration).** Cross-lane seams reconciled on `phase0/integration`: providers console platform-only end to end (PENDING_EXCEPTIONS empty); one deterministic p34 suite; health check and guide describe F-04 failing mailboxes; handbook claims H-16/H-17/H-18/H-25 rewritten and H-26–H-31 added for the other lanes (H-31: only a reply to our outreach cancels the remaining follow-ups, flow:F-01); one UTC formatter and flash builder; X3 and I115 removed from `e2e/known-issues.json`; seed-demo logs the real target database.
 
 ### Follow-ups recorded by the lanes (not done)
 

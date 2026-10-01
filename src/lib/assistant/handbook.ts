@@ -118,8 +118,10 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    approval). When one is due it is written by AI and either waits for
    approval on [/communication/follow-ups] (also the Follow-ups tab of
    [/inbox]) or, if you switched approval off, is sent without anyone
-   reviewing it. {H-15} Any inbound message on the thread cancels the
-   remaining follow-ups. Right now follow-ups are NOT scheduled after a
+   reviewing it. {H-15} A reply to your outreach on the thread
+   (including an auto-reply or a delivery report about it) cancels the
+   remaining follow-ups; newsletters and unrelated mail filed on the
+   thread do not. {H-31} Right now follow-ups are NOT scheduled after a
    cold email, so none are sent for cold outreach (see Known
    limitations, I005). {H-14}
 

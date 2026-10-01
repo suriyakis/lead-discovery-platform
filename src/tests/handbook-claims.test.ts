@@ -811,6 +811,114 @@ describe('follow-up service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
       );
     expect(step1!.status).toBe('sent');
   });
+
+  it('[handbook H-31] a reply to our outreach on the thread, auto-reply and delivery report included, cancels the remaining follow-ups; a newsletter or unrelated mail on the thread does not', async () => {
+    const s = await setup();
+    const relevances = ['bulk', 'prospect_reply', 'auto_reply', 'bounce'] as const;
+    const { product, items } = await discover(s, { count: relevances.length });
+    const mailbox = await makeMailbox(s);
+    const provider = new MockMailProvider();
+    await updateFollowUpConfig(ctx(s), { requireApproval: false });
+
+    // One sequence thread per case, each with step 1 due and the inbound
+    // that sync would have filed on it (relevance set by the F-01 gate).
+    const threadOf = new Map<string, bigint>();
+    for (const [i, relevance] of relevances.entries()) {
+      const to = `lead${i}@target.com`;
+      const sent = await sendMessage(ctx(s), {
+        mode: 'sequence',
+        mailboxId: mailbox.id,
+        to: [{ address: to }],
+        subject: `Hi ${i}`,
+        text: 'first touch',
+        providerOverride: provider,
+      });
+      const lead = await ensureQualifiedLead(ctx(s), items[i]!.id, product.id);
+      await updateContact(ctx(s), lead.id, { contactEmail: to });
+      // Thread state is seeded by hand: nothing creates it for a cold send (H-14).
+      await db.insert(outreachThreadState).values({
+        workspaceId: s.workspaceId,
+        qualifiedLeadId: lead.id,
+        threadId: sent.threadId!,
+        stage: 'discovery',
+      });
+      await scheduleFollowUps(ctx(s), { threadId: sent.threadId!, qualifiedLeadId: lead.id });
+      const inbound = (
+        from: string,
+        outreachRelevance: (typeof mailMessages.$inferInsert)['outreachRelevance'],
+      ) => ({
+        workspaceId: s.workspaceId,
+        mailboxId: mailbox.id,
+        threadId: sent.threadId!,
+        messageId: `<${outreachRelevance}-${i}@${from.split('@')[1]}>`,
+        direction: 'inbound' as const,
+        status: 'received' as const,
+        fromAddress: from,
+        toAddresses: ['sales@nulife.pl'],
+        subject: `Re: Hi ${i}`,
+        bodyText: 'thanks',
+        receivedAt: new Date(),
+        outreachRelevance,
+      });
+      await db
+        .insert(mailMessages)
+        .values(
+          relevance === 'bulk'
+            ? [inbound('digest@news.example', 'bulk'), inbound('colleague@nulife.pl', 'unrelated')]
+            : [inbound(to, relevance)],
+        );
+      threadOf.set(relevance, sent.threadId!);
+    }
+    await db
+      .update(outreachFollowUps)
+      .set({ scheduledFor: new Date(Date.now() - 60_000) })
+      .where(
+        and(eq(outreachFollowUps.workspaceId, s.workspaceId), eq(outreachFollowUps.stepNumber, 1)),
+      );
+    _setAIProviderForTests({
+      id: 'stub-ai',
+      model: 'stub-model',
+      async generateText() {
+        return {
+          text: 'Just following up.',
+          model: 'stub',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      async generateJson() {
+        throw new Error('not used');
+      },
+      estimateCost() {
+        return 0;
+      },
+      async healthCheck() {
+        return { ok: true };
+      },
+    });
+
+    const result = await processDueFollowUps(ctx(s), { mailProviderOverride: provider });
+    expect(result.sent).toBe(1);
+
+    const rows = await db
+      .select()
+      .from(outreachFollowUps)
+      .where(eq(outreachFollowUps.workspaceId, s.workspaceId));
+    const on = (relevance: string) => rows.filter((r) => r.threadId === threadOf.get(relevance));
+    // Newsletter + colleague on the thread: step 1 went out, the rest wait.
+    const bulk = on('bulk');
+    expect(bulk.length).toBeGreaterThan(1);
+    expect(bulk.find((r) => r.stepNumber === 1)!.status).toBe('sent');
+    expect(bulk.filter((r) => r.stepNumber > 1).every((r) => r.status === 'pending')).toBe(true);
+    // A reply, an auto-reply or a delivery report: nothing left to send.
+    for (const relevance of ['prospect_reply', 'auto_reply', 'bounce']) {
+      const steps = on(relevance);
+      expect(steps.length, relevance).toBeGreaterThan(1);
+      expect(
+        steps.every((r) => r.status === 'skipped' && r.skipReason === 'replied'),
+        relevance,
+      ).toBe(true);
+    }
+  });
 });
 
 // ---- mail service: mailbox status ----------------------------------
