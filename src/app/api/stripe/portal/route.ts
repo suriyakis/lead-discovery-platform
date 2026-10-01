@@ -7,6 +7,7 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { authErrorToResponse } from '@/lib/services/http';
 import { BillingError, createPortalSession } from '@/lib/services/billing';
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -14,7 +15,14 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
-  const ctx = await getWorkspaceContext();
+  let ctx;
+  try {
+    ctx = await getWorkspaceContext();
+  } catch (err) {
+    const res = authErrorToResponse(err);
+    if (res) return res;
+    throw err;
+  }
   const origin = new URL(req.url).origin;
   try {
     const result = await createPortalSession(ctx, `${origin}/settings/billing`);

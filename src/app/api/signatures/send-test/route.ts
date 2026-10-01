@@ -8,11 +8,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
+import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { authErrorToResponse } from '@/lib/services/http';
 import { db } from '@/lib/db/client';
 import { mailboxes, signatures } from '@/lib/db/schema/mailing';
 import { and, desc, eq } from 'drizzle-orm';
@@ -39,12 +36,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
-    if (err instanceof AuthRequiredError) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-    if (err instanceof NoWorkspaceError) {
-      return NextResponse.json({ error: 'no_workspace' }, { status: 400 });
-    }
+    const res = authErrorToResponse(err);
+    if (res) return res;
     throw err;
   }
 

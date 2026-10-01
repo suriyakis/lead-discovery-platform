@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { authErrorToResponse } from '@/lib/services/http';
 import {
   BillingError,
   createTokenCheckoutSession,
@@ -29,7 +30,14 @@ export async function POST(req: Request): Promise<NextResponse> {
   } catch {
     return NextResponse.json({ error: 'invalid_input' }, { status: 400 });
   }
-  const ctx = await getWorkspaceContext();
+  let ctx;
+  try {
+    ctx = await getWorkspaceContext();
+  } catch (err) {
+    const res = authErrorToResponse(err);
+    if (res) return res;
+    throw err;
+  }
 
   const origin = new URL(req.url).origin;
   try {

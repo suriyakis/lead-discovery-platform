@@ -4,15 +4,21 @@
 // small chat panel. Single-shot request/response against /api/assistant
 // with a short client-held history. [/path] references in answers are
 // rendered as in-app links.
+//
+// On failure (AP-02) the question goes back into the input, the
+// unanswered bubble is removed and a Retry button resends it; the rules
+// live in src/lib/assistant/panel-state.ts.
 
 import { useRef, useState } from 'react';
 import Link from 'next/link';
-import { HelpCircle, Send, X } from 'lucide-react';
-
-interface Turn {
-  role: 'user' | 'assistant';
-  content: string;
-}
+import { HelpCircle, RotateCcw, Send, X } from 'lucide-react';
+import {
+  historyToSend,
+  settleAsk,
+  type AskFailure,
+  type AssistantReplyBody,
+  type Turn,
+} from '@/lib/assistant/panel-state';
 
 /** Render "[/path]" handbook references as links, everything else as text. */
 function AnswerText({ text }: { text: string }) {
@@ -39,42 +45,43 @@ export function AssistantPanel() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<(AskFailure & { question: string }) | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  async function ask() {
-    const question = input.trim();
+  async function ask(retryQuestion?: string) {
+    const question = (retryQuestion ?? input).trim();
     if (!question || busy) return;
+    const prior = turns;
     setBusy(true);
-    setError(null);
-    setInput('');
-    const nextTurns: Turn[] = [...turns, { role: 'user', content: question }];
-    setTurns(nextTurns);
+    setFailure(null);
+    // A Retry leaves anything newly typed in the input alone.
+    if (retryQuestion === undefined || input.trim() === question) setInput('');
+    setTurns([...prior, { role: 'user', content: question }]);
+    let status: number | null = null;
+    let body: AssistantReplyBody | null = null;
     try {
       const res = await fetch('/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, history: turns.slice(-8) }),
+        body: JSON.stringify({ question, history: historyToSend(prior) }),
       });
-      const j = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        answer?: string;
-        detail?: string;
-        error?: string;
-      };
-      if (!res.ok || !j.ok || !j.answer) {
-        setError(j.detail || j.error || `request failed (${res.status})`);
-        return;
-      }
-      setTurns([...nextTurns, { role: 'assistant', content: j.answer }]);
+      status = res.status;
+      body = (await res.json().catch(() => null)) as AssistantReplyBody | null;
+    } catch {
+      status = null; // never reached the server
+    }
+    const outcome = settleAsk(prior, question, status, body);
+    setTurns(outcome.turns);
+    if (outcome.ok) {
       queueMicrotask(() => {
         listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
       });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
+    } else {
+      // Hand the question back unless something new was typed meanwhile.
+      setInput((current) => (current.trim() ? current : outcome.input));
+      setFailure({ ...outcome.failure, question });
     }
+    setBusy(false);
   }
 
   if (!open) {
@@ -185,10 +192,22 @@ export function AssistantPanel() {
           </div>
         ))}
         {busy ? <p className="muted" style={{ margin: 0 }}>Thinking…</p> : null}
-        {error ? (
-          <p className="form-error" style={{ margin: 0, fontSize: '0.82rem' }}>
-            {error}
-          </p>
+        {failure ? (
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <p className="form-error" style={{ margin: 0, fontSize: '0.82rem', flex: 1 }}>
+              {failure.message}
+            </p>
+            {failure.retryable ? (
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => void ask(failure.question)}
+                disabled={busy}
+              >
+                <RotateCcw className="lucide" aria-hidden="true" /> Retry
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
 

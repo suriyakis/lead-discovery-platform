@@ -11,7 +11,17 @@
 
 import { createHash } from 'node:crypto';
 import { GeminiAIProvider } from './gemini';
+import { AIOutputError } from './errors';
+import {
+  reasoningProfile,
+  withOutputFloor,
+  type AIReasoningEffort,
+  type ReasoningVendor,
+} from './model-profiles';
 import type { ZodSchema } from 'zod';
+
+export { AIOutputError, type AIOutputFailureKind } from './errors';
+export type { AIReasoningEffort } from './model-profiles';
 
 export interface AIGenInput {
   /** System prompt + messages, OpenAI-style. */
@@ -29,6 +39,16 @@ export interface AIGenOptions {
   model?: string;
   /** Caller-supplied deterministic seed. Honored by the mock; ignored by real providers. */
   mockSeed?: string;
+  /** Opt-in bounded reasoning for a visible-answer call (AP-02). Each
+   *  adapter maps it through the per-model profile (./model-profiles):
+   *  the vendor's effort knob where the model takes one, plus enough
+   *  output budget that hidden reasoning can't starve the answer. When
+   *  absent, request bodies are exactly what they were before. */
+  reasoning?: AIReasoningEffort;
+  /** Metering only, never sent to a vendor: a platform-support call (a
+   *  super-admin acting inside a tenant). Logged with payload.support =
+   *  true and never debited to the tenant's wallet. */
+  support?: boolean;
 }
 
 export interface AIGenResult {
@@ -148,15 +168,32 @@ export class OpenAIAIProvider implements IAIProvider {
 
   async generateText(input: AIGenInput, options: AIGenOptions = {}): Promise<AIGenResult> {
     const json = await this.callChat(input, options, false);
-    const text = json.choices?.[0]?.message?.content ?? '';
-    return {
-      text,
-      model: json.model ?? this.model,
-      usage: {
-        inputTokens: json.usage?.prompt_tokens ?? 0,
-        outputTokens: json.usage?.completion_tokens ?? 0,
-      },
+    const choice = json.choices?.[0];
+    const text = choice?.message?.content ?? '';
+    const model = json.model ?? this.model;
+    const usage = {
+      inputTokens: json.usage?.prompt_tokens ?? 0,
+      outputTokens: json.usage?.completion_tokens ?? 0,
     };
+    if (!text.trim()) {
+      // A blank answer used to come back as '' and surface downstream as
+      // a mystery (I135). Name the two causes we can see. DeepSeek's
+      // reasoning_content is deliberately ignored — content only.
+      const finish = choice?.finish_reason ?? null;
+      if (choice?.message?.refusal || finish === 'content_filter') {
+        throw new AIOutputError(
+          { kind: 'refusal', provider: this.id, model, stopReason: finish, usage },
+          `${this.id} declined to answer (finish_reason=${finish ?? 'n/a'})`,
+        );
+      }
+      if (finish === 'length') {
+        throw new AIOutputError(
+          { kind: 'empty', provider: this.id, model, stopReason: finish, usage },
+          `${this.id} returned no visible text: the output budget ran out (finish_reason=length)`,
+        );
+      }
+    }
+    return { text, model, usage };
   }
 
   async generateJson<T>(
@@ -205,8 +242,17 @@ export class OpenAIAIProvider implements IAIProvider {
       void result;
       return { ok: true };
     } catch (err) {
+      // A 1-token budget on a reasoning model legitimately comes back
+      // empty — the key and model still answered, which is all this checks.
+      if (err instanceof AIOutputError) return { ok: true };
       return { ok: false, detail: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  /** Which column of the per-model profile table this adapter reads.
+   *  OpenAI-compatible subclasses (DeepSeek) override it. */
+  protected reasoningVendor(): ReasoningVendor {
+    return 'openai';
   }
 
   protected async callChat(
@@ -215,7 +261,10 @@ export class OpenAIAIProvider implements IAIProvider {
     asJson: boolean,
   ): Promise<{
     model?: string;
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      message?: { content?: string | null; refusal?: string | null };
+      finish_reason?: string | null;
+    }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   }> {
     const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
@@ -224,6 +273,13 @@ export class OpenAIAIProvider implements IAIProvider {
 
     const model = options.model ?? this.model;
     const body: Record<string, unknown> = { model, messages };
+    // AP-02: only when the caller opts into `reasoning` does the profile
+    // raise the output budget / add the effort knob; otherwise `profile`
+    // is null and the body below is byte-identical to before.
+    const profile = options.reasoning
+      ? reasoningProfile(this.reasoningVendor(), model)
+      : null;
+    const maxTokens = profile ? withOutputFloor(options.maxTokens, profile) : options.maxTokens;
     // gpt-5 and o-series renamed `max_tokens` → `max_completion_tokens`,
     // and BOTH reject any custom temperature (only the default 1.0 is
     // accepted, returns 400 otherwise). Older chat models still take
@@ -231,11 +287,13 @@ export class OpenAIAIProvider implements IAIProvider {
     const isReasoning = /^o[13]/.test(model);
     const isGpt5 = model.startsWith('gpt-5');
     if (isReasoning || isGpt5) {
-      if (options.maxTokens) body.max_completion_tokens = options.maxTokens;
+      // max_completion_tokens includes the hidden reasoning tokens.
+      if (maxTokens) body.max_completion_tokens = maxTokens;
       // No temperature on these models — API rejects anything ≠ 1.0.
+      if (profile?.effort === 'reasoning_effort') body.reasoning_effort = options.reasoning;
     } else {
       body.temperature = options.temperature ?? 0.4;
-      if (options.maxTokens) body.max_tokens = options.maxTokens;
+      if (maxTokens) body.max_tokens = maxTokens;
     }
     if (asJson) body.response_format = { type: 'json_object' };
 
@@ -295,6 +353,12 @@ export class DeepSeekAIProvider extends OpenAIAIProvider {
     });
   }
 
+  /** v4-pro thinks inside max_tokens (reasoning_content) — the profile
+   *  gives it output headroom when the caller opts into `reasoning`. */
+  protected override reasoningVendor(): ReasoningVendor {
+    return 'deepseek';
+  }
+
   override estimateCost(usage: AIUsage): number {
     // DeepSeek V4 (July 2026), cache-miss rates, $/1M in / out:
     //   v4-flash: $0.14 / $0.28    v4-pro: $0.435 / $0.87
@@ -350,19 +414,35 @@ export class AnthropicAIProvider implements IAIProvider {
 
   async generateText(input: AIGenInput, options: AIGenOptions = {}): Promise<AIGenResult> {
     const json = await this.callMessages(input, options);
-    // content is an array of blocks; concatenate the text-typed ones.
+    // content is an array of blocks; concatenate the text-typed ones
+    // (thinking blocks are skipped).
     const text = (json.content ?? [])
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
       .map((b) => b.text)
       .join('');
-    return {
-      text,
-      model: json.model ?? this.model,
-      usage: {
-        inputTokens: json.usage?.input_tokens ?? 0,
-        outputTokens: json.usage?.output_tokens ?? 0,
-      },
+    const model = json.model ?? this.model;
+    const usage = {
+      inputTokens: json.usage?.input_tokens ?? 0,
+      outputTokens: json.usage?.output_tokens ?? 0,
     };
+    // Safety classifiers can decline with HTTP 200 + stop_reason
+    // 'refusal' — any partial text is not an answer.
+    if (json.stop_reason === 'refusal') {
+      const category = json.stop_details?.category;
+      throw new AIOutputError(
+        { kind: 'refusal', provider: this.id, model, stopReason: 'refusal', usage },
+        `anthropic declined to answer${category ? ` (category=${category})` : ''}`,
+      );
+    }
+    // Only thinking blocks and the cap reached: the budget went to
+    // thinking and there is no visible answer.
+    if (!text.trim() && json.stop_reason === 'max_tokens') {
+      throw new AIOutputError(
+        { kind: 'empty', provider: this.id, model, stopReason: 'max_tokens', usage },
+        'anthropic returned no visible text: max_tokens was reached before the answer',
+      );
+    }
+    return { text, model, usage };
   }
 
   async generateJson<T>(
@@ -407,6 +487,9 @@ export class AnthropicAIProvider implements IAIProvider {
       void result;
       return { ok: true };
     } catch (err) {
+      // 1 token on a thinking model is spent thinking — the key and model
+      // still answered, which is all this checks.
+      if (err instanceof AIOutputError) return { ok: true };
       return { ok: false, detail: err instanceof Error ? err.message : String(err) };
     }
   }
@@ -417,17 +500,23 @@ export class AnthropicAIProvider implements IAIProvider {
   ): Promise<{
     model?: string;
     content?: Array<{ type: string; text?: string }>;
+    stop_reason?: string | null;
+    stop_details?: { category?: string | null } | null;
     usage?: { input_tokens?: number; output_tokens?: number };
   }> {
     const model = String(options.model ?? this.model);
+    // AP-02: null unless the caller opts into `reasoning` — then the body
+    // below is byte-identical to before.
+    const profile = options.reasoning ? reasoningProfile('anthropic', model) : null;
+    // Anthropic's Messages API requires max_tokens. 4096 is a safer
+    // default than 1024 — most callers (drafts, translations,
+    // autofill) want longer-than-1024 output and silent truncation
+    // produces cryptic JSON-parse failures downstream.
+    const requested = options.maxTokens ?? 4096;
     const body: Record<string, unknown> = {
       model,
       messages: [{ role: 'user', content: input.prompt }],
-      // Anthropic's Messages API requires max_tokens. 4096 is a safer
-      // default than 1024 — most callers (drafts, translations,
-      // autofill) want longer-than-1024 output and silent truncation
-      // produces cryptic JSON-parse failures downstream.
-      max_tokens: options.maxTokens ?? 4096,
+      max_tokens: profile ? (withOutputFloor(requested, profile) ?? requested) : requested,
     };
     // Sampling params were REMOVED on Opus 4.7+ / Opus 5 / Sonnet 5 /
     // Fable — sending temperature there returns a 400. Only include it
@@ -435,6 +524,11 @@ export class AnthropicAIProvider implements IAIProvider {
     if (!/(opus-5|opus-4-7|opus-4-8|sonnet-5|fable|mythos)/.test(model)) {
       body.temperature = options.temperature ?? 0.4;
     }
+    // Effort is GA (no beta header) on 4.6+ models; Haiku 4.5 and older
+    // models return a 400 for it. `thinking` is never sent: Sonnet 5.5 /
+    // Opus 5.5 reject {type: 'disabled'} and run adaptive when it is
+    // omitted — the profile's output floor leaves room for that.
+    if (profile?.effort === 'output_config') body.output_config = { effort: options.reasoning };
     if (input.system) body.system = input.system;
 
     const controller = new AbortController();
@@ -478,6 +572,13 @@ export class AnthropicAIProvider implements IAIProvider {
  *
  * Metering is best-effort — a usage-log failure never breaks the AI call
  * that already succeeded.
+ *
+ * AP-02 billing tags (both skip the token debit in services/usage.ts):
+ *   - `support: true` when the caller marks a platform-support call
+ *     (AIGenOptions.support — a super-admin asking inside a tenant);
+ *   - `unbilled: 'empty_output' | 'refusal'` when the vendor answered
+ *     with no usable text (blank result, or a typed AIOutputError). The
+ *     row still records what the vendor billed us, for cost tracking.
  */
 class MeteredAIProvider implements IAIProvider {
   constructor(
@@ -496,8 +597,20 @@ class MeteredAIProvider implements IAIProvider {
   }
 
   async generateText(input: AIGenInput, options?: AIGenOptions): Promise<AIGenResult> {
-    const result = await this.inner.generateText(input, options);
-    await this.record(result.model, result.usage.inputTokens, result.usage.outputTokens);
+    let result: AIGenResult;
+    try {
+      result = await this.inner.generateText(input, options);
+    } catch (err) {
+      await this.recordOutputFailure(err, options);
+      throw err;
+    }
+    const blank = !result.text.trim();
+    await this.record(
+      result.model,
+      result.usage.inputTokens,
+      result.usage.outputTokens,
+      billingTags(options, blank ? 'empty_output' : null),
+    );
     return result;
   }
 
@@ -506,7 +619,13 @@ class MeteredAIProvider implements IAIProvider {
     schema: ZodSchema<T>,
     options?: AIGenOptions,
   ): Promise<T> {
-    const result = await this.inner.generateJson(input, schema, options);
+    let result: T;
+    try {
+      result = await this.inner.generateJson(input, schema, options);
+    } catch (err) {
+      await this.recordOutputFailure(err, options);
+      throw err;
+    }
     const inputTokens = estimateTokens(`${input.system ?? ''}\n${input.prompt}`);
     let outputTokens = 0;
     try {
@@ -514,7 +633,12 @@ class MeteredAIProvider implements IAIProvider {
     } catch {
       outputTokens = 200; // circular/unstringifiable — charge a nominal floor
     }
-    await this.record(options?.model ?? this.inner.model, inputTokens, outputTokens);
+    await this.record(
+      options?.model ?? this.inner.model,
+      inputTokens,
+      outputTokens,
+      billingTags(options, null),
+    );
     return result;
   }
 
@@ -526,10 +650,24 @@ class MeteredAIProvider implements IAIProvider {
     return this.inner.healthCheck();
   }
 
+  /** The vendor answered but produced nothing usable: log what it cost
+   *  us, never debit it. Any other error (network, 4xx/5xx) carries no
+   *  usage and is not recorded, as before. */
+  private async recordOutputFailure(err: unknown, options?: AIGenOptions): Promise<void> {
+    if (!(err instanceof AIOutputError)) return;
+    await this.record(
+      err.model,
+      err.usage.inputTokens,
+      err.usage.outputTokens,
+      billingTags(options, err.kind === 'refusal' ? 'refusal' : 'empty_output'),
+    );
+  }
+
   private async record(
     model: string,
     inputTokens: number,
     outputTokens: number,
+    tags: Record<string, unknown> = {},
   ): Promise<void> {
     try {
       const { recordUsage } = await import('@/lib/services/usage');
@@ -541,7 +679,7 @@ class MeteredAIProvider implements IAIProvider {
           provider: this.inner.id,
           units: BigInt(inputTokens + outputTokens),
           costEstimateCents: Math.ceil(costDollars * 100),
-          payload: { model, inputTokens, outputTokens, keySource: this.keySource },
+          payload: { model, inputTokens, outputTokens, keySource: this.keySource, ...tags },
         },
       );
     } catch (err) {
@@ -551,6 +689,19 @@ class MeteredAIProvider implements IAIProvider {
       );
     }
   }
+}
+
+/** usage_log payload tags that exempt a call from the token debit (see
+ *  maybeDebitForUsage). Empty for an ordinary billable call, so its
+ *  payload is unchanged. */
+function billingTags(
+  options: AIGenOptions | undefined,
+  unbilled: 'empty_output' | 'refusal' | null,
+): Record<string, unknown> {
+  return {
+    ...(options?.support ? { support: true } : {}),
+    ...(unbilled ? { unbilled } : {}),
+  };
 }
 
 function metered(

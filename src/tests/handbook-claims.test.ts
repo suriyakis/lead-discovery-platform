@@ -86,6 +86,10 @@ import {
   updateWorkspaceNativeLanguage,
   updateWorkspaceOutreachLanguage,
 } from '@/lib/services/workspace';
+import { tokenTransactions } from '@/lib/db/schema/tokens';
+import { askAssistant } from '@/lib/services/assistant';
+import { getTokenWallet } from '@/lib/services/token-ledger';
+import { recordUsage } from '@/lib/services/usage';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 const SRC = path.resolve(__dirname, '..');
@@ -1051,5 +1055,64 @@ describe('qualification — geography gate', { timeout: DB_TEST_TIMEOUT_MS }, ()
     await enqueueDraft(ctx(s), { draftId: draft.id, mailboxId: mailbox.id, delayMode: 'immediate' });
     const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
     expect(r.sent).toBe(1);
+  });
+});
+
+describe('assistant (Ask the platform)', { timeout: DB_TEST_TIMEOUT_MS }, () => {
+  it('[handbook H-24] an empty wallet still gets a free built-in answer; platform-admin questions are never charged', async () => {
+    const s = await setup();
+    const calls: Array<{ support?: boolean }> = [];
+    const stub: IAIProvider = {
+      id: 'stub',
+      model: 'stub-1',
+      async generateText(_input, options) {
+        calls.push({ support: options?.support });
+        return { text: 'model answer', model: 'stub-1', usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+      async generateJson() {
+        throw new Error('not used');
+      },
+      estimateCost: () => 0,
+      healthCheck: async () => ({ ok: true }),
+    };
+    _setAIProviderForTests(stub);
+
+    // A platform admin's question is marked as support…
+    const superCtx = makeWorkspaceContext({
+      workspaceId: s.workspaceId,
+      userId: s.adminId,
+      role: 'super_admin',
+    });
+    await askAssistant(superCtx, 'why is nothing sending?');
+    expect(calls).toEqual([{ support: true }]);
+    // …and support usage is never debited, while the same usage is.
+    const before = (await getTokenWallet(ctx(s))).balance;
+    const usage = {
+      kind: 'ai.assistant',
+      provider: 'anthropic',
+      units: 100,
+      costEstimateCents: 2,
+    };
+    await recordUsage(ctx(s), { ...usage, payload: { keySource: 'platform', support: true } });
+    expect((await getTokenWallet(ctx(s))).balance).toBe(before);
+    await recordUsage(ctx(s), { ...usage, payload: { keySource: 'platform' } });
+    expect((await getTokenWallet(ctx(s))).balance).toBeLessThan(before);
+
+    // Empty wallet: the model is not called and nothing is charged.
+    await db.update(workspaces).set({ tokenBalance: 0n }).where(eq(workspaces.id, s.workspaceId));
+    const txBefore = await db
+      .select()
+      .from(tokenTransactions)
+      .where(eq(tokenTransactions.workspaceId, s.workspaceId));
+    const r = await askAssistant(ctx(s), 'why am I getting no leads?');
+    expect(calls).toHaveLength(1);
+    expect(r.source).toBe('deterministic');
+    expect(r.answer).toContain('[/settings/billing]');
+    expect(r.findings).toContain('tokens.empty');
+    const txAfter = await db
+      .select()
+      .from(tokenTransactions)
+      .where(eq(tokenTransactions.workspaceId, s.workspaceId));
+    expect(txAfter).toHaveLength(txBefore.length);
   });
 });

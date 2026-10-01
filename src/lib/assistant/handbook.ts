@@ -210,6 +210,11 @@ every send) on [/mailbox/suppression].
   5,500, Deep Dive €199 → 24,000 tokens.
 - When the wallet is empty, discovery, drafting and translation PAUSE
   until tokens arrive (pack purchase or the next allowance).
+- Questions to this guide are metered AI work too. With an empty wallet
+  the guide still answers — free, from a built-in checklist of what it
+  can see in the workspace, with a link to [/settings/billing] — and
+  questions a platform admin asks inside your workspace are never
+  charged to it. {H-24}
 - Pro only: actions running on your own API keys (BYOK, set under
   [/settings/integrations]) are token-free.
 - Subscriptions and packs are bought on [/settings/billing] (Stripe).
