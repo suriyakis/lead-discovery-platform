@@ -132,6 +132,9 @@ describe('askAssistant', () => {
     );
     expect(prompt).toContain('why am I getting no leads?');
     expect(stub.lastInput!.system).toContain(`guide of ${BRAND_NAME}`);
+    // maxTokens no longer bounds the visible answer on every model (the
+    // per-model output floors), so the prompt asks for brevity itself.
+    expect(stub.lastInput!.system).toMatch(/under\s+about 250 words/);
     expect(stub.lastInput!.system).not.toContain('Lead Discovery Platform');
     // The model reads the handbook without its claim tags.
     expect(prompt).toContain('Known limitations right now');

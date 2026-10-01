@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  HISTORY_TURN_MAX_CHARS,
   PANEL_COPY,
   describeFailure,
   historyToSend,
@@ -126,5 +127,18 @@ describe('historyToSend', () => {
     const sent = historyToSend(many);
     expect(sent).toHaveLength(8);
     expect(sent[0]!.content).toBe('t4');
+  });
+
+  it('clips a long earlier answer so the next question is still accepted', () => {
+    // A 4.6+ model may now answer with more than the old ~3,600
+    // characters; the route used to 400 every later question for it.
+    const long = 'x'.repeat(5000);
+    const sent = historyToSend([
+      { role: 'user', content: 'explain autopilot' },
+      { role: 'assistant', content: long },
+    ]);
+    expect(sent[1]!.content).toHaveLength(HISTORY_TURN_MAX_CHARS);
+    expect(HISTORY_TURN_MAX_CHARS).toBeLessThanOrEqual(2000);
+    expect(sent[0]).toEqual({ role: 'user', content: 'explain autopilot' });
   });
 });

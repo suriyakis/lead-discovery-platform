@@ -36,6 +36,15 @@ export type AskOutcome =
 /** How many prior turns travel with a question (the server keeps 8). */
 export const HISTORY_TURNS_SENT = 8;
 
+/**
+ * Longest prior turn sent back, in characters. Answers are no longer
+ * capped at ~3,600 characters (the per-model output floors raise the
+ * budget), so a long answer must not make every later question fail.
+ * The server reads only the first 500 characters of each turn anyway,
+ * and /api/assistant clips (never rejects) to this same length.
+ */
+export const HISTORY_TURN_MAX_CHARS = 2000;
+
 /** Error codes whose `detail` is written by /api/assistant itself (see
  *  the route header) — safe to show verbatim. Anything else gets generic
  *  copy, so a proxy page or vendor message can never reach the user. */
@@ -55,9 +64,11 @@ export const PANEL_COPY = {
   invalid: "That question couldn't be sent — keep it under 2,000 characters.",
 } as const;
 
-/** The prior turns that travel with the next question. */
+/** The prior turns that travel with the next question, each clipped. */
 export function historyToSend(prior: ReadonlyArray<Turn>): Turn[] {
-  return prior.slice(-HISTORY_TURNS_SENT);
+  return prior
+    .slice(-HISTORY_TURNS_SENT)
+    .map((t) => ({ role: t.role, content: t.content.slice(0, HISTORY_TURN_MAX_CHARS) }));
 }
 
 /**

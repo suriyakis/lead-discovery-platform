@@ -20,6 +20,7 @@ import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { AssistantError, askAssistant } from '@/lib/services/assistant';
 import { authErrorToResponse } from '@/lib/services/http';
 import { rateLimitAllow } from '@/lib/rate-limit';
+import { HISTORY_TURN_MAX_CHARS } from '@/lib/assistant/panel-state';
 
 const InputSchema = z.object({
   question: z.string().min(1).max(2000),
@@ -27,7 +28,10 @@ const InputSchema = z.object({
     .array(
       z.object({
         role: z.enum(['user', 'assistant']),
-        content: z.string().max(4000),
+        // Clipped, never rejected: a long earlier answer must not turn
+        // every later question into a 400 (askAssistant reads only the
+        // first 500 characters of each turn).
+        content: z.string().transform((s) => s.slice(0, HISTORY_TURN_MAX_CHARS)),
       }),
     )
     .max(16)

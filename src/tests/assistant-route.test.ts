@@ -204,6 +204,31 @@ describe('POST /api/assistant', () => {
     expect(body.findings).toContain('tokens.empty');
   });
 
+  it('a 5,000-character earlier answer in the history is clipped, not a 400', async () => {
+    const w = await world();
+    signIn({ id: w.ownerId, role: 'member', accountStatus: 'active' });
+    let prompt = '';
+    const stub = new StubProvider('Short answer.');
+    vi.spyOn(stub, 'generateText').mockImplementation(async (input: AIGenInput) => {
+      prompt = input.prompt;
+      return { text: 'Short answer.', model: 'stub-1', usage: { inputTokens: 1, outputTokens: 1 } };
+    });
+    _setAIProviderForTests(stub);
+    const res = await assistantPOST(
+      post('/api/assistant', {
+        question: 'and the emergency pause?',
+        history: [
+          { role: 'user', content: 'explain autopilot' },
+          { role: 'assistant', content: `START${'y'.repeat(4995)}` },
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).answer).toBe('Short answer.');
+    // The model still sees the start of the long turn (500 characters).
+    expect(prompt).toContain(`Guide: START${'y'.repeat(495)}\n`);
+  });
+
   it('a provider failure is a generic retryable 500 — raw provider text never reaches the user', async () => {
     const w = await world();
     signIn({ id: w.ownerId, role: 'member', accountStatus: 'active' });
