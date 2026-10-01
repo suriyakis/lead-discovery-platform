@@ -10,6 +10,7 @@ import {
 import { TokenError, adjustTokens } from '@/lib/services/token-ledger';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmTokenAdjustButton } from '@/components/ConfirmTokenAdjustButton';
+import { auditRowScopeHint, auditRowScopeLabel } from '@/lib/audit-scope';
 
 export default async function AdminPage({
   searchParams,
@@ -219,7 +220,7 @@ export default async function AdminPage({
               {recentAudit.map((a) => (
                 <li key={a.id.toString()}>
                   <span className="muted">{a.createdAt.toLocaleString()}</span>{' '}
-                  <code>{a.workspaceId === null ? 'platform' : `ws:${a.workspaceId.toString()}`}</code>{' '}
+                  <code title={auditRowScopeHint(a) ?? undefined}>{auditRowScopeLabel(a)}</code>{' '}
                   <strong>{a.kind}</strong>
                   {a.entityType ? ` ${a.entityType}#${a.entityId ?? ''}` : ''}
                   {a.userId ? ` · by ${a.userId.slice(0, 12)}…` : ''}

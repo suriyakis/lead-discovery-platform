@@ -13,11 +13,27 @@ import {
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
+import {
+  auditRowScopeHint,
+  auditRowScopeLabel,
+  type NoWorkspaceOrigin,
+} from '@/lib/audit-scope';
 
 const ALLOWED_LIMITS = [50, 100, 250, 500, 1000] as const;
 
-/** `?workspace=platform` selects rows with workspace_id NULL. */
-const PLATFORM_SCOPE = 'platform';
+/**
+ * Rows with workspace_id NULL come in two kinds (src/lib/audit-scope.ts):
+ * `?workspace=platform` selects the platform-scope events,
+ * `?workspace=deleted` the tenant rows whose workspace was deleted.
+ */
+const NO_WORKSPACE_FILTERS: ReadonlyArray<{
+  value: string;
+  origin: NoWorkspaceOrigin;
+  label: string;
+}> = [
+  { value: 'platform', origin: 'platform', label: 'Platform events (no workspace)' },
+  { value: 'deleted', origin: 'deleted_workspace', label: 'Deleted workspaces (no workspace)' },
+];
 
 export default async function PlatformAuditPage({
   searchParams,
@@ -33,14 +49,14 @@ export default async function PlatformAuditPage({
   const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
 
-  // '' = all, 'platform' = platform-scope rows only (workspace_id NULL),
+  // '' = all, 'platform' / 'deleted' = one kind of workspace_id-NULL row,
   // digits = one workspace.
-  const workspaceFilter: bigint | null | undefined =
-    sp.workspace === PLATFORM_SCOPE
-      ? null
-      : sp.workspace && /^\d+$/.test(sp.workspace)
-        ? BigInt(sp.workspace)
-        : undefined;
+  const noWorkspace = NO_WORKSPACE_FILTERS.find((f) => f.value === sp.workspace);
+  const workspaceFilter: bigint | null | undefined = noWorkspace
+    ? null
+    : sp.workspace && /^\d+$/.test(sp.workspace)
+      ? BigInt(sp.workspace)
+      : undefined;
   const kindFilter = sp.kind?.trim() || undefined;
   const since = parseDateInput(sp.since);
   const until = parseDateInput(sp.until);
@@ -53,6 +69,7 @@ export default async function PlatformAuditPage({
   const [events, kinds, allWorkspaces] = await Promise.all([
     listAuditAcrossWorkspaces(pctx, {
       workspaceId: workspaceFilter,
+      noWorkspaceOrigin: noWorkspace?.origin,
       kind: kindFilter,
       since,
       until,
@@ -82,10 +99,14 @@ export default async function PlatformAuditPage({
       </p>
       <h1>Platform audit log</h1>
       <p className="muted">
-        Audit events across every workspace, plus platform-level events
-        (users, pre-authorisations, platform roles, provider keys and
-        settings) that belong to no workspace. Each row is signed with the
-        actor&apos;s user id.
+        Audit events across every workspace. Rows marked{' '}
+        <code>platform</code> are platform-level events (users,
+        pre-authorisations, platform roles, provider keys and settings,
+        background jobs) filed in no workspace on purpose. Rows marked{' '}
+        <code>no workspace</code> belonged to a workspace that has since been
+        deleted: audit rows outlive their workspace, and the{' '}
+        <code>admin.workspace.delete</code> row names it. Each row is signed
+        with the actor&apos;s user id.
       </p>
 
       <form className="leads-controls" method="get">
@@ -93,12 +114,14 @@ export default async function PlatformAuditPage({
           Workspace
           <select
             name="workspace"
-            defaultValue={
-              workspaceFilter === null ? PLATFORM_SCOPE : (workspaceFilter?.toString() ?? '')
-            }
+            defaultValue={noWorkspace?.value ?? workspaceFilter?.toString() ?? ''}
           >
             <option value="">All</option>
-            <option value={PLATFORM_SCOPE}>Platform (no workspace)</option>
+            {NO_WORKSPACE_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
             {allWorkspaces.map((w) => (
               <option key={w.id.toString()} value={w.id.toString()}>
                 {w.name}
@@ -154,16 +177,15 @@ export default async function PlatformAuditPage({
             {events.map((e) => {
               const u = e.userId ? userById.get(e.userId) : null;
               const w = e.workspaceId ? wsById.get(e.workspaceId.toString()) : null;
+              const scopeHint = auditRowScopeHint(e);
               const payload = e.payload as Record<string, unknown>;
               const hasPayload = Object.keys(payload).length > 0;
               return (
                 <li key={e.id.toString()}>
                   <div>
                     <span className="muted">{e.createdAt.toLocaleString()}</span>{' '}
-                    <code>
-                      {e.workspaceId === null
-                        ? 'platform'
-                        : `ws:${w ? w.name : e.workspaceId.toString()}`}
+                    <code title={scopeHint ?? undefined}>
+                      {auditRowScopeLabel(e, w?.name)}
                     </code>{' '}
                     <strong>{e.kind}</strong>
                     {e.entityType ? (

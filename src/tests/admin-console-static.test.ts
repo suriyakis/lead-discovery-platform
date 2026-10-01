@@ -9,6 +9,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { PLATFORM_AUDIT_KINDS } from '@/lib/audit-scope';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const ADMIN_DIR = path.join(ROOT, 'src', 'app', 'admin');
@@ -123,5 +124,62 @@ describe('platform services cannot fall back to an ambient workspace', () => {
     const src = readFileSync(path.join(ROOT, 'src/lib/services/admin.ts'), 'utf8');
     expect(src).not.toMatch(/import[^;]*\bWorkspaceContext\b[^;]*;/);
     expect(src).not.toMatch(/recordAuditEvent\(\s*ctx\b/);
+  });
+});
+
+describe('platform audit kinds are registered (audit-scope.ts)', () => {
+  // The console labels a workspace_id-NULL row `platform` only when its
+  // kind is in PLATFORM_AUDIT_KINDS; anything else reads as a row orphaned
+  // by a workspace delete. So every kind written at platform scope must be
+  // listed — and written as a literal, so this check can see it. The list
+  // is append-only: rows of a kind no longer written still exist.
+  const SOURCE_DIRS = [path.join(ROOT, 'src'), path.join(ROOT, 'scripts')];
+  const sources = SOURCE_DIRS.flatMap((d) => walk(d))
+    .map((full) => ({
+      rel: path.relative(ROOT, full).split(path.sep).join('/'),
+      // Comments may name the function; only code counts.
+      src: readFileSync(full, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, ''),
+    }))
+    .filter((f) => !f.rel.startsWith('src/tests/'));
+
+  function writtenPlatformKinds(): { kinds: string[]; nonLiteral: string[] } {
+    const kinds: string[] = [];
+    const nonLiteral: string[] = [];
+    for (const f of sources) {
+      // recordPlatformAuditEvent(actor, { kind: '...' })
+      const callRe = /(?<!function )\brecordPlatformAuditEvent\(/g;
+      for (const m of f.src.matchAll(callRe)) {
+        const after = f.src.slice(m.index!, m.index! + 400);
+        const k = /^recordPlatformAuditEvent\(\s*[^,]+,\s*\{\s*kind:\s*'([^']+)'/.exec(after);
+        if (k) kinds.push(k[1]!);
+        else nonLiteral.push(`${f.rel}@${m.index}`);
+      }
+      // Direct inserts at platform scope: insert(auditLog).values({ workspaceId: null, ... kind: '...' })
+      const insertRe =
+        /insert\(auditLog\)\s*\.values\(\{\s*workspaceId:\s*null,[^}]*?kind:\s*'([^']+)'/g;
+      for (const m of f.src.matchAll(insertRe)) kinds.push(m[1]!);
+    }
+    return { kinds, nonLiteral };
+  }
+
+  it('finds the platform-scope writers (sanity check for the scanner)', () => {
+    const { kinds } = writtenPlatformKinds();
+    expect(kinds).toEqual(
+      expect.arrayContaining([
+        'user.set_account_status',
+        'admin.workspace.delete',
+        'admin.audit.refile',
+      ]),
+    );
+  });
+
+  it('every kind written at platform scope is in PLATFORM_AUDIT_KINDS', () => {
+    const { kinds, nonLiteral } = writtenPlatformKinds();
+    expect(nonLiteral, 'recordPlatformAuditEvent needs a literal kind').toEqual([]);
+    const known = new Set<string>(PLATFORM_AUDIT_KINDS);
+    const missing = [...new Set(kinds)].filter((k) => !known.has(k)).sort();
+    expect(missing, 'add these to PLATFORM_AUDIT_KINDS in src/lib/audit-scope.ts').toEqual([]);
   });
 });

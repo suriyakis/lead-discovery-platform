@@ -17,7 +17,13 @@ import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { users } from '@/lib/db/schema/auth';
-import { listAuditEvents } from '@/lib/services/audit';
+import { listAuditEvents, recordAuditEvent } from '@/lib/services/audit';
+import {
+  PLATFORM_AUDIT_KINDS,
+  auditRowOrigin,
+  auditRowScopeHint,
+  auditRowScopeLabel,
+} from '@/lib/audit-scope';
 import {
   AuthRequiredError,
   PlatformAdminRequiredError,
@@ -27,6 +33,8 @@ import {
 import { makeWorkspaceContext } from '@/lib/services/context';
 import {
   adminAddUserToWorkspace,
+  archiveWorkspace,
+  deleteWorkspace,
   listAuditAcrossWorkspaces,
   setBillingExempt,
   setFeatureFlag,
@@ -285,5 +293,78 @@ describe('audit attribution from the console (I051)', () => {
       .from(auditLog)
       .where(inArray(auditLog.kind, ['user.delete']));
     expect(rows).toEqual([]);
+  });
+});
+
+describe('rows with no workspace: platform events vs deleted workspaces', () => {
+  it('the console tells platform events from rows orphaned by a workspace delete', async () => {
+    const s = await setup();
+    mockedAuth.mockResolvedValue(sessionFor(s.superAdmin, 'super_admin'));
+    const pctx = await requirePlatformAdmin();
+
+    // Tenant B's own activity, then a platform event, then B is deleted:
+    // audit_log.workspace_id is ON DELETE SET NULL, so B's rows survive
+    // with workspace_id NULL next to the platform rows.
+    await recordAuditEvent(
+      { workspaceId: s.tenantB, userId: s.ownerB },
+      { kind: 'product.create', entityType: 'product', entityId: 1 },
+    );
+    await setAccountStatus(pctx, s.memberB, 'suspended', 'spam');
+    await archiveWorkspace(pctx, s.tenantB, 'closing');
+    await deleteWorkspace(pctx, s.tenantB);
+    // A live tenant's row must never show up in either no-workspace view.
+    await recordAuditEvent(
+      { workspaceId: s.tenantA, userId: s.ownerA },
+      { kind: 'product.create', entityType: 'product', entityId: 2 },
+    );
+
+    const kindsOf = (rows: Array<{ kind: string }>) => rows.map((r) => r.kind).sort();
+
+    const platform = await listAuditAcrossWorkspaces(pctx, {
+      workspaceId: null,
+      noWorkspaceOrigin: 'platform',
+      limit: 1000,
+    });
+    expect(kindsOf(platform)).toEqual(['admin.workspace.delete', 'user.set_account_status']);
+
+    const orphaned = await listAuditAcrossWorkspaces(pctx, {
+      workspaceId: null,
+      noWorkspaceOrigin: 'deleted_workspace',
+      limit: 1000,
+    });
+    expect(kindsOf(orphaned)).toEqual(['admin.workspace.archive', 'product.create']);
+    expect(orphaned.every((r) => r.workspaceId === null)).toBe(true);
+
+    // workspaceId null alone still returns both kinds of row.
+    const none = await listAuditAcrossWorkspaces(pctx, { workspaceId: null, limit: 1000 });
+    expect(kindsOf(none)).toEqual([...kindsOf(platform), ...kindsOf(orphaned)].sort());
+
+    // The origin narrows only the no-workspace view; with a real workspace
+    // id it is ignored.
+    const tenantA = await listAuditAcrossWorkspaces(pctx, {
+      workspaceId: s.tenantA,
+      noWorkspaceOrigin: 'platform',
+      limit: 1000,
+    });
+    expect(kindsOf(tenantA)).toEqual(['product.create']);
+
+    // Labels: the orphaned rows no longer read as platform events.
+    for (const r of platform) {
+      expect(auditRowOrigin(r)).toBe('platform');
+      expect(auditRowScopeLabel(r)).toBe('platform');
+    }
+    for (const r of orphaned) {
+      expect(auditRowOrigin(r)).toBe('deleted_workspace');
+      expect(auditRowScopeLabel(r)).toBe('no workspace');
+      expect(auditRowScopeHint(r)).toMatch(/workspace was deleted/);
+    }
+    expect(auditRowScopeLabel(tenantA[0]!, 'Tenant A')).toBe('ws:Tenant A');
+    expect(auditRowScopeLabel(tenantA[0]!)).toBe(`ws:${s.tenantA.toString()}`);
+    expect(auditRowScopeHint(tenantA[0]!)).toBeNull();
+  });
+
+  it('every kind the refile script moves to platform scope is a platform kind', () => {
+    const all = PLATFORM_AUDIT_KINDS as readonly string[];
+    for (const k of PLATFORM_SCOPE_KINDS) expect(all).toContain(k);
   });
 });

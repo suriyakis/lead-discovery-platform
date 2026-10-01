@@ -9,7 +9,7 @@
 // scope (workspace_id NULL). Nothing here ever logs into the workspace the
 // admin's switcher happens to point at — PlatformContext has none.
 
-import { and, count, desc, eq, isNull, sql, sum, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNull, notInArray, sql, sum, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users, type User } from '@/lib/db/schema/auth';
 import {
@@ -29,6 +29,7 @@ import {
 } from '@/lib/db/schema/admin';
 import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
 import { isPlatformContext, type PlatformContext } from './platform-context';
+import { PLATFORM_AUDIT_KINDS, type NoWorkspaceOrigin } from '@/lib/audit-scope';
 
 export class AdminServiceError extends Error {
   public readonly code: string;
@@ -1059,9 +1060,14 @@ export async function recentAuditAcrossWorkspaces(
 }
 
 export interface AuditAcrossWorkspacesFilter {
-  /** A workspace id, or `null` for platform-scope rows only (workspace_id
-   *  IS NULL — user lifecycle, platform roles, keys, settings). */
+  /** A workspace id, or `null` for rows with no workspace (workspace_id IS
+   *  NULL). Those are platform-scope events AND tenant rows whose
+   *  workspace was deleted (ON DELETE SET NULL); see src/lib/audit-scope.ts. */
   workspaceId?: bigint | null;
+  /** With `workspaceId: null` only: keep just the platform-scope events
+   *  (kind in PLATFORM_AUDIT_KINDS) or just the rows orphaned by a
+   *  workspace delete (every other kind). Ignored otherwise. */
+  noWorkspaceOrigin?: NoWorkspaceOrigin;
   kind?: string;
   since?: Date;
   until?: Date;
@@ -1076,6 +1082,11 @@ export async function listAuditAcrossWorkspaces(
   const conds: SQL[] = [];
   if (filter.workspaceId === null) {
     conds.push(isNull(auditLog.workspaceId));
+    if (filter.noWorkspaceOrigin === 'platform') {
+      conds.push(inArray(auditLog.kind, [...PLATFORM_AUDIT_KINDS]));
+    } else if (filter.noWorkspaceOrigin === 'deleted_workspace') {
+      conds.push(notInArray(auditLog.kind, [...PLATFORM_AUDIT_KINDS]));
+    }
   } else if (filter.workspaceId !== undefined) {
     conds.push(eq(auditLog.workspaceId, filter.workspaceId));
   }

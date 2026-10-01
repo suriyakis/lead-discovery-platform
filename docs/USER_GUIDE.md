@@ -167,7 +167,12 @@ MinIO, R2 all need path style). For native AWS, leave it false.
 - `/admin/support` — the support inbox across every workspace.
 - `/admin/providers` — platform API keys and default providers/models.
 - `/admin/audit` — the audit log across every workspace. Pick
-  **Platform (no workspace)** to see platform-level events.
+  **Platform events** to see platform-level events (filed in no
+  workspace on purpose), or **Deleted workspaces** to see rows whose
+  workspace was deleted later (audit rows outlive their workspace and
+  lose the pointer; the `admin.workspace.delete` row names the
+  workspace). Rows are labelled `platform` and `no workspace`
+  accordingly.
 
 **Where console actions are logged.** Every action in the console records
 YOUR `user_id`. Where the row is filed depends on what you changed, never
