@@ -50,6 +50,13 @@ export type OutreachLinkedRelevance = Extract<
   'prospect_reply' | 'auto_reply' | 'bounce'
 >;
 
+/** The outreach-linked classes as a list, for inArray() filters. */
+export const OUTREACH_LINKED_RELEVANCE_VALUES: ReadonlyArray<OutreachLinkedRelevance> = [
+  'prospect_reply',
+  'auto_reply',
+  'bounce',
+];
+
 export function isOutreachLinked(
   relevance: string | null | undefined,
 ): relevance is OutreachLinkedRelevance {

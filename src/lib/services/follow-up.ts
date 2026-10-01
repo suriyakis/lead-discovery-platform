@@ -15,7 +15,7 @@
 
 import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { mailMessages, mailThreads, mailboxes } from '@/lib/db/schema/mailing';
+import { mailMessages, mailThreads, mailboxes, type MailMessage } from '@/lib/db/schema/mailing';
 import {
   outreachFollowUps,
   type FollowUpSkipReason,
@@ -35,6 +35,7 @@ import {
 import { sendMessage } from './mail';
 import { isSuppressed } from './suppression';
 import { classifySmtpError } from '@/lib/mail/smtp-errors';
+import { OUTREACH_LINKED_RELEVANCE_VALUES, isOutreachLinked } from '@/lib/mail/relevance';
 import { prepareOutboundDualBody } from './language-resolution';
 import { getWorkspaceNativeLanguage } from './workspace';
 import type { IMailProvider } from '@/lib/mail';
@@ -428,13 +429,43 @@ export async function processDueFollowUps(
   return { checked: due.length, sent, skipped, failed };
 }
 
+/**
+ * flow:F-01: inbound mail that may stand for the recipient's answer on an
+ * outreach thread — outreach-linked relevance (prospect_reply /
+ * auto_reply / bounce) or not assessed yet (NULL: synced before F-01 and
+ * not backfilled; treated as linked so a real reply is never ignored).
+ * Bulk and unrelated mail that subject-fallback threading (I008) put on
+ * the thread is neither a reply nor context for the next step.
+ */
+function outreachLinkedInbound(): SQL {
+  return and(
+    eq(mailMessages.direction, 'inbound'),
+    or(
+      isNull(mailMessages.outreachRelevance),
+      inArray(mailMessages.outreachRelevance, [...OUTREACH_LINKED_RELEVANCE_VALUES]),
+    ),
+  )!;
+}
+
+/** Thread messages a follow-up may build on: our outbound mail and
+ *  outreach-linked (or unassessed) inbound — never bulk / unrelated. */
+function followUpContext(messages: MailMessage[]): MailMessage[] {
+  return messages.filter(
+    (m) =>
+      m.direction !== 'inbound' ||
+      m.outreachRelevance === null ||
+      isOutreachLinked(m.outreachRelevance),
+  );
+}
+
 async function processOne(
   ctx: WorkspaceContext,
   row: OutreachFollowUp,
   deps: ProcessDueFollowUpsDeps = {},
 ): Promise<'sent' | 'skipped'> {
-  // Re-verify: any inbound on this thread? If so, recipient already
-  // replied — cancel the rest of the cascade.
+  // Re-verify: did the recipient answer on this thread? If so, cancel the
+  // rest of the cascade. flow:F-01: only outreach-linked inbound counts —
+  // a newsletter threaded onto the conversation is not a reply.
   const inboundAfter = await db
     .select({ id: mailMessages.id })
     .from(mailMessages)
@@ -442,7 +473,7 @@ async function processOne(
       and(
         eq(mailMessages.workspaceId, ctx.workspaceId),
         eq(mailMessages.threadId, row.threadId),
-        eq(mailMessages.direction, 'inbound'),
+        outreachLinkedInbound(),
       ),
     )
     .limit(1);
@@ -541,17 +572,21 @@ async function processOne(
     return 'skipped';
   }
 
-  // Last outbound message — used for in-reply-to threading.
-  const messages = await db
-    .select()
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, row.threadId),
-      ),
-    )
-    .orderBy(asc(mailMessages.createdAt));
+  // Last message — used for in-reply-to threading. flow:F-01: bulk /
+  // unrelated inbound on the thread is neither threaded onto nor fed to
+  // the AI as conversation history.
+  const messages = followUpContext(
+    await db
+      .select()
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.threadId, row.threadId),
+        ),
+      )
+      .orderBy(asc(mailMessages.createdAt)),
+  );
   if (messages.length === 0) {
     // No prior outbound — schedule was created against an empty
     // thread somehow. Skip rather than send into the void.
@@ -764,16 +799,18 @@ export async function approveFollowUp(
     );
   }
 
-  const messages = await db
-    .select()
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, row.threadId),
-      ),
-    )
-    .orderBy(asc(mailMessages.createdAt));
+  const messages = followUpContext(
+    await db
+      .select()
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.threadId, row.threadId),
+        ),
+      )
+      .orderBy(asc(mailMessages.createdAt)),
+  );
   const lastMessage = messages[messages.length - 1] ?? null;
 
   // Flow A: the staged/edited body is native. Prefer the operator-reviewed

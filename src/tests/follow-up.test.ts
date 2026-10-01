@@ -926,3 +926,176 @@ describe('processDueFollowUps (P58)', () => {
     expect(provider.sent.length).toBeGreaterThanOrEqual(2); // initial + follow-up
   });
 });
+
+// flow:F-01 — only outreach-linked inbound (or unassessed legacy rows) may
+// cancel the cascade or feed the next step; bulk / unrelated mail that
+// subject-fallback threading put on the thread does neither.
+describe('processDueFollowUps — inbound relevance on the thread (flow:F-01)', () => {
+  const NEWSLETTER_BODY = 'WEEKLY-DIGEST-BODY: top 10 offers this week';
+  const COLLEAGUE_BODY = 'COLLEAGUE-BODY: lunch on Friday?';
+
+  function recordingAi(prompts: string[]): IAIProvider {
+    return {
+      id: 'stub-ai',
+      model: 'stub-model',
+      async generateText(req: { prompt?: string; system?: string }) {
+        prompts.push(`${req.system ?? ''}\n${req.prompt ?? ''}`);
+        return {
+          text: 'Polite follow-up body.',
+          model: 'stub',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      async generateJson() {
+        throw new Error('not used');
+      },
+      estimateCost() {
+        return 0;
+      },
+      async healthCheck() {
+        return { ok: true };
+      },
+    } as IAIProvider;
+  }
+
+  /** One outbound to an open lead, step 1 due, auto-send on. */
+  async function dueFollowUp() {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    const mb = await makeMailbox(s);
+    const product = await createProductProfile(c, { name: 'P1' });
+    const ri = await makeReviewItem(s.workspaceA);
+    const provider = new MockMailProvider();
+    const sent = await sendMessage(c, {
+      mode: 'sequence',
+      mailboxId: mb.id,
+      to: [{ address: 'lead@target.com' }],
+      subject: 'Hi',
+      text: 'x',
+      providerOverride: provider,
+    });
+    const [lead] = await db
+      .insert(qualifiedLeads)
+      .values({
+        workspaceId: s.workspaceA,
+        reviewItemId: ri,
+        productProfileId: product.id,
+        state: 'relevant',
+        contactEmail: 'lead@target.com',
+      })
+      .returning();
+    await db.insert(outreachThreadState).values({
+      workspaceId: s.workspaceA,
+      qualifiedLeadId: lead!.id,
+      threadId: sent.threadId!,
+      stage: 'discovery',
+    });
+    await updateFollowUpConfig(c, { requireApproval: false });
+    await scheduleFollowUps(c, { threadId: sent.threadId!, qualifiedLeadId: lead!.id });
+    await db
+      .update(outreachFollowUps)
+      .set({ scheduledFor: new Date(Date.now() - 60_000) })
+      .where(
+        and(
+          eq(outreachFollowUps.workspaceId, s.workspaceA),
+          eq(outreachFollowUps.stepNumber, 1),
+        ),
+      );
+    return { s, c, mb, provider, sent };
+  }
+
+  afterAll(() => _setAIProviderForTests(null));
+
+  it('a bulk or unrelated inbound on the thread neither cancels the follow-up nor reaches the AI', async () => {
+    const { s, c, mb, provider, sent } = await dueFollowUp();
+    await db.insert(mailMessages).values([
+      {
+        workspaceId: s.workspaceA,
+        mailboxId: mb.id,
+        threadId: sent.threadId!,
+        messageId: '<digest-1@news.example>',
+        direction: 'inbound',
+        status: 'received',
+        fromAddress: 'digest@news.example',
+        toAddresses: ['sales@nulife.pl'],
+        subject: 'Re: Hi',
+        bodyText: NEWSLETTER_BODY,
+        receivedAt: new Date(),
+        outreachRelevance: 'bulk',
+      },
+      {
+        workspaceId: s.workspaceA,
+        mailboxId: mb.id,
+        threadId: sent.threadId!,
+        messageId: '<lunch-1@nulife.pl>',
+        direction: 'inbound',
+        status: 'received',
+        fromAddress: 'colleague@nulife.pl',
+        toAddresses: ['sales@nulife.pl'],
+        subject: 'Re: Hi',
+        bodyText: COLLEAGUE_BODY,
+        receivedAt: new Date(),
+        outreachRelevance: 'unrelated',
+      },
+    ]);
+
+    const prompts: string[] = [];
+    _setAIProviderForTests(recordingAi(prompts));
+    const result = await processDueFollowUps(c, { mailProviderOverride: provider });
+    expect(result).toMatchObject({ sent: 1, skipped: 0, failed: 0 });
+
+    const rows = await db
+      .select()
+      .from(outreachFollowUps)
+      .where(eq(outreachFollowUps.workspaceId, s.workspaceA));
+    const step1 = rows.find((r) => r.stepNumber === 1)!;
+    expect(step1.status).toBe('sent');
+    expect(rows.filter((r) => r.stepNumber > 1).every((r) => r.status === 'pending')).toBe(true);
+
+    // The AI saw our outbound, never the newsletter or the colleague.
+    expect(prompts.length).toBeGreaterThan(0);
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain('WEEKLY-DIGEST-BODY');
+      expect(prompt).not.toContain('COLLEAGUE-BODY');
+    }
+    // And the follow-up threads onto our own message, not the newsletter.
+    const [followUp] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.id, step1.sentMessageId!));
+    expect(followUp!.inReplyTo).toBe(sent.messageId);
+  });
+
+  for (const relevance of ['prospect_reply', 'auto_reply', 'bounce'] as const) {
+    it(`a ${relevance} inbound on the thread cancels the cascade`, async () => {
+      const { s, c, mb, provider, sent } = await dueFollowUp();
+      await db.insert(mailMessages).values({
+        workspaceId: s.workspaceA,
+        mailboxId: mb.id,
+        threadId: sent.threadId!,
+        messageId: `<${relevance}-1@target.com>`,
+        direction: 'inbound',
+        status: 'received',
+        fromAddress: 'lead@target.com',
+        toAddresses: ['sales@nulife.pl'],
+        subject: 'Re: Hi',
+        bodyText: 'thanks',
+        receivedAt: new Date(),
+        outreachRelevance: relevance,
+      });
+      _setAIProviderForTests(recordingAi([]));
+      const result = await processDueFollowUps(c, { mailProviderOverride: provider });
+      expect(result.sent).toBe(0);
+      const pending = await db
+        .select()
+        .from(outreachFollowUps)
+        .where(
+          and(
+            eq(outreachFollowUps.workspaceId, s.workspaceA),
+            eq(outreachFollowUps.status, 'pending'),
+          ),
+        );
+      expect(pending).toHaveLength(0);
+    });
+  }
+});
