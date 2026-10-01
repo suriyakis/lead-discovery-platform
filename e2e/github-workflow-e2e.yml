@@ -1,15 +1,40 @@
-# GitHub Actions job for the Playwright smoke test (e2e/smoke.spec.ts).
+# GitHub Actions workflow: the Playwright smoke test (e2e/smoke.spec.ts).
 #
-# NOT a workflow on its own: paste the `e2e:` job below under `jobs:` in
-# .github/workflows/ci.yml. It lives here because the automation token
-# cannot push files under .github/workflows (missing `workflow` scope);
-# the owner adds it by hand.
+# A complete workflow — copy this file unchanged to .github/workflows/e2e.yml.
+# It lives under e2e/ because the automation token cannot push files under
+# .github/workflows (it lacks the `workflow` scope), so the owner adds it by
+# hand.
+#
+# NOT YET EXECUTED IN GITHUB ACTIONS. The same steps were run locally
+# (pgvector container, this env block, migrate + seed, `pnpm build`,
+# `pnpm start`, `pnpm test:e2e` with CI=true) — see the PR description for
+# the result. The first Actions run is still the real test of this file.
 #
 # What it does: Postgres with pgvector as a service, migrate + seed the
 # throwaway lead_e2e database with scripts/seed-demo.ts, production build,
-# `next start` on :3200, then every route at 1440px and 390px. Background
-# jobs are off and every provider is the mock, so no secrets are needed —
-# the values below are CI-only placeholders, not credentials.
+# `next start` on :3200, then every route at 1440px and 390px plus the
+# branded 404 / error-page checks. Background jobs are off and every
+# provider is the mock, so no secrets are needed — the values below are
+# CI-only placeholders, not credentials.
+#
+# `next start` logs a warning because next.config.ts sets
+# output: 'standalone' (the production Dockerfile runs
+# .next/standalone/server.js instead); it still serves the whole app.
+
+name: e2e smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e:
@@ -57,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
 
       - uses: actions/setup-node@v4
         with:
