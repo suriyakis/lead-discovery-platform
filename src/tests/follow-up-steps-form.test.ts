@@ -137,6 +137,18 @@ describe('parseFollowUpForm', () => {
     expect(!r.ok && r.error).toMatch(/at least one follow-up step.*Follow-ups enabled/);
   });
 
+  it('refuses it with the switch already off too, without promising that switching off helps', () => {
+    const r = parseFollowUpForm(
+      cardForm(asCards(FOUR_STEPS), { remove: [0, 1, 2, 3], enabled: false }),
+    );
+
+    expect(r.ok).toBe(false);
+    // The old text ended "switch ... off instead", which an operator who
+    // had already switched it off could not act on.
+    expect(!r.ok && r.error).not.toMatch(/instead/);
+    expect(!r.ok && r.error).toMatch(/even while "Follow-ups enabled" is off.*keep a step/);
+  });
+
   it('refuses more than ten steps', () => {
     const ten = Array.from({ length: 10 }, () => ({ days: '7' }));
 

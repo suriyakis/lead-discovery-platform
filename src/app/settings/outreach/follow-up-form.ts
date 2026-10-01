@@ -79,11 +79,16 @@ export function parseFollowUpForm(formData: FormData): FollowUpFormResult {
     });
   }
 
+  // The schedule always keeps at least one step (the follow-up service
+  // and engine rely on it), whether or not follow-ups are switched on.
+  // The message must not suggest that switching off would let this save
+  // through: it is refused either way.
   if (steps.length === 0) {
     return {
       ok: false,
       error:
-        'Keep at least one follow-up step. To stop follow-ups, switch "Follow-ups enabled" off instead.',
+        'Keep at least one follow-up step: the schedule always has one, even while "Follow-ups enabled" is off. ' +
+        'To stop follow-ups, switch "Follow-ups enabled" off and keep a step.',
     };
   }
   if (steps.length > FOLLOW_UP_MAX_STEPS) {
