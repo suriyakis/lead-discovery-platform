@@ -116,6 +116,7 @@ Local-filesystem implementation now; S3-compatible (Hetzner Object Storage / B2 
 - Services live under `src/lib/services/<module>/`. They take a typed `WorkspaceContext` as first arg.
 - Validation: Zod schemas at the API boundary. The service layer trusts its inputs (it has been validated and authorized).
 - Errors: services throw typed errors (e.g., `WorkspaceAccessDenied`, `ProductProfileNotFound`); route handlers translate them into HTTP responses.
+- Server (form) actions translate the same typed errors into a readable `?error=` / `?message=` flash with `describeActionError(err, [XxxServiceError, …])` from `src/lib/action-errors.ts`, which rethrows Next redirect/notFound throws and anything not listed. Each action decides what `not_found` / `conflict` mean for it (a repeated "end session" is a success; "connector inactive" is not). Unexpected errors fall through to the branded `src/app/error.tsx` (root-layout failures to `global-error.tsx`; unknown URLs and `notFound()` to `not-found.tsx`). Prefer module-scope actions in a `'use server'` file bound with `.bind(null, id)` — they are testable and cannot close over page-local helpers.
 
 ## Auth + session
 

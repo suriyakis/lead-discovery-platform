@@ -5,6 +5,10 @@ import { defineConfig } from 'vitest/config';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  // tsconfig says jsx: "preserve" (Next compiles JSX itself); esbuild would
+  // fall back to the classic React.createElement transform. Use the
+  // automatic runtime so tests can render .tsx components directly.
+  esbuild: { jsx: 'automatic' },
   test: {
     environment: 'node',
     globals: false,

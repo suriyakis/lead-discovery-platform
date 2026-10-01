@@ -2,44 +2,49 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
+import { flashText } from '@/lib/action-errors';
 import {
+  AccountInactiveError,
   AuthRequiredError,
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { canAdminWorkspace } from '@/lib/services/context';
-import {
-  ReviewServiceError,
-  approveReviewItem,
-  archiveReviewItem,
-  commentOnReviewItem,
-  flagForReview,
-  getReviewItem,
-  ignoreReviewItem,
-  rejectReviewItem,
-} from '@/lib/services/review';
+import { canAdminWorkspace, canWrite } from '@/lib/services/context';
+import { ReviewServiceError, getReviewItem } from '@/lib/services/review';
 import { listQualificationsForRecord } from '@/lib/services/qualification';
+import { activeDraftFor } from '@/lib/services/outreach';
 import {
-  activeDraftFor,
-  generateOutreachDraft,
-} from '@/lib/services/outreach';
+  approveReviewItemAction,
+  archiveReviewItemAction,
+  commentOnReviewItemAction,
+  flagReviewItemAction,
+  generateDraftAction,
+  ignoreReviewItemAction,
+  rejectReviewItemAction,
+} from './actions';
 
 export default async function ReviewDetail({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ message?: string | string[]; error?: string | string[] }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
   const { id: idStr } = await params;
   if (!/^\d+$/.test(idStr)) redirect('/review');
   const id = BigInt(idStr);
+  const sp = await searchParams;
+  const flashMessage = flashText(sp.message);
+  const flashError = flashText(sp.error);
 
   let ctx;
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
+    if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/review');
     throw err;
   }
@@ -71,61 +76,20 @@ export default async function ReviewDetail({
   const url = (normalized.url as string | undefined) ?? sourceRecord.sourceUrl;
   const domain = normalized.domain as string | undefined;
 
-  // ---- server actions ----
-  async function approve(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const reason = String(formData.get('reason') ?? '').trim() || null;
-    await approveReviewItem(c, id, reason);
-    redirect(`/review/${id}`);
-  }
-  async function reject(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const reason = String(formData.get('reason') ?? '').trim() || null;
-    await rejectReviewItem(c, id, reason);
-    redirect(`/review/${id}`);
-  }
-  async function ignore() {
-    'use server';
-    const c = await getWorkspaceContext();
-    await ignoreReviewItem(c, id);
-    redirect(`/review/${id}`);
-  }
-  async function flag() {
-    'use server';
-    const c = await getWorkspaceContext();
-    await flagForReview(c, id);
-    redirect(`/review/${id}`);
-  }
-  async function archive() {
-    'use server';
-    const c = await getWorkspaceContext();
-    await archiveReviewItem(c, id);
-    redirect('/review');
-  }
-  async function postComment(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const text = String(formData.get('comment') ?? '').trim();
-    if (!text) return;
-    await commentOnReviewItem(c, id, text);
-    redirect(`/review/${id}`);
-  }
-  async function generateDraft(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const productIdRaw = String(formData.get('productId') ?? '');
-    if (!/^\d+$/.test(productIdRaw)) return;
-    const methodRaw = String(formData.get('method') ?? 'rules');
-    const method = (methodRaw === 'ai' || methodRaw === 'hybrid' ? methodRaw : 'rules');
-    const created = await generateOutreachDraft(c, {
-      reviewItemId: id,
-      productProfileId: BigInt(productIdRaw),
-      method,
-    });
-    redirect(`/drafts/${created.id}`);
-  }
+  // ---- server actions (./actions.ts, bound to this item's id) ----
+  const itemKey = id.toString();
+  const approve = approveReviewItemAction.bind(null, itemKey);
+  const reject = rejectReviewItemAction.bind(null, itemKey);
+  const ignore = ignoreReviewItemAction.bind(null, itemKey);
+  const flag = flagReviewItemAction.bind(null, itemKey);
+  const archive = archiveReviewItemAction.bind(null, itemKey);
+  const postComment = commentOnReviewItemAction.bind(null, itemKey);
+  const generateDraft = generateDraftAction.bind(null, itemKey);
+
+  // Viewers can read everything here, but they don't get buttons that
+  // can only fail for them (the services refuse !canWrite).
+  const canEdit = canWrite(ctx);
+  const isArchived = item.state === 'archived';
 
   return (
     <AppShell>
@@ -137,6 +101,21 @@ export default async function ReviewDetail({
         <p>
           <span className="badge">{item.state}</span>
         </p>
+
+        {flashMessage || flashError ? (
+          <div className="flash-stack">
+            {flashMessage ? (
+              <p className="mail-flash info" role="status">
+                {flashMessage}
+              </p>
+            ) : null}
+            {flashError ? (
+              <p className="mail-flash error" role="alert">
+                {flashError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         <section>
           <h2>Source</h2>
@@ -271,7 +250,7 @@ export default async function ReviewDetail({
                           Open draft →
                         </Link>
                       ) : null}
-                      {item.state !== 'archived' ? (
+                      {canEdit && !isArchived ? (
                         <form action={generateDraft} className="generate-draft-form">
                           <input type="hidden" name="productId" value={product.id.toString()} />
                           <select name="method" defaultValue="rules">
@@ -294,7 +273,17 @@ export default async function ReviewDetail({
           )}
         </section>
 
-        {item.state !== 'archived' ? (
+        {!isArchived && !canEdit ? (
+          <section>
+            <h2>Actions</h2>
+            <p className="muted">
+              Read-only — your role in this workspace can view review items but not
+              approve, reject, comment on or draft outreach for them.
+            </p>
+          </section>
+        ) : null}
+
+        {!isArchived && canEdit ? (
           <section>
             <h2>Actions</h2>
             <div className="action-row">
@@ -361,7 +350,7 @@ export default async function ReviewDetail({
             </ul>
           )}
 
-          {item.state !== 'archived' ? (
+          {canEdit && !isArchived ? (
             <form action={postComment} className="comment-form">
               <label>
                 <span>Add comment</span>

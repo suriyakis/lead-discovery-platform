@@ -7280,3 +7280,88 @@ button.primary-btn {
   );
   transition: width 0.4s ease;
 }
+
+/* ---- Status pages: error.tsx, global-error.tsx, not-found.tsx ----
+   One centred card on the brand background. The error variant swaps the
+   teal eyebrow for the "rejected" status colour; nothing else differs. */
+.status-page {
+  display: grid;
+  place-items: center;
+  max-width: none;
+  min-height: calc(100vh - 4rem);
+  padding: 3rem 1.5rem;
+}
+
+.status-card {
+  width: 100%;
+  max-width: 34rem;
+  padding: 2rem 2rem 1.75rem;
+  background: var(--brand-card);
+  border: 1px solid var(--brand-border);
+  border-radius: 0.75rem;
+  box-shadow: var(--brand-shadow);
+}
+
+.status-eyebrow {
+  margin: 0 0 0.5rem;
+  font-family: var(--brand-mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--brand-accent-teal);
+}
+
+.status-card-error .status-eyebrow {
+  color: var(--brand-status-rejected);
+}
+
+.status-card h1 {
+  margin: 0 0 0.75rem;
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.status-lede {
+  margin: 0 0 1.25rem;
+  color: var(--brand-muted);
+}
+
+.status-ref {
+  margin: 0 0 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--brand-muted);
+  overflow-wrap: anywhere;
+}
+
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+}
+
+.status-actions button:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+@media (max-width: 480px) {
+  .status-page {
+    padding: 1.5rem 1rem;
+    place-items: start center;
+  }
+
+  .status-card {
+    padding: 1.5rem 1.25rem;
+  }
+}
+
+/* Stacked ?message= / ?error= flashes above page content. */
+.flash-stack {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0 0 1.25rem;
+}
