@@ -1728,7 +1728,10 @@ async function holdClaimedEntry(
  * its geo gate wasn't satisfied:
  *
  *   mismatch              → always blocked
- *   unverified            → blocked unless the review item is human-approved
+ *   unverified            → blocked unless the review item is approved AND a
+ *                            person confirmed the location (KL-02 geo
+ *                            confirmation on the product, or a person's
+ *                            name on the approval — not autopilot's)
  *   match / no_gate       → allowed
  *   chain unresolvable    → allowed (one-off sends have no qualification;
  *                            blocking them would break manual mail)
@@ -1742,7 +1745,9 @@ async function checkGeoAtSendTime(
       geoStatus: qualifications.geoStatus,
       targetCountry: qualifications.targetCountry,
       inferredCountry: qualifications.inferredCountry,
+      geoConfirmedAt: qualifications.geoConfirmedAt,
       reviewState: reviewItems.state,
+      approvedByUserId: reviewItems.approvedByUserId,
     })
     .from(outreachDrafts)
     .innerJoin(reviewItems, eq(reviewItems.id, outreachDrafts.reviewItemId))
@@ -1773,7 +1778,11 @@ async function checkGeoAtSendTime(
         `recipe targets ${q.targetCountry ?? 'unknown'}`,
     };
   }
-  if (q.geoStatus === 'unverified' && q.reviewState !== 'approved') {
+  // Still approved, and by a person: an autopilot approval
+  // (approvedByUserId NULL, KL-02) confirms nothing.
+  const humanConfirmed =
+    q.reviewState === 'approved' && (q.geoConfirmedAt !== null || q.approvedByUserId !== null);
+  if (q.geoStatus === 'unverified' && !humanConfirmed) {
     return {
       allowed: false,
       reason:

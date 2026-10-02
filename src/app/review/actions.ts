@@ -12,6 +12,7 @@ import {
   bulkDeleteReviewItems,
 } from '@/lib/services/review';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { parseDecisionKey } from '@/lib/services/learning-decisions';
 
 function parseIds(formData: FormData): bigint[] {
   const ids: bigint[] = [];
@@ -51,7 +52,9 @@ export async function bulkArchiveAction(formData: FormData): Promise<void> {
     redirect(returnTo(formData, { error: 'Select at least one item.' }));
   }
   try {
-    const r = await bulkArchiveReviewItems(ctx, ids);
+    const r = await bulkArchiveReviewItems(ctx, ids, {
+      decisionKey: parseDecisionKey(formData.get('decisionKey')),
+    });
     redirect(
       returnTo(formData, {
         message: `Archived ${r.archived} of ${r.requested} item(s).`,
@@ -80,9 +83,13 @@ export async function bulkDeleteAction(formData: FormData): Promise<void> {
   }
   try {
     const r = await bulkDeleteReviewItems(ctx, ids);
+    const kept =
+      r.kept.length > 0
+        ? ` Kept ${r.kept.length} with recorded decisions or comments — archive ${r.kept.length === 1 ? 'it' : 'them'} instead.`
+        : '';
     redirect(
       returnTo(formData, {
-        message: `Deleted ${r.deleted} of ${r.requested} item(s).`,
+        message: `Deleted ${r.deleted} of ${r.requested} item(s).${kept}`,
       }),
     );
   } catch (err) {

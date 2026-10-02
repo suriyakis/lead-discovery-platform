@@ -61,6 +61,7 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import {
@@ -803,9 +804,12 @@ function reachesApprovalThreshold(policy: AutomationPolicy): SQL | undefined {
  * item, in SQL, so the per-run cap only counts items autopilot acts on: the
  * item is still 'new', the qualification relevant, its product active and
  * running the step (not switched off or paused, autopilot not off for it)
- * and the score reaches that product's threshold.
+ * and the score reaches that product's threshold. KL-02: and no operator
+ * verdict on ANY product of the record — a person already decided, and
+ * autopilot never second-guesses them.
  */
 function autoApproveEligible(ctx: WorkspaceContext, policy: AutomationPolicy): SQL | undefined {
+  const decided = alias(qualifications, 'q_decided');
   return and(
     eq(reviewItems.workspaceId, ctx.workspaceId),
     eq(reviewItems.state, 'new'),
@@ -813,6 +817,18 @@ function autoApproveEligible(ctx: WorkspaceContext, policy: AutomationPolicy): S
     productIsActive(),
     excludeProducts(policy, 'auto_approve_projects', qualifications.productProfileId),
     reachesApprovalThreshold(policy),
+    notExists(
+      db
+        .select({ one: sql`1` })
+        .from(decided)
+        .where(
+          and(
+            eq(decided.workspaceId, reviewItems.workspaceId),
+            eq(decided.sourceRecordId, reviewItems.sourceRecordId),
+            isNotNull(decided.operatorVerdict),
+          ),
+        ),
+    ),
   );
 }
 
@@ -961,6 +977,9 @@ function enqueuePairs(
     eq(reviewItems.workspaceId, ctx.workspaceId),
     eq(reviewItems.state, 'approved'),
     eq(qualifications.isRelevant, true),
+    // KL-02: a pair the operator marked Not a fit is never drafted (an
+    // approved item can carry mixed verdicts).
+    or(isNull(qualifications.operatorVerdict), eq(qualifications.operatorVerdict, 'fit')),
     productIsActive(),
     excludeProducts(policy, 'auto_enqueue_outreach', qualifications.productProfileId),
     notExists(

@@ -10,6 +10,7 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace, canWrite } from '@/lib/services/context';
+import { newDecisionKey } from '@/lib/services/learning-decisions';
 import { ReviewServiceError, getReviewItem } from '@/lib/services/review';
 import { listQualificationsForRecord } from '@/lib/services/qualification';
 import { activeDraftFor } from '@/lib/services/outreach';
@@ -90,6 +91,10 @@ export default async function ReviewDetail({
   // can only fail for them (the services refuse !canWrite).
   const canEdit = canWrite(ctx);
   const isArchived = item.state === 'archived';
+  // One nonce per decision control (KL-02): a double submit, or a resubmit
+  // after Back, records the decision once. Each render gets fresh ones, so a
+  // deliberate second decision is a new decision.
+  const decisionKey = () => <input type="hidden" name="decisionKey" value={newDecisionKey()} />;
 
   return (
     <AppShell>
@@ -181,6 +186,12 @@ export default async function ReviewDetail({
                       </span>
                       <span className="muted">conf {qualification.confidence}</span>
                       <span className="muted">via {qualification.method}</span>
+                      {qualification.operatorVerdict === 'fit' ? (
+                        <span className="badge badge-good">marked Fit</span>
+                      ) : null}
+                      {qualification.operatorVerdict === 'not_fit' ? (
+                        <span className="badge badge-bad">marked Not a fit</span>
+                      ) : null}
                       {qualification.geoStatus === 'match' ? (
                         <span className="badge badge-good">
                           geo ✓ {qualification.inferredCountry}
@@ -250,7 +261,13 @@ export default async function ReviewDetail({
                           Open draft →
                         </Link>
                       ) : null}
-                      {canEdit && !isArchived ? (
+                      {qualification.operatorVerdict === 'not_fit' ? (
+                        <p className="muted">
+                          Marked Not a fit for {product.name}: no draft, no pipeline lead
+                          and no autopilot outreach for this product.
+                        </p>
+                      ) : null}
+                      {canEdit && !isArchived && qualification.operatorVerdict !== 'not_fit' ? (
                         <form action={generateDraft} className="generate-draft-form">
                           <input type="hidden" name="productId" value={product.id.toString()} />
                           <select name="method" defaultValue="rules">
@@ -288,6 +305,7 @@ export default async function ReviewDetail({
             <h2>Actions</h2>
             <div className="action-row">
               <form action={ignore}>
+                {decisionKey()}
                 <button type="submit">Ignore</button>
               </form>
               <form action={flag}>
@@ -295,6 +313,7 @@ export default async function ReviewDetail({
               </form>
               {canAdminWorkspace(ctx) ? (
                 <form action={archive}>
+                  {decisionKey()}
                   <button type="submit" className="ghost-btn">
                     Archive
                   </button>
@@ -303,6 +322,7 @@ export default async function ReviewDetail({
             </div>
 
             <form action={approve} className="approve-form">
+              {decisionKey()}
               <label>
                 <span>Approve — why does this fit? (optional, teaches the knowledge base)</span>
                 <input
@@ -316,6 +336,7 @@ export default async function ReviewDetail({
             </form>
 
             <form action={reject} className="reject-form">
+              {decisionKey()}
               <label>
                 <span>Reject — why doesn&apos;t this fit? (teaches the knowledge base)</span>
                 <input
@@ -352,6 +373,7 @@ export default async function ReviewDetail({
 
           {canEdit && !isArchived ? (
             <form action={postComment} className="comment-form">
+              {decisionKey()}
               <label>
                 <span>Add comment</span>
                 <textarea

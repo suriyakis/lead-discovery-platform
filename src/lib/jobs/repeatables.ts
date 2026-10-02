@@ -29,6 +29,16 @@
 //                                           delete log rows past their
 //                                           retention window
 //                                           (services/retention.ts)
+//   learning.sweep          every 2 min  → KL-03: the learning outbox's
+//                                           sweeper (stale claims, lost jobs,
+//                                           backoff retries, events waiting
+//                                           for tokens or a hold, missed
+//                                           compensations) — runLearningSweep
+//   knowledge.index.sweep   every 2 min  → KL-06: the indexing outbox's
+//                                           sweeper (runs older than 15 min
+//                                           → failed + notified, due retries
+//                                           and lost jobs re-enqueued) —
+//                                           runKnowledgeIndexSweep
 //
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
@@ -45,9 +55,11 @@
 // one (replies keep arriving while paused), and each tick's service
 // re-checks the gate before every item it works on (a queue row, a
 // follow-up, a recipe, a mailbox), so a pause committed mid-tick stops it
-// at the next item. The two ops ticks (reaper, retention) are platform
-// maintenance: they send, spend and start nothing, so no pause or hold
-// gates them.
+// at the next item. The ops ticks (reaper, retention) and the two outbox
+// sweepers (learning, knowledge indexing) are platform maintenance
+// (MAINTENANCE_TICKS): they send nothing and start no new work — the
+// learning job they re-drive asks the automation gate before any AI call
+// (learning-processor.ts learningGate) — so no pause or hold gates them.
 //
 // PC-13: every automation tick iterates workspacesForTick() — the same
 // workspaces, each with its resolved automation policy
@@ -89,6 +101,8 @@ import { processDueCrawlPlans } from '@/lib/services/crawl-engine';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
+import { runLearningSweep } from '@/lib/services/learning-processor';
+import { runKnowledgeIndexSweep } from '@/lib/services/knowledge-indexing';
 import { processDueHealthChecks } from '@/lib/services/health-check';
 import {
   listWorkspacesWithStuckWork,
@@ -698,6 +712,13 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
  */
 const handleRetentionTick: InstrumentedHandler = () => runRetentionTick();
 
+/** KL-03: per-workspace errors are caught inside runLearningSweep
+ *  (workspacesFailed in the heartbeat summary). */
+const handleLearningSweepTick: InstrumentedHandler = () => runLearningSweep();
+
+/** KL-06: per-workspace errors are caught inside runKnowledgeIndexSweep. */
+const handleKnowledgeIndexSweepTick: InstrumentedHandler = () => runKnowledgeIndexSweep();
+
 const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
   'autopilot.tick': handleAutopilotTick,
   'outreach.drain.tick': handleDrainTick,
@@ -709,6 +730,8 @@ const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
   'health.check.tick': handleHealthCheckTick,
   'ops.reaper.tick': handleStuckWorkTick,
   'ops.retention.tick': handleRetentionTick,
+  'learning.sweep': handleLearningSweepTick,
+  'knowledge.index.sweep': handleKnowledgeIndexSweepTick,
 };
 
 /** Platform incident raised when startup could not schedule the ticks. */

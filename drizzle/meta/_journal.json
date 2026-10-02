@@ -512,6 +512,13 @@
       "when": 1790930491574,
       "tag": "0072_p1_ops_visibility_log_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1790932921515,
+      "tag": "0073_p1_knowledge_foundation_learning_knowledge",
+      "breakpoints": true
     }
   ]
 }

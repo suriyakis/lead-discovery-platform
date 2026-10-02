@@ -14,6 +14,10 @@ import {
 } from '@/lib/services/knowledge-sources';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import type { KnowledgeSourceKind } from '@/lib/db/schema/documents';
+import { sourcesWithActiveIndexRuns } from '@/lib/services/knowledge-indexing';
+import { AutoRefresh } from '@/components/AutoRefresh';
+import { ScopeChip } from './scope-chip';
+import { IndexStatusBadge, indexStatusMoving } from './index-status';
 
 const KIND_FILTERS: ReadonlyArray<{ key: 'all' | KnowledgeSourceKind; label: string }> = [
   { key: 'all', label: 'All' },
@@ -25,7 +29,7 @@ const KIND_FILTERS: ReadonlyArray<{ key: 'all' | KnowledgeSourceKind; label: str
 export default async function KnowledgePage({
   searchParams,
 }: {
-  searchParams: Promise<{ kind?: string; product?: string }>;
+  searchParams: Promise<{ kind?: string; product?: string; message?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -39,15 +43,20 @@ export default async function KnowledgePage({
     sp.product && /^\d+$/.test(sp.product) ? BigInt(sp.product) : null;
 
   let products: ProductProfile[] = [];
+  let productNames = new Map<string, string>();
   let sources: KnowledgeSourceRow[] = [];
+  let activeRuns = new Set<string>();
   try {
     const ctx = await getWorkspaceContext();
-    products = await listProductProfiles(ctx, { includeArchived: false });
+    const allProducts = await listProductProfiles(ctx, { includeArchived: true });
+    productNames = new Map(allProducts.map((p) => [p.id.toString(), p.name]));
+    products = allProducts.filter((p) => p.active);
     sources = await listKnowledgeSources(ctx, {
       kind: kindKey === 'all' ? undefined : (kindKey as KnowledgeSourceKind),
       productProfileId: productFilter ?? undefined,
       limit: 200,
     });
+    activeRuns = await sourcesWithActiveIndexRuns(ctx);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof NoWorkspaceError) {
@@ -74,9 +83,11 @@ export default async function KnowledgePage({
         </div>
         <p className="muted">
           Things this workspace knows about its products and sectors —
-          documents, reference URLs, distilled snippets. Future RAG phases
-          chunk and embed these for AI grounding.
+          documents, reference URLs, distilled snippets. Each one is chunked
+          and embedded in the background; drafts and replies quote the
+          indexed passages.
         </p>
+        {sp.message ? <p className="form-info">{sp.message}</p> : null}
 
         <form className="leads-controls" method="get">
           <label>
@@ -111,11 +122,13 @@ export default async function KnowledgePage({
             </p>
           ) : (
             <ul className="lead-list">
-              {sources.map(({ source, document }) => (
+              {sources.map(({ source, document, scope }) => (
                 <li key={source.id.toString()}>
                   <div className="lead-row">
                     <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
                     <span className="badge">{source.kind}</span>
+                    <ScopeChip scope={scope} productNames={productNames} />
+                    <IndexStatusBadge status={source.indexStatus} />
                   </div>
                   {source.summary ? <p className="muted">{source.summary}</p> : null}
                   <div className="lead-meta">
@@ -136,6 +149,11 @@ export default async function KnowledgePage({
               ))}
             </ul>
           )}
+          {sources.some(({ source }) =>
+            indexStatusMoving(source.indexStatus, activeRuns.has(source.id.toString())),
+          ) ? (
+            <AutoRefresh reason="knowledge-index" />
+          ) : null}
         </section>
       </AppShell>
   );

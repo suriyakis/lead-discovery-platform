@@ -16,6 +16,16 @@ import {
   type WorkspaceRole,
   makeWorkspaceContext,
 } from '@/lib/services/context';
+import {
+  LEARNING_PROCESS_JOB,
+  LearningProcessPayloadSchema,
+} from '@/lib/services/learning-decisions';
+import { processDecision } from '@/lib/services/learning-processor';
+import {
+  KNOWLEDGE_INDEX_JOB,
+  KnowledgeIndexPayloadSchema,
+} from '@/lib/services/knowledge-index-queue';
+import { runKnowledgeIndexJob, summarizeIndexOutcome } from '@/lib/services/knowledge-indexing';
 
 export interface ConnectorRunJobPayload {
   runId: string;
@@ -50,20 +60,74 @@ const handleConnectorRun: JobHandler<ConnectorRunJobPayload> = async (payload) =
   return runConnectorRun(ctx, runId);
 };
 
+/**
+ * KL-02/KL-03: work one decision's learning outbox (learning-processor.ts).
+ * The payload is untrusted queue data — validated before use; the
+ * decision's events already sit in the database as 'pending', so a
+ * malformed or lost job only delays them until learning.sweep re-drives
+ * them. processDecision never throws: failures are recorded on the events
+ * (backoff, then 'failed'), not left to the queue's own retries.
+ */
+const handleLearningProcess: JobHandler = async (payload) => {
+  const p = LearningProcessPayloadSchema.parse(payload);
+  const ctx = makeWorkspaceContext({
+    workspaceId: BigInt(p.workspaceId),
+    userId: p.userId,
+    role: p.role,
+  });
+  return processDecision(ctx, p.decisionId);
+};
+
+/**
+ * KL-06: one knowledge.index run (knowledge-indexing.ts). The payload is
+ * untrusted queue data — validated before use; the run's row already sits
+ * in indexing_jobs as 'queued', so a malformed or lost job only delays it
+ * until knowledge.index.sweep re-enqueues it. Failures are recorded on the
+ * row (backoff retry, then 'failed' + a notification), never thrown to the
+ * queue; the return value is JSON-safe for BullMQ.
+ */
+const handleKnowledgeIndex: JobHandler = async (payload) => {
+  const p = KnowledgeIndexPayloadSchema.parse(payload);
+  const ctx = makeWorkspaceContext({
+    workspaceId: BigInt(p.workspaceId),
+    userId: p.userId,
+    role: p.role,
+  });
+  return summarizeIndexOutcome(await runKnowledgeIndexJob(ctx, BigInt(p.jobId)));
+};
+
 let registered = false;
 
 export function registerJobHandlers(): void {
   if (registered) return;
   const q = getJobQueue();
-  // PC-07: on-demand job — heartbeat (last run, failures) but no schedule,
-  // so it never counts as stale; a thrown run raises a 'job.failed'
-  // platform incident that the next good run resolves.
+  // PC-07: on-demand jobs — heartbeat (last run, failures) but no
+  // schedule, so they never count as stale; a thrown run raises a
+  // 'job.failed' platform incident that the next good run resolves.
   q.on<ConnectorRunJobPayload>(
     'connector.run',
     instrumented<ConnectorRunJobPayload>(
       'connector.run',
       (payload, ctx) => handleConnectorRun(payload, { jobId: ctx.jobId }),
       { kind: 'job', label: 'Discovery run' },
+    ),
+  );
+  // KL-02/KL-03 and KL-06: both record their own failures on their rows
+  // (backoff, then 'failed' + a notification); the heartbeat shows they run.
+  q.on(
+    LEARNING_PROCESS_JOB,
+    instrumented(
+      LEARNING_PROCESS_JOB,
+      (payload, ctx) => handleLearningProcess(payload, { jobId: ctx.jobId }),
+      { kind: 'job', label: 'Learning' },
+    ),
+  );
+  q.on(
+    KNOWLEDGE_INDEX_JOB,
+    instrumented(
+      KNOWLEDGE_INDEX_JOB,
+      (payload, ctx) => handleKnowledgeIndex(payload, { jobId: ctx.jobId }),
+      { kind: 'job', label: 'Knowledge indexing' },
     ),
   );
   registered = true;

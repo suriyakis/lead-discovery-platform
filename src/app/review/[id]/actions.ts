@@ -19,6 +19,7 @@ import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';
 import { describeActionError, withFlash } from '@/lib/action-errors';
 import type { WorkspaceContext } from '@/lib/services/context';
+import { parseDecisionKey } from '@/lib/services/learning-decisions';
 import { OutreachServiceError, generateOutreachDraft } from '@/lib/services/outreach';
 import {
   ReviewServiceError,
@@ -56,6 +57,13 @@ function reasonFrom(formData: FormData): string | null {
   return String(formData.get('reason') ?? '').trim().slice(0, 500) || null;
 }
 
+/** The form's decision nonce (KL-02): a double submit or a resubmit after
+ *  Back records the decision once. A missing or malformed one just means
+ *  no idempotency. */
+function decisionKeyFrom(formData: FormData | undefined): string | null {
+  return formData ? parseDecisionKey(formData.get('decisionKey')) : null;
+}
+
 /** Route a described review failure to the right page and flash. */
 function redirectForFailure(id: bigint, failure: { code: string; message: string }): never {
   if (failure.code === 'not_found') redirect(withFlash('/review', { message: ITEM_GONE }));
@@ -90,28 +98,36 @@ async function runTransition(
 
 export async function approveReviewItemAction(rawId: string, formData: FormData): Promise<void> {
   const reason = reasonFrom(formData);
-  await runTransition(rawId, 'approve', (ctx, id) => approveReviewItem(ctx, id, reason));
+  const decisionKey = decisionKeyFrom(formData);
+  await runTransition(rawId, 'approve', (ctx, id) =>
+    approveReviewItem(ctx, id, reason, { decisionKey }),
+  );
 }
 
 export async function rejectReviewItemAction(rawId: string, formData: FormData): Promise<void> {
   const reason = reasonFrom(formData);
-  await runTransition(rawId, 'reject', (ctx, id) => rejectReviewItem(ctx, id, reason));
+  const decisionKey = decisionKeyFrom(formData);
+  await runTransition(rawId, 'reject', (ctx, id) =>
+    rejectReviewItem(ctx, id, reason, { decisionKey }),
+  );
 }
 
-export async function ignoreReviewItemAction(rawId: string): Promise<void> {
-  await runTransition(rawId, 'ignore', (ctx, id) => ignoreReviewItem(ctx, id));
+export async function ignoreReviewItemAction(rawId: string, formData?: FormData): Promise<void> {
+  const decisionKey = decisionKeyFrom(formData);
+  await runTransition(rawId, 'ignore', (ctx, id) => ignoreReviewItem(ctx, id, { decisionKey }));
 }
 
 export async function flagReviewItemAction(rawId: string): Promise<void> {
   await runTransition(rawId, 'flag', (ctx, id) => flagForReview(ctx, id));
 }
 
-export async function archiveReviewItemAction(rawId: string): Promise<void> {
+export async function archiveReviewItemAction(rawId: string, formData?: FormData): Promise<void> {
   const id = parseItemId(rawId);
   if (id === null) redirect('/review');
+  const decisionKey = decisionKeyFrom(formData);
   const ctx = await requireActionContext('/review');
   try {
-    await archiveReviewItem(ctx, id);
+    await archiveReviewItem(ctx, id, { decisionKey });
   } catch (err) {
     redirectForFailure(
       id,
@@ -128,9 +144,10 @@ export async function commentOnReviewItemAction(rawId: string, formData: FormDat
   if (id === null) redirect('/review');
   const text = String(formData.get('comment') ?? '').trim();
   if (!text) redirect(withFlash(itemPath(id), { error: 'Write a comment before posting it.' }));
+  const decisionKey = decisionKeyFrom(formData);
   const ctx = await requireActionContext('/review');
   try {
-    await commentOnReviewItem(ctx, id, text);
+    await commentOnReviewItem(ctx, id, text, { decisionKey });
   } catch (err) {
     redirectForFailure(
       id,
@@ -168,13 +185,18 @@ export async function generateDraftAction(rawId: string, formData: FormData): Pr
         "Your role in this workspace is read-only, so you can't generate drafts. Ask a workspace admin if you need edit access.",
       not_found:
         'That review item or product no longer exists, so no draft was generated.',
+      // KL-02: the only conflict here is an operator's Not a fit on the pair.
+      conflict:
+        'This company was marked Not a fit for that product, so no draft was written for it.',
     });
     // Unlike a state change, a missing product does not mean the item is
     // gone — stay on the item and explain.
     redirect(
       withFlash(
         itemPath(id),
-        failure.code === 'not_found' ? { message: failure.message } : { error: failure.message },
+        failure.code === 'not_found' || failure.code === 'conflict'
+          ? { message: failure.message }
+          : { error: failure.message },
       ),
     );
   }

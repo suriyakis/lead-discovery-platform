@@ -52,6 +52,7 @@ import {
 } from '@/lib/db/schema/outreach';
 import { pipelineState, qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { qualifications } from '@/lib/db/schema/qualifications';
+import { learningEvents } from '@/lib/db/schema/learning';
 import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
@@ -559,10 +560,19 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     const approved = await reviewItem(fresh.id);
     expect(approved.state).toBe('approved');
-    // PC-11 (I034): a machine decision carries no person's name.
+    // KL-02 (I034): a machine approval carries no person's name.
     expect(approved.approvedByUserId).toBeNull();
     expect(approved.approvalReason).toBe('autopilot');
     expect((await reviewItem(geoHeld.id)).state).toBe('needs_review');
+    // ...and teaches nothing: its learning events are autopilot's, never processed.
+    const events = await db
+      .select()
+      .from(learningEvents)
+      .where(eq(learningEvents.workspaceId, s.workspaceId));
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((e) => e.origin === 'autopilot' && e.processingStatus === 'skipped')).toBe(
+      true,
+    );
   });
 
   it('[handbook H-08] generate + enqueue writes, approves (as the owner) and queues a draft with no human step, only for a lead with a contact email', async () => {

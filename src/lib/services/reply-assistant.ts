@@ -3,9 +3,12 @@
 // lessons, build a structured prompt, and ask the IAIProvider to draft a
 // reply. Phase 12 — RAG-grounded reply generation.
 
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import { contactAssociations } from '@/lib/db/schema/contacts';
 import { mailMessages, mailThreads, type MailMessage } from '@/lib/db/schema/mailing';
+import { outreachThreadState } from '@/lib/db/schema/outreach';
+import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 import { retrieve, retrieveLessons } from './rag';
@@ -84,21 +87,32 @@ export async function suggestReply(
     || lastInbound.subject
     || messages.map((m) => m.subject).join(' ');
 
-  // Phase 12 technical reply assistant: workspace-wide retrieval — no
-  // product scope (the operator may be answering a generic technical
-  // question that touches multiple products). The Phase 50 vector-
-  // storage provider abstraction REQUIRES a productProfileId, so this
-  // path intentionally bypasses it and calls retrieve() directly. As
-  // long as the workspace stays on pgvector (the default), both code
-  // paths land in the same underlying tables. retrieveLessons() likewise
-  // operates on learning_lessons and isn't part of the provider abstraction.
+  // KL-05 (design §8): knowledge for the thread's product plus
+  // workspace-wide knowledge, through the same scope predicate as every
+  // other path (knowledge-scope.ts) — a thread about product B never sees a
+  // source or rule scoped to product A. When the thread's leads are for
+  // several products it gets exactly the union of those products (never a
+  // third product's); a thread with no lead product (a generic inbound
+  // inquiry) gets workspace-wide knowledge only. This path calls retrieve()
+  // directly: the vector-storage provider abstraction requires a product.
+  // Rules: only the categories the registry routes to reply suggestions
+  // (reply_quality, outreach_style, general_instruction) — before KL-01
+  // nothing ever asked for reply_quality and every qualification rule
+  // competed for these slots (I038).
+  const threadProducts = await resolveThreadProducts(ctx, input.threadId);
+  const productProfileId = threadProducts.length === 1 ? threadProducts[0] : undefined;
+  const scope =
+    productProfileId !== undefined ? { productProfileId } : { productProfileIds: threadProducts };
   const [chunks, lessons] = await Promise.all([
     retrieve(ctx, queryText, {
       limit: input.chunkLimit ?? 6,
+      ...scope,
       embedder: input.embedder,
     }),
     retrieveLessons(ctx, queryText, {
       limit: input.lessonLimit ?? 4,
+      taskType: 'reply',
+      ...scope,
       embedder: input.embedder,
     }),
   ]);
@@ -116,6 +130,8 @@ export async function suggestReply(
     entityId: input.threadId,
     payload: {
       lastInboundId: lastInbound.id.toString(),
+      productProfileId: productProfileId?.toString() ?? null,
+      productProfileIds: threadProducts.map((id) => id.toString()),
       chunkIds: chunks.map((c) => c.chunk.id.toString()),
       lessonIds: lessons.map((l) => l.lesson.id.toString()),
       model: result.model,
@@ -130,6 +146,111 @@ export async function suggestReply(
       lessonIds: lessons.map((l) => l.lesson.id),
     },
   };
+}
+
+/**
+ * The one product a mail thread is about, or null when there is none or
+ * more than one (see resolveThreadProducts) — a guess between two products
+ * would scope the reply to the wrong one.
+ */
+export async function resolveThreadProduct(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  threadId: bigint,
+): Promise<bigint | null> {
+  const products = await resolveThreadProducts(ctx, threadId);
+  return products.length === 1 ? products[0]! : null;
+}
+
+/**
+ * The products a mail thread may be about, sorted: one when a single lead
+ * product is known, several when its leads disagree, none when it has no
+ * lead. Walks, in order: the outreach conversation state for the thread,
+ * leads whose active thread it is, and the leads of the contacts linked to
+ * the thread; the first step that names exactly one product wins, and
+ * otherwise the candidates seen so far are returned (Suggest reply then
+ * reads exactly their union, never another product's knowledge).
+ */
+export async function resolveThreadProducts(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  threadId: bigint,
+): Promise<bigint[]> {
+  const seen = new Map<string, bigint>();
+  const candidates = (): bigint[] =>
+    [...seen.values()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  /** The single product, or null after remembering the ambiguous set. */
+  const single = (ids: readonly bigint[]): bigint | null => {
+    const distinct = Array.from(new Set(ids.map((id) => id.toString())));
+    if (distinct.length === 1) return BigInt(distinct[0]!);
+    for (const id of distinct) seen.set(id, BigInt(id));
+    return null;
+  };
+  const leadProducts = async (leadIds: readonly bigint[]): Promise<bigint[]> => {
+    if (leadIds.length === 0) return [];
+    const rows = await db
+      .select({ productProfileId: qualifiedLeads.productProfileId })
+      .from(qualifiedLeads)
+      .where(
+        and(eq(qualifiedLeads.workspaceId, ctx.workspaceId), inArray(qualifiedLeads.id, [...leadIds])),
+      );
+    return rows.map((r) => r.productProfileId);
+  };
+
+  const states = await db
+    .select({ leadId: outreachThreadState.qualifiedLeadId })
+    .from(outreachThreadState)
+    .where(
+      and(
+        eq(outreachThreadState.workspaceId, ctx.workspaceId),
+        eq(outreachThreadState.threadId, threadId),
+      ),
+    );
+  const fromState = single(await leadProducts(states.map((s) => s.leadId)));
+  if (fromState !== null) return [fromState];
+
+  const current = await db
+    .select({ productProfileId: qualifiedLeads.productProfileId })
+    .from(qualifiedLeads)
+    .where(
+      and(
+        eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+        eq(qualifiedLeads.currentThreadId, threadId),
+      ),
+    );
+  if (current.length > 0) {
+    const one = single(current.map((r) => r.productProfileId));
+    return one !== null ? [one] : candidates();
+  }
+
+  const threadContacts = await db
+    .select({ contactId: contactAssociations.contactId })
+    .from(contactAssociations)
+    .where(
+      and(
+        eq(contactAssociations.workspaceId, ctx.workspaceId),
+        eq(contactAssociations.entityType, 'mail_thread'),
+        eq(contactAssociations.entityId, threadId.toString()),
+      ),
+    );
+  if (threadContacts.length === 0) return candidates();
+  const leadLinks = await db
+    .select({ entityId: contactAssociations.entityId })
+    .from(contactAssociations)
+    .where(
+      and(
+        eq(contactAssociations.workspaceId, ctx.workspaceId),
+        eq(contactAssociations.entityType, 'qualified_lead'),
+        inArray(
+          contactAssociations.contactId,
+          threadContacts.map((c) => c.contactId),
+        ),
+      ),
+    );
+  const leadIds = leadLinks
+    .map((l) => l.entityId)
+    .filter((id) => /^\d+$/.test(id))
+    .map((id) => BigInt(id));
+  const fromContacts = single(await leadProducts(leadIds));
+  return fromContacts !== null ? [fromContacts] : candidates();
 }
 
 interface PromptParts {

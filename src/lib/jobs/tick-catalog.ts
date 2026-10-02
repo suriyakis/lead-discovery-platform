@@ -34,6 +34,11 @@ export const STUCK_WORK_TICK_MS = 5 * 60 * 1000;
  *  notifications, resolved incidents, …) — src/lib/services/retention.ts.
  *  Under BullMQ it fires at 00:00 UTC (epoch-aligned slots). */
 export const RETENTION_TICK_MS = 24 * 60 * 60 * 1000;
+/** KL-03: the learning outbox's sweeper (services/learning-processor.ts). */
+export const LEARNING_SWEEP_TICK_MS = 2 * 60 * 1000;
+/** KL-06: the knowledge-indexing outbox's sweeper
+ *  (services/knowledge-indexing.ts). */
+export const KNOWLEDGE_INDEX_SWEEP_TICK_MS = 2 * 60 * 1000;
 
 export type TickName =
   | 'autopilot.tick'
@@ -45,7 +50,9 @@ export type TickName =
   | 'crawl.engine.tick'
   | 'health.check.tick'
   | 'ops.reaper.tick'
-  | 'ops.retention.tick';
+  | 'ops.retention.tick'
+  | 'learning.sweep'
+  | 'knowledge.index.sweep';
 
 export interface TickDefinition {
   readonly name: TickName;
@@ -112,18 +119,34 @@ export const TICK_CATALOG: readonly TickDefinition[] = [
     jobId: 'ops-retention-tick',
     label: 'Data retention',
   },
+  {
+    name: 'learning.sweep',
+    everyMs: LEARNING_SWEEP_TICK_MS,
+    jobId: 'learning-sweep',
+    label: 'Learning sweep',
+  },
+  {
+    name: 'knowledge.index.sweep',
+    everyMs: KNOWLEDGE_INDEX_SWEEP_TICK_MS,
+    jobId: 'knowledge-index-sweep',
+    label: 'Knowledge indexing sweep',
+  },
 ];
 
 /**
- * Platform maintenance ticks (PC-10, PC-35): they send, spend and start
- * nothing, so no workspace pause, hold or the platform outbound stop gates
- * them, and they are no line of a workspace's "What runs right now". Every
+ * Platform maintenance ticks (PC-10, PC-35, and the KL-03 / KL-06 outbox
+ * sweepers): they send nothing and start no new work, so no workspace
+ * pause, hold or the platform outbound stop gates them, and they are no
+ * line of a workspace's "What runs right now". The learning job a sweep
+ * re-drives asks the automation gate itself before any AI call. Every
  * other catalogued tick is workspace automation
  * (services/automation-policy.ts AUTOMATION_TICKS).
  */
 export const MAINTENANCE_TICKS = [
   'ops.reaper.tick',
   'ops.retention.tick',
+  'learning.sweep',
+  'knowledge.index.sweep',
 ] as const satisfies readonly TickName[];
 
 export function getTickDefinition(name: string): TickDefinition | undefined {

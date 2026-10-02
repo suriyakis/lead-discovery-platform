@@ -8,16 +8,26 @@
 // and never a presigned bucket URL (anyone holding it could fetch the
 // file, under a UUID filename).
 
-import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, inArray, ne, type SQL } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { db } from '@/lib/db/client';
 import {
   documents,
   type Document,
+  type DocumentMeta,
   type DocumentStatus,
   type NewDocument,
 } from '@/lib/db/schema/documents';
+
+const { extractedText: _extractedText, ...metaColumns } = getTableColumns(documents);
+/**
+ * KL-06: every documents column except extracted_text, the indexer's
+ * extraction cache (megabytes for a long PDF). Lists and joins (the
+ * library, retrieve(), the knowledge-source lists) select these, so the
+ * cache is read only by the indexer (document-extraction.ts).
+ */
+export const documentMetaColumns = metaColumns;
 import { recordAuditEvent } from './audit';
 import {
   canAdminWorkspace,
@@ -172,7 +182,7 @@ export interface ListDocumentsFilter {
 export async function listDocuments(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   filter: ListDocumentsFilter = {},
-): Promise<Document[]> {
+): Promise<DocumentMeta[]> {
   const conditions: SQL[] = [eq(documents.workspaceId, ctx.workspaceId)];
   if (filter.status !== undefined) {
     const statuses = Array.isArray(filter.status)
@@ -188,7 +198,7 @@ export async function listDocuments(
   }
   const limit = Math.min(filter.limit ?? 200, 1000);
   return db
-    .select()
+    .select(documentMetaColumns)
     .from(documents)
     .where(and(...conditions))
     .orderBy(desc(documents.createdAt))

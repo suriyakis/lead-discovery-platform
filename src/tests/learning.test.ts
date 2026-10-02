@@ -1,23 +1,21 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
 import { db } from '@/lib/db/client';
-import { auditLog } from '@/lib/db/schema/audit';
 import { learningEvents, learningLessons } from '@/lib/db/schema/learning';
+import { productProfiles } from '@/lib/db/schema/products';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import {
   LearningServiceError,
   applyLessonsToPrompt,
+  retireLessons,
   bulkSetLessonsEnabled,
   countLessons,
   createLesson,
   disableLesson,
   getLessonCategoryCounts,
   enableLesson,
-  extractLessonHeuristic,
   getRelevantLessons,
   listLessons,
-  recordFeedback,
   updateLesson,
 } from '@/lib/services/learning';
 import { createProductProfile } from '@/lib/services/product-profile';
@@ -65,122 +63,6 @@ afterAll(async () => {
   await (db.$client as unknown as { end: () => Promise<void> }).end();
 });
 
-// ---- heuristic extractor -------------------------------------------
-
-describe('extractLessonHeuristic', () => {
-  it('returns null for empty / too-short input', () => {
-    expect(extractLessonHeuristic(null)).toBeNull();
-    expect(extractLessonHeuristic('')).toBeNull();
-    expect(extractLessonHeuristic('ok')).toBeNull();
-  });
-
-  it('catches qualification negatives', () => {
-    expect(extractLessonHeuristic("don't target councils")?.category).toBe(
-      'qualification_negative',
-    );
-    expect(extractLessonHeuristic('avoid retail SMBs entirely')?.category).toBe(
-      'qualification_negative',
-    );
-  });
-
-  it('catches qualification positives', () => {
-    expect(extractLessonHeuristic('this is the ideal kind of company')?.category).toBe(
-      'qualification_positive',
-    );
-  });
-
-  it('catches false positive / negative', () => {
-    expect(
-      extractLessonHeuristic('this is a false positive — wrong sector')?.category,
-    ).toBe('false_positive');
-  });
-
-  it('catches outreach style', () => {
-    expect(extractLessonHeuristic('the tone is too formal here')?.category).toBe(
-      'outreach_style',
-    );
-  });
-
-  it('catches contact role', () => {
-    expect(extractLessonHeuristic('we need to reach procurement, not engineering')?.category).toBe(
-      'contact_role',
-    );
-  });
-
-  it('returns null on neutral content', () => {
-    expect(extractLessonHeuristic('looks fine I guess')).toBeNull();
-  });
-});
-
-// ---- recordFeedback ---------------------------------------------------
-
-describe('recordFeedback', () => {
-  it('appends a learning_event and writes audit', async () => {
-    const s = await setup();
-    const { event } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      entityType: 'review_item',
-      entityId: '1',
-      actionType: 'general_instruction',
-      originalComment: 'looks fine I guess',
-    });
-    expect(event.workspaceId).toBe(s.workspaceA);
-    expect(event.actionType).toBe('general_instruction');
-    expect(event.extractedLessonId).toBeNull();
-    const audit = await db.select().from(auditLog).where(eq(auditLog.kind, 'learning.feedback'));
-    expect(audit).toHaveLength(1);
-  });
-
-  it('extracts a lesson when the comment matches a heuristic', async () => {
-    const s = await setup();
-    const { event, lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: "don't target councils for this product",
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('qualification_negative');
-    expect(lesson?.evidenceEventIds).toEqual([event.id]);
-    expect(event.extractedLessonId).toBe(lesson?.id ?? null);
-  });
-
-  it('respects workspace isolation on the produced lesson', async () => {
-    const s = await setup();
-    await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: "don't target councils",
-    });
-    const inA = await listLessons(ctx(s.workspaceA, s.ownerA, 'owner'));
-    const inB = await listLessons(ctx(s.workspaceB, s.ownerB, 'owner'));
-    expect(inA).toHaveLength(1);
-    expect(inB).toHaveLength(0);
-  });
-
-  it('repeated identical feedback reinforces the existing lesson instead of duplicating', async () => {
-    const s = await setup();
-    const comment = "don't target councils for this product";
-    const first = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: comment,
-    });
-    const second = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: comment,
-    });
-    // One lesson row, not two.
-    const rows = await db
-      .select()
-      .from(learningLessons)
-      .where(eq(learningLessons.workspaceId, s.workspaceA));
-    expect(rows).toHaveLength(1);
-    // Second feedback linked its event to the SAME lesson and bumped it.
-    expect(second.lesson?.id).toBe(first.lesson?.id);
-    expect(second.event.extractedLessonId).toBe(first.lesson?.id ?? null);
-    expect(second.lesson!.confidence).toBe(first.lesson!.confidence + 5);
-    // Evidence chain unions both events.
-    expect(second.lesson!.evidenceEventIds).toContain(first.event.id);
-    expect(second.lesson!.evidenceEventIds).toContain(second.event.id);
-  });
-});
-
 // ---- createLesson + listLessons --------------------------------------
 
 describe('manual lesson creation', () => {
@@ -191,7 +73,9 @@ describe('manual lesson creation', () => {
       rule: 'Avoid corporate buzzwords like synergy.',
     });
     expect(created.category).toBe('outreach_style');
-    expect(created.enabled).toBe(true);
+    expect(created.lifecycle).toBe('active');
+    expect(created.scopeKind).toBe('workspace');
+    expect(created.polarity).toBe(0);
     expect(created.confidence).toBe(65);
 
     await expect(
@@ -202,20 +86,49 @@ describe('manual lesson creation', () => {
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 
-  it('rejects empty rule + unknown category', async () => {
+  it('rejects empty rule + unknown or removed category', async () => {
     const s = await setup();
     await expect(
       createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
         category: 'outreach_style',
         rule: '   ',
       }),
-    ).rejects.toMatchObject({ code: 'invalid_input' });
+    ).rejects.toMatchObject({ code: 'rule_required' });
     await expect(
       createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
         category: 'made_up' as never,
         rule: 'X',
       }),
-    ).rejects.toMatchObject({ code: 'invalid_input' });
+    ).rejects.toMatchObject({ code: 'unknown_category' });
+    for (const removed of ['dedupe_hint', 'connector_quality']) {
+      await expect(
+        createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+          category: removed as never,
+          rule: 'X',
+        }),
+      ).rejects.toMatchObject({ code: 'unknown_category' });
+    }
+  });
+
+  it('polarity: fixed categories take theirs, either-way categories take the choice, a disallowed choice is refused', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA, 'owner');
+    const neg = await createLesson(c, { category: 'qualification_negative', rule: 'Skip councils' });
+    expect(neg.polarity).toBe(-1);
+    const sectorDefault = await createLesson(c, { category: 'sector_preference', rule: 'Data centres' });
+    expect(sectorDefault.polarity).toBe(1);
+    const sectorAvoid = await createLesson(c, {
+      category: 'sector_preference',
+      rule: 'Public-sector schools',
+      polarity: -1,
+    });
+    expect(sectorAvoid.polarity).toBe(-1);
+    await expect(
+      createLesson(c, { category: 'outreach_style', rule: 'Short emails', polarity: 1 }),
+    ).rejects.toMatchObject({ code: 'invalid_polarity' });
+    await expect(
+      createLesson(c, { category: 'qualification_positive', rule: 'Installers', polarity: -1 }),
+    ).rejects.toMatchObject({ code: 'invalid_polarity' });
   });
 
   it('lists in confidence-desc, then updatedAt-desc order', async () => {
@@ -309,13 +222,41 @@ describe('bulkSetLessonsEnabled', () => {
     // inB belongs to workspaceB → filtered out by WHERE.
     expect(result.updated).toBe(1);
 
-    const lessonsA = await listLessons(a, { enabled: false });
+    const lessonsA = await listLessons(a, { lifecycle: 'disabled' });
     expect(lessonsA.map((l) => l.rule).sort()).toEqual([
       'already disabled in A',
       'enabled in A',
     ]);
     const lessonsB = await listLessons(b);
-    expect(lessonsB[0]?.enabled).toBe(true);
+    expect(lessonsB[0]?.lifecycle).toBe('active');
+  });
+
+  it('bulk enable never revives a retired rule or a rule with no product left', async () => {
+    const s = await setup();
+    const a = ctx(s.workspaceA, s.ownerA, 'owner');
+    const product = await createProductProfile(a, { name: 'Doomed' });
+    const disabled = await createLesson(a, { category: 'outreach_style', rule: 'disabled one' });
+    await disableLesson(a, disabled.id);
+    const orphan = await createLesson(a, {
+      category: 'qualification_negative',
+      rule: 'orphan once its product goes',
+      scope: { kind: 'products', productProfileIds: [product.id] },
+    });
+    await disableLesson(a, orphan.id);
+    const retired = await createLesson(a, { category: 'outreach_style', rule: 'retired one' });
+    await db.transaction((tx) =>
+      retireLessons(tx, s.workspaceA, [retired.id], { reason: 'stale' }),
+    );
+    await db.delete(productProfiles).where(eq(productProfiles.id, product.id));
+
+    const result = await bulkSetLessonsEnabled(a, [disabled.id, orphan.id, retired.id], true);
+    expect(result).toEqual({ updated: 1, requested: 3 });
+    const byId = new Map(
+      (await listLessons(a)).map((l) => [l.id.toString(), l.lifecycle]),
+    );
+    expect(byId.get(disabled.id.toString())).toBe('active');
+    expect(byId.get(orphan.id.toString())).toBe('disabled');
+    expect(byId.get(retired.id.toString())).toBe('retired');
   });
 
   it('viewer cannot bulk-disable', async () => {
@@ -335,7 +276,7 @@ describe('bulkSetLessonsEnabled', () => {
 });
 
 describe('getLessonCategoryCounts', () => {
-  it('sums per category + total; honours enabled filter + workspace isolation', async () => {
+  it('sums per category + total; honours lifecycle filter + workspace isolation', async () => {
     const s = await setup();
     const a = ctx(s.workspaceA, s.ownerA, 'owner');
     const b = ctx(s.workspaceB, s.ownerB, 'owner');
@@ -346,7 +287,7 @@ describe('getLessonCategoryCounts', () => {
     await disableLesson(a, toDisable.id);
     await createLesson(b, { category: 'qualification_positive', rule: 'B1' });
 
-    const enabledOnly = await getLessonCategoryCounts(a, { enabled: true });
+    const enabledOnly = await getLessonCategoryCounts(a, { lifecycle: 'active' });
     expect(enabledOnly.qualification_positive).toBe(2);
     expect(enabledOnly.outreach_style).toBe(1);
     expect(enabledOnly.contact_role).toBe(0);
@@ -415,12 +356,49 @@ describe('update / enable / disable', () => {
 
     await expect(
       updateLesson(ctx(s.workspaceA, s.ownerA, 'owner'), lesson.id, { rule: '   ' }),
-    ).rejects.toMatchObject({ code: 'invalid_input' });
+    ).rejects.toMatchObject({ code: 'rule_required' });
     await expect(
       updateLesson(ctx(s.workspaceA, s.ownerA, 'owner'), lesson.id, {
         category: 'bogus' as never,
       }),
-    ).rejects.toMatchObject({ code: 'invalid_input' });
+    ).rejects.toMatchObject({ code: 'unknown_category' });
+  });
+
+  it('re-filing a rule keeps its direction when allowed, else takes the new default', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA, 'owner');
+    const lesson = await createLesson(c, {
+      category: 'sector_preference',
+      rule: 'Councils',
+      polarity: -1,
+    });
+    const asGeneral = await updateLesson(c, lesson.id, { category: 'general_instruction' });
+    expect(asGeneral.polarity).toBe(-1);
+    const asStyle = await updateLesson(c, lesson.id, { category: 'outreach_style' });
+    expect(asStyle.polarity).toBe(0);
+    await expect(updateLesson(c, lesson.id, { polarity: -1 })).rejects.toMatchObject({
+      code: 'invalid_polarity',
+    });
+  });
+
+  it('a retired rule: disable is a conflict, restore is admin-only and clears the reason', async () => {
+    const s = await setup();
+    const owner = ctx(s.workspaceA, s.ownerA, 'owner');
+    const member = ctx(s.workspaceA, s.memberA, 'member');
+    const lesson = await createLesson(owner, { category: 'outreach_style', rule: 'Old style rule' });
+    await db.transaction((tx) =>
+      retireLessons(tx, s.workspaceA, [lesson.id], { reason: 'stale', note: 'unused' }),
+    );
+    await expect(disableLesson(owner, lesson.id)).rejects.toMatchObject({
+      code: 'lifecycle_conflict',
+    });
+    await expect(enableLesson(member, lesson.id)).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    const restored = await enableLesson(owner, lesson.id);
+    expect(restored.lifecycle).toBe('active');
+    expect(restored.retiredReason).toBeNull();
+    expect(restored.retiredNote).toBeNull();
   });
 });
 
@@ -454,7 +432,7 @@ describe('retrieval + prompt application', () => {
     await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
       rule: 'Vetrofluid: skip councils',
-      productProfileId: product.id,
+      scope: { kind: 'products', productProfileIds: [product.id] },
     });
     await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
@@ -494,7 +472,7 @@ describe('retrieval + prompt application', () => {
     await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
       rule: 'product-scoped rule',
-      productProfileId: product.id,
+      scope: { kind: 'products', productProfileIds: [product.id] },
     });
     await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
@@ -517,7 +495,7 @@ describe('retrieval + prompt application', () => {
     await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
       rule: 'for this product',
-      productProfileId: product.id,
+      scope: { kind: 'products', productProfileIds: [product.id] },
     });
     await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
@@ -526,7 +504,7 @@ describe('retrieval + prompt application', () => {
     await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
       rule: 'for a different product',
-      productProfileId: other.id,
+      scope: { kind: 'products', productProfileIds: [other.id] },
     });
     const combined = await getRelevantLessons(ctx(s.workspaceA, s.ownerA, 'owner'), {
       productProfileId: product.id,
@@ -574,7 +552,7 @@ describe('createLesson dedup', () => {
     const scoped = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'qualification_negative',
       rule: 'Avoid consultancies',
-      productProfileId: product.id,
+      scope: { kind: 'products', productProfileIds: [product.id] },
     });
     expect(scoped.id).not.toBe(wsWide.id);
   });
@@ -674,105 +652,6 @@ describe('recordLessonsApplied', () => {
     // Should not throw and should not flip anything.
     await recordLessonsApplied({ workspaceId: s.workspaceA }, []);
     expect(true).toBe(true);
-  });
-});
-
-// ---- AI extractor (P60-03) --------------------------------------------
-
-describe('extractLesson (AI-first with heuristic fallback)', () => {
-  function stubAi(
-    impl: () => Promise<{ category: string | null; rule: string; confidence: number }>,
-  ): IAIProvider {
-    return {
-      id: 'stub-ai',
-      model: 'stub-model',
-      async generateText() {
-        return {
-          text: '',
-          model: 'stub',
-          usage: { inputTokens: 0, outputTokens: 0 },
-        };
-      },
-      async generateJson(_input, schema) {
-        void _input;
-        const out = await impl();
-        return schema.parse(out);
-      },
-      estimateCost() {
-        return 0;
-      },
-      async healthCheck() {
-        return { ok: true };
-      },
-    };
-  }
-
-  afterAll(() => _setAIProviderForTests(null));
-
-  it('uses the AI-extracted category when the AI returns a valid lesson', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({
-        category: 'sector_preference',
-        rule: 'Avoid public-sector schools — corporate buyers convert better.',
-        confidence: 82,
-      })),
-    );
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_negative',
-      originalComment: 'wrong sector — these are public-sector schools, not corporate',
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('sector_preference');
-    expect(lesson?.confidence).toBe(82);
-    expect(lesson?.rule).toContain('public-sector');
-  });
-
-  it('falls back to the heuristic when the AI returns null category', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({ category: null, rule: '', confidence: 0 })),
-    );
-    // "wrong fit" matches the heuristic's false_positive pattern.
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_negative',
-      originalComment: 'wrong fit — not a real buyer',
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('false_positive');
-  });
-
-  it('falls back to the heuristic when the AI provider throws', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => {
-        throw new Error('upstream timeout');
-      }),
-    );
-    // "perfect" matches the heuristic's qualification_positive pattern.
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_positive',
-      originalComment: 'perfect fit, exactly the kind of buyer we want',
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('qualification_positive');
-  });
-
-  it('rejects an AI category that is not in the allow-list', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({
-        category: 'totally_made_up',
-        rule: 'should be ignored',
-        confidence: 90,
-      })),
-    );
-    // Heuristic also returns null for this neutral text, so no lesson at all.
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_negative',
-      originalComment: 'no clear signal here just some neutral text',
-    });
-    expect(lesson).toBeNull();
   });
 });
 

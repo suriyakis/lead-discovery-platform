@@ -29,6 +29,7 @@ import {
 } from '@/lib/services/outreach-engine';
 import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
 import type { ProductProfile } from '@/lib/db/schema/products';
+import { makeLessonRow } from './helpers/learning';
 import type { LearningLesson } from '@/lib/db/schema/learning';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -89,7 +90,6 @@ describe('composeRulesDraft (pure engine)', () => {
       discoveryAngle: null,
       engagementAngle: null,
       pitchAngle: null,
-      documentSourceIds: [],
       pricingSnapshotId: null,
       crmMapping: {} as never,
       createdBy: null,
@@ -101,23 +101,12 @@ describe('composeRulesDraft (pure engine)', () => {
   }
 
   function makeLesson(overrides: Partial<LearningLesson> = {}): LearningLesson {
-    const base: LearningLesson = {
-      id: 1n,
-      workspaceId: 1n,
-      productProfileId: null,
+    return makeLessonRow({
       category: 'outreach_style',
       rule: 'Keep it short and friendly.',
-      confidence: 80,
-      enabled: true,
-      sourceEventIds: [],
-      sampleCount: 1,
-      embedding: null,
-      lastAppliedAt: null,
-      createdBy: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as unknown as LearningLesson;
-    return { ...base, ...overrides };
+      polarity: 0,
+      ...overrides,
+    });
   }
 
   it('emits subject, body, evidence; method=rules', () => {
@@ -220,7 +209,6 @@ describe('composeAiDraft (pure engine)', () => {
       discoveryAngle: null,
       engagementAngle: null,
       pitchAngle: null,
-      documentSourceIds: [],
       pricingSnapshotId: null,
       crmMapping: {} as never,
       createdBy: null,
@@ -398,7 +386,7 @@ describe('generateOutreachDraft (DB-backed)', () => {
     await createLesson(ctx(s.workspaceA, s.ownerA), {
       category: 'outreach_style',
       rule: 'Reference cross-border logistics expertise when relevant.',
-      productProfileId: product.id,
+      scope: { kind: 'products', productProfileIds: [product.id] },
     });
     const { reviews } = await seedRecordViaConnectorRun(s.workspaceA, s.ownerA);
     const draft = await generateOutreachDraft(ctx(s.workspaceA, s.ownerA), {

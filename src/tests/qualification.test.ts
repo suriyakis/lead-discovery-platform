@@ -16,7 +16,7 @@ import { createProductProfile, updateProductProfile } from '@/lib/services/produ
 import { createLesson } from '@/lib/services/learning';
 import { sourceRecords } from '@/lib/db/schema/connectors';
 import type { ProductProfile } from '@/lib/db/schema/products';
-import type { LearningLesson } from '@/lib/db/schema/learning';
+import { makeLessonRow } from './helpers/learning';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 interface Setup {
@@ -74,7 +74,6 @@ describe('classifyRecord (pure engine)', () => {
       discoveryAngle: null,
       engagementAngle: null,
       pitchAngle: null,
-      documentSourceIds: [],
       pricingSnapshotId: null,
       crmMapping: {} as never,
       createdBy: null,
@@ -146,33 +145,18 @@ describe('classifyRecord (pure engine)', () => {
   });
 
   it('positive lessons add to score; negative lessons subtract', () => {
-    const positive: LearningLesson = {
+    const positive = makeLessonRow({
       id: 1n,
-      workspaceId: 1n,
-      productProfileId: null,
       category: 'qualification_positive',
       rule: 'Healthcare projects with budget over £5M are great fits',
-      source: 'operator',
-      evidenceEventIds: [],
-      enabled: true,
-      confidence: 80,
-      applicationCount: 0,
-      lastAppliedAt: null,
-      embedding: null,
-      embeddingModel: null,
-      embeddingDim: 1536,
-      embeddedAt: null,
-      createdBy: null,
-      updatedBy: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    const negative: LearningLesson = {
-      ...positive,
+      polarity: 1,
+    });
+    const negative = makeLessonRow({
       id: 2n,
       category: 'qualification_negative',
       rule: 'Skip residential schemes — wrong fit',
-    };
+      polarity: -1,
+    });
     const v1 = classifyRecord(
       { title: 'Healthcare facility — large budget approval' },
       makeProduct(),
@@ -189,34 +173,46 @@ describe('classifyRecord (pure engine)', () => {
     expect(v2.disqualifyingSignals.some((s) => s.startsWith('lesson:'))).toBe(true);
   });
 
-  it('disabled lessons are ignored', () => {
-    const lesson: LearningLesson = {
-      id: 1n,
-      workspaceId: 1n,
-      productProfileId: null,
-      category: 'qualification_negative',
-      rule: 'Skip residential',
-      source: 'operator',
-      evidenceEventIds: [],
-      enabled: false,
-      confidence: 80,
-      applicationCount: 0,
-      lastAppliedAt: null,
-      embedding: null,
-      embeddingModel: null,
-      embeddingDim: 1536,
-      embeddedAt: null,
-      createdBy: null,
-      updatedBy: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    const v = classifyRecord(
-      { title: 'Residential apartment' },
-      makeProduct(),
-      [lesson],
-    );
-    expect(v.relevanceScore).toBe(50); // no -15 from the disabled lesson
+  it('the sign comes from the rule polarity, not the category (I098)', () => {
+    // An AVOID sector rule: before KL-01 every sector_preference rule
+    // scored as positive.
+    const avoidSector = makeLessonRow({
+      id: 3n,
+      category: 'sector_preference',
+      rule: 'Avoid residential developers',
+      polarity: -1,
+    });
+    const v = classifyRecord({ title: 'Residential developers in Leeds' }, makeProduct(), [
+      avoidSector,
+    ]);
+    expect(v.relevanceScore).toBe(50 - 15);
+    expect(v.evidence.matchedLessonIds).toEqual([3n]);
+  });
+
+  it('neutral rules never move the score and are not counted as matched', () => {
+    const neutral = makeLessonRow({
+      id: 4n,
+      category: 'general_instruction',
+      rule: 'Residential enquiries go to the Leeds office',
+      polarity: 0,
+    });
+    const v = classifyRecord({ title: 'Residential enquiries' }, makeProduct(), [neutral]);
+    expect(v.relevanceScore).toBe(50);
+    expect(v.evidence.matchedLessonIds).toEqual([]);
+  });
+
+  it('only active lessons count (disabled, proposed and retired are ignored)', () => {
+    for (const lifecycle of ['disabled', 'proposed', 'retired'] as const) {
+      const lesson = makeLessonRow({
+        category: 'qualification_negative',
+        rule: 'Skip residential',
+        polarity: -1,
+        lifecycle,
+        retiredReason: lifecycle === 'retired' ? 'stale' : null,
+      });
+      const v = classifyRecord({ title: 'Residential apartment' }, makeProduct(), [lesson]);
+      expect(v.relevanceScore).toBe(50); // no -15 from an inactive lesson
+    }
   });
 
   it('confidence grows with signal count', () => {
@@ -370,7 +366,7 @@ describe('classifySourceRecord (DB-backed)', () => {
     await createLesson(ctx(s.workspaceA, s.ownerA), {
       category: 'qualification_negative',
       rule: 'Skip records with synthetic content',
-      productProfileId: a.id,
+      scope: { kind: 'products', productProfileIds: [a.id] },
     });
     const records = await seedRecordViaConnectorRun(s.workspaceA, s.ownerA);
     if (!records[0]) return;

@@ -18,6 +18,7 @@ import { workspaces } from '@/lib/db/schema/workspaces';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import {
   createLesson,
+  getLessonScopeProducts,
   getRelevantLessons,
   reinforceLessons,
 } from '@/lib/services/learning';
@@ -32,6 +33,7 @@ import { createProductProfile } from '@/lib/services/product-profile';
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { reviewItems } from '@/lib/db/schema/review';
 import { generateOutreachDraft } from '@/lib/services/outreach';
+import { updateLearnFromReplies } from '@/lib/services/workspace';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 class StubJson implements IAIProvider {
@@ -181,9 +183,39 @@ describe('learnFromReplyOutcome', () => {
     return { c, product, lesson, draft };
   }
 
+  it('KL-02: off by default — a reply records no event and moves no rule', async () => {
+    const s = await setup();
+    const { c, product, lesson, draft } = await seedDraftWithLessons(s);
+    const r = await learnFromReplyOutcome(c, {
+      messageId: 122n,
+      replyClass: 'interest',
+      classifierConfidence: 80,
+      productProfileId: product.id,
+      precedingDraftId: draft.id,
+    });
+    expect(r).toEqual({
+      recorded: false,
+      direction: 'up',
+      reinforcedCount: 0,
+      skippedReason: 'learn_from_replies_off',
+    });
+    expect((await lessonRow(lesson.id)).confidence).toBe(50);
+    const events = await db
+      .select()
+      .from(learningEvents)
+      .where(
+        and(
+          eq(learningEvents.workspaceId, s.workspaceA),
+          eq(learningEvents.actionType, 'reply_positive'),
+        ),
+      );
+    expect(events).toHaveLength(0);
+  });
+
   it('positive reply records an event and reinforces the draft lessons up', async () => {
     const s = await setup();
     const { c, product, lesson, draft } = await seedDraftWithLessons(s);
+    await updateLearnFromReplies(c, true);
 
     const r = await learnFromReplyOutcome(c, {
       messageId: 123n,
@@ -206,11 +238,20 @@ describe('learnFromReplyOutcome', () => {
       );
     expect(events).toHaveLength(1);
     expect(events[0]!.productProfileId).toBe(product.id);
+    // A machine classification, not an operator decision (I034): never
+    // claimed by learning.process, never mined by the weekly synthesis.
+    expect(events[0]).toMatchObject({
+      origin: 'system',
+      processingStatus: 'skipped',
+      processingNote: 'machine',
+      decisionId: null,
+    });
   });
 
   it('negative reply weakens; neutral classes are ignored', async () => {
     const s = await setup();
     const { c, product, lesson, draft } = await seedDraftWithLessons(s);
+    await updateLearnFromReplies(c, true);
 
     const neg = await learnFromReplyOutcome(c, {
       messageId: 124n,
@@ -286,7 +327,10 @@ describe('learnFromDraftEdit', () => {
       );
     expect(lessons).toHaveLength(1);
     expect(lessons[0]!.category).toBe('outreach_style');
-    expect(lessons[0]!.productProfileId).toBe(product.id);
+    expect(lessons[0]!.scopeKind).toBe('products');
+    expect((await getLessonScopeProducts(c, [lessons[0]!.id])).get(lessons[0]!.id.toString())).toEqual([
+      product.id,
+    ]);
     expect(lessons[0]!.confidence).toBe(65); // capped below the AI's 80
 
     // Same draft again → guard blocks a second lesson.
@@ -392,6 +436,27 @@ describe('synthesizeWorkspaceLearningUnattended', () => {
     expect(stub.calls).toBe(0);
   });
 
+  it('never mines reply outcomes: they are machine events (I034)', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await updateLearnFromReplies(c, true);
+    const product = await createProductProfile(c, { name: 'P', shortDescription: 'x' });
+    for (let i = 0; i < 15; i++) {
+      await learnFromReplyOutcome(c, {
+        messageId: BigInt(900 + i),
+        replyClass: i % 2 === 0 ? 'negative' : 'interest',
+        classifierConfidence: 80,
+        productProfileId: product.id,
+        precedingDraftId: null,
+      });
+    }
+    const stub = new StubJson({ proposals: [] });
+    _setAIProviderForTests(stub);
+    const r = await synthesizeWorkspaceLearningUnattended(s.workspaceA);
+    expect(r).toMatchObject({ ran: false, skippedReason: 'insufficient_events', eventsExamined: 0 });
+    expect(stub.calls).toBe(0);
+  });
+
   it('skips on an empty wallet', async () => {
     const s = await setup();
     await seedEvents(s.workspaceA, 15);
@@ -460,9 +525,14 @@ describe('synthesizeWorkspaceLearningUnattended', () => {
         ),
       );
     expect(created).toHaveLength(1);
-    expect(created[0]!.productProfileId).toBe(product.id);
+    expect(created[0]!.scopeKind).toBe('products');
+    expect((await getLessonScopeProducts(c, [created[0]!.id])).get(created[0]!.id.toString())).toEqual([
+      product.id,
+    ]);
     expect(created[0]!.confidence).toBe(55); // capped
-    expect(created[0]!.enabled).toBe(true);
+    expect(created[0]!.lifecycle).toBe('active');
+    // qualification_negative fixes the direction, whatever the model says.
+    expect(created[0]!.polarity).toBe(-1);
 
     const notes = await db
       .select()

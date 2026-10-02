@@ -56,17 +56,6 @@ const FORBIDDEN_DELTA = -50;
 const POSITIVE_LESSON_DELTA = 10;
 const NEGATIVE_LESSON_DELTA = -15;
 
-const POSITIVE_LESSON_CATEGORIES = new Set([
-  'qualification_positive',
-  'sector_preference',
-  'product_positioning',
-  'false_negative', // lesson learned: don't dismiss this kind again
-]);
-const NEGATIVE_LESSON_CATEGORIES = new Set([
-  'qualification_negative',
-  'false_positive',
-]);
-
 export function classifyRecord(
   record: ClassifiableRecord,
   product: ProductProfile,
@@ -118,19 +107,25 @@ export function classifyRecord(
   }
 
   // ---- learning lessons ----
+  // The rule's polarity (KL-01) decides the sign: PREFER (+1) raises the
+  // score, AVOID (-1) lowers it. Neutral rules (0: style, positioning,
+  // most general instructions) never move relevance, so they are not
+  // "matched" either — before KL-01 they were, and the review path then
+  // reinforced rules that had no say in the verdict (I098).
   const matchedLessonIds: bigint[] = [];
   for (const lesson of lessons) {
-    if (!lesson.enabled) continue;
+    if (lesson.lifecycle !== 'active') continue;
+    if (lesson.polarity === 0) continue;
     if (!matchesIn(haystack, keyTokenForLesson(lesson.rule))) continue;
     matchedLessonIds.push(lesson.id);
-    if (POSITIVE_LESSON_CATEGORIES.has(lesson.category)) {
+    if (lesson.polarity > 0) {
       score += POSITIVE_LESSON_DELTA;
       contributions.push({
         kind: `lesson:${lesson.category}`,
         value: short(lesson.rule),
         delta: POSITIVE_LESSON_DELTA,
       });
-    } else if (NEGATIVE_LESSON_CATEGORIES.has(lesson.category)) {
+    } else {
       score += NEGATIVE_LESSON_DELTA;
       disqualifyingSignals.push(`lesson:${short(lesson.rule)}`);
       contributions.push({
@@ -139,7 +134,6 @@ export function classifyRecord(
         delta: NEGATIVE_LESSON_DELTA,
       });
     }
-    // Other categories (outreach_style, etc.) don't directly affect relevance.
   }
 
   // ---- finalize ----

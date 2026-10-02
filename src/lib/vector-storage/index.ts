@@ -114,6 +114,17 @@ export interface IVectorStorageProvider {
    *  payloads. 'mock' | 'pgvector' | 'openai'. */
   readonly id: string;
 
+  /**
+   * KL-06 (I040): true when the provider's index IS the source's local
+   * chunk set (document_chunks), which the knowledge.index job builds once
+   * per source before the per-product attach loop. attachKnowledgeSource
+   * then only does bookkeeping (the product binding and its counters) and
+   * needs no file bytes, and detach is never called before a re-attach
+   * (it would drop the chunks just built). Providers that upload a copy
+   * per product (openai, mock) leave it unset.
+   */
+  readonly indexesPerSource?: boolean;
+
   /** Idempotent. Returns the existing binding when one already exists
    *  for (workspace, product, provider), else creates one. */
   ensureProductStore(
@@ -212,9 +223,10 @@ export async function upsertProductVectorStore(
   return created;
 }
 
-/** Bump the running counters on a product binding. Used by every
- *  provider after a successful attach. Negative deltas are allowed
- *  (detach). */
+/** Bump the running counters on a product binding. Used by the
+ *  providers that upload a copy per product (openai, mock) after a
+ *  successful attach. Negative deltas are allowed (detach). The pgvector
+ *  bindings are never bumped: recomputePgvectorProductUsage derives them. */
 export async function bumpProductVectorStoreUsage(
   storeId: bigint,
   deltaBytes: number,
@@ -228,6 +240,43 @@ export async function bumpProductVectorStoreUsage(
       updatedAt: new Date(),
     })
     .where(eq(productVectorStores.id, storeId));
+}
+
+/**
+ * KL-06: the pgvector bindings' counters, derived instead of bumped. On
+ * pgvector a product's store IS the local chunks of the sources scoped to
+ * it, so usage_bytes = the bytes of those chunks' text and file_count =
+ * the number of those sources that have chunks. Recomputed after every
+ * attach and detach, so re-indexing never inflates them (before KL-06
+ * they only ever grew, I040) and deleting a source brings them down. One
+ * UPDATE per workspace; only existing pgvector bindings are touched.
+ */
+export async function recomputePgvectorProductUsage(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<void> {
+  // Raw SQL: correlated aggregate subqueries in SET, which the builder
+  // cannot express. Only the workspace id is bound.
+  await db.execute(sql`
+    UPDATE product_vector_stores pvs
+    SET usage_bytes = COALESCE((
+          SELECT SUM(octet_length(c.content))
+          FROM document_chunks c
+          JOIN knowledge_source_products p
+            ON p.source_id = c.knowledge_source_id AND p.workspace_id = c.workspace_id
+          WHERE c.workspace_id = pvs.workspace_id
+            AND p.product_profile_id = pvs.product_profile_id
+        ), 0),
+        file_count = (
+          SELECT COUNT(DISTINCT c.knowledge_source_id)::int
+          FROM document_chunks c
+          JOIN knowledge_source_products p
+            ON p.source_id = c.knowledge_source_id AND p.workspace_id = c.workspace_id
+          WHERE c.workspace_id = pvs.workspace_id
+            AND p.product_profile_id = pvs.product_profile_id
+        ),
+        updated_at = now()
+    WHERE pvs.workspace_id = ${ctx.workspaceId}
+      AND pvs.provider_id = 'pgvector'`);
 }
 
 // ─── mock impl ───────────────────────────────────────────────────────
@@ -333,12 +382,26 @@ export async function getVectorStorageProviderForCtx(
     'vector_storage',
     process.env.VECTOR_STORAGE_PROVIDER,
   );
-  if (active.id === 'mock') return new MockVectorStorageProvider();
-  if (active.id === 'pgvector') {
+  return getVectorStorageProviderByIdForCtx(ctx, active.id);
+}
+
+/**
+ * KL-06: the provider with this id, whether or not it is the active one —
+ * deleting a source detaches it from the provider that holds it
+ * (knowledge_sources.external_provider_id), which may not be the rail the
+ * workspace uses today. The test injection still short-circuits.
+ */
+export async function getVectorStorageProviderByIdForCtx(
+  ctx: WorkspaceContext,
+  id: string,
+): Promise<IVectorStorageProvider> {
+  if (cached) return cached;
+  if (id === 'mock') return new MockVectorStorageProvider();
+  if (id === 'pgvector') {
     const { PgvectorVectorStorageProvider } = await import('./pgvector');
     return new PgvectorVectorStorageProvider();
   }
-  if (active.id === 'openai') {
+  if (id === 'openai') {
     const { resolveProviderKey } = await import('@/lib/services/secrets');
     const resolved = await resolveProviderKey(
       ctx,
@@ -356,7 +419,7 @@ export async function getVectorStorageProviderForCtx(
       keySource: resolved.source,
     });
   }
-  throw new Error(`Unknown vector_storage provider id from cascade: ${active.id}`);
+  throw new Error(`Unknown vector_storage provider id: ${id}`);
 }
 
 export function _setVectorStorageProviderForTests(

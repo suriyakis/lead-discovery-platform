@@ -12,6 +12,7 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { countReviewItems, getStateCounts, listReviewItems } from '@/lib/services/review';
+import { newDecisionKey } from '@/lib/services/learning-decisions';
 import type { ReviewItemState } from '@/lib/db/schema/review';
 import { bulkArchiveAction, bulkDeleteAction } from './actions';
 
@@ -154,6 +155,8 @@ export default async function ReviewPage({
           className="bulk-toolbar"
         >
           <input type="hidden" name="state" value={stateKey} />
+          {/* KL-02: the bulk archive is one decision; a resubmit is a no-op. */}
+          <input type="hidden" name="decisionKey" value={newDecisionKey()} />
           {fromRaw ? <input type="hidden" name="from" value={fromRaw} /> : null}
           {toRaw ? <input type="hidden" name="to" value={toRaw} /> : null}
           {page > 1 ? <input type="hidden" name="page" value={String(page)} /> : null}
@@ -178,7 +181,7 @@ export default async function ReviewPage({
             ) : null}
             <ConfirmFormButton
               formAction={bulkDeleteAction}
-              message="Permanently delete the selected items? This cannot be undone."
+              message="Permanently delete the selected items? This cannot be undone. Items with recorded decisions or comments are kept — archive those instead."
               className="ghost-btn danger"
               disabled={items.length === 0}
             >

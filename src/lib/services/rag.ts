@@ -1,22 +1,34 @@
 // RAG indexing + retrieval service.
 //
-// Index path:
-//   indexDocument(ctx, documentId)         — chunk + embed a document's bytes
-//   indexKnowledgeSource(ctx, ksId)        — chunk + embed a text/url source
+// Index path (KL-06: indexing is a job — knowledge-indexing.ts):
+//   indexDocument(ctx, documentId)         — index this document's sources NOW, in-process
+//   indexKnowledgeSource(ctx, ksId)        — index one source NOW, in-process
+//   replaceSourceChunks(...)               — the chunk swap the knowledge.index job uses
 //   embedLesson(ctx, lessonId)             — embed a single learning_lesson
-//   embedAllLessons(ctx)                   — bulk-embed every enabled lesson
+//   embedAllLessons(ctx)                   — bulk-embed every active, in-scope lesson
+//
+// Pages never index inside the request any more: they queue a run
+// (requestKnowledgeIndex / requestDocumentIndex) and the knowledge.index
+// job does the work. indexDocument / indexKnowledgeSource run that same
+// job inline (same outbox row, same extraction cache, same no-re-embed
+// rule) for scripts and tests that need the result at once.
 //
 // Retrieval path:
 //   retrieve(ctx, query, opts)             — top-k cosine-nearest chunks
 //   retrieveLessons(ctx, query, opts)      — top-k cosine-nearest lessons
+//
+// KL-05: every chunk is owned by exactly one knowledge source, and only
+// knowledge-scope.ts decides whether a source's chunks may reach a prompt
+// (scope, archived document). There are no "document-level" chunks any
+// more: a NULL source used to mean workspace-wide, which is how a
+// product-scoped document leaked into every product (I039).
 
-import { and, desc, eq, isNotNull, sql, type SQL } from 'drizzle-orm';
-import { Readable } from 'node:stream';
+import { and, desc, eq, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   documents,
   knowledgeSources,
-  type Document,
+  type DocumentMeta,
   type KnowledgeSource,
 } from '@/lib/db/schema/documents';
 import {
@@ -25,17 +37,29 @@ import {
   type DocumentChunk,
   type IndexingJob,
   type NewDocumentChunk,
-  type NewIndexingJob,
 } from '@/lib/db/schema/rag';
 import { learningLessons, type LearningLesson } from '@/lib/db/schema/learning';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
-import { getStorage, type IStorage } from '@/lib/storage';
+import { DocumentExtractionError } from './document-extraction';
+import { documentMetaColumns } from './documents';
+import { knowledgeSourceRetrievable, WORKSPACE_KNOWLEDGE_SCOPE } from './knowledge-scope';
+// knowledge-sources.ts reaches rag.ts only through dynamic imports, and
+// knowledge-indexing.ts (which imports rag.ts) is reached from here only
+// through a dynamic import, so these static imports have no cycle.
+import { createKnowledgeSource, listDocumentSources } from './knowledge-sources';
+import { categoriesForTaskType, type LessonTaskType } from './learning-categories';
+// Static import is safe: learning.ts reaches rag.ts only through a
+// dynamic import (scheduleLessonEmbedding), so there is no load cycle.
+import { lessonInScope } from './learning';
+import type { IStorage } from '@/lib/storage';
 import {
   EMBEDDING_DIM,
   getEmbeddingProviderForCtx,
   type IEmbeddingProvider,
 } from '@/lib/embeddings';
+
+export { isIndexableDocument } from './document-extraction';
 
 export class RagServiceError extends Error {
   public readonly code: string;
@@ -62,7 +86,7 @@ const CHUNK_CHAR_TARGET = 2000;
 const CHUNK_CHAR_OVERLAP = 200;
 const MAX_CHUNKS_PER_SOURCE = 1000;
 
-interface Chunk {
+export interface Chunk {
   index: number;
   startChar: number;
   endChar: number;
@@ -108,223 +132,48 @@ export function chunkText(input: string): Chunk[] {
   return chunks;
 }
 
-// ---- text extraction ------------------------------------------------
+// ---- index (in-process) --------------------------------------------
 
-/**
- * Whether auto-indexing should even be attempted for a document, judged
- * from metadata alone (no bytes needed). Mirrors the extractable branches
- * of extractDocumentText, minus the looks-like-UTF-8 byte heuristic —
- * unknown binary types are stored fine but skipped by AUTO indexing; the
- * manual "Index now" button still runs the full byte-sniffing path.
- */
-export function isIndexableDocument(input: {
-  mimeType: string | null;
-  filename: string;
-}): boolean {
-  const mime = (input.mimeType ?? '').toLowerCase();
-  const filename = input.filename.toLowerCase();
-  if (mime.startsWith('text/') || mime === 'application/json') return true;
-  if (mime === 'application/xhtml+xml') return true;
-  if (mime === 'application/pdf' || filename.endsWith('.pdf')) return true;
-  if (
-    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    filename.endsWith('.docx')
-  ) {
-    return true;
-  }
-  return /\.(md|txt|csv|json|html?|xml)$/.test(filename);
-}
-
-interface ExtractDeps {
+export interface IndexDeps {
   storage?: IStorage;
+  embedder?: IEmbeddingProvider;
 }
-
-async function extractDocumentText(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  document: Document,
-  deps: ExtractDeps = {},
-): Promise<string> {
-  const storage = deps.storage ?? getStorage();
-  const stream = await storage.get(document.storageKey);
-  const buffer = await streamToBuffer(stream);
-  const mime = document.mimeType.toLowerCase();
-  const filename = document.filename.toLowerCase();
-
-  if (mime.startsWith('text/') || mime === 'application/json') {
-    return buffer.toString('utf8');
-  }
-  if (mime === 'text/html' || mime === 'application/xhtml+xml') {
-    return stripHtml(buffer.toString('utf8'));
-  }
-  // PDFs go through the same lazy-loaded pdf-parse pipeline that
-  // product-autofill uses, sharing the same v1-self-test workaround
-  // (import the inner module path to skip the entry-point bug). PDFs
-  // matter for spec sheets / TDS docs and are the most common
-  // operator-uploaded format after plain text.
-  if (mime === 'application/pdf' || filename.endsWith('.pdf')) {
-    return extractPdfText(ctx, buffer, document.filename);
-  }
-  // DOCX via mammoth (`.docx` only — old `.doc` binary format is rare
-  // and would need a separate path). Mammoth strips formatting and
-  // returns the body text directly, ideal for embedding.
-  if (
-    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    filename.endsWith('.docx')
-  ) {
-    return extractDocxText(buffer, document.filename);
-  }
-  // Heuristic: if the buffer looks like UTF-8 text, treat it as such.
-  const sample = buffer.subarray(0, Math.min(buffer.length, 1024)).toString('utf8');
-  if (looksLikeText(sample)) return buffer.toString('utf8');
-  throw invalid(`unsupported mime type for indexing: ${mime}`);
-}
-
-/** Below this many extracted chars a "parsed" PDF counts as image-based
- *  (scanned pages parse fine — they just contain no text operators). */
-const PDF_TEXT_MIN_CHARS = 20;
-
-async function extractPdfText(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  buffer: Buffer,
-  filename: string,
-): Promise<string> {
-  // @ts-expect-error pdf-parse v1 has no .d.ts for the inner path; we
-  // hand-type the surface we use.
-  const mod = (await import('pdf-parse/lib/pdf-parse.js')) as unknown as {
-    default: (buffer: Buffer) => Promise<{ text: string }>;
-  };
-  let raw = '';
-  try {
-    const result = await mod.default(buffer);
-    raw = result.text ?? '';
-  } catch (err) {
-    throw invalid(
-      `pdf parse failed for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  const cleaned = raw
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  if (cleaned.length >= PDF_TEXT_MIN_CHARS) return cleaned;
-
-  // Image-based (scanned) PDF — no text layer. Auto-route to the OCR
-  // provider (Mistral) when a key is configured anywhere in the
-  // cascade; otherwise fail with instructions instead of silently
-  // producing an empty index.
-  const { getOcrProviderForCtx, estimateOcrCostCents } = await import('@/lib/ocr');
-  const ocr = await getOcrProviderForCtx(ctx);
-  if (!ocr) {
-    throw invalid(
-      `${filename} contains no extractable text (image-based / scanned PDF). Add a Mistral API key (Admin → Providers, or workspace BYOK 'mistral.apiKey') to enable automatic OCR, or re-save the PDF with a text layer.`,
-    );
-  }
-  const result = await ocr.provider.extractPdfText(buffer, filename);
-  // Meter the OCR pages — same choke point as every other billable call.
-  // Best-effort: a usage-log failure never breaks the extraction.
-  try {
-    const { recordUsage } = await import('./usage');
-    await recordUsage(ctx, {
-      kind: 'ocr.pdf',
-      provider: ocr.provider.id,
-      units: BigInt(Math.max(result.pages, 1)),
-      costEstimateCents: estimateOcrCostCents(result.pages),
-      payload: {
-        model: result.model,
-        filename,
-        pages: result.pages,
-        keySource: ocr.keySource,
-      },
-    });
-  } catch (err) {
-    console.error(
-      '[rag.extractPdfText] OCR usage record failed:',
-      err instanceof Error ? err.message : err,
-    );
-  }
-  const ocrCleaned = result.text
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  if (ocrCleaned.length < PDF_TEXT_MIN_CHARS) {
-    throw invalid(
-      `${filename}: OCR (${result.model}) found no readable text across ${result.pages} page${result.pages === 1 ? '' : 's'} — the scan may be blank or illegible.`,
-    );
-  }
-  return ocrCleaned;
-}
-
-async function extractDocxText(buffer: Buffer, filename: string): Promise<string> {
-  const mod = (await import('mammoth')) as unknown as {
-    extractRawText: (input: { buffer: Buffer }) => Promise<{ value: string }>;
-  };
-  let raw = '';
-  try {
-    const result = await mod.extractRawText({ buffer });
-    raw = result.value ?? '';
-  } catch (err) {
-    throw invalid(
-      `docx parse failed for ${filename}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  const cleaned = raw
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  if (cleaned.length < 20) {
-    throw invalid(`${filename} contains no extractable text after docx parsing.`);
-  }
-  return cleaned;
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n[ \t]+/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function looksLikeText(sample: string): boolean {
-  let nonText = 0;
-  for (const ch of sample) {
-    const code = ch.charCodeAt(0);
-    if ((code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 65533) {
-      nonText++;
-    }
-  }
-  return nonText / Math.max(1, sample.length) < 0.05;
-}
-
-async function streamToBuffer(stream: Readable | NodeJS.ReadableStream): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream as AsyncIterable<Buffer | string>) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks);
-}
-
-// ---- index ---------------------------------------------------------
 
 export interface IndexResult {
   job: IndexingJob;
   chunkCount: number;
 }
 
+export interface IndexDocumentResult extends IndexResult {
+  /** One entry per source of the document, in order. `job` above is the
+   *  last one's (kept for callers that index a single-source document). */
+  sources: Array<{ knowledgeSourceId: bigint; job: IndexingJob; chunkCount: number }>;
+  /** Set when the document had no source and indexing created a
+   *  workspace-wide one for it. */
+  createdSourceId: bigint | null;
+}
+
+/** Extraction failures surface as this module's invalid_input, as before. */
+function asRagError(err: unknown): unknown {
+  return err instanceof DocumentExtractionError ? invalid(err.message) : err;
+}
+
+/**
+ * KL-05: "index this document's sources". The document's chunks are its
+ * knowledge sources' chunks, so re-indexing refreshes exactly those (in
+ * place, scope unchanged) and never writes a second, unscoped set (I039).
+ * A document with no source yet gets one workspace-wide source (available
+ * to every product), created explicitly and audited; to scope it to
+ * products, tick them on that source.
+ *
+ * KL-06: runs the knowledge.index job inline for each source (pages queue
+ * it instead — requestDocumentIndex).
+ */
 export async function indexDocument(
   ctx: WorkspaceContext,
   documentId: bigint,
-  deps: ExtractDeps & { embedder?: IEmbeddingProvider } = {},
-): Promise<IndexResult> {
+  deps: IndexDeps = {},
+): Promise<IndexDocumentResult> {
   if (!canWrite(ctx)) throw permissionDenied('rag.index_document');
   const docRows = await db
     .select()
@@ -342,44 +191,61 @@ export async function indexDocument(
     throw invalid(`cannot index document in status ${doc.status}`);
   }
 
-  const job = await startJob(ctx, { documentId, knowledgeSourceId: null });
-  try {
-    const text = await extractDocumentText(ctx, doc, deps);
-    const chunks = chunkText(text);
-    const embedder = deps.embedder ?? (await getEmbeddingProviderForCtx(ctx));
-    const inserted = await embedAndPersist(ctx, embedder, chunks, {
+  let sourceIds = (await listDocumentSources(ctx, documentId)).map((r) => r.source.id);
+  let createdSourceId: bigint | null = null;
+  if (sourceIds.length === 0) {
+    const created = await createKnowledgeSource(ctx, {
+      kind: 'document',
+      title: doc.name,
       documentId,
-      knowledgeSourceId: null,
+      tags: doc.tags,
+      scope: WORKSPACE_KNOWLEDGE_SCOPE,
     });
-    const finished = await finishJob(ctx, job.id, 'succeeded', inserted, embedder.model);
-    await recordAuditEvent(ctx, {
-      kind: 'rag.index_document',
-      entityType: 'document',
-      entityId: documentId,
-      payload: { chunkCount: inserted, model: embedder.model },
-    });
-    return { job: finished, chunkCount: inserted };
-  } catch (err) {
-    await finishJob(
-      ctx,
-      job.id,
-      'failed',
-      0,
-      null,
-      err instanceof Error ? err.message : String(err),
-    );
-    throw err;
+    createdSourceId = created.id;
+    sourceIds = [created.id];
   }
+
+  const results: IndexDocumentResult['sources'] = [];
+  let firstError: unknown = null;
+  for (const knowledgeSourceId of sourceIds) {
+    try {
+      const r = await indexKnowledgeSource(ctx, knowledgeSourceId, deps);
+      results.push({ knowledgeSourceId, job: r.job, chunkCount: r.chunkCount });
+    } catch (err) {
+      firstError ??= err;
+    }
+  }
+  if (firstError !== null) throw firstError;
+  const last = results[results.length - 1];
+  if (!last) throw invariant('document indexing produced no result');
+  const chunkCount = results.reduce((n, r) => n + r.chunkCount, 0);
+  await recordAuditEvent(ctx, {
+    kind: 'rag.index_document',
+    entityType: 'document',
+    entityId: documentId,
+    payload: {
+      chunkCount,
+      knowledgeSourceIds: results.map((r) => r.knowledgeSourceId.toString()),
+      createdSourceId: createdSourceId?.toString() ?? null,
+    },
+  });
+  return { job: last.job, chunkCount, sources: results, createdSourceId };
 }
 
+/**
+ * Index one source now, in this process: queue its run (reusing a queued
+ * one) and execute the knowledge.index job inline. Throws what made the
+ * run fail; the run's row records it either way (and, for a transient
+ * error, stays queued for its backoff retry).
+ */
 export async function indexKnowledgeSource(
   ctx: WorkspaceContext,
   knowledgeSourceId: bigint,
-  deps: ExtractDeps & { embedder?: IEmbeddingProvider } = {},
+  deps: IndexDeps = {},
 ): Promise<IndexResult> {
   if (!canWrite(ctx)) throw permissionDenied('rag.index_knowledge_source');
-  const ksRows = await db
-    .select()
+  const ks = await db
+    .select({ id: knowledgeSources.id })
     .from(knowledgeSources)
     .where(
       and(
@@ -388,163 +254,112 @@ export async function indexKnowledgeSource(
       ),
     )
     .limit(1);
-  if (!ksRows[0]) throw notFound('knowledge_source');
-  const ks = ksRows[0];
-
-  const job = await startJob(ctx, {
-    documentId: null,
-    knowledgeSourceId,
-  });
+  if (!ks[0]) throw notFound('knowledge_source');
+  const { indexKnowledgeSourceNow } = await import('./knowledge-indexing');
   try {
-    let text = '';
-    if (ks.kind === 'text') {
-      text = ks.textExcerpt ?? '';
-    } else if (ks.kind === 'url') {
-      text = `${ks.title}\n${ks.summary ?? ''}\n${ks.url ?? ''}`;
-    } else if (ks.kind === 'document' && ks.documentId) {
-      // Forward to document indexing; both the document and ks rows can
-      // surface in retrieval via the join.
-      const docRows = await db
-        .select()
-        .from(documents)
-        .where(eq(documents.id, ks.documentId))
-        .limit(1);
-      if (docRows[0]) {
-        text = await extractDocumentText(ctx, docRows[0], deps);
-      }
-    }
-    if (!text.trim()) {
-      throw invalid(`knowledge_source ${ks.id} produced no extractable text`);
-    }
-    const chunks = chunkText(text);
-    const embedder = deps.embedder ?? (await getEmbeddingProviderForCtx(ctx));
-    const inserted = await embedAndPersist(ctx, embedder, chunks, {
-      documentId: null,
-      knowledgeSourceId,
-    });
-    const finished = await finishJob(ctx, job.id, 'succeeded', inserted, embedder.model);
-    await recordAuditEvent(ctx, {
-      kind: 'rag.index_knowledge_source',
-      entityType: 'knowledge_source',
-      entityId: knowledgeSourceId,
-      payload: { chunkCount: inserted, model: embedder.model, kind: ks.kind },
-    });
-    return { job: finished, chunkCount: inserted };
+    return await indexKnowledgeSourceNow(ctx, knowledgeSourceId, deps);
   } catch (err) {
-    await finishJob(
-      ctx,
-      job.id,
-      'failed',
-      0,
-      null,
-      err instanceof Error ? err.message : String(err),
-    );
-    throw err;
+    throw asRagError(err);
   }
 }
 
-async function embedAndPersist(
-  ctx: WorkspaceContext,
+/**
+ * Embed first, then swap the source's chunks in one transaction: the old
+ * set stays retrievable until the new one is committed, and the source row
+ * lock keeps two concurrent re-indexes from leaving both sets behind. The
+ * same transaction stamps the source with the hash of the text and the
+ * embedding model the new chunks came from (KL-06: a later run with the
+ * same hash and model re-embeds nothing).
+ */
+export async function replaceSourceChunks(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
   embedder: IEmbeddingProvider,
   chunks: ReadonlyArray<Chunk>,
-  scope: { documentId: bigint | null; knowledgeSourceId: bigint | null },
+  knowledgeSourceId: bigint,
+  stamp: { contentHash: string; embeddingModel: string },
 ): Promise<number> {
-  // Re-index: drop prior chunks for the same scope.
-  if (scope.documentId !== null) {
-    await db
-      .delete(documentChunks)
-      .where(
-        and(
-          eq(documentChunks.workspaceId, ctx.workspaceId),
-          eq(documentChunks.documentId, scope.documentId),
-        ),
-      );
-  }
-  if (scope.knowledgeSourceId !== null) {
-    await db
-      .delete(documentChunks)
-      .where(
-        and(
-          eq(documentChunks.workspaceId, ctx.workspaceId),
-          eq(documentChunks.knowledgeSourceId, scope.knowledgeSourceId),
-        ),
-      );
-  }
-  if (chunks.length === 0) return 0;
-
   // Batch the embed call — most providers cap at 128 inputs per call.
   const BATCH = 64;
   const now = new Date();
-  let total = 0;
+  const rows: NewDocumentChunk[] = [];
   for (let i = 0; i < chunks.length; i += BATCH) {
     const batch = chunks.slice(i, i + BATCH);
     const result = await embedder.embed({ texts: batch.map((c) => c.content) });
     if (result.embeddings.length !== batch.length) {
       throw invariant('embedder returned wrong batch size');
     }
-    const rows: NewDocumentChunk[] = batch.map((c, idx) => ({
-      workspaceId: ctx.workspaceId,
-      documentId: scope.documentId,
-      knowledgeSourceId: scope.knowledgeSourceId,
-      chunkIndex: c.index,
-      startChar: c.startChar,
-      endChar: c.endChar,
-      content: c.content,
-      tokenCount: c.tokenCount,
-      embedding: result.embeddings[idx]!,
-      embeddingModel: result.model,
-      embeddingDim: EMBEDDING_DIM,
-      embeddedAt: now,
-    }));
-    await db.insert(documentChunks).values(rows);
-    total += rows.length;
+    batch.forEach((c, idx) => {
+      rows.push({
+        workspaceId: ctx.workspaceId,
+        knowledgeSourceId,
+        chunkIndex: c.index,
+        startChar: c.startChar,
+        endChar: c.endChar,
+        content: c.content,
+        tokenCount: c.tokenCount,
+        embedding: result.embeddings[idx]!,
+        embeddingModel: result.model,
+        embeddingDim: EMBEDDING_DIM,
+        embeddedAt: now,
+      });
+    });
   }
-  return total;
+
+  await db.transaction(async (tx) => {
+    const [owner] = await tx
+      .select({ id: knowledgeSources.id })
+      .from(knowledgeSources)
+      .where(
+        and(
+          eq(knowledgeSources.workspaceId, ctx.workspaceId),
+          eq(knowledgeSources.id, knowledgeSourceId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+    if (!owner) throw notFound('knowledge_source');
+    await tx
+      .delete(documentChunks)
+      .where(
+        and(
+          eq(documentChunks.workspaceId, ctx.workspaceId),
+          eq(documentChunks.knowledgeSourceId, knowledgeSourceId),
+        ),
+      );
+    for (let i = 0; i < rows.length; i += BATCH) {
+      await tx.insert(documentChunks).values(rows.slice(i, i + BATCH));
+    }
+    await tx
+      .update(knowledgeSources)
+      .set({
+        indexedContentHash: stamp.contentHash,
+        indexedEmbeddingModel: stamp.embeddingModel,
+      })
+      .where(
+        and(
+          eq(knowledgeSources.workspaceId, ctx.workspaceId),
+          eq(knowledgeSources.id, knowledgeSourceId),
+        ),
+      );
+  });
+  return rows.length;
 }
 
-async function startJob(
-  ctx: WorkspaceContext,
-  scope: { documentId: bigint | null; knowledgeSourceId: bigint | null },
-): Promise<IndexingJob> {
-  const row: NewIndexingJob = {
-    workspaceId: ctx.workspaceId,
-    documentId: scope.documentId,
-    knowledgeSourceId: scope.knowledgeSourceId,
-    status: 'running',
-    startedAt: new Date(),
-    triggeredBy: ctx.userId,
-  };
-  const [created] = await db.insert(indexingJobs).values(row).returning();
-  if (!created) throw invariant('indexing_job insert returned no row');
-  return created;
-}
-
-async function finishJob(
+/** Chunks a source owns right now. */
+export async function countSourceChunks(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  id: bigint,
-  status: 'succeeded' | 'failed',
-  chunkCount: number,
-  embeddingModel: string | null,
-  error?: string,
-): Promise<IndexingJob> {
-  const [updated] = await db
-    .update(indexingJobs)
-    .set({
-      status,
-      chunkCount,
-      embeddingModel,
-      error: error ?? null,
-      finishedAt: new Date(),
-    })
+  knowledgeSourceId: bigint,
+): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(documentChunks)
     .where(
       and(
-        eq(indexingJobs.workspaceId, ctx.workspaceId),
-        eq(indexingJobs.id, id),
+        eq(documentChunks.workspaceId, ctx.workspaceId),
+        eq(documentChunks.knowledgeSourceId, knowledgeSourceId),
       ),
-    )
-    .returning();
-  if (!updated) throw invariant('indexing_job finish returned no row');
-  return updated;
+    );
+  return Number(row?.n ?? 0);
 }
 
 // ---- lesson embedding ----------------------------------------------
@@ -589,13 +404,15 @@ export async function embedAllLessons(
   embedder?: IEmbeddingProvider,
 ): Promise<{ embedded: number }> {
   if (!canWrite(ctx)) throw permissionDenied('rag.embed_all_lessons');
+  // Only rules some prompt can actually receive: active and in scope.
   const rows = await db
     .select()
     .from(learningLessons)
     .where(
       and(
         eq(learningLessons.workspaceId, ctx.workspaceId),
-        eq(learningLessons.enabled, true),
+        eq(learningLessons.lifecycle, 'active'),
+        lessonInScope(),
       ),
     );
   const embedderInst = embedder ?? (await getEmbeddingProviderForCtx(ctx));
@@ -628,7 +445,14 @@ export async function embedAllLessons(
 export interface RetrieveOptions {
   /** Top-k. Defaults to 8. */
   limit?: number;
+  /** Workspace-wide sources plus this product's. See knowledge-scope.ts. */
   productProfileId?: bigint;
+  /** Instead of productProfileId: workspace-wide sources plus these
+   *  products' (Suggest reply on a thread whose leads are for several
+   *  products); EMPTY = workspace-wide only (a thread with no lead
+   *  product). Omitting both: workspace-wide plus every source that still
+   *  has a product. */
+  productProfileIds?: readonly bigint[];
   /** Phase 22: filter chunks to a single knowledge purpose category. */
   purposeCategory?:
     | 'technical'
@@ -643,13 +467,21 @@ export interface RetrieveOptions {
 export interface RetrievedChunk {
   chunk: DocumentChunk;
   similarity: number;
-  document: Document | null;
-  knowledgeSource: KnowledgeSource | null;
+  /** The document the owning source wraps (kind=document), else null —
+   *  without its extraction cache (KL-06). */
+  document: DocumentMeta | null;
+  knowledgeSource: KnowledgeSource;
 }
 
 /**
  * Top-k cosine-nearest chunks for `query` in the workspace. Uses pgvector's
  * `<=>` (cosine distance) operator — similarity = 1 - distance.
+ *
+ * Which chunks may be returned is decided by THE predicate
+ * (knowledgeSourceRetrievable): the owning source's scope and whether its
+ * document is archived. An identical passage (e.g. one document wrapped
+ * by two sources, possible only in data from before KL-05) is returned
+ * once.
  */
 export async function retrieve(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -666,52 +498,58 @@ export async function retrieve(
   const conditions: SQL[] = [
     eq(documentChunks.workspaceId, ctx.workspaceId),
     isNotNull(documentChunks.embedding),
+    knowledgeSourceRetrievable({
+      workspaceId: ctx.workspaceId,
+      productProfileId: options.productProfileId,
+      productProfileIds: options.productProfileIds,
+    }),
   ];
-  // Optional product filter — match chunks whose owning knowledge_source
-  // is attached to that product.
-  if (options.productProfileId !== undefined) {
-    conditions.push(
-      sql`(${documentChunks.knowledgeSourceId} IS NULL OR EXISTS (
-        SELECT 1 FROM ${knowledgeSources}
-        WHERE ${knowledgeSources.id} = ${documentChunks.knowledgeSourceId}
-          AND ${options.productProfileId} = ANY(${knowledgeSources.productProfileIds})
-      ))`,
-    );
-  }
-  // Phase 22: optional purpose-category filter. Only chunks owned by a
-  // knowledge_source with a matching purpose_category are returned.
-  // Document-only chunks (no knowledge_source) are excluded when this
-  // filter is active — purpose is a knowledge-source-level axis.
+  // Phase 22: optional purpose-category filter (a source-level axis).
   if (options.purposeCategory !== undefined) {
-    conditions.push(
-      sql`EXISTS (
-        SELECT 1 FROM ${knowledgeSources}
-        WHERE ${knowledgeSources.id} = ${documentChunks.knowledgeSourceId}
-          AND ${knowledgeSources.purposeCategory} = ${options.purposeCategory}
-      )`,
-    );
+    conditions.push(eq(knowledgeSources.purposeCategory, options.purposeCategory));
   }
 
   const rows = await db
     .select({
       chunk: documentChunks,
-      document: documents,
+      document: documentMetaColumns,
       knowledgeSource: knowledgeSources,
       similarity: sql<number>`1 - (${documentChunks.embedding} <=> ${sql.raw(`'${literal}'::vector`)})`.as('similarity'),
     })
     .from(documentChunks)
-    .leftJoin(documents, eq(documents.id, documentChunks.documentId))
-    .leftJoin(knowledgeSources, eq(knowledgeSources.id, documentChunks.knowledgeSourceId))
+    .innerJoin(
+      knowledgeSources,
+      and(
+        eq(knowledgeSources.id, documentChunks.knowledgeSourceId),
+        eq(knowledgeSources.workspaceId, documentChunks.workspaceId),
+      ),
+    )
+    .leftJoin(
+      documents,
+      and(
+        eq(documents.id, knowledgeSources.documentId),
+        eq(documents.workspaceId, knowledgeSources.workspaceId),
+      ),
+    )
     .where(and(...conditions))
     .orderBy(sql`${documentChunks.embedding} <=> ${sql.raw(`'${literal}'::vector`)}`)
-    .limit(limit);
+    // Headroom for the duplicate-passage filter below.
+    .limit(Math.min(limit * 2, 200));
 
-  return rows.map((r) => ({
-    chunk: r.chunk,
-    similarity: Number(r.similarity),
-    document: r.document,
-    knowledgeSource: r.knowledgeSource,
-  }));
+  const seen = new Set<string>();
+  const out: RetrievedChunk[] = [];
+  for (const r of rows) {
+    if (seen.has(r.chunk.content)) continue;
+    seen.add(r.chunk.content);
+    out.push({
+      chunk: r.chunk,
+      similarity: Number(r.similarity),
+      document: r.document,
+      knowledgeSource: r.knowledgeSource,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 export interface RetrievedLesson {
@@ -719,11 +557,25 @@ export interface RetrievedLesson {
   similarity: number;
 }
 
-/** Top-k cosine-nearest enabled learning_lessons for `query`. */
+export interface RetrieveLessonsOptions {
+  /** Top-k. Defaults to 8. */
+  limit?: number;
+  /** Workspace-wide rules plus that product's rules; omitted = every rule
+   *  that applies somewhere (lessonInScope()). */
+  productProfileId?: bigint;
+  /** Instead of productProfileId: workspace-wide rules plus these
+   *  products'; EMPTY = workspace-wide rules only. */
+  productProfileIds?: readonly bigint[];
+  /** The consuming task; only its registry categories are searched. */
+  taskType?: LessonTaskType;
+  embedder?: IEmbeddingProvider;
+}
+
+/** Top-k cosine-nearest active, in-scope learning_lessons for `query`. */
 export async function retrieveLessons(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   query: string,
-  options: RetrieveOptions = {},
+  options: RetrieveLessonsOptions = {},
 ): Promise<RetrievedLesson[]> {
   if (!query.trim()) return [];
   const embedder = options.embedder ?? (await getEmbeddingProviderForCtx(ctx));
@@ -734,13 +586,12 @@ export async function retrieveLessons(
 
   const conditions: SQL[] = [
     eq(learningLessons.workspaceId, ctx.workspaceId),
-    eq(learningLessons.enabled, true),
+    eq(learningLessons.lifecycle, 'active'),
     isNotNull(learningLessons.embedding),
+    lessonInScope(options.productProfileId ?? options.productProfileIds),
   ];
-  if (options.productProfileId !== undefined) {
-    conditions.push(
-      sql`(${learningLessons.productProfileId} IS NULL OR ${learningLessons.productProfileId} = ${options.productProfileId})`,
-    );
+  if (options.taskType !== undefined) {
+    conditions.push(inArray(learningLessons.category, categoriesForTaskType(options.taskType)));
   }
 
   const rows = await db
@@ -762,13 +613,40 @@ function vectorLiteral(v: ReadonlyArray<number>): string {
 
 // ---- read ---------------------------------------------------------
 
+/** Sources wrapping a document, as a subquery for IN (...). */
+function sourcesWrappingDocument(workspaceId: bigint, documentId: bigint) {
+  return db
+    .select({ id: knowledgeSources.id })
+    .from(knowledgeSources)
+    .where(
+      and(
+        eq(knowledgeSources.workspaceId, workspaceId),
+        eq(knowledgeSources.documentId, documentId),
+      ),
+    );
+}
+
+/**
+ * Indexing runs, newest first. With `documentId`: the runs of the
+ * document's knowledge sources (KL-05: the document page lists its sources'
+ * jobs — a document is indexed only through them), plus the document-level
+ * runs recorded before KL-05.
+ */
 export async function listIndexingJobs(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   filter: { documentId?: bigint; knowledgeSourceId?: bigint; limit?: number } = {},
 ): Promise<IndexingJob[]> {
   const conditions: SQL[] = [eq(indexingJobs.workspaceId, ctx.workspaceId)];
   if (filter.documentId !== undefined) {
-    conditions.push(eq(indexingJobs.documentId, filter.documentId));
+    conditions.push(
+      or(
+        eq(indexingJobs.documentId, filter.documentId),
+        inArray(
+          indexingJobs.knowledgeSourceId,
+          sourcesWrappingDocument(ctx.workspaceId, filter.documentId),
+        ),
+      )!,
+    );
   }
   if (filter.knowledgeSourceId !== undefined) {
     conditions.push(eq(indexingJobs.knowledgeSourceId, filter.knowledgeSourceId));
@@ -777,10 +655,11 @@ export async function listIndexingJobs(
     .select()
     .from(indexingJobs)
     .where(and(...conditions))
-    .orderBy(desc(indexingJobs.createdAt))
+    .orderBy(desc(indexingJobs.createdAt), desc(indexingJobs.id))
     .limit(Math.min(filter.limit ?? 50, 500));
 }
 
+/** The chunks of a document = the chunks of the sources wrapping it. */
 export async function listChunksForDocument(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   documentId: bigint,
@@ -791,7 +670,8 @@ export async function listChunksForDocument(
     .where(
       and(
         eq(documentChunks.workspaceId, ctx.workspaceId),
-        eq(documentChunks.documentId, documentId),
+        inArray(documentChunks.knowledgeSourceId, sourcesWrappingDocument(ctx.workspaceId, documentId)),
       ),
-    );
+    )
+    .orderBy(documentChunks.knowledgeSourceId, documentChunks.chunkIndex);
 }

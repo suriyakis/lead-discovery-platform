@@ -13,7 +13,9 @@ import {
 } from '@/lib/services/auth-context';
 import { countLeads, listLeads, type LeadRow } from '@/lib/services/qualification';
 import { listProductProfiles } from '@/lib/services/product-profile';
-import { ensureQualifiedLead } from '@/lib/services/pipeline';
+import { PipelineServiceError, ensureQualifiedLead } from '@/lib/services/pipeline';
+import { withFlash } from '@/lib/action-errors';
+import { isNextRedirectError } from '@/lib/server-redirect';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { bulkArchiveAction, bulkDeleteAction } from './actions';
 
@@ -106,12 +108,24 @@ export default async function LeadsPage({
     const reviewItemIdRaw = String(formData.get('reviewItemId') ?? '');
     const productIdRaw = String(formData.get('productProfileId') ?? '');
     if (!/^\d+$/.test(reviewItemIdRaw) || !/^\d+$/.test(productIdRaw)) return;
-    const created = await ensureQualifiedLead(
-      c,
-      BigInt(reviewItemIdRaw),
-      BigInt(productIdRaw),
-    );
-    redirect(`/pipeline/${created.id}`);
+    let createdId: bigint;
+    try {
+      const created = await ensureQualifiedLead(
+        c,
+        BigInt(reviewItemIdRaw),
+        BigInt(productIdRaw),
+      );
+      createdId = created.id;
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      // KL-02: a pair an operator marked Not a fit cannot be promoted (a
+      // stale page may still show the button).
+      if (err instanceof PipelineServiceError && err.code === 'conflict') {
+        redirect(withFlash('/leads', { error: err.message }));
+      }
+      throw err;
+    }
+    redirect(`/pipeline/${createdId}`);
   }
 
   // Hidden inputs that round-trip the current filter so bulk actions
@@ -279,9 +293,14 @@ export default async function LeadsPage({
                       <span>conf {qualification.confidence}</span>
                       <span>via {qualification.method}</span>
                       {reviewItem ? <span>review: {reviewItem.state}</span> : null}
+                      {qualification.operatorVerdict === 'not_fit' ? (
+                        <span className="badge badge-bad">marked Not a fit</span>
+                      ) : null}
                       <span>{qualification.createdAt.toLocaleString()}</span>
                     </div>
-                    {reviewItem && qualification.isRelevant ? (
+                    {reviewItem &&
+                    qualification.isRelevant &&
+                    qualification.operatorVerdict !== 'not_fit' ? (
                       <form action={promote} style={{ marginTop: '0.5rem' }}>
                         <input type="hidden" name="reviewItemId" value={reviewItem.id.toString()} />
                         <input type="hidden" name="productProfileId" value={product.id.toString()} />

@@ -27,6 +27,7 @@ import { listKnowledgeSources } from '@/lib/services/knowledge-sources';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { ProductFields, readArrayField, readNullableString } from '../_form';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { IndexStatusBadge } from '@/app/knowledge/index-status';
 
 export default async function EditProductPage({
   params,
@@ -365,20 +366,32 @@ async function KnowledgeSection({
     getProductKnowledgeCoverage({ workspaceId }, productProfileId),
     listKnowledgeSources({ workspaceId }, { productProfileId, limit: 25 }),
   ]);
-  const hasAny = coverage.docs > 0 || coverage.chunks > 0;
+  // KL-05 (I104): this product's own sources and the workspace-wide ones
+  // are counted separately; nothing scoped to another product counts.
+  const own = coverage.product;
+  const shared = coverage.workspace;
+  const hasAny = own.sources > 0 || shared.sources > 0;
   return (
     <section>
       <h2>
         Knowledge{' '}
-        {hasAny ? (
-          <span className="badge badge-good">
-            {coverage.docs} source{coverage.docs === 1 ? '' : 's'} ·{' '}
-            {coverage.chunks} chunk{coverage.chunks === 1 ? '' : 's'} indexed
+        {own.sources > 0 ? (
+          <span className="badge badge-good" data-testid="coverage-product">
+            {own.sources} source{own.sources === 1 ? '' : 's'} ·{' '}
+            {own.chunks} chunk{own.chunks === 1 ? '' : 's'} indexed
           </span>
         ) : (
-          <span className="badge">none yet</span>
+          <span className="badge" data-testid="coverage-product">
+            none for this product yet
+          </span>
         )}
       </h2>
+      {shared.sources > 0 ? (
+        <p className="muted small" data-testid="coverage-workspace">
+          Also uses {shared.sources} source{shared.sources === 1 ? '' : 's'} available to
+          every product ({shared.chunks} chunk{shared.chunks === 1 ? '' : 's'} indexed).
+        </p>
+      ) : null}
       <p className="muted">
         {hasAny
           ? 'Engagement and pitch drafts quote the most relevant passages from these sources on every conversation.'
@@ -406,25 +419,17 @@ async function KnowledgeSection({
       </div>
       {sources.length > 0 ? (
         <ul className="profile-list" style={{ marginTop: '0.75rem' }}>
-          {sources.map(({ source }) => {
-            const status = source.externalStatus;
-            const statusBadgeClass =
-              status === 'indexed'
-                ? 'badge badge-good'
-                : status === 'failed'
-                  ? 'badge badge-bad'
-                  : 'badge';
-            return (
-              <li key={source.id.toString()}>
-                <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
-                <span className="meta">
-                  <span className="badge">{source.kind}</span>{' '}
-                  <span className={statusBadgeClass}>{status}</span>{' '}
-                  <span className="muted small">{source.purposeCategory}</span>
-                </span>
-              </li>
-            );
-          })}
+          {sources.map(({ source }) => (
+            <li key={source.id.toString()}>
+              <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
+              <span className="meta">
+                <span className="badge">{source.kind}</span>{' '}
+                {/* KL-06: the index status, not the provider attach state. */}
+                <IndexStatusBadge status={source.indexStatus} />{' '}
+                <span className="muted small">{source.purposeCategory}</span>
+              </span>
+            </li>
+          ))}
         </ul>
       ) : null}
     </section>

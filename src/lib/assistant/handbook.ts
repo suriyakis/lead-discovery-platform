@@ -70,17 +70,23 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    send-time check. {H-20}
 4. REVIEW QUEUE ([/review]): you approve, reject or comment. Approving a
    geo-unverified item confirms it is inside the target country.
-   Comments teach the system — lessons are extracted automatically and
-   influence future qualification. @mentions (write @user@email) notify
-   teammates. Approving does NOT create a pipeline lead, a draft or an
-   email: it records your decision and trains the learning memory.
-   {H-01} Review items cannot be assigned to a teammate; pipeline leads
-   can, on the lead's page. {H-03} When autopilot's auto-approve is on,
-   some approvals are made by autopilot, not by a person (see Autopilot).
+   Comments teach the system — lessons are extracted automatically, a
+   moment after you post, and influence future qualification. @mentions
+   (write @user@email) notify teammates. Approving does NOT create a
+   pipeline lead, a draft or an email: it records your decision and trains
+   the learning memory. {H-01} A decision counts for the products the AI
+   found the company relevant to: rejecting, ignoring or archiving an item
+   marks it Not a fit for each of them, and from then on Promote, drafting
+   and autopilot's generate + enqueue refuse that company for those
+   products. {H-36} Review items cannot be assigned to a teammate;
+   pipeline leads can, on the lead's page. {H-03} When autopilot's
+   auto-approve is on, some approvals are made by autopilot, not by a
+   person (see Autopilot).
 5. LEADS ([/leads]) lists the relevant matches from discovery, whatever
    their review state (archived ones are hidden). "Promote to pipeline"
    on a lead creates the pipeline lead; it does not need an approval
-   first. {H-02}
+   first. {H-02} It is not offered for a company marked Not a fit for
+   that product (see Review queue).
 6. PIPELINE ([/pipeline]): open a lead there to set its contact name and
    CONTACT EMAIL, assign it to a teammate, add notes, set its own
    outreach language and move it through the stages. Nothing fills in
@@ -194,9 +200,10 @@ step is off until an admin turns it on:
 - Auto-approve: review items still in "new" whose relevance score
   reaches the threshold (default 70, or the product's higher one) are
   approved and recorded as approved by autopilot — no person's name,
-  reason "autopilot" — although no person looked at them; an item that
-  fits several products is approved once. needs_review (geo-unverified)
-  items are never auto-approved. {H-07}
+  reason "autopilot" — and never teach the learning memory. Items a
+  person already gave a verdict on, and needs_review (geo-unverified)
+  items, are never auto-approved; an item that fits several products is
+  approved once. {H-07}
 - Generate + enqueue: for approved items, writes a draft, approves it
   in the workspace owner's name and puts it in the send queue, oldest
   approval first; nobody reviews those emails. It only takes items whose
@@ -224,7 +231,7 @@ Pausing all automation — one switch for the whole workspace:
   the next item everything that runs on its own: the send queue,
   follow-ups (nothing is composed), autopilot, scheduled crawls, reply
   auto-actions (the suppress and close switches on [/settings/outreach]
-  wait for you), background AI (drafting, translation, compaction),
+  wait for you), background AI (drafting, translation, compaction, learning from your decisions),
   auto top-up and the trash purge.
   Nothing fails or is lost — it waits — and a banner on every page says
   who paused and when. {H-09}
@@ -293,19 +300,28 @@ every send) on [/mailbox/suppression].
 
 ## Knowledge base (/documents, /knowledge)
 Upload product docs (text, PDF, DOCX) on [/documents] — they are chunked
-and indexed for retrieval AUTOMATICALLY on upload; the reply assistant
-and pitch composer ground their answers in these. Ticking products on
-the upload form scopes the knowledge to those products (a knowledge
-source is created and indexed for you); uploads without products are
-available workspace-wide. Byte-identical re-uploads are detected and
-skipped; when a file changes, upload the new version. Knowledge sources
-created on [/knowledge/new] are also indexed automatically, but editing
-a knowledge source's text later does not re-index it: click Re-index on
-its page after an edit.
+and indexed for retrieval AUTOMATICALLY, in the background right after
+the upload; the reply assistant and pitch composer ground their answers
+in these. Ticking products on the upload form scopes the knowledge to
+those products (a knowledge source is created and indexed for you, once
+however many products you tick); uploads without products are available
+workspace-wide. Byte-identical re-uploads are detected and skipped; when
+a file changes, upload the new version. Knowledge sources created on
+[/knowledge/new] are indexed the same way. Every source shows its index
+status — queued, indexing, indexed, stale (changed since it was indexed)
+or failed — and its page updates on its own while it is queued or
+indexing. Editing a source's text, URL, summary or products marks it
+stale and re-indexes it automatically; drafts use the previous version
+until that finishes. A failed run is retried a few times, then the
+workspace gets one notification for that source. {H-39}
 Scanned / image-based PDFs (no text layer) are OCR'd automatically via
 Mistral when a Mistral API key is configured (platform-wide by the
-admin, or the workspace's own under BYOK) — without a key they fail
-with a clear message instead of indexing empty.
+admin, or the workspace's own under BYOK) — once per file: the text is
+kept, so re-indexing never pays for OCR again. Without a key they fail
+with a clear message instead of indexing empty. On a PDF's page, owners
+and admins can force a fresh read with "Re-extract with OCR", which
+shows the estimated cost first. Deleting a knowledge source needs its
+title typed to confirm.
 Download on a document's page (opened from [/documents]) sends the
 original file through the app to any member of the workspace, viewers
 included; an archived document sends you back to its page with a
@@ -314,14 +330,27 @@ message instead (restore it first). {H-28} The CSV export on
 
 ## Learning memory (/learning) — the platform teaches itself
 Lessons are rules qualification and outreach follow. They come from
-four channels: (1) operator review comments, auto-extracted; (2) the
+four channels: (1) review decisions and comments, learned in the
+background a moment after you decide (badge "from a decision") — one
+rule per decision, scoped to every product that got the same verdict,
+and only when there is something to learn: a written reason, a verdict
+that contradicts the AI's, or overturning autopilot. A decision that
+simply agrees with the AI makes no new rule; it strengthens the rules
+the AI relied on and weakens the ones that pointed the other way. A
+suggested rule the AI is less than 50% sure of is dropped. Learning
+uses AI tokens: with an empty wallet it waits and resumes after a
+top-up. Changing your mind undoes what the earlier decision taught —
+rule confidences go back and a rule learned only from it is retired.
+If learning fails 5 times you get one notification that day; the
+decision itself is always saved. {H-38} (2) the
 operator's edits to AI drafts — a material rewrite is diffed and
 distilled into a style rule (badge "from your edits"); (3) reply
-outcomes — a positive reply raises the confidence of the lessons that
-shaped the email, a decline lowers it; (4) a weekly AI synthesis pass
-that mines the recent decision/reply stream for patterns and proposes
-new rules (badge "auto-learned", modest starting confidence). Admins
-can trigger "Synthesize now" and "Compact now" on [/learning].
+outcomes — switched off for every workspace for now, so replies teach
+nothing (reply classes are still keyword guesses, see I088); {H-37}
+(4) a weekly AI synthesis pass that mines people's recent decisions
+(never autopilot's, never one that was later changed) for patterns and
+proposes new rules (badge "auto-learned", modest starting confidence).
+Admins can trigger "Synthesize now" and "Compact now" on [/learning].
 Confidence self-adjusts from outcomes; persistently contradicted
 lessons retire automatically. Any lesson can be edited or disabled.
 Repeating the same feedback does NOT create duplicate rules — a repeat

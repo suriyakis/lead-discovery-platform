@@ -13,7 +13,7 @@ import {
 } from '@/lib/db/schema/workspaces';
 import { isEnabledLanguage } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
-import { canAdminWorkspace, isSuperAdmin, type WorkspaceContext } from './context';
+import { canAdminWorkspace, canOwnWorkspace, isSuperAdmin, type WorkspaceContext } from './context';
 import { NoWorkspaceError, resolveWorkspaceContextForUser } from './workspace-resolution';
 
 export class WorkspaceServiceError extends Error {
@@ -196,6 +196,11 @@ export interface WorkspaceSettingsData {
    *  override says otherwise. Absent ⇒ fall through the recipe/product
    *  cascade. */
   outreachLanguage?: string;
+  /** KL-02: whether classified replies may teach the learning layer
+   *  (learnFromReplyOutcome). Absent ⇒ off. An owner switch; reply classes
+   *  are still keyword guesses (I088), so it stays off until KL-15 adds the
+   *  outbound-thread and classifier-version gates. */
+  learnFromReplies?: boolean;
 }
 
 /** Read the workspace settings blob. Returns `{}` when the row or blob is
@@ -327,6 +332,40 @@ export async function updateWorkspaceOutreachLanguage(
     payload: { outreachLanguage: stored },
   });
   return stored;
+}
+
+/** KL-02: may reply outcomes teach? Default off (absent or not `true`). */
+export async function getLearnFromReplies(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<boolean> {
+  const settings = await getWorkspaceSettings(ctx);
+  return settings.learnFromReplies === true;
+}
+
+/** KL-02: switch reply learning on or off. Owner-only, audit-logged. */
+export async function updateLearnFromReplies(
+  ctx: WorkspaceContext,
+  enabled: boolean,
+): Promise<boolean> {
+  if (!canOwnWorkspace(ctx)) {
+    throw permissionDenied('workspace.update_learn_from_replies');
+  }
+  const current = await getWorkspaceSettings(ctx);
+  const next: WorkspaceSettingsData = { ...current, learnFromReplies: enabled === true };
+  await db
+    .insert(workspaceSettings)
+    .values({ workspaceId: ctx.workspaceId, settings: next, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: workspaceSettings.workspaceId,
+      set: { settings: next, updatedAt: new Date() },
+    });
+  await recordAuditEvent(ctx, {
+    kind: 'workspace.update_learn_from_replies',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: { learnFromReplies: enabled === true },
+  });
+  return enabled === true;
 }
 
 /** Phase 50: workspace-level cap on bytes uploaded per product to the

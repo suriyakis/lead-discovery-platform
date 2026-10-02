@@ -82,48 +82,64 @@ export async function buildProductKnowledgeBlock(
   };
 }
 
-/** Per-product coverage signal for the UI. Counts indexed chunks
- *  attached to a product (via knowledge_sources.productProfileIds). */
+export interface KnowledgeCoverageCount {
+  /** Live sources (document not archived). */
+  sources: number;
+  /** Their embedded chunks. */
+  chunks: number;
+}
+
+export interface ProductKnowledgeCoverage {
+  /** Sources scoped to this product. */
+  product: KnowledgeCoverageCount;
+  /** Workspace-wide sources, which this product's drafts also read. */
+  workspace: KnowledgeCoverageCount;
+}
+
+/** Per-product coverage signal for the UI (KL-05, I104): what this
+ *  product's drafts can actually retrieve, with the product's own sources
+ *  and the workspace-wide ones counted separately. Same predicate as
+ *  retrieve() (knowledge-scope.ts), so a 'products' source with no product
+ *  left, another product's source or an archived document never counts. */
 export async function getProductKnowledgeCoverage(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   productProfileId: bigint,
-): Promise<{ docs: number; chunks: number }> {
+): Promise<ProductKnowledgeCoverage> {
   const { db } = await import('@/lib/db/client');
   const { documentChunks } = await import('@/lib/db/schema/rag');
   const { knowledgeSources } = await import('@/lib/db/schema/documents');
-  const { and, eq, isNotNull, sql } = await import('drizzle-orm');
+  const { knowledgeSourceRetrievable } = await import('./knowledge-scope');
+  const { and, eq, sql } = await import('drizzle-orm');
+  const empty = (): ProductKnowledgeCoverage => ({
+    product: { sources: 0, chunks: 0 },
+    workspace: { sources: 0, chunks: 0 },
+  });
   try {
-    const [chunksRow, docsRow] = await Promise.all([
-      db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(documentChunks)
-        .where(
-          and(
-            eq(documentChunks.workspaceId, ctx.workspaceId),
-            isNotNull(documentChunks.embedding),
-            sql`(${documentChunks.knowledgeSourceId} IS NULL OR EXISTS (
-              SELECT 1 FROM ${knowledgeSources}
-              WHERE ${knowledgeSources.id} = ${documentChunks.knowledgeSourceId}
-                AND ${productProfileId} = ANY(${knowledgeSources.productProfileIds})
-            ))`,
-          ),
+    const rows = await db
+      .select({
+        scopeKind: knowledgeSources.scopeKind,
+        sources: sql<number>`count(DISTINCT ${knowledgeSources.id})::int`,
+        chunks: sql<number>`count(${documentChunks.id}) FILTER (WHERE ${documentChunks.embedding} IS NOT NULL)::int`,
+      })
+      .from(knowledgeSources)
+      .leftJoin(
+        documentChunks,
+        and(
+          eq(documentChunks.knowledgeSourceId, knowledgeSources.id),
+          eq(documentChunks.workspaceId, knowledgeSources.workspaceId),
         ),
-      db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(knowledgeSources)
-        .where(
-          and(
-            eq(knowledgeSources.workspaceId, ctx.workspaceId),
-            sql`${productProfileId} = ANY(${knowledgeSources.productProfileIds})`,
-          ),
-        ),
-    ]);
-    return {
-      docs: docsRow[0]?.n ?? 0,
-      chunks: chunksRow[0]?.n ?? 0,
-    };
+      )
+      .where(knowledgeSourceRetrievable({ workspaceId: ctx.workspaceId, productProfileId }))
+      .groupBy(knowledgeSources.scopeKind);
+    const out = empty();
+    for (const r of rows) {
+      const bucket = r.scopeKind === 'workspace' ? out.workspace : out.product;
+      bucket.sources = Number(r.sources);
+      bucket.chunks = Number(r.chunks);
+    }
+    return out;
   } catch (err) {
     console.warn('[outreach-knowledge] coverage query failed:', err);
-    return { docs: 0, chunks: 0 };
+    return empty();
   }
 }

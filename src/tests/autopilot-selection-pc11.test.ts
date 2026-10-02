@@ -25,14 +25,13 @@ import type { CrmLeadPayload, ICRMConnector, SyncResult } from '@/lib/crm';
 import { auditLog } from '@/lib/db/schema/audit';
 import { autopilotLog } from '@/lib/db/schema/autopilot';
 import { sourceRecords } from '@/lib/db/schema/connectors';
-import { learningEvents } from '@/lib/db/schema/learning';
+import { learningDecisions, learningEvents } from '@/lib/db/schema/learning';
 import { type Mailbox } from '@/lib/db/schema/mailing';
 import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { pipelineEvents, qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { productProfiles } from '@/lib/db/schema/products';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
-import * as learning from '@/lib/services/learning';
 import {
   AUTOPILOT_STEP_FAILED,
   LOG_ONCE_INCIDENT_SINK,
@@ -212,6 +211,14 @@ async function auditFor(t: Tenant, kind: string, entityId: bigint) {
         eq(auditLog.entityId, entityId.toString()),
       ),
     );
+}
+
+/** KL-02: the learning decisions recorded in the workspace. */
+async function decisionsIn(t: Tenant) {
+  return db
+    .select()
+    .from(learningDecisions)
+    .where(eq(learningDecisions.workspaceId, t.workspaceId));
 }
 
 async function learningEventsFor(t: Tenant, reviewItemId: bigint) {
@@ -599,8 +606,6 @@ describe(
         enableAutoApproveProjects: true,
         autoApproveThreshold: 70,
       });
-      const feed = vi.spyOn(learning, 'recordFeedback');
-
       const run = await runOnce(t.auto);
       expect(run.steps).toEqual([
         { step: 'auto_approve_projects', outcome: 'success', detail: 'approved=1/1' },
@@ -621,20 +626,23 @@ describe(
         productProfileIds: [A.id.toString(), B.id.toString()],
       });
 
-      // The learning feed ran once: one event per classified product (what
-      // it emits per product is the knowledge workstream's contract), all
-      // with origin autopilot, none attributed to a person.
-      const calls = feed.mock.calls.filter(
-        ([, input]) => input.entityId === both.reviewItem.id.toString(),
-      );
-      expect(calls).toHaveLength(2);
-      expect(calls.every(([, input]) => input.origin === 'autopilot')).toBe(true);
-      expect(new Set(calls.map(([, input]) => String(input.productProfileId)))).toEqual(
-        new Set([A.id.toString(), B.id.toString()]),
-      );
+      // Learning is fed once (KL-02's decision record replaced the feed):
+      // one autopilot decision keyed by the run and the item, with one
+      // event per approved product, all origin autopilot and none
+      // attributed to a person.
+      const decisions = await decisionsIn(t);
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({
+        origin: 'autopilot',
+        decisionKey: `autopilot:${run.runId}:${both.reviewItem.id}`,
+        userId: null,
+      });
       const events = await learningEventsFor(t, both.reviewItem.id);
       expect(events).toHaveLength(2);
-      expect(events.every((e) => e.userId === null)).toBe(true);
+      expect(events.every((e) => e.userId === null && e.origin === 'autopilot')).toBe(true);
+      expect(new Set(events.map((e) => String(e.productProfileId)))).toEqual(
+        new Set([A.id.toString(), B.id.toString()]),
+      );
 
       const log = await db
         .select()
@@ -760,7 +768,7 @@ describe('a same-state decision writes nothing (PC-11 (3), I018)', { timeout: 60
     const events = await learningEventsFor(t, x.reviewItem.id);
     expect(audits).toHaveLength(1);
     expect(events).toHaveLength(1);
-    const feed = vi.spyOn(learning, 'recordFeedback');
+    const decisionsBefore = (await decisionsIn(t)).length;
 
     const again = await approveReviewItem(t.owner, x.reviewItem.id, 'still a good fit');
     expect(again.approvedAt?.getTime()).toBe(first.approvedAt?.getTime());
@@ -774,7 +782,7 @@ describe('a same-state decision writes nothing (PC-11 (3), I018)', { timeout: 60
 
     expect(await auditFor(t, 'review.approved', x.reviewItem.id)).toHaveLength(1);
     expect(await learningEventsFor(t, x.reviewItem.id)).toHaveLength(1);
-    expect(feed).not.toHaveBeenCalled();
+    expect(await decisionsIn(t)).toHaveLength(decisionsBefore);
   });
 
   it('a repeated reject writes nothing either, and autopilot leaves an item a person decided alone', async () => {
