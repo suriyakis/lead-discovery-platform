@@ -51,6 +51,10 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      # PC-07: reported by /api/ready (token-protected detail). Export
+      # BUILD_SHA=$(git rev-parse --short HEAD) before building.
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
     restart: unless-stopped
     depends_on:
       postgres:

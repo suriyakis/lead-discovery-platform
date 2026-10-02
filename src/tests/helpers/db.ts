@@ -26,6 +26,9 @@ const TENANT_TABLES = [
   'verification_tokens',
   'preauthorized_emails',
   'users',
+  // PC-07: not tenant-owned (no FK to workspaces), so list them explicitly.
+  'job_heartbeats',
+  'ops_events',
 ];
 
 /**

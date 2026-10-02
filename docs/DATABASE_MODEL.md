@@ -176,6 +176,13 @@ Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`).
 
 `remediation_log`: one row per changed row — run_id, workspace_id, category (`R1a`, `R4`, …), table_name (allow-listed), row_id, action (`update` / `delete` / `ledger_credit`), before / after (jsonb images: the changed columns for an update, the whole row for a delete), reverted_at.
 
+### `job_heartbeats`, `ops_events` (Phase 1, PC-07)
+Operational visibility (I021/I022). Not tenant-owned bookkeeping, written by background jobs (no user acts). See `docs/OPS_MONITORING.md`.
+
+`job_heartbeats`: one row per job name (the 8 repeatable ticks and the on-demand `connector.run`). name (pk), kind (`tick` / `job`), interval_ms, queue_provider, boot_id + registered_at (written by the schedule registration at boot), last_started_at / last_finished_at / last_ok_at, last_status (`running` / `ok` / `degraded` / `failed`), last_duration_ms, last_error (masked) + last_error_at, last_summary (jsonb, the handler's structured summary), next_due_at (informational), run_count, consecutive_failures. Staleness is computed on read, never stored.
+
+`ops_events`: the incident stream. scope (`platform` / `workspace`; a CHECK ties `workspace_id` to it), workspace_id (cascade), kind, severity (`info` / `warning` / `error` / `critical`), source (job or subsystem), dedupe_key, fingerprint (sha256 over scope + workspace + kind + dedupe key), title, message (masked), payload (jsonb, masked), occurrences, first_seen_at / last_seen_at, acknowledged_at / acknowledged_by, resolved_at / resolved_by / resolution (`auto` / `manual`). A partial unique index keeps one open row per fingerprint, so repeats bump `occurrences`. Resolved rows are kept 90 days (`OPS_EVENTS_RETENTION_DAYS`).
+
 ## Reserved fields and tables (no migration needed for future phases)
 
 These columns / tables are reserved on Phase-1-and-Phase-2 tables so later phases can attach without an "alter table" parade:

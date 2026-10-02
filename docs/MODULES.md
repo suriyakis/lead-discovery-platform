@@ -191,6 +191,8 @@ See `ISearchProvider` in `docs/ARCHITECTURE.md`.
 
 See `IJobQueue` in `docs/ARCHITECTURE.md`. Job types defined as the system grows: `run_connector`, `run_recipe`, `enrich_website`, `classify_records`, `generate_draft`, `process_feedback`, `extract_document_text` (later), `sync_crm` (later), `sync_email` (later).
 
+**Ops visibility (PC-07).** Every handler registered with the queue is wrapped by `instrumented()` (`src/lib/jobs/instrumented.ts`): `job_heartbeats` per job name, per-workspace failures as `ops_events` through `TickIncidents` (`src/lib/ops/tick-incidents.ts`), whole-job failures as platform incidents. The tick catalogue (names, cadences, labels) is `src/lib/jobs/tick-catalog.ts`; the expected-slot staleness rule is `src/lib/jobs/tick-schedule.ts`; readiness (`/api/ready`) is `src/lib/services/readiness.ts`. Writers: `services/job-heartbeats.ts`, `services/ops-events.ts`. See `docs/OPS_MONITORING.md`.
+
 ### File Storage
 
 **Phase.** 1 (interface + local-FS impl), 9+ (S3-compatible for production).

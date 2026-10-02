@@ -33,6 +33,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+# PC-07: the commit this image was built from, reported in the
+# token-protected /api/ready detail (docs/OPS_MONITORING.md). Pass it with
+# BUILD_SHA=$(git rev-parse --short HEAD) docker-compose ... build app.
+ARG BUILD_SHA=unknown
+ENV BUILD_SHA=$BUILD_SHA
+
 RUN addgroup --system --gid 1001 nodejs \
  && adduser --system --uid 1001 nextjs
 

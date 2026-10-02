@@ -10,6 +10,7 @@ import { db } from '@/lib/db/client';
 import { connectorRuns } from '@/lib/db/schema/connectors';
 import { eq } from 'drizzle-orm';
 import { getJobQueue, type JobHandler } from './index';
+import { instrumented } from './instrumented';
 import {
   type WorkspaceContext,
   type WorkspaceRole,
@@ -54,7 +55,17 @@ let registered = false;
 export function registerJobHandlers(): void {
   if (registered) return;
   const q = getJobQueue();
-  q.on<ConnectorRunJobPayload>('connector.run', handleConnectorRun);
+  // PC-07: on-demand job — heartbeat (last run, failures) but no schedule,
+  // so it never counts as stale; a thrown run raises a 'job.failed'
+  // platform incident that the next good run resolves.
+  q.on<ConnectorRunJobPayload>(
+    'connector.run',
+    instrumented<ConnectorRunJobPayload>(
+      'connector.run',
+      (payload, ctx) => handleConnectorRun(payload, { jobId: ctx.jobId }),
+      { kind: 'job', label: 'Discovery run' },
+    ),
+  );
   registered = true;
 }
 

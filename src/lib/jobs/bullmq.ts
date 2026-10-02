@@ -15,6 +15,8 @@ import type {
   JobStatus,
   RepeatableJobOptions,
 } from './index';
+import { isInstrumentedHandler } from './instrumented';
+import { attachWorkerEventReporting } from './worker-events';
 
 const QUEUE_NAME = 'lead-platform';
 
@@ -151,5 +153,10 @@ export class BullMQJobQueue implements IJobQueue {
       autorun: true,
     };
     this.worker = new Worker(QUEUE_NAME, processor, options);
+    // PC-07: worker failures and errors become platform ops_events
+    // (handlers wrapped by instrumented() report their own failures).
+    attachWorkerEventReporting(this.worker, {
+      isInstrumented: (name) => isInstrumentedHandler(this.handlers.get(name)),
+    });
   }
 }

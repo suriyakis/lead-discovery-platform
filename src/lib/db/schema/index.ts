@@ -28,3 +28,4 @@ export * from './health';
 export * from './support';
 export * from './platform-settings';
 export * from './remediation';
+export * from './ops';

@@ -516,8 +516,22 @@ export async function listHealthReports(
  * Tick entry point: atomically claim workspaces whose check is due
  * (enabled + lastAt older than their interval), then run each. The
  * conditional UPDATE prevents double-runs across concurrent ticks.
+ *
+ * PC-07: the observer hears each claimed workspace's outcome (the tick
+ * turns a failure into an ops incident and a later success resolves it).
+ * A claim that throws counts as that workspace's failure instead of
+ * aborting the whole tick.
  */
-export async function processDueHealthChecks(): Promise<{
+export interface HealthCheckTickObserver {
+  /** Best-effort; must not throw. */
+  onWorkspaceFailed?: (workspaceId: bigint, err: unknown) => Promise<void> | void;
+  /** Best-effort; must not throw. */
+  onWorkspaceSucceeded?: (workspaceId: bigint) => Promise<void> | void;
+}
+
+export async function processDueHealthChecks(
+  observer: HealthCheckTickObserver = {},
+): Promise<{
   checked: number;
   failed: number;
 }> {
@@ -541,18 +555,18 @@ export async function processDueHealthChecks(): Promise<{
     if (ws.lastAt && now - ws.lastAt.getTime() < intervalMs) continue;
     // Atomic claim (same pattern as auto top-up): only one tick wins.
     const cutoff = new Date(now - intervalMs);
-    const claimed = await db
-      .update(workspaces)
-      .set({ healthCheckLastAt: new Date(), updatedAt: new Date() })
-      .where(
-        and(
-          eq(workspaces.id, ws.id),
-          sql`(${workspaces.healthCheckLastAt} IS NULL OR ${workspaces.healthCheckLastAt} < ${cutoff.toISOString()}::timestamptz)`,
-        ),
-      )
-      .returning({ id: workspaces.id });
-    if (!claimed[0]) continue;
     try {
+      const claimed = await db
+        .update(workspaces)
+        .set({ healthCheckLastAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(workspaces.id, ws.id),
+            sql`(${workspaces.healthCheckLastAt} IS NULL OR ${workspaces.healthCheckLastAt} < ${cutoff.toISOString()}::timestamptz)`,
+          ),
+        )
+        .returning({ id: workspaces.id });
+      if (!claimed[0]) continue;
       await runWorkspaceHealthCheck({ workspaceId: ws.id });
       checked++;
     } catch (err) {
@@ -561,7 +575,10 @@ export async function processDueHealthChecks(): Promise<{
         `[health.tick] workspace=${ws.id} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await observer.onWorkspaceFailed?.(ws.id, err);
+      continue;
     }
+    await observer.onWorkspaceSucceeded?.(ws.id);
   }
   return { checked, failed };
 }

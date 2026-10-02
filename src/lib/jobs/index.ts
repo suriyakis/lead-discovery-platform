@@ -36,6 +36,9 @@ export interface RepeatableJobOptions {
 }
 
 export interface IJobQueue {
+  /** Provider id ('memory' | 'bullmq'); heartbeats record it to pick the
+   *  tick slot alignment (PC-07). */
+  readonly id?: string;
   enqueue<P extends JobPayload>(type: string, payload: P, options?: JobOptions): Promise<JobId>;
   status(id: JobId): Promise<JobStatus>;
   cancel(id: JobId): Promise<void>;

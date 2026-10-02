@@ -68,6 +68,7 @@ See `.env.example` for the full list. Notable ones:
 - **`SEARCH_PROVIDER`** — same pattern.
 - **`STORAGE_PROVIDER`** — `local` (the default) in dev **and in production today**. The Phase 9 deploy note (TODO.md P9-06) kept prod on `local`, and `docker-compose.prod.yml` mounts the `app-storage` volume at `/app/storage` for it (`STORAGE_LOCAL_ROOT` defaults to `./storage`). Check `.env` on the server before relying on this. `s3` (any S3-compatible bucket, `S3_*` vars in `.env.example`) is supported. Switching is an env change, but copy the existing objects into the bucket under the same keys first, or every stored document and export goes missing. Either way, browsers download through the authenticated routes `/api/documents/[id]/download` and `/api/crm/exports/[file]`, which check the workspace and stream from storage. No storage URL (file:// or presigned) ever reaches a page.
 - **`JOB_QUEUE_PROVIDER`** — `memory` in dev, `bullmq` once Redis is up.
+- **`OPS_READY_TOKEN`**: unlocks the full `/api/ready` report (at least 16 characters). **`BUILD_SHA`**: build argument naming the deployed commit (`BUILD_SHA=$(git rev-parse --short HEAD)` before `docker-compose ... build app`). See `docs/OPS_MONITORING.md`.
 
 ## Production: Hetzner deployment
 
@@ -137,7 +138,8 @@ If a migration is the problem, **reverting code is not enough**. Revert the sche
 
 ### Health checks
 
-- `GET /api/health` — returns 200 with `{ ok: true, db: 'up', queue: 'up' }`. Wired up in Phase 1.
+- `GET /api/health`: liveness. Returns 200 `{ ok: true }` whenever the process answers and does no I/O (no database, Redis or queue check), so container and nginx checks never flap on a slow dependency.
+- `GET /api/ready`: readiness (PC-07). Returns 200 or 503 after checking the database, Redis (with `JOB_QUEUE_PROVIDER=bullmq`), applied migrations and every background tick's heartbeat (the expected-slot rule, with a 10-minute grace after a deploy). Point the external uptime monitor here. The full report needs `Authorization: Bearer $OPS_READY_TOKEN`. Setup, the staleness table and the incident stream (`ops_events`) are in [`docs/OPS_MONITORING.md`](OPS_MONITORING.md).
 - Nginx `proxy_read_timeout` is generous because some background jobs are long; user-facing endpoints stay snappy. Run heavy work as jobs.
 
 ### What goes where on the server

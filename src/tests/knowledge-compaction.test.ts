@@ -10,6 +10,7 @@ import { createLesson } from '@/lib/services/learning';
 import {
   KnowledgeCompactionError,
   compactWorkspaceKnowledge,
+  compactWorkspaceKnowledgeUnattended,
 } from '@/lib/services/knowledge-compaction';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -411,5 +412,69 @@ describe('compaction cost guards', () => {
     expect(called).toBe(true);
     expect(second.keptClusters).toBe(1);
     expect(second.skippedUnchangedClusters).toBe(0);
+  });
+});
+
+// PC-07 (I021): the unattended (weekly tick) pass swallows a failed merge so
+// the other clusters still run, but it no longer disappears into the
+// console: the summary counts it and the tick raises an ops incident.
+describe('compactWorkspaceKnowledgeUnattended: failed merges', () => {
+  function failingAi(message: string): IAIProvider {
+    const ai = stubAi(() => ({ action: 'keep_all' }));
+    return {
+      ...ai,
+      async generateJson() {
+        throw new Error(message);
+      },
+    };
+  }
+
+  async function seedCluster(s: Setup) {
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'Focus on manufacturing firms.',
+      confidence: 70,
+    });
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'Prefer manufacturing companies.',
+      confidence: 60,
+    });
+  }
+
+  it('counts the failed merge and keeps its text out of the audit row', async () => {
+    const s = await setup();
+    await seedCluster(s);
+    _setAIProviderForTests(failingAi('provider 429: api_key=sk-test-123456 exhausted'));
+
+    const summary = await compactWorkspaceKnowledgeUnattended(s.workspaceA);
+    expect(summary.failedClusters).toBe(1);
+    expect(summary.lastClusterError).toContain('provider 429');
+    expect(summary.keptClusters + summary.mergedClusters).toBe(0);
+
+    const [row] = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.kind, 'knowledge.compaction.run'));
+    expect(row?.payload).toMatchObject({ failedClusters: 1, mode: 'unattended' });
+    expect(row?.payload).not.toHaveProperty('lastClusterError');
+  });
+
+  it('the attended run still throws instead of counting', async () => {
+    const s = await setup();
+    await seedCluster(s);
+    _setAIProviderForTests(failingAi('provider down'));
+    await expect(
+      compactWorkspaceKnowledge(ctx(s.workspaceA, s.ownerA, 'owner')),
+    ).rejects.toThrow('provider down');
+  });
+
+  it('a clean pass reports no failures', async () => {
+    const s = await setup();
+    await seedCluster(s);
+    _setAIProviderForTests(stubAi(() => ({ action: 'keep_all' })));
+    const summary = await compactWorkspaceKnowledgeUnattended(s.workspaceA);
+    expect(summary.failedClusters).toBe(0);
+    expect(summary.lastClusterError).toBeNull();
   });
 });

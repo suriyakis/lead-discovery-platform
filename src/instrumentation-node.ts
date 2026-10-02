@@ -3,8 +3,14 @@
 //   - kick BullMQ's repeatable scheduler (deduped by jobId — one schedule
 //     per platform regardless of replica count)
 //   - warn when production runs on the in-memory queue
+//   - PC-07: fix this process's boot identity (boot_id + boot time for the
+//     readiness deploy grace) and report a failed schedule registration as
+//     a platform incident instead of a console line only
 
 export async function registerNodeRuntime(): Promise<void> {
+  const { getBootInfo } = await import('./lib/jobs/boot');
+  const boot = getBootInfo();
+
   // Production sanity: warn loudly when booting with the memory queue (jobs
   // lost on restart, no cross-replica deduplication). Skip when NODE_ENV is
   // not 'production' so dev + tests stay frictionless.
@@ -19,7 +25,8 @@ export async function registerNodeRuntime(): Promise<void> {
   }
 
   const { registerJobHandlers } = await import('./lib/jobs/bootstrap');
-  const { registerRepeatableJobs } = await import('./lib/jobs/repeatables');
+  const { registerRepeatableJobs, reportScheduleRegistrationFailure } =
+    await import('./lib/jobs/repeatables');
 
   registerJobHandlers();
 
@@ -34,7 +41,7 @@ export async function registerNodeRuntime(): Promise<void> {
   try {
     await registerRepeatableJobs();
     console.log(
-      `[startup] Background ticks scheduled (provider=${provider}): ` +
+      `[startup] Background ticks scheduled (provider=${provider}, boot=${boot.id}): ` +
         'autopilot every 5min, outreach drain every 30s, IMAP every 2min.',
     );
   } catch (err) {
@@ -42,5 +49,6 @@ export async function registerNodeRuntime(): Promise<void> {
       '[startup] Failed to register repeatable jobs:',
       err instanceof Error ? err.message : err,
     );
+    await reportScheduleRegistrationFailure(err);
   }
 }
