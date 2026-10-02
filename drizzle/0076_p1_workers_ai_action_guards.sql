@@ -43,8 +43,12 @@ ALTER TABLE "qualification_runs" ADD CONSTRAINT "qualification_runs_counters_che
 -- PC-38: work_leases gains the 'action' kind (single-flight for an
 -- operator's button); its resource_key is the action's name, optionally
 -- ':<id>' (ACTION_RESOURCE_PATTERN in services/work-leases.ts).
-ALTER TABLE "work_leases" DROP CONSTRAINT "work_leases_kind_check";--> statement-breakpoint
+-- ORDER: this replaces the two checks 0074's custom block (PC-12) adds, so
+-- it must run after it. IF EXISTS keeps it from failing a migrate when the
+-- blocks are regenerated or squashed in another order; the ADDs below are
+-- the checks that must hold in the end.
+ALTER TABLE "work_leases" DROP CONSTRAINT IF EXISTS "work_leases_kind_check";--> statement-breakpoint
 ALTER TABLE "work_leases" ADD CONSTRAINT "work_leases_kind_check" CHECK ("kind" IN ('autopilot.run', 'outreach.drain', 'outreach.follow_up', 'mailbox.sync', 'connector.recipe', 'action'));--> statement-breakpoint
-ALTER TABLE "work_leases" DROP CONSTRAINT "work_leases_resource_key_check";--> statement-breakpoint
+ALTER TABLE "work_leases" DROP CONSTRAINT IF EXISTS "work_leases_resource_key_check";--> statement-breakpoint
 ALTER TABLE "work_leases" ADD CONSTRAINT "work_leases_resource_key_check" CHECK (CASE WHEN "kind" IN ('mailbox.sync', 'connector.recipe') THEN "resource_key" ~ '^[0-9]+$' WHEN "kind" = 'action' THEN "resource_key" ~ '^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*(:[0-9]{1,19})?$' ELSE "resource_key" = '' END);
 -- custom:end
