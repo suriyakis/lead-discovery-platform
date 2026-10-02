@@ -249,7 +249,10 @@ CRM connection.
   the background sender; both re-check suppression, limits and the
   domain cooldown. "Interrupted: delivery unknown" means the send was
   cut off and may have gone out: check the mailbox's Sent folder
-  first. Entries stuck in `sending` are settled after 10 minutes.
+  first; if it is there, **Mark as delivered** records it as sent.
+  Entries stuck in `sending` are settled after 10 minutes. An email
+  that has already gone out is never sent again, from the queue or
+  from the Errors folder (extra copies there are moved to Trash).
 
 Anything outside this guide is either in `docs/ARCHITECTURE.md`,
 `docs/MODULES.md`, or `docs/ROADMAP.md`.
