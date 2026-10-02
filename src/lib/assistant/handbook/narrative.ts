@@ -258,6 +258,15 @@ Pausing all automation — one switch for the whole workspace:
   AI reply drafts wait in the send queue until the platform releases
   the workspace (a banner says so), while email you write yourself sends
   normally. {H-32}
+- The platform can put your workspace on hold — one kind of work
+  (sending, inbox sync, the reply auto-actions on [/settings/outreach],
+  discovery, autopilot, CRM sync, background AI, auto top-up or the trash
+  purge) or all of it — and
+  can stop outbound email for every workspace at once. A banner says what
+  is on hold and why, and owners and admins are notified. Unlike the
+  pause, a hold also stops what you do yourself: under a Sending hold or
+  the platform's stop no email goes out, not even one you write ("send
+  anyway" does not apply). Only the platform releases it. {H-62}
 - Approved emails in the send queue go out every 30 seconds and
   mailboxes sync every 2 minutes, whether or not autopilot is on: only
   the pause, a hold or the go-live hold stops sending. Background

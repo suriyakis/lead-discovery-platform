@@ -92,6 +92,14 @@ import {
 } from '@/lib/services/follow-up';
 import { analyseReply, classifyReply, type ReplyClass } from '@/lib/services/reply-classifier';
 import { pauseAutomation, resumeAutomation, undoPause } from '@/lib/services/automation-pause';
+import {
+  clearPlatformOutboundStop,
+  placePlatformHold,
+  releasePlatformHold,
+  releaseTenantHold,
+  setPlatformOutboundStop,
+} from '@/lib/services/holds';
+import { makePlatformContext } from '@/lib/services/platform-context';
 import { PAUSED_MESSAGE } from '@/lib/services/automation-gate';
 import {
   getReplyAutoActions,
@@ -705,6 +713,55 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     await expect(resumeAutomation(adminCtx(s), { source: 'api' })).resolves.toMatchObject({
       wasPaused: true,
     });
+  });
+
+  it('[handbook H-62] a platform hold or the platform stop refuses even a hand-written send, "send anyway" included; only the platform releases its hold', async () => {
+    const s = await setup();
+    const mailbox = await makeMailbox(s, {});
+    const platformAdmin = await seedUser({
+      email: `hb-platform-${seq}@test.local`,
+      role: 'super_admin',
+    });
+    const pctx = makePlatformContext(platformAdmin);
+    const send = {
+      mode: 'one_to_one' as const,
+      origin: 'manual' as const,
+      mailboxId: mailbox.id,
+      to: [{ address: 'someone@sender.example' }],
+      subject: 'By hand',
+      text: 'Written by a person',
+      confirmPaused: true,
+    };
+
+    // A Sending hold placed by the platform.
+    const provider = new MockMailProvider();
+    const hold = await placePlatformHold(pctx, s.workspaceId, {
+      scope: 'capabilities',
+      capabilities: ['sending'],
+      reason: 'Deliverability review',
+    });
+    await expect(sendMessage(ctx(s), { ...send, providerOverride: provider })).rejects.toMatchObject({
+      reason: 'hold',
+    });
+    // The workspace cannot release it; the platform can.
+    await expect(
+      releaseTenantHold(adminCtx(s), hold.id, 'we fixed it'),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+    await releasePlatformHold(pctx, s.workspaceId, hold.id, 'review done');
+
+    // The platform-wide outbound stop.
+    await setPlatformOutboundStop(pctx, 'Provider incident');
+    try {
+      await expect(
+        sendMessage(ctx(s), { ...send, providerOverride: provider }),
+      ).rejects.toMatchObject({ reason: 'platform_outbound_stop' });
+    } finally {
+      await clearPlatformOutboundStop(pctx, 'Provider incident over');
+    }
+    expect(provider.sent).toHaveLength(0);
+
+    // Nothing held any more: the same send goes out.
+    await expect(sendMessage(ctx(s), { ...send, providerOverride: provider })).resolves.toBeDefined();
   });
 
   it('[handbook H-11] autopilot needs Starter or Pro (or billing exempt); a lapsed plan stops the runs', async () => {
