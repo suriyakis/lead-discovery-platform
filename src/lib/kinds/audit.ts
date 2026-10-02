@@ -68,6 +68,8 @@ export const AUDIT_KINDS = [
   'review.bulk_archive',
   'review.bulk_delete',
   'qualification.reclassify_workspace',
+  /** PC-38: an admin asked for a background "Re-classify all" run. */
+  'qualification.reclassify_requested',
   'lead.bulk_archive',
   'lead.bulk_delete',
   'lead_research.run',

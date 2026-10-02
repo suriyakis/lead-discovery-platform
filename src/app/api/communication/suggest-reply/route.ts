@@ -40,7 +40,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'invalid_input' }, { status: 400 });
   }
 
-  if (!rateLimitAllow(`suggest-reply:ws:${ctx.workspaceId}`, 20, 60_000)) {
+  if (!(await rateLimitAllow(`suggest-reply:ws:${ctx.workspaceId}`, 20, 60_000))) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many suggestions — try again in a minute.' },
       { status: 429 },

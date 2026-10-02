@@ -61,10 +61,11 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // Cost-DoS guard: metering is post-hoc, so the wallet check alone can be
   // raced by concurrent floods (and billing-exempt tenants have no wallet
-  // gate at all). Cap per workspace AND per user.
+  // gate at all). Cap per workspace AND per user. PC-38: the windows are
+  // shared (Postgres), so a deploy no longer resets them.
   if (
-    !rateLimitAllow(`assistant:ws:${ctx.workspaceId}`, 20, 60_000) ||
-    !rateLimitAllow(`assistant:user:${ctx.userId}`, 10, 60_000)
+    !(await rateLimitAllow(`assistant:ws:${ctx.workspaceId}`, 20, 60_000)) ||
+    !(await rateLimitAllow(`assistant:user:${ctx.userId}`, 10, 60_000))
   ) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many questions — try again in a minute.', retryable: true },

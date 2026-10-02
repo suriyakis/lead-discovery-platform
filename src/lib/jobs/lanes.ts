@@ -10,8 +10,10 @@
 //          Concurrency 4 (JOB_TICKS_CONCURRENCY).
 //   runs   on-demand work that can take minutes to hours: discovery runs
 //          (connector.run), knowledge indexing (knowledge.index: OCR +
-//          embeddings) and learning (learning.process: an AI call per
-//          decision). Concurrency 2 (JOB_RUNS_CONCURRENCY): the box has two
+//          embeddings), learning (learning.process: an AI call per
+//          decision) and "Re-classify all" (qualification.reclassify,
+//          PC-38: AI calls per record × product, in batches of 50).
+//          Concurrency 2 (JOB_RUNS_CONCURRENCY): the box has two
 //          CPUs and shares them with the web process and Postgres.
 //
 // Under BullMQ each lane is its own Redis queue with its own Worker, so a
@@ -63,7 +65,7 @@ export const LANE_DEFINITIONS: Readonly<Record<JobLane, LaneDefinition>> = {
     queueName: 'lead-platform-runs',
     defaultConcurrency: 2,
     concurrencyEnv: 'JOB_RUNS_CONCURRENCY',
-    description: 'on-demand work (discovery runs, knowledge indexing, learning)',
+    description: 'on-demand work (discovery runs, knowledge indexing, learning, re-classification)',
   },
 };
 

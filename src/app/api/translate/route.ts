@@ -48,7 +48,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, subject: parsed.subject, body: parsed.body });
   }
 
-  if (!rateLimitAllow(`translate:ws:${ctx.workspaceId}`, 30, 60_000)) {
+  if (!(await rateLimitAllow(`translate:ws:${ctx.workspaceId}`, 30, 60_000))) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many translations — try again in a minute.' },
       { status: 429 },

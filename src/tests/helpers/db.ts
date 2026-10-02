@@ -32,6 +32,8 @@ const TENANT_TABLES = [
   // PC-08: owner-alert state and delivery log.
   'ops_alert_state',
   'ops_alert_deliveries',
+  // PC-38: the shared rate limiter's windows (keys, no workspace FK).
+  'rate_limit_buckets',
 ];
 
 /**

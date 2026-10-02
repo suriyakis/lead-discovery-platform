@@ -8,6 +8,7 @@
 import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';
 import { describeActionError, withFlash } from '@/lib/action-errors';
+import { ActionGuardError, withRateLimit } from '@/lib/services/action-guards';
 import { AutomationGateError } from '@/lib/services/automation-gate';
 import {
   ConnectorServiceError,
@@ -32,7 +33,11 @@ export async function runRecipeNowAction(
 
   let runId: bigint;
   try {
-    const { run } = await startRun(ctx, { connectorId, recipeId });
+    // PC-38: rate-limited per workspace. One run per recipe at a time the
+    // recipe's own lease already ensures (PC-12, RecipeRunInFlightError).
+    const { run } = await withRateLimit(ctx, 'connector.recipe_run_now', () =>
+      startRun(ctx, { connectorId, recipeId }),
+    );
     runId = run.id;
   } catch (err) {
     // PC-12 (I068): a recipe runs once at a time — show the run in progress.
@@ -41,7 +46,7 @@ export async function runRecipeNowAction(
     }
     const failure = describeActionError(
       err,
-      [ConnectorServiceError, TokenError, AutomationGateError],
+      [ConnectorServiceError, TokenError, AutomationGateError, ActionGuardError],
       {
         permission_denied:
           "Your role in this workspace is read-only, so you can't start runs. Ask a workspace admin if you need edit access.",

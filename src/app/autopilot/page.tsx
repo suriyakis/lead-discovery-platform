@@ -20,7 +20,7 @@ import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { cx } from '@/lib/ui/cx';
 import styles from './autopilot.module.css';
-import { describeRunNow } from './run-now';
+import { runAutopilotNowAction } from './actions';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -38,7 +38,6 @@ import {
   listProductAutopilotSettings,
   pauseProductAutomation,
   resumeProductAutomation,
-  runOnce,
   updateAutopilotSettings,
   upsertProductAutopilotSettings,
 } from '@/lib/services/autopilot';
@@ -232,15 +231,6 @@ export default async function AutopilotPage({
     }
   }
 
-  async function runNow() {
-    'use server';
-    const c = await getWorkspaceContext();
-    const r = await runOnce(c, { purpose: 'manual' });
-    // PC-06 / PC-35 / PC-12: why a run did nothing (held, off, already
-    // running) or what it did — run-now.ts.
-    redirect(`/autopilot?message=${encodeURIComponent(describeRunNow(r))}`);
-  }
-
   return (
     <AppShell>
       <p className="muted">
@@ -255,7 +245,7 @@ export default async function AutopilotPage({
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <MasterStrip settings={base} paused={pauseOverview.pause !== null} runNow={runNow} />
+      <MasterStrip settings={base} paused={pauseOverview.pause !== null} runNow={runAutopilotNowAction} />
 
       <AutomationPauseControl overview={pauseOverview} returnTo="/autopilot" />
 

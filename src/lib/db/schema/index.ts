@@ -32,3 +32,5 @@ export * from './holds';
 export * from './automation-state';
 export * from './ops';
 export * from './work-leases';
+export * from './rate-limits';
+export * from './qualification-runs';

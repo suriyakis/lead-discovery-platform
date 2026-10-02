@@ -36,7 +36,7 @@ import {
   parseLessonPolarity,
   polarityForRule,
 } from './learning-categories';
-import { hasTokens } from './token-ledger';
+import { assertTokens, hasTokens } from './token-ledger';
 
 export class LearningSynthesisError extends Error {
   public readonly code: string;
@@ -119,6 +119,9 @@ export async function synthesizeWorkspaceLearning(
       'permission_denied',
     );
   }
+  // PC-38 (I184): an empty wallet refuses the button before any AI call
+  // (TokenError), instead of a silent 'no_tokens' skip.
+  await assertTokens(ctx);
   // PC-06: the button is refused under a Background AI hold.
   await assertGate(ctx, 'background_ai');
   return runSynthesis(ctx);

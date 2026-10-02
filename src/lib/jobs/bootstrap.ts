@@ -26,6 +26,7 @@ import {
   KnowledgeIndexPayloadSchema,
 } from '@/lib/services/knowledge-index-queue';
 import { runKnowledgeIndexJob, summarizeIndexOutcome } from '@/lib/services/knowledge-indexing';
+import { RECLASSIFY_JOB, runReclassificationJob } from '@/lib/services/qualification-runs';
 
 export interface ConnectorRunJobPayload {
   runId: string;
@@ -139,6 +140,16 @@ export function registerJobHandlers(): void {
       (payload, ctx) => handleKnowledgeIndex(payload, { jobId: ctx.jobId }),
       { kind: 'job', label: 'Knowledge indexing' },
     ),
+  );
+  // PC-38 (I028): a "Re-classify all" run. It records its own progress and
+  // outcome on its qualification_runs row; a throw (a database error) also
+  // marks the run failed before it reaches the heartbeat.
+  q.on(
+    RECLASSIFY_JOB,
+    instrumented(RECLASSIFY_JOB, (payload) => runReclassificationJob(payload), {
+      kind: 'job',
+      label: 'Re-classify all',
+    }),
   );
   registered = true;
 }

@@ -162,6 +162,7 @@ every workspace, active or archived:
 | `ops_alert_state` | owner-alert keys not alerted since | 90 days | `last_alerted_at` |
 | `job_heartbeats.retired` | heartbeat rows of jobs that are no longer catalogued ticks (a catalogued tick's row is never deleted) | 90 days | `updated_at` |
 | `work_leases.expired` | PC-12: work leases a dead holder left that no acquire took over since (a deleted mailbox's or recipe's, mostly) | 7 days | `expires_at` |
+| `rate_limit_buckets.expired` | PC-38: rate-limiter windows that ended and no request reopened | 1 day | `expires_at` |
 
 Nothing else is deleted: every other audit kind, `usage_log` (it backs
 token debits), mail and every tenant record stay. Each policy deletes at
@@ -268,8 +269,9 @@ again.
 
 Work that must not overlap in a workspace holds a row in `work_leases`
 (`src/lib/services/work-leases.ts`): `autopilot.run`, `outreach.drain`,
-`outreach.follow_up`, `mailbox.sync` (per mailbox) and `connector.recipe`
-(per recipe). A second caller does nothing and the ticks count it as
+`outreach.follow_up`, `mailbox.sync` (per mailbox), `connector.recipe`
+(per recipe) and, since PC-38, `action` (an operator's AI button, per
+action name; see "Rate limits and single-flight" below). A second caller does nothing and the ticks count it as
 `busy` in their heartbeat summary (`autopilot.tick`,
 `outreach.drain.tick`, `outreach.follow_up.tick`, `mail.imap.tick`,
 `mail.probe.tick`); it is
@@ -331,6 +333,63 @@ SELECT name, last_status, last_started_at, last_ok_at, consecutive_failures,
        run_count, last_error, registered_at, boot_id
 FROM job_heartbeats ORDER BY name;
 ```
+
+### Rate limits and single-flight (PC-38)
+
+The app limits AI work in two places, both shared by every process (the
+web server and the worker) and surviving deploys, because the state is in
+Postgres:
+
+- **API routes** (`src/lib/rate-limit.ts`, table `rate_limit_buckets`):
+  `/api/assistant` 20 a minute per workspace and 10 per user,
+  `/api/translate` 30 and `/api/communication/suggest-reply` 20 a minute
+  per workspace (unchanged), `/api/signatures/redesign` 10 a minute per
+  workspace (new). Over the limit: 429 `rate_limited`. If the database is
+  unreachable the limiter falls back to an in-process window and logs
+  `[rate-limit] postgres store unavailable` once a minute.
+- **AI buttons** (`src/lib/services/action-guards.ts`): each start counts
+  against `action:<name>:ws:<id>` and runs under the work lease `action` /
+  `<name>`, so a double-click or a second tab gets "already running":
+
+  | Button | Action | Per workspace | Single-flight |
+  |---|---|---|---|
+  | Re-classify all | `qualification.reclassify_all` | 6 an hour | the whole background run |
+  | Synthesize now | `learning.synthesize` | 6 an hour | yes |
+  | Compact now | `knowledge.compact` | 6 an hour | yes |
+  | Generate product profile | `product.autofill` | 20 an hour | yes |
+  | Run check now (health) | `health.check_now` | 6 an hour | yes |
+  | Crawl plan Run now | `crawl_plan.run_now` | 30 an hour | per plan |
+  | Autopilot Run now | `autopilot.run_now` | 30 an hour | by `autopilot.run` |
+  | Recipe Run now | `connector.recipe_run_now` | 60 an hour | by `connector.recipe` |
+
+  Re-classify all, Synthesize now and product autofill refuse an empty
+  wallet before any AI call.
+
+**Re-classify all** is a background job (`qualification.reclassify`, runs
+lane): admins only, one `qualification_runs` row per run, batches of 50
+records with progress saved after each, stopped by an empty wallet
+(`no_tokens`) or a Background AI hold (`held`); the Crawl Engine page shows
+the progress. A run whose worker died (its lease expired) or whose job was
+lost is failed as interrupted the next time someone presses the button. To
+see runs:
+
+```sql
+SELECT id, workspace_id, status, stop_reason, processed_records, total_records,
+       qualification_count, failed_records, created_at, heartbeat_at, finished_at
+FROM qualification_runs ORDER BY id DESC LIMIT 20;
+```
+
+To see who is being limited right now:
+
+```sql
+SELECT key, count, window_start, expires_at FROM rate_limit_buckets
+WHERE expires_at > now() ORDER BY count DESC LIMIT 20;
+```
+
+In front of all this, nginx limits `/api/` and server-action POSTs per
+client address (scanners probing server actions, X10): the snippet and how
+to apply it are in docs/DEPLOYMENT.md, "Release steps: Phase 1 shared rate
+limits (PC-38)".
 
 ## Owner alerts (ntfy)
 

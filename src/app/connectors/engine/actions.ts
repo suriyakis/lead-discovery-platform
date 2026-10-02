@@ -3,6 +3,8 @@
 // P62-03: server actions for the Crawl Engine UI. PC-13 (I062): none of
 // them writes autopilot settings — the autopilot switches live on
 // /autopilot only (the "Pipeline after crawl" panel is read-only).
+// PC-38: a plan's Run now is single-flight per plan and rate-limited per
+// workspace; Re-classify all is a background run.
 
 import { redirect } from 'next/navigation';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
@@ -15,6 +17,14 @@ import {
   updateCrawlPlan,
 } from '@/lib/services/crawl-engine';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { requireActionContext } from '@/lib/action-context';
+import { describeActionError, withFlash } from '@/lib/action-errors';
+import { ActionGuardError, guardAction } from '@/lib/services/action-guards';
+import { AutomationGateError } from '@/lib/services/automation-gate';
+import { QualificationRunError, requestReclassification } from '@/lib/services/qualification-runs';
+import { TokenError } from '@/lib/services/token-ledger';
+
+const ENGINE_PATH = '/connectors/engine';
 
 function bigintArrayFromFormData(formData: FormData, name: string): bigint[] {
   const out: bigint[] = [];
@@ -115,7 +125,10 @@ export async function runPlanAction(formData: FormData): Promise<void> {
   }
   const id = BigInt(idStr);
   try {
-    const r = await runCrawlPlanNow(c, id);
+    // PC-38: one Run now per plan at a time, within the workspace's limit.
+    const r = await guardAction(c, 'crawl_plan.run_now', () => runCrawlPlanNow(c, id), {
+      resource: id,
+    });
     const parts: string[] = [];
     if (r.startedRuns.length > 0)
       parts.push(`${r.startedRuns.length} run(s) started`);
@@ -132,7 +145,7 @@ export async function runPlanAction(formData: FormData): Promise<void> {
     if (isNextRedirectError(err)) throw err;
     redirect(
       `/connectors/engine?error=${encodeURIComponent(
-        err instanceof CrawlEngineError
+        err instanceof CrawlEngineError || err instanceof ActionGuardError
           ? err.message
           : err instanceof Error
             ? err.message
@@ -142,25 +155,33 @@ export async function runPlanAction(formData: FormData): Promise<void> {
   }
 }
 
+/**
+ * PC-38 (I028): "Re-classify all" starts a background run and returns at
+ * once (services/qualification-runs.ts). Admins only; an empty wallet, a
+ * Background AI hold, a run already in progress and the action's rate
+ * limit are refused with a readable flash before anything runs.
+ */
 export async function reclassifyAll(formData: FormData): Promise<void> {
-  const c = await getWorkspaceContext();
-  try {
-    const { reclassifyWorkspace } = await import('@/lib/services/qualification');
-    const r = await reclassifyWorkspace(c);
-    redirect(
-      `/connectors/engine?message=${encodeURIComponent(
-        `Re-classified ${r.recordCount} record(s) — ${r.qualificationCount} qualifications written.`,
-      )}`,
-    );
-  } catch (err) {
-    if (isNextRedirectError(err)) throw err;
-    redirect(
-      `/connectors/engine?error=${encodeURIComponent(
-        err instanceof Error ? err.message : 'reclassify failed',
-      )}`,
-    );
-  }
   void formData;
+  const c = await requireActionContext('/connectors');
+  let message: string;
+  try {
+    const run = await requestReclassification(c);
+    message = `Re-classification started: ${run.totalRecords.toLocaleString('en-US')} record(s) against ${run.productCount} active product(s). It runs in the background; progress shows below.`;
+  } catch (err) {
+    const failure = describeActionError(
+      err,
+      [QualificationRunError, TokenError, AutomationGateError, ActionGuardError],
+      {
+        permission_denied:
+          'Only workspace admins can re-classify every record. Ask an admin if it needs doing.',
+        queue_unavailable:
+          'The background queue is unavailable right now, so nothing was started. Try again in a few minutes.',
+      },
+    );
+    redirect(withFlash(ENGINE_PATH, { error: failure.message }));
+  }
+  redirect(withFlash(ENGINE_PATH, { message }));
 }
 
 export async function deletePlanAction(formData: FormData): Promise<void> {

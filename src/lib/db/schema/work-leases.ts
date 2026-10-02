@@ -16,9 +16,16 @@ import { workspaces } from './workspaces';
  *                        Sync buttons, Test connection)
  *   connector.recipe     per recipe (resource = recipe id): one executing
  *                        discovery run at a time
+ *   action               PC-38: single-flight for an operator's button
+ *                        (resource = the action's name, optionally
+ *                        ':<id>' of what it acts on, e.g.
+ *                        'learning.synthesize' or 'crawl_plan.run_now:7';
+ *                        purpose 'action:<name>'): a double-click or a
+ *                        second tab gets "already running" instead of a
+ *                        second AI pass (services/action-guards.ts)
  *
- * The CHECK constraint on `kind` (migration custom block) lists the same
- * values.
+ * The CHECK constraints on `kind` and `resource_key` (migration custom
+ * blocks) list the same values.
  */
 export const WORK_LEASE_KINDS = [
   'autopilot.run',
@@ -26,6 +33,7 @@ export const WORK_LEASE_KINDS = [
   'outreach.follow_up',
   'mailbox.sync',
   'connector.recipe',
+  'action',
 ] as const;
 export type WorkLeaseKind = (typeof WORK_LEASE_KINDS)[number];
 

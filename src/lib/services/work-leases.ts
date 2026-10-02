@@ -73,14 +73,30 @@ export const WORK_LEASE_POLICY: Readonly<Record<WorkLeaseKind, WorkLeasePolicy>>
   // One IMAP fetch of up to 100 messages, or one SMTP + IMAP check.
   'mailbox.sync': { ttlMs: 2 * MINUTE, maxHoldMs: 10 * MINUTE, autoRenew: true },
   'connector.recipe': { ttlMs: 15 * MINUTE, maxHoldMs: Number.POSITIVE_INFINITY, autoRenew: false },
+  // PC-38: an operator's button held for its request (synthesis, compaction,
+  // autofill, a health check: a few AI calls). Background work that keeps
+  // an action's lease past the request (Re-classify all) passes its own
+  // checkpoint-renewed policy.
+  action: { ttlMs: 2 * MINUTE, maxHoldMs: 30 * MINUTE, autoRenew: true },
 };
 
-/** Per-resource kinds key the lease by a mailbox or recipe id. */
-const PER_RESOURCE: ReadonlySet<WorkLeaseKind> = new Set(['mailbox.sync', 'connector.recipe']);
+/** Per-resource kinds key the lease by a mailbox or recipe id, or (kind
+ *  'action') by the action's name. */
+const PER_RESOURCE: ReadonlySet<WorkLeaseKind> = new Set([
+  'mailbox.sync',
+  'connector.recipe',
+  'action',
+]);
+
+/** PC-38: an action lease's resource — 'learning.synthesize',
+ *  'crawl_plan.run_now:7'. The CHECK constraint on resource_key uses the
+ *  same pattern. */
+export const ACTION_RESOURCE_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*(:[0-9]{1,19})?$/;
 
 export interface WorkLeaseSpec {
   kind: WorkLeaseKind;
-  /** The mailbox / recipe id (required for the per-resource kinds). */
+  /** The mailbox / recipe id (required for the per-resource kinds), or
+   *  the action's name for kind 'action'. */
   resource?: bigint | string;
   /** Shown in the ops console: 'tick', 'manual', 'post-crawl', … */
   purpose?: string;
@@ -93,17 +109,27 @@ export interface WorkLeaseSpec {
 const SpecSchema = z
   .object({
     kind: z.enum(WORK_LEASE_KINDS),
-    resource: z
-      .union([z.bigint().nonnegative(), z.string().regex(/^\d{1,19}$/)])
-      .optional(),
+    resource: z.union([z.bigint().nonnegative(), z.string().max(120)]).optional(),
     purpose: z.string().max(200).optional(),
     ttlMs: z.number().int().min(10).max(24 * 60 * MINUTE).optional(),
     maxHoldMs: z.number().positive().optional(),
     autoRenew: z.boolean().optional(),
   })
   .refine((s) => PER_RESOURCE.has(s.kind) === (s.resource !== undefined), {
-    message: 'a mailbox.sync / connector.recipe lease names its resource; the other kinds do not',
-  });
+    message:
+      'a mailbox.sync / connector.recipe / action lease names its resource; the other kinds do not',
+  })
+  .refine(
+    (s) =>
+      s.resource === undefined ||
+      (s.kind === 'action'
+        ? typeof s.resource === 'string' && ACTION_RESOURCE_PATTERN.test(s.resource)
+        : typeof s.resource === 'bigint' || /^\d{1,19}$/.test(s.resource)),
+    {
+      message:
+        "a mailbox / recipe lease's resource is an id; an action lease's is a name like 'learning.synthesize' or 'crawl_plan.run_now:7'",
+    },
+  );
 
 /** Who holds a lease the caller could not take. */
 export interface LeaseHolder {

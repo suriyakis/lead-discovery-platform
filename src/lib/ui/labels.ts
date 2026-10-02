@@ -647,6 +647,7 @@ export const AUDIT_KIND_LABEL = {
   'review.bulk_archive': 'Records archived in bulk',
   'review.bulk_delete': 'Records deleted in bulk',
   'qualification.reclassify_workspace': 'Records requalified',
+  'qualification.reclassify_requested': 'Re-classification requested',
   'lead.bulk_archive': 'Matches archived in bulk',
   'lead.bulk_delete': 'Matches deleted in bulk',
   'lead_research.run': 'Lead research run',

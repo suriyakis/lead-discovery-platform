@@ -189,6 +189,29 @@ The release that brings the workspace pause, holds, the accountable-owner rule a
 
    `pnpm db:migrate` does not run this import. It must run, and the owner must review the rows, before the release that drops `feature_flags`.
 
+### Release steps: Phase 1 shared rate limits (PC-38)
+
+The release that moves the rate limiter into Postgres and makes "Re-classify all" a background job. `pnpm db:migrate` creates `rate_limit_buckets` and `qualification_runs` and widens the `work_leases` checks; nothing else is needed for the app. The API thresholds are unchanged; their windows now survive deploys.
+
+**nginx (owner, on agregat, once).** The app limits AI work per workspace; nginx limits requests per client address in front of it, for `/api/` and server-action POSTs (a POST with a `Next-Action` header: scanners probe these, X10). The snippet is versioned in `scripts/deploy/nginx/`:
+
+```bash
+cd /opt/lead-discovery-platform
+cp scripts/deploy/nginx/leadsonar-rate-limit-zones.conf /etc/nginx/conf.d/
+cp scripts/deploy/nginx/leadsonar-rate-limit.conf /etc/nginx/snippets/
+# inside the discover.nulife.pl TLS server { }, above the location blocks:
+#     include snippets/leadsonar-rate-limit.conf;
+$EDITOR /etc/nginx/sites-available/discover.nulife.pl
+nginx -t && systemctl reload nginx
+```
+
+- `/api/` gets 5 requests a second per address with a burst of 30; `/api/track`, `/api/unsubscribe`, `/api/stripe/webhook`, `/api/health`, `/api/ready` and `/api/auth` are exempt (mail clients, image proxies, Stripe, monitors and sign-in call them, often from one address).
+- Server actions get 2 a second per address with a burst of 20. Page views, navigations and assets are never limited.
+- Past the burst nginx answers 429 at once and logs a `limiting requests` warning in the vhost's error log.
+- Check: `nginx -t` passes; a page still loads and a form still submits; `for i in $(seq 60); do curl -s -o /dev/null -w '%{http_code}\n' -X POST https://discover.nulife.pl/api/translate; done | sort | uniq -c` shows 401s, then 429s.
+- If nginx ever sits behind a proxy or CDN, set `real_ip_header` / `set_real_ip_from` first, or every client shares the proxy's address.
+- To remove: delete the `include` line and both files, then `nginx -t && systemctl reload nginx`.
+
 ### Backups
 
 - **Postgres:** `pg_dump` once a day, written to a local backups directory and uploaded to off-host storage. Retention: 30 days. Script lives at `scripts/backup-postgres.sh`.

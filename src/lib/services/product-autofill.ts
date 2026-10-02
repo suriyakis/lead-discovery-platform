@@ -19,6 +19,7 @@ import {
 } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
+import { assertTokens } from './token-ledger';
 import {
   createProductProfile,
   type CreateProductProfileInput,
@@ -579,6 +580,8 @@ export async function autofillProductProfileFromSources(
   if (!url && pdfs.length === 0) {
     throw invalid('provide at least one URL or one PDF');
   }
+  // PC-38 (I184): an empty wallet refuses before the fetch and the AI call.
+  await assertTokens(ctx);
 
   const sources: ExtractedSource[] = [];
   if (url) sources.push(await fetchAndExtractWebsite(url));
