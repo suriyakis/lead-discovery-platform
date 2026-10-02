@@ -29,6 +29,9 @@ const TENANT_TABLES = [
   // PC-07: not tenant-owned (no FK to workspaces), so list them explicitly.
   'job_heartbeats',
   'ops_events',
+  // PC-08: owner-alert state and delivery log.
+  'ops_alert_state',
+  'ops_alert_deliveries',
 ];
 
 /**

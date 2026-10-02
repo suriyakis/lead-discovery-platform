@@ -196,6 +196,16 @@ export async function listOpenOpsEventFingerprints(source: string): Promise<Set<
   return new Set(rows.map((r) => r.fingerprint));
 }
 
+/** Fingerprints of the open incidents of one kind (PC-08: the watchdog
+ *  resolves the `tick.stale` incidents of ticks that run again). */
+export async function listOpenOpsEventFingerprintsByKind(kind: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ fingerprint: opsEvents.fingerprint })
+    .from(opsEvents)
+    .where(and(eq(opsEvents.kind, kind), isNull(opsEvents.resolvedAt)));
+  return new Set(rows.map((r) => r.fingerprint));
+}
+
 /** Open incidents per severity, platform-wide (readiness detail). */
 export async function countOpenOpsEventsBySeverity(): Promise<Record<OpsEventSeverity, number>> {
   const rows = await db

@@ -6,6 +6,8 @@
 //   - PC-07: fix this process's boot identity (boot_id + boot time for the
 //     readiness deploy grace) and report a failed schedule registration as
 //     a platform incident instead of a console line only
+//   - PC-08: start the ops watchdog (owner alerts); skipped, like the
+//     schedule, with SCHEDULE_BACKGROUND_JOBS=0
 
 export async function registerNodeRuntime(): Promise<void> {
   const { getBootInfo } = await import('./lib/jobs/boot');
@@ -51,4 +53,12 @@ export async function registerNodeRuntime(): Promise<void> {
     );
     await reportScheduleRegistrationFailure(err);
   }
+
+  // PC-08: the ops watchdog (stale ticks on two consecutive checks, owner
+  // alerts to ntfy, the daily digest). Started after the registration on
+  // both paths: a failed registration is exactly what it must report. A
+  // timer in this process, not a queued job, so a lost Redis does not
+  // silence it; the external monitor on /api/ready covers a dead process.
+  const { startOpsWatchdog } = await import('./lib/ops/watchdog');
+  startOpsWatchdog();
 }

@@ -134,7 +134,78 @@ export const opsEvents = pgTable(
   }),
 );
 
+/**
+ * PC-08: owner-alert rate-limit state. One row per ALERT KEY: an incident
+ * fingerprint (`ops_events.fingerprint`), a control-change key
+ * (`control:…`) or the daily digest (`digest:daily`).
+ *
+ * The key outlives the incident row on purpose: an incident that resolves
+ * and reopens within the re-alert window (a flapping tick) keeps its key,
+ * so it does not page again. Claiming a key is one INSERT … ON CONFLICT DO
+ * UPDATE … WHERE last_alerted_at <= cutoff, which is what stops two
+ * processes (or two overlapping passes) from sending the same alert.
+ * See src/lib/services/ops-alerts.ts.
+ */
+export const opsAlertState = pgTable(
+  'ops_alert_state',
+  {
+    alertKey: text('alert_key').primaryKey(),
+    lastAlertedAt: timestamp('last_alerted_at', { mode: 'date', withTimezone: true }).notNull(),
+    /** The incident row the last alert was about (NULL for control
+     *  changes and digests, or once retention deleted the row). */
+    lastEventId: bigint('last_event_id', { mode: 'bigint' }).references(() => opsEvents.id, {
+      onDelete: 'set null',
+    }),
+    alertCount: integer('alert_count').notNull().default(1),
+  },
+  (table) => ({
+    lastAlertedIdx: index('ops_alert_state_last_alerted_idx').on(table.lastAlertedAt),
+  }),
+);
+
+/**
+ * PC-08: every message sent (or attempted) to the owner-alert sink. The
+ * hourly message budget is counted from here, the console's "recent
+ * alerts" list reads it, and it is the record of what left the platform.
+ * Titles and errors are masked; the topic and the access token are never
+ * stored. Same 90-day retention as ops_events (the deletion is PC-35).
+ */
+export const opsAlertDeliveries = pgTable(
+  'ops_alert_deliveries',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    /** 'incident' | 'digest' (a burst folded into one message) |
+     *  'daily_digest' | 'control' (stop / hold / pause change) | 'test'. */
+    kind: text('kind').notNull(),
+    /** The sink format; only 'ntfy' today. */
+    sink: text('sink').notNull().default('ntfy'),
+    /** 'sent' | 'failed'. */
+    status: text('status').notNull(),
+    title: text('title').notNull(),
+    /** ntfy priority 1 (min) … 5 (max). */
+    priority: integer('priority').notNull(),
+    /** Incidents (ops_events rows) the message covers. */
+    eventCount: integer('event_count').notNull().default(0),
+    /** { alertKeys, eventIds }: bounded lists. */
+    payload: jsonb('payload')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /** HTTP status the sink answered with, when it answered. */
+    httpStatus: integer('http_status'),
+    /** Masked failure reason. */
+    error: text('error'),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    kindCreatedIdx: index('ops_alert_deliveries_kind_created_idx').on(table.kind, table.createdAt),
+    createdIdx: index('ops_alert_deliveries_created_idx').on(table.createdAt),
+  }),
+);
+
 export type JobHeartbeat = typeof jobHeartbeats.$inferSelect;
 export type NewJobHeartbeat = typeof jobHeartbeats.$inferInsert;
 export type OpsEvent = typeof opsEvents.$inferSelect;
 export type NewOpsEvent = typeof opsEvents.$inferInsert;
+export type OpsAlertState = typeof opsAlertState.$inferSelect;
+export type OpsAlertDelivery = typeof opsAlertDeliveries.$inferSelect;
+export type NewOpsAlertDelivery = typeof opsAlertDeliveries.$inferInsert;

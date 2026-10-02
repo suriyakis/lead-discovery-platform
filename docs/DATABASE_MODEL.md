@@ -183,6 +183,13 @@ Operational visibility (I021/I022). Not tenant-owned bookkeeping, written by bac
 
 `ops_events`: the incident stream. scope (`platform` / `workspace`; a CHECK ties `workspace_id` to it), workspace_id (cascade), kind, severity (`info` / `warning` / `error` / `critical`), source (job or subsystem), dedupe_key, fingerprint (sha256 over scope + workspace + kind + dedupe key), title, message (masked), payload (jsonb, masked), occurrences, first_seen_at / last_seen_at, acknowledged_at / acknowledged_by, resolved_at / resolved_by / resolution (`auto` / `manual`). A partial unique index keeps one open row per fingerprint, so repeats bump `occurrences`. Resolved rows are kept 90 days (`OPS_EVENTS_RETENTION_DAYS`).
 
+### `ops_alert_state`, `ops_alert_deliveries` (Phase 1, PC-08)
+Owner alerting to ntfy (see `docs/OPS_MONITORING.md`, "Owner alerts"). Not tenant-owned; written by the in-process watchdog, the control-change hook and the console's test alert.
+
+`ops_alert_state`: one row per alert key: an incident fingerprint, a control-change key (`control:<control>:<workspace>:<hold>:<action>`) or `digest:daily`. alert_key (pk), last_alerted_at, last_event_id (the `ops_events` row last alerted, set null on delete), alert_count (CHECK >= 1). Claiming a key is an upsert guarded by `last_alerted_at <= cutoff`, so an alert goes out once across processes; the key outlives the incident row so a flapping incident does not page again within 6 h.
+
+`ops_alert_deliveries`: every message sent or attempted. kind (`incident` / `digest` / `daily_digest` / `control` / `test`), sink (`ntfy`), status (`sent` / `failed`), title (masked), priority (1-5), event_count, payload (jsonb: alert keys and event ids, bounded), http_status, error (masked, scrubbed of the topic and token), created_at. The hourly budget counts `sent` incident and digest rows. Same 90-day retention as `ops_events` (PC-35). CHECKs on kind, status, priority and event_count live in the migration's custom block.
+
 ## Reserved fields and tables (no migration needed for future phases)
 
 These columns / tables are reserved on Phase-1-and-Phase-2 tables so later phases can attach without an "alter table" parade:

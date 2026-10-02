@@ -165,7 +165,10 @@ MinIO, R2 all need path style). For native AWS, leave it false.
 - `/admin/users`, `/admin/users/<id>` — account status, pre-authorisation,
   password users, platform role, memberships.
 - `/admin/support` — the support inbox across every workspace.
-- `/admin/providers` — platform API keys and default providers/models.
+- `/admin/providers` — platform API keys and default providers/models,
+  and **Owner alerts**: whether alerts to the owner's ntfy topic are on
+  (configured in the server environment; the topic is never shown), the
+  last alerts sent, and **Send test alert**.
 - `/admin/audit` — the audit log across every workspace. Pick
   **Platform events** to see platform-level events (filed in no
   workspace on purpose), or **Deleted workspaces** to see rows whose

@@ -51,6 +51,8 @@ export const PLATFORM_AUDIT_KINDS = [
   // kinds carry a workspace and read as workspace rows.
   'remediation.apply',
   'remediation.revert',
+  // PC-08: 'Send test alert' in the platform console (services/ops-alerts.ts)
+  'ops.alert.test',
 ] as const;
 
 export type PlatformAuditKind = (typeof PLATFORM_AUDIT_KINDS)[number];

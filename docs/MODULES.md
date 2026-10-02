@@ -193,6 +193,8 @@ See `IJobQueue` in `docs/ARCHITECTURE.md`. Job types defined as the system grows
 
 **Ops visibility (PC-07).** Every handler registered with the queue is wrapped by `instrumented()` (`src/lib/jobs/instrumented.ts`): `job_heartbeats` per job name, per-workspace failures as `ops_events` through `TickIncidents` (`src/lib/ops/tick-incidents.ts`), whole-job failures as platform incidents. The tick catalogue (names, cadences, labels) is `src/lib/jobs/tick-catalog.ts`; the expected-slot staleness rule is `src/lib/jobs/tick-schedule.ts`; readiness (`/api/ready`) is `src/lib/services/readiness.ts`. Writers: `services/job-heartbeats.ts`, `services/ops-events.ts`. See `docs/OPS_MONITORING.md`.
 
+**Owner alerts (PC-08).** `src/lib/ops/watchdog.ts` (in-process timer: stale ticks on two consecutive checks become `tick.stale` incidents, then the dispatcher and the daily digest run), `src/lib/services/ops-alerts.ts` (`dispatchOpsAlerts`, `sendDailyDigestIfDue`, `alertControlChange` / `notifyControlChange` for the stop, hold and pause controls, `sendTestAlert` and `getOwnerAlertStatus` for the console), `src/lib/ops/alert-config.ts` (env), `src/lib/ops/alert-messages.ts` (message formats, grouping, noise), `src/lib/ops/ntfy.ts` (the sink). Console: `src/components/OwnerAlertsPanel.tsx` on `/admin/providers`.
+
 ### File Storage
 
 **Phase.** 1 (interface + local-FS impl), 9+ (S3-compatible for production).

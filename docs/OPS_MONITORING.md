@@ -48,10 +48,11 @@ the detail is never shown. Never put the token in a monitor URL.
 - Alert after **2 consecutive failures**. A single 503 can be the edge of a
   deploy or one slow check.
 - Run it **off agregat** (UptimeRobot, Better Stack, Uptime Kuma on another
-  host). Until the dedicated worker (PC-36) and the alert watchdog (PC-08)
-  ship, it is the only check that does not depend on the app process.
-- Alert destination: the owner's ntfy topic. PC-08 adds in-app alerting
-  through `NTFY_URL` + `NTFY_TOPIC`.
+  host). It is the only check that does not depend on the app process: the
+  in-app watchdog (below) runs inside that process and dies with it. Until
+  the dedicated worker (PC-36) it stays the independent check.
+- Alert destination: the owner's ntfy topic, the same one the in-app
+  alerts use (see "Owner alerts" below), so everything lands in one place.
 
 ### When it fires
 
@@ -118,6 +119,8 @@ incidents:
 | `job.failed` | platform | `connector.run` throws, or a BullMQ job without an instrumented handler fails | the next success of that job name |
 | `worker.error` | platform (critical) | the BullMQ worker emits `error` (usually Redis) | the next completed job |
 | `jobs.schedule_registration_failed` | platform (critical) | startup could not schedule the ticks | the next successful registration |
+| `tick.stale` | platform | the watchdog sees a tick stale (outside the boot grace) on 2 consecutive checks (PC-08) | a watchdog check sees it running again |
+| `alerts.delivery_failed` | platform (warning) | the ntfy server refuses an owner alert or does not answer (PC-08); never alerted itself | the next delivered alert |
 
 - **Fingerprinted and deduplicated.** The fingerprint covers scope,
   workspace, kind and dedupe key, never the error text. While an incident is
@@ -143,6 +146,99 @@ SELECT name, last_status, last_started_at, last_ok_at, consecutive_failures,
        run_count, last_error, registered_at, boot_id
 FROM job_heartbeats ORDER BY name;
 ```
+
+## Owner alerts (ntfy)
+
+PC-08 pushes what needs the owner to an [ntfy](https://ntfy.sh) topic: the
+phone app subscribed to it rings. Nothing to install on the server.
+
+### Setup
+
+Set these in the production `.env` and restart the app:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NTFY_TOPIC` | unset (alerts off) | The topic to publish to. **Required to enable alerts.** Letters, digits, `-` and `_`, at most 64. |
+| `NTFY_URL` | `https://ntfy.sh` | The ntfy server. A self-hosted one works the same (base URL, no credentials in it). |
+| `NTFY_TOKEN` | unset | Access token (`tk_…`) for a reserved topic on ntfy.sh or a self-hosted server with access control. Sent as `Authorization: Bearer`. |
+| `OPS_ALERT_MIN_SEVERITY` | `error` | `warning`, `error` or `critical`: the lowest incident severity that alerts. |
+
+On the public ntfy.sh server **the topic name is the password**: anyone who
+knows it can read the alerts. Use a long random name
+(`leadsonar-$(openssl rand -hex 12)`) or reserve the topic and set
+`NTFY_TOKEN`. The topic and the token are never shown in the console, never
+logged and never stored; failures are scrubbed of both.
+
+Without `NTFY_TOPIC` the app runs normally with alerts off, and logs
+`[ops] Owner alerts are off: NTFY_TOPIC is not set` once per process.
+
+Check it from the platform console: **Providers → Owner alerts** shows the
+status (server host, whether the topic and token are set, the threshold,
+messages sent in the last hour, the last alerts) and has **Send test
+alert**. The test is audited (`ops.alert.test`).
+
+### What alerts
+
+1. **Incidents** (`ops_events` above) of severity `OPS_ALERT_MIN_SEVERITY`
+   and up. ntfy priority follows the severity: `critical` 5 (urgent),
+   `error` 4 (high), `warning` 3, `info` 2.
+2. **Stale ticks.** The watchdog checks the tick heartbeats every minute. A
+   tick that is stale (the expected-slot rule above, outside the boot grace)
+   on **two consecutive checks** opens a `tick.stale` incident (error), which
+   alerts like any other. One stale observation never alerts.
+3. **Platform stop and hold changes.** The platform-wide outbound stop (set
+   priority 4, cleared 3), workspace holds (placed, released, expired,
+   legacy confirmed or discarded) and the workspace automation pause, sent
+   right after the change commits. The message names the workspace and
+   what is held, and carries the masked reason; who acted is in the audit
+   log. The same change twice within a minute (a double submit) is one
+   alert. These do not spend the hourly budget.
+4. **Daily digest** at 07:00 UTC (the first watchdog check after it): every
+   open incident of severity `warning` and up, grouped by kind and source
+   with counts, workspaces and the oldest first-seen time. Nothing open,
+   nothing sent.
+
+### Rules that keep it quiet
+
+- **One alert per incident.** Repeats of an open incident only count
+  occurrences. Still open after **6 hours**: one reminder ("still open"),
+  then every 6 hours.
+- **Per incident key, not per row.** An incident that resolves and reopens
+  within 6 hours of its last alert (a flapping tick) does not page again.
+- **Digest when many fire.** More than **3** incidents due at once, or more
+  than the budget has left, go out as **one** message that groups them.
+- **Budget.** At most **10** incident or digest messages per rolling hour,
+  platform-wide. Over budget, incidents wait and go out (as a digest) when
+  the hour frees; critical ones still go out at once.
+- **Noise.** Errors matching `Failed to find Server Action` (scanners
+  probing server actions, X10) never alert and never appear in a digest.
+- **Exactly once.** Each alert key is claimed in `ops_alert_state` before
+  the message is sent, so two app processes or two overlapping checks
+  cannot both send it. A failed send gives the claim back and the next
+  check retries; the failure is logged in `ops_alert_deliveries` and opens
+  an `alerts.delivery_failed` warning. A failed control-change alert is
+  recorded but not retried.
+
+### The watchdog
+
+A timer in the app process, started at boot by the Next.js startup hook
+(`src/lib/ops/watchdog.ts`), first check 30 s after boot, then every 60 s.
+It is not a queued job, so it keeps working when Redis or the BullMQ worker
+is what broke. It does **not** survive the app process: if the process dies
+or hangs, so does the watchdog, which is why the external monitor above is
+still required. It does not start with `SCHEDULE_BACKGROUND_JOBS=0`.
+
+### Reading the alert log
+
+```sql
+SELECT created_at, kind, status, priority, title, event_count, http_status, error
+FROM ops_alert_deliveries ORDER BY created_at DESC LIMIT 20;
+
+SELECT alert_key, last_alerted_at, alert_count
+FROM ops_alert_state ORDER BY last_alerted_at DESC LIMIT 20;
+```
+
+`ops_alert_deliveries` follows the 90-day retention of `ops_events` (PC-35).
 
 ## Build SHA
 
