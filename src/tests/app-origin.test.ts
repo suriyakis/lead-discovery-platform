@@ -120,7 +120,10 @@ describe('appUrl (I155)', () => {
       if (text.includes('discover.nulife.pl')) offenders.push(f.split(path.sep).join('/'));
     }
     expect(offenders).toEqual([]);
-    for (const f of ['src/app/(app)/onboarding/page.tsx', 'src/app/(app)/settings/billing/page.tsx'])
+    for (const f of [
+      'src/app/(app)/onboarding/page.tsx',
+      'src/app/(app)/settings/billing/page.tsx',
+    ])
       expect(read(f), f).toMatch(/appUrl\('\/[\w/]+(\?stripe=success)?'/);
   });
 });
@@ -137,5 +140,30 @@ describe('stale copy (I155)', () => {
     expect(knowledge).not.toMatch(/Future RAG/);
     // KL-06: sources are indexed in the background as soon as they change.
     expect(knowledge).toContain('Each one is chunked and embedded in the background');
+  });
+});
+
+describe('one origin rule for alert and mail links (I155 x PC-08 x PC-36)', () => {
+  it('owner alerts link to the public origin, never a loopback APP_URL in production', async () => {
+    const { readAlertConfig } = await import('@/lib/ops/alert-config');
+    const prod = {
+      NODE_ENV: 'production',
+      NTFY_TOPIC: 'ls-origin-test',
+      APP_URL: 'http://localhost:3000',
+      AUTH_URL: 'https://discover.example.test/',
+    };
+    expect(readAlertConfig(prod).appUrl).toBe('https://discover.example.test');
+    expect(
+      readAlertConfig({ NTFY_TOPIC: 'ls-origin-test', APP_URL: 'https://a.example.test/' }).appUrl,
+    ).toBe('https://a.example.test');
+    expect(
+      readAlertConfig({ NODE_ENV: 'production', NTFY_TOPIC: 'ls-origin-test' }).appUrl,
+    ).toBeNull();
+  });
+
+  it('sent mail builds its pixel and unsubscribe links from appOrigin, not raw APP_URL', () => {
+    const mail = read('src/lib/services/mail.ts');
+    expect(mail).not.toMatch(/process\.env\.APP_URL/);
+    expect(mail).toMatch(/const appUrl = appOrigin\(\)\.origin;/);
   });
 });

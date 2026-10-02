@@ -12,12 +12,13 @@
 // none is set, appUrl falls back to the origin the request came in on.
 //
 // A loopback value (localhost, 127.0.0.1, [::1]) never beats a real one:
-// the base docker-compose.yml sets APP_URL=http://localhost:3000 for the
-// app service and compose merges that into the prod container's
-// environment (environment beats env_file), so in prod APP_URL is likely
-// localhost while AUTH_URL names the public host. In production a
+// the base docker-compose.yml used to set APP_URL=http://localhost:3000 and
+// compose merged it into the prod container (environment beats env_file).
+// PC-36 removed it there and the deploy script now refuses a .env without
+// an https APP_URL; this rule stays as the second guard. In production a
 // loopback value is ignored; elsewhere it is used only when nothing
-// better is known.
+// better is known. Sent-mail links (mail.ts) and owner-alert links
+// (ops/alert-config.ts) read their origin from here too.
 
 import { z } from 'zod';
 

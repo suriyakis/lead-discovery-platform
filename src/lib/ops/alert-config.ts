@@ -12,6 +12,7 @@
 // rendered, logged or stored; describeAlertConfig() is the only view of
 // this configuration that may reach a page.
 
+import { configuredAppOrigin } from '@/lib/app-origin';
 import type { OpsEventSeverity } from '@/lib/services/ops-events';
 
 export const DEFAULT_NTFY_URL = 'https://ntfy.sh';
@@ -47,7 +48,7 @@ export interface AlertConfig {
   minSeverity: AlertMinSeverity;
   /** OPS_ALERT_MIN_SEVERITY was set to something unknown and was ignored. */
   minSeverityIgnored: boolean;
-  /** Public base URL of the app (APP_URL), for the notification's link. */
+  /** Public origin of the app (APP_URL, else AUTH_URL), for the notification's link. */
   appUrl: string | null;
 }
 
@@ -68,7 +69,9 @@ const trimPath = (url: URL) => url.pathname.replace(/\/+$/, '');
 export function readAlertConfig(env: Env = process.env): AlertConfig {
   const rawSeverity = env.OPS_ALERT_MIN_SEVERITY?.trim().toLowerCase() ?? '';
   const knownSeverity = (ALERT_MIN_SEVERITIES as readonly string[]).includes(rawSeverity);
-  const appUrl = parseHttpUrl(env.APP_URL?.trim() ?? '');
+  // The same origin rule as sent mail and Stripe (app-origin.ts): APP_URL,
+  // else AUTH_URL / NEXTAUTH_URL, never a loopback one in production.
+  const appUrl = configuredAppOrigin(env);
   const topic = env.NTFY_TOPIC?.trim() ?? '';
   const token = env.NTFY_TOKEN?.trim() || null;
   const server = parseHttpUrl(env.NTFY_URL?.trim() || DEFAULT_NTFY_URL);
@@ -80,7 +83,7 @@ export function readAlertConfig(env: Env = process.env): AlertConfig {
     tokenSet: token !== null,
     minSeverity: knownSeverity ? (rawSeverity as AlertMinSeverity) : DEFAULT_ALERT_MIN_SEVERITY,
     minSeverityIgnored: rawSeverity !== '' && !knownSeverity,
-    appUrl: appUrl ? appUrl.origin + trimPath(appUrl) : null,
+    appUrl: appUrl ? appUrl.origin : null,
   };
   const off = (reason: string): AlertConfig => ({
     ...base,

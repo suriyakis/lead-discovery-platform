@@ -2,6 +2,7 @@
 // outbound + inbound message is persisted, threaded by header heuristic,
 // and audit-logged. Suppression list is checked before every send.
 
+import { appOrigin } from '@/lib/app-origin';
 import {
   and,
   asc,
@@ -74,11 +75,7 @@ import {
   markDraftQueueEntriesSent,
   trashEarlierFailedCopies,
 } from './outreach-queue-sent';
-import {
-  defaultSignature,
-  renderSignatureHtml,
-  renderSignatureText,
-} from './signatures';
+import { defaultSignature, renderSignatureHtml, renderSignatureText } from './signatures';
 import { analyseReply } from './reply-classifier';
 import { maybeAutoTranslateInbound } from './translation';
 import { assessInboundRelevance } from './inbound-relevance';
@@ -278,7 +275,10 @@ async function sendAndRecord(
     throw new MailServiceError('mailbox is archived', 'invalid_input');
   }
   if (mailbox.status === 'paused') {
-    throw new MailServiceError('mailbox is paused — re-enable it from Edit mailbox to resume sends', 'invalid_input');
+    throw new MailServiceError(
+      'mailbox is paused — re-enable it from Edit mailbox to resume sends',
+      'invalid_input',
+    );
   }
   // PC-05: a manual send the person confirmed while automation is paused
   // is audited before it goes out, so it is on record even if the send
@@ -321,10 +321,7 @@ async function sendAndRecord(
         .select()
         .from(signatures)
         .where(
-          and(
-            eq(signatures.workspaceId, ctx.workspaceId),
-            eq(signatures.id, input.signatureId),
-          ),
+          and(eq(signatures.workspaceId, ctx.workspaceId), eq(signatures.id, input.signatureId)),
         )
         .limit(1);
       sig = rows[0] ?? null;
@@ -343,7 +340,9 @@ async function sendAndRecord(
   // /api/track/<token>.gif. We embed it ONLY when the caller supplied an
   // HTML body (text-only emails skip the pixel).
   const trackingToken = randomUUID().replace(/-/g, '');
-  const appUrl = (process.env.APP_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
+  // The public origin (APP_URL, else AUTH_URL; never a loopback one in
+  // production): the base of the pixel and unsubscribe links.
+  const appUrl = appOrigin().origin;
   if (outboundHtml) {
     const pixelUrl = `${appUrl}/api/track/${trackingToken}.gif`;
     outboundHtml = `${outboundHtml}<img src="${pixelUrl}" width="1" height="1" alt="" style="display:block;margin:0;padding:0;border:0" />`;
@@ -391,9 +390,7 @@ async function sendAndRecord(
     headers,
   };
 
-  const attempted = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])].map(
-    (a) => a.address,
-  );
+  const attempted = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])].map((a) => a.address);
 
   let sendResult;
   try {
@@ -452,10 +449,9 @@ async function sendAndRecord(
         targetLanguage: input.targetLanguage ?? null,
         headers: headers as unknown as Record<string, unknown>,
         attachments: [],
-        failureReason:
-          responseCode
-            ? `${responseCode} ${failureReason}`.slice(0, 4000)
-            : failureReason.slice(0, 4000),
+        failureReason: responseCode
+          ? `${responseCode} ${failureReason}`.slice(0, 4000)
+          : failureReason.slice(0, 4000),
         sourceDraftId: input.sourceDraftId ?? null,
         spamAt: isLoop ? new Date() : null,
         spamReason: isLoop ? 'bounce_loop' : null,
@@ -791,7 +787,10 @@ export async function sendTestEmail(
     throw new MailServiceError('mailbox is archived', 'invalid_input');
   }
   if (mailbox.status === 'paused') {
-    throw new MailServiceError('mailbox is paused — re-enable it from Edit mailbox to resume sends', 'invalid_input');
+    throw new MailServiceError(
+      'mailbox is paused — re-enable it from Edit mailbox to resume sends',
+      'invalid_input',
+    );
   }
 
   // Signature resolution: explicit id → that signature (validated);
@@ -805,12 +804,7 @@ export async function sendTestEmail(
     const rows = await db
       .select()
       .from(signatures)
-      .where(
-        and(
-          eq(signatures.workspaceId, ctx.workspaceId),
-          eq(signatures.id, input.signatureId),
-        ),
-      )
+      .where(and(eq(signatures.workspaceId, ctx.workspaceId), eq(signatures.id, input.signatureId)))
       .limit(1);
     if (!rows[0]) throw invalid('signature not found');
     sig = rows[0];
@@ -934,12 +928,7 @@ async function syncInboundHeld(
   await db
     .update(mailboxes)
     .set({ lastSyncedAt: new Date(), lastError: null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(mailboxes.workspaceId, ctx.workspaceId),
-        eq(mailboxes.id, mailbox.id),
-      ),
-    );
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id)));
 
   // PC-35 (I066): audited only when the sync stored something. An empty
   // (or all-duplicate) sync changed nothing, and the 2-minute IMAP tick
@@ -958,9 +947,7 @@ async function syncInboundHeld(
   return { fetched: messages.length, inserted, duplicates };
 }
 
-type PersistInboundOutcome =
-  | { existed: true }
-  | { existed: false; relevance: OutreachRelevance };
+type PersistInboundOutcome = { existed: true } | { existed: false; relevance: OutreachRelevance };
 
 /**
  * Store one fetched message, then run the reply pipeline only when it is
@@ -1051,36 +1038,38 @@ async function persistInbound(
     }
   }
 
-  const [insertedRow] = await db.insert(mailMessages).values({
-    workspaceId: ctx.workspaceId,
-    mailboxId,
-    threadId: thread.id,
-    direction: 'inbound',
-    status: 'received',
-    messageId: inbound.messageId,
-    inReplyTo: inbound.inReplyTo,
-    references: inbound.references,
-    fromAddress: inbound.from.address,
-    fromName: inbound.from.name ?? null,
-    toAddresses: inbound.to.map((a) => a.address),
-    ccAddresses: inbound.cc.map((a) => a.address),
-    bccAddresses: [],
-    subject: inbound.subject,
-    bodyText: inbound.textBody,
-    bodyHtml: inbound.htmlBody,
-    contactId,
-    headers: inbound.headers as unknown as Record<string, unknown>,
-    attachments: inbound.attachments.map((a) => ({
-      filename: a.filename,
-      contentType: a.contentType,
-      sizeBytes: a.sizeBytes,
-      // Phase 10 leaves attachment bytes inline in the inbound stream.
-      // Phase 11+ can offload to IStorage when the bodies grow.
-    })),
-    receivedAt: inbound.receivedAt,
-    outreachRelevance: relevance,
-    relevanceSignals: assessment.signals,
-  } satisfies NewMailMessage)
+  const [insertedRow] = await db
+    .insert(mailMessages)
+    .values({
+      workspaceId: ctx.workspaceId,
+      mailboxId,
+      threadId: thread.id,
+      direction: 'inbound',
+      status: 'received',
+      messageId: inbound.messageId,
+      inReplyTo: inbound.inReplyTo,
+      references: inbound.references,
+      fromAddress: inbound.from.address,
+      fromName: inbound.from.name ?? null,
+      toAddresses: inbound.to.map((a) => a.address),
+      ccAddresses: inbound.cc.map((a) => a.address),
+      bccAddresses: [],
+      subject: inbound.subject,
+      bodyText: inbound.textBody,
+      bodyHtml: inbound.htmlBody,
+      contactId,
+      headers: inbound.headers as unknown as Record<string, unknown>,
+      attachments: inbound.attachments.map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        sizeBytes: a.sizeBytes,
+        // Phase 10 leaves attachment bytes inline in the inbound stream.
+        // Phase 11+ can offload to IStorage when the bodies grow.
+      })),
+      receivedAt: inbound.receivedAt,
+      outreachRelevance: relevance,
+      relevanceSignals: assessment.signals,
+    } satisfies NewMailMessage)
     .onConflictDoNothing({ target: [mailMessages.workspaceId, mailMessages.messageId] })
     .returning({ id: mailMessages.id });
   // Another sync stored it between the check above and this insert.
@@ -1188,12 +1177,7 @@ export async function countThreadsByKind(
       outreach: sql<number>`COUNT(*) FILTER (WHERE ${outreachExists})::int`,
     })
     .from(mailThreads)
-    .where(
-      and(
-        eq(mailThreads.workspaceId, ctx.workspaceId),
-        eq(mailThreads.mailboxId, mailboxId),
-      ),
-    );
+    .where(and(eq(mailThreads.workspaceId, ctx.workspaceId), eq(mailThreads.mailboxId, mailboxId)));
   const all = rows[0]?.total ?? 0;
   const outreach = rows[0]?.outreach ?? 0;
   return { all, outreach, inbox: all - outreach };
@@ -1206,23 +1190,13 @@ export async function getThread(
   const threadRows = await db
     .select()
     .from(mailThreads)
-    .where(
-      and(
-        eq(mailThreads.workspaceId, ctx.workspaceId),
-        eq(mailThreads.id, threadId),
-      ),
-    )
+    .where(and(eq(mailThreads.workspaceId, ctx.workspaceId), eq(mailThreads.id, threadId)))
     .limit(1);
   if (!threadRows[0]) throw notFound();
   const messages = await db
     .select()
     .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, threadId),
-      ),
-    )
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), eq(mailMessages.threadId, threadId)))
     .orderBy(asc(mailMessages.createdAt));
   return { thread: threadRows[0], messages };
 }
@@ -1237,10 +1211,7 @@ function folderFilter(folder: MailFolder): SQL {
     case 'trash':
       return isNotNull(mailMessages.trashedAt);
     case 'spam':
-      return and(
-        isNull(mailMessages.trashedAt),
-        isNotNull(mailMessages.spamAt),
-      ) as SQL;
+      return and(isNull(mailMessages.trashedAt), isNotNull(mailMessages.spamAt)) as SQL;
     case 'errors':
       return and(
         isNull(mailMessages.trashedAt),
@@ -1444,12 +1415,7 @@ export async function getMessage(
   const rows = await db
     .select()
     .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.id, id),
-      ),
-    )
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), eq(mailMessages.id, id)))
     .limit(1);
   if (!rows[0]) throw notFound();
   return rows[0];
@@ -1627,10 +1593,7 @@ export async function permanentlyDelete(
   const deleted = await db
     .delete(mailMessages)
     .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        inArray(mailMessages.id, eligibleIds),
-      ),
+      and(eq(mailMessages.workspaceId, ctx.workspaceId), inArray(mailMessages.id, eligibleIds)),
     )
     .returning({ id: mailMessages.id });
   const deletedIds = deleted.map((r) => r.id);
@@ -1724,7 +1687,10 @@ export type SafeSyncOutcome =
  *  sync that just finished (its counters, its failing status). */
 export async function safeSyncOne(
   ctx: WorkspaceContext,
-  mailbox: Pick<Mailbox, 'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'>,
+  mailbox: Pick<
+    Mailbox,
+    'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'
+  >,
 ): Promise<SafeSyncOutcome> {
   // Outside the try: a permission error is the caller's, not the server's,
   // and must not count as a mailbox failure.
@@ -1771,7 +1737,10 @@ async function currentMailboxRow(
 }
 
 /** safeSyncOne's work; the caller holds the mailbox's sync lease. */
-async function safeSyncHeld(ctx: WorkspaceContext, mailbox: SyncableMailbox): Promise<SafeSyncOutcome> {
+async function safeSyncHeld(
+  ctx: WorkspaceContext,
+  mailbox: SyncableMailbox,
+): Promise<SafeSyncOutcome> {
   let recovered = false;
   if (isAutomatic(ctx) && mailbox.status !== 'active') {
     return {
@@ -1930,9 +1899,7 @@ export interface TrashPurgeResult {
  *  A retention of 0 disables auto-purge (operator can still manually
  *  Empty trash now). Returns the count + the resolved retention so the
  *  cron logs are self-explanatory. */
-export async function purgeOldTrashUnattended(
-  workspaceId: bigint,
-): Promise<TrashPurgeResult> {
+export async function purgeOldTrashUnattended(workspaceId: bigint): Promise<TrashPurgeResult> {
   const { workspaces } = await import('@/lib/db/schema/workspaces');
   const rows = await db
     .select({ retentionDays: workspaces.trashRetentionDays })
@@ -1964,19 +1931,12 @@ export async function purgeOldTrashUnattended(
 
 /** Admin-gated "Empty trash now" — hard-deletes EVERY trashed message
  *  in the workspace regardless of age. Emits an audit event. */
-export async function emptyTrashNow(
-  ctx: WorkspaceContext,
-): Promise<{ deleted: number }> {
+export async function emptyTrashNow(ctx: WorkspaceContext): Promise<{ deleted: number }> {
   const { canAdminWorkspace } = await import('./context');
   if (!canAdminWorkspace(ctx)) throw permissionDenied('mail.empty_trash_now');
   const deleted = await db
     .delete(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        isNotNull(mailMessages.trashedAt),
-      ),
-    )
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), isNotNull(mailMessages.trashedAt)))
     .returning({ id: mailMessages.id });
   if (deleted.length > 0) {
     await recordAuditEvent(ctx, {
@@ -2019,10 +1979,7 @@ export async function updateTrashRetentionDays(
   const { canAdminWorkspace } = await import('./context');
   if (!canAdminWorkspace(ctx)) throw permissionDenied('mail.update_retention');
   if (!Number.isInteger(days)) throw invalid('trash_retention_days must be an integer');
-  const clamped = Math.max(
-    TRASH_RETENTION_DAYS_MIN,
-    Math.min(TRASH_RETENTION_DAYS_MAX, days),
-  );
+  const clamped = Math.max(TRASH_RETENTION_DAYS_MIN, Math.min(TRASH_RETENTION_DAYS_MAX, days));
   const { workspaces } = await import('@/lib/db/schema/workspaces');
   await db
     .update(workspaces)
@@ -2126,7 +2083,10 @@ async function originOfSentMessage(
       })
       .from(outreachDrafts)
       .where(
-        and(eq(outreachDrafts.workspaceId, ctx.workspaceId), eq(outreachDrafts.id, msg.sourceDraftId)),
+        and(
+          eq(outreachDrafts.workspaceId, ctx.workspaceId),
+          eq(outreachDrafts.id, msg.sourceDraftId),
+        ),
       )
       .limit(1);
     // A draft that no longer exists was outreach: fail closed (cold).
@@ -2212,12 +2172,7 @@ export async function retrySend(
   const originals = await db
     .select()
     .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        inArray(mailMessages.id, [...ids]),
-      ),
-    )
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), inArray(mailMessages.id, [...ids])))
     .orderBy(asc(mailMessages.id));
 
   /** Drafts already tried in this batch (sent or not). */
@@ -2467,10 +2422,7 @@ async function ensureThread(
         .where(eq(mailThreads.id, linked[0].threadId))
         .limit(1);
       if (threadRows[0]) {
-        const merged = mergeUniqueLower([
-          ...threadRows[0].participants,
-          ...input.participants,
-        ]);
+        const merged = mergeUniqueLower([...threadRows[0].participants, ...input.participants]);
         if (merged.length !== threadRows[0].participants.length) {
           await db
             .update(mailThreads)
@@ -2495,10 +2447,7 @@ async function ensureThread(
     .limit(1);
   if (existing[0]) {
     // Merge participants (lowercased + deduped).
-    const merged = mergeUniqueLower([
-      ...existing[0].participants,
-      ...input.participants,
-    ]);
+    const merged = mergeUniqueLower([...existing[0].participants, ...input.participants]);
     if (merged.length !== existing[0].participants.length) {
       await db
         .update(mailThreads)
