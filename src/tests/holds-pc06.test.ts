@@ -119,6 +119,10 @@ import {
   planLegacyFlagImport,
   renderLegacyFlagReport,
 } from '@/lib/remediation/legacy-feature-flags';
+import {
+  findWorkspacesWithoutAccountableOwner,
+  renderAccountableOwnersReport,
+} from '@/lib/remediation/accountable-owners';
 import { accountStatusConfirms } from '@/lib/confirm-copy';
 import { AutomationHoldBanner } from '@/components/AutomationHoldBanner';
 import { platformCtx, smuggled } from './helpers/platform';
@@ -1105,6 +1109,42 @@ describe('(3) accountable owner', { timeout: 60_000 }, () => {
     expect(owned.suspended).toContain('all automatic work there stops');
     expect(owned.suspended).toContain('Members can still work by hand');
     expect(accountStatusConfirms(user).suspended).not.toContain('automatic work');
+  });
+
+  it('the pre-deploy check lists exactly the active workspaces the gate stops for their owner', async () => {
+    const ok = await tenant();
+    const suspended = await tenant();
+    const notMember = await tenant();
+    const archived = await tenant();
+    await setAccountStatus(pctx(), suspended.ownerId, 'suspended', 'chargeback');
+    await db
+      .delete(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, notMember.workspaceId),
+          eq(workspaceMembers.userId, notMember.ownerId),
+        ),
+      );
+    await setAccountStatus(pctx(), archived.ownerId, 'suspended', 'left');
+    await db.update(workspaces).set({ status: 'archived' }).where(eq(workspaces.id, archived.workspaceId));
+
+    const found = await findWorkspacesWithoutAccountableOwner(db);
+    expect(found.map((w) => [w.workspaceId, w.problem, w.ownerAccountStatus])).toEqual([
+      [suspended.workspaceId, 'owner_inactive', 'suspended'],
+      [notMember.workspaceId, 'owner_not_member', 'active'],
+    ]);
+    // The same verdict as the gate's own state (the view), workspace by workspace.
+    for (const t of [ok, suspended, notMember]) {
+      const s = await loadAutomationState(t.workspaceId);
+      expect(found.find((w) => w.workspaceId === t.workspaceId)?.problem ?? null).toBe(s.ownerProblem);
+    }
+    const report = renderAccountableOwnersReport(found);
+    expect(report).toContain('STOP: 2 active workspace(s) would run NO automatic work');
+    expect(report).toContain(`workspace ${suspended.workspaceId} `);
+    expect(report).toContain('the owner account is suspended');
+    expect(report).toContain('the owner has no workspace_members row');
+    expect(report).not.toMatch(/@test\.local/);
+    expect(renderAccountableOwnersReport([])).toMatch(/^OK: /);
   });
 });
 
