@@ -201,6 +201,25 @@ The release that brings the workspace pause, holds, the accountable-owner rule a
 
    `pnpm db:migrate` does not run this import. It must run, and the owner must review the rows, before the release that drops `feature_flags`.
 
+### Release steps: Phase 1 mailbox health (PC-09)
+
+The release that classifies mailbox failures and adds the `mail.probe.tick`. `pnpm db:migrate` adds the mailbox health columns; the probes start on their own. One step needs the owner:
+
+1. **After the deploy: the reviewed backfill (required).** Mailboxes that were already failing before this release (prod had two: workspace 1's since 2026-05-08 on a refused SMTP 587, workspace 2's after 13 failed syncs) are neither announced nor probed until the owner has reviewed them. Run the dry run (read only; ids, failing since, side, class, host:port, no addresses or error text) and give the report to the owner:
+
+   ```bash
+   DATABASE_URL=... pnpm exec tsx scripts/remediation/mailbox-health-backfill.ts
+   ```
+
+2. **After the owner signs off that exact list**, apply it with the fingerprint the dry run printed. It refuses if the list changed meanwhile (run the dry run again), and it is idempotent:
+
+   ```bash
+   DATABASE_URL=... pnpm exec tsx scripts/remediation/mailbox-health-backfill.ts --apply --expect <fingerprint>
+   ```
+
+   Each listed mailbox gets its failure class, one `mailbox.failing` incident (the ntfy alert follows) and one notification to its workspace's owners and admins; the audit rows are system events. None of them is probed automatically afterwards: they recover when someone fixes the settings, clicks Test again or Reactivate.
+3. **Check.** The dry run now prints `Nothing to backfill.`; `SELECT id, failure_class, next_probe_at FROM mailboxes WHERE status = 'failing'` shows a class on every row.
+
 ### Release steps: Phase 1 shared rate limits (PC-38)
 
 The release that moves the rate limiter into Postgres and makes "Re-classify all" a background job. `pnpm db:migrate` creates `rate_limit_buckets` and `qualification_runs` and widens the `work_leases` checks; nothing else is needed for the app. The API thresholds are unchanged; their windows now survive deploys.

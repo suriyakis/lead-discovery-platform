@@ -17,14 +17,16 @@
 //      (services/mailbox.ts trackPreexistingFailingMailbox) — and leaves
 //      next_probe_at NULL: a backfilled mailbox is not probed
 //      automatically. It recovers when a person fixes the settings (one
-//      scheduled check), clicks Test again or Reactivate.
+//      scheduled check), clicks Test again or Reactivate. Its audit row
+//      is a system event (user_id NULL, backfill 'PC-09'): nobody in the
+//      workspace acted, so it is not filed under the owner.
 //
 // --apply refuses when the candidate set is not the one the reviewed dry
 // run fingerprinted, and is idempotent (a tracked mailbox has a class and
 // drops out of the plan).
 
 import { createHash } from 'node:crypto';
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import { db as appDb } from '@/lib/db/client';
 import { mailboxes } from '@/lib/db/schema/mailing';
@@ -46,8 +48,8 @@ export type BackfillDb = PgDatabase<PgQueryResultHKT, any, any>;
 export const BACKFILL_TAG = 'PC-09 mailbox health backfill';
 
 export class MailboxBackfillError extends Error {
-  public readonly code: 'drift' | 'no_owner';
-  constructor(message: string, code: 'drift' | 'no_owner') {
+  public readonly code: 'drift';
+  constructor(message: string, code: 'drift') {
     super(message);
     this.name = 'MailboxBackfillError';
     this.code = code;
@@ -192,28 +194,12 @@ export async function applyMailboxHealthBackfill(options: {
     );
   }
   const now = options.now ?? new Date();
-  const wsIds = [...new Set(plan.rows.map((r) => BigInt(r.workspaceId)))];
-  const owners =
-    wsIds.length > 0
-      ? await appDb
-          .select({ id: workspaces.id, ownerUserId: workspaces.ownerUserId })
-          .from(workspaces)
-          .where(inArray(workspaces.id, wsIds))
-      : [];
-  const ownerOf = new Map(owners.map((o) => [o.id.toString(), o.ownerUserId]));
   let tracked = 0;
   let notified = 0;
   let skipped = 0;
   for (const r of plan.rows) {
-    const ownerUserId = ownerOf.get(r.workspaceId);
-    if (!ownerUserId) {
-      throw new MailboxBackfillError(
-        `workspace ${r.workspaceId} has no owner to record the audit row against`,
-        'no_owner',
-      );
-    }
     const res = await trackPreexistingFailingMailbox(
-      { workspaceId: BigInt(r.workspaceId), userId: ownerUserId },
+      BigInt(r.workspaceId),
       BigInt(r.mailboxId),
       now,
     );

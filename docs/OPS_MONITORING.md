@@ -267,7 +267,10 @@ DATABASE_URL=... pnpm exec tsx scripts/remediation/mailbox-health-backfill.ts --
 `--apply` gives each listed mailbox its class, opens its `mailbox.failing`
 incident (the ntfy alert follows) and notifies its owners and admins; the
 mailboxes stay unprobed until someone fixes their settings or clicks Test
-again.
+again. Its `mailbox.marked_failing` audit rows are system events (`user_id`
+NULL, payload `actor: system`, `backfill: PC-09`): nobody in the workspace
+acted. It is a release step (docs/DEPLOYMENT.md, "Release steps: Phase 1
+mailbox health (PC-09)").
 
 ### Work leases (PC-12)
 

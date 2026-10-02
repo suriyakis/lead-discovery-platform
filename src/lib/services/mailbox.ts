@@ -11,7 +11,7 @@ import {
   type MailboxStatus,
   type NewMailbox,
 } from '@/lib/db/schema/mailing';
-import { recordAuditEvent } from './audit';
+import { recordAuditEvent, recordSystemAuditEvent } from './audit';
 import {
   clearBackOnlineNotice,
   describeRecoveryPlan,
@@ -952,16 +952,21 @@ export async function recordMailboxConnectionCheck(
  * (next_probe_at stays NULL): it waits for a person (Edit settings, Test
  * again, Reactivate). No network. Returns tracked: false when the row is
  * no longer an untracked failing mailbox.
+ *
+ * A system writer (a reviewed remediation script, nobody acting in the
+ * workspace): its audit row is a system event (user_id NULL, payload
+ * actor 'system', backfill 'PC-09'), like the reaper's — never filed
+ * under the workspace owner.
  */
 export async function trackPreexistingFailingMailbox(
-  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  workspaceId: bigint,
   mailboxId: bigint,
   now: Date = new Date(),
 ): Promise<{ tracked: boolean; failureClass: MailboxFailureClass | null; notified: boolean }> {
   const [row] = await db
     .select()
     .from(mailboxes)
-    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
+    .where(and(eq(mailboxes.workspaceId, workspaceId), eq(mailboxes.id, mailboxId)))
     .limit(1);
   if (!row || row.status !== 'failing' || row.failureClass !== null) {
     return { tracked: false, failureClass: null, notified: false };
@@ -979,7 +984,7 @@ export async function trackPreexistingFailingMailbox(
     })
     .where(
       and(
-        eq(mailboxes.workspaceId, ctx.workspaceId),
+        eq(mailboxes.workspaceId, workspaceId),
         eq(mailboxes.id, mailboxId),
         eq(mailboxes.status, 'failing'),
         isNull(mailboxes.failureClass),
@@ -988,7 +993,7 @@ export async function trackPreexistingFailingMailbox(
     .returning();
   if (!updated) return { tracked: false, failureClass: null, notified: false };
   const lastError = row.lastError ?? storedError(stored.protocol, stored.message);
-  await recordAuditEvent(ctx, {
+  await recordSystemAuditEvent(workspaceId, {
     kind: 'mailbox.marked_failing',
     entityType: 'mailbox',
     entityId: mailboxId,
@@ -1004,7 +1009,7 @@ export async function trackPreexistingFailingMailbox(
   });
   await raiseMailboxFailingIncident(
     {
-      workspaceId: ctx.workspaceId,
+      workspaceId: workspaceId,
       mailboxId,
       failureClass,
       protocol: stored.protocol,
@@ -1015,8 +1020,8 @@ export async function trackPreexistingFailingMailbox(
     now,
   );
   // flow:F-04 may have notified already under its own key: replace it.
-  await resolveNotifications(ctx.workspaceId, legacyMailboxFailingKey(mailboxId));
-  const rows = await notifyWorkspaceAdmins(ctx.workspaceId, failingNotice(updated));
+  await resolveNotifications(workspaceId, legacyMailboxFailingKey(mailboxId));
+  const rows = await notifyWorkspaceAdmins(workspaceId, failingNotice(updated));
   return { tracked: true, failureClass, notified: rows.length > 0 };
 }
 

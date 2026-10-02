@@ -865,7 +865,10 @@ describe('acceptance (7): the reviewed backfill of mailboxes failing before PC-0
       .select()
       .from(auditLog)
       .where(and(eq(auditLog.workspaceId, ws1.workspaceId), eq(auditLog.kind, 'mailbox.marked_failing')));
-    expect(audits[0]!.payload).toMatchObject({ backfill: 'PC-09' });
+    // A system event: nobody in the workspace acted, so it is not the owner's.
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.userId).toBeNull();
+    expect(audits[0]!.payload).toMatchObject({ backfill: 'PC-09', actor: 'system' });
 
     // Idempotent, and still not probed.
     expect((await planMailboxHealthBackfill(db)).rows).toEqual([]);
