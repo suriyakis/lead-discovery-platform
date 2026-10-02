@@ -3,7 +3,7 @@
 // as the `worker` service of docker-compose.prod.yml from the same image
 // as the web app.
 //
-// It runs both job lanes and schedules the ticks (background.ts). It
+// It runs every job lane and schedules the ticks (background.ts). It
 // serves no HTTP and runs no ops watchdog: the watchdog stays in the web
 // process, so a dead worker shows up there as stale ticks (and on
 // /api/ready), never silenced with it.

@@ -19,7 +19,7 @@ import { registerConnector } from '@/lib/connectors/registry';
 import type { ConnectorRunRequest, HarvesterEvent, ISourceConnector } from '@/lib/connectors/types';
 import { BullMQJobQueue } from '@/lib/jobs/bullmq';
 import { handleConnectorRun, type ConnectorRunJobPayload } from '@/lib/jobs/bootstrap';
-import { LANE_DEFINITIONS, LEGACY_QUEUE_NAME } from '@/lib/jobs/lanes';
+import { BATCH_TICKS, LANE_DEFINITIONS, LEGACY_QUEUE_NAME } from '@/lib/jobs/lanes';
 import type { WorkspaceContext } from '@/lib/services/context';
 import { createConnector } from '@/lib/services/connector-run';
 import { LEARNING_PROCESS_JOB } from '@/lib/services/learning-decisions';
@@ -113,6 +113,38 @@ describe.skipIf(!REDIS_URL)('BullMQ lanes on a real Redis (PC-36)', () => {
 
     longRuns.resolve();
     await waitFor(() => runsStarted === 3);
+  });
+
+  it('(1) drain ticks stay on schedule while four long AI ticks fill the batch lane', async () => {
+    const q = queue();
+    const longTicks = deferred();
+    const started: string[] = [];
+    for (const name of BATCH_TICKS) {
+      q.on(name, async () => {
+        started.push(name);
+        await longTicks.promise;
+      });
+    }
+    const drains: number[] = [];
+    q.on('outreach.drain.tick', async () => {
+      drains.push(Date.now());
+    });
+
+    for (const name of BATCH_TICKS) await q.enqueue(name, {});
+    await waitFor(() => started.length === 3);
+    await q.enqueueRepeatable('outreach.drain.tick', {}, { everyMs: 400, jobId: 'drain' });
+    await sleep(2500);
+
+    // Three long AI ticks take every batch slot (the fourth waits) and the
+    // drain tick still fires on every 400 ms slot of its own lane.
+    expect(started).toHaveLength(3);
+    expect(drains.length).toBeGreaterThanOrEqual(5);
+    const gaps = drains.slice(1).map((t, i) => t - drains[i]!);
+    expect(Math.max(...gaps)).toBeLessThan(900);
+    expect(await rawQueue(LANE_DEFINITIONS.batch.queueName).getWaitingCount()).toBe(1);
+
+    longTicks.resolve();
+    await waitFor(() => started.length === 4);
   });
 
   it('(3) a ROLE=web queue registers no worker: its jobs wait for the worker service', async () => {

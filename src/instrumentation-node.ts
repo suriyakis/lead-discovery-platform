@@ -1,7 +1,7 @@
 // Node-runtime half of the Next.js startup hook (see instrumentation.ts).
 //   - PC-36: decide what this web server does from ROLE (lib/jobs/role.ts):
 //       web  serve HTTP and enqueue only — no queue worker, no tick
-//            schedule (the worker service runs both lanes);
+//            schedule (the worker service runs every lane);
 //       all  (default) also run the background work in this process
 //            (lib/jobs/background.ts): the job handlers, the move off the
 //            pre-lane BullMQ queue and the repeatable tick schedule

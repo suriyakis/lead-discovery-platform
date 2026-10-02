@@ -1,7 +1,8 @@
 // PC-36 (I065) — a dedicated worker and split job lanes.
 //
 //   (1) drain ticks stay on schedule while a long fake run occupies the
-//       runs lane (memory queue here; real BullMQ in bullmq-redis-pc36);
+//       runs lane, and while four long AI ticks occupy the batch lane
+//       (memory queue here; real BullMQ in bullmq-redis-pc36);
 //   (2) memory mode keeps at most one pending tick per type;
 //   (3) ROLE=web registers no worker, and ROLE=worker serves no HTTP;
 //   plus the lane routing, retry policy, dedupe keys, the BullMQ wiring
@@ -32,6 +33,7 @@ import {
 } from '@/lib/jobs/bullmq';
 import { _resetHandlersForTests, registerJobHandlers } from '@/lib/jobs/bootstrap';
 import {
+  BATCH_TICKS,
   CONNECTOR_RUN_RETRY,
   LANE_DEFINITIONS,
   LaneConfigError,
@@ -191,13 +193,28 @@ function fakeBull(options: { consume?: boolean; env?: Record<string, string> } =
 }
 
 const TICKS_QUEUE = LANE_DEFINITIONS.ticks.queueName;
+const BATCH_QUEUE = LANE_DEFINITIONS.batch.queueName;
 const RUNS_QUEUE = LANE_DEFINITIONS.runs.queueName;
 
 // ---- lanes ----------------------------------------------------------------
 
 describe('job lanes (PC-36)', () => {
-  it('every catalogued tick runs on the ticks lane; on-demand work on the runs lane', () => {
-    for (const tick of TICK_CATALOG) expect(laneForJob(tick.name)).toBe('ticks');
+  it('short ticks run on the ticks lane, the long AI ticks on the batch lane, on-demand work on the runs lane', () => {
+    const batch: readonly string[] = BATCH_TICKS;
+    for (const tick of TICK_CATALOG) {
+      expect(laneForJob(tick.name)).toBe(batch.includes(tick.name) ? 'batch' : 'ticks');
+    }
+    expect(BATCH_TICKS).toEqual([
+      'autopilot.tick',
+      'outreach.follow_up.tick',
+      'knowledge.compact.tick',
+      'health.check.tick',
+    ]);
+    // Every batch tick is catalogued (heartbeated, judged for staleness).
+    for (const name of BATCH_TICKS) expect(TICK_CATALOG.some((t) => t.name === name)).toBe(true);
+    for (const name of ['outreach.drain.tick', 'mail.imap.tick', 'mail.probe.tick', 'ops.reaper.tick']) {
+      expect(laneForJob(name)).toBe('ticks');
+    }
     expect(laneForJob('connector.run')).toBe('runs');
     expect(laneForJob(LEARNING_PROCESS_JOB)).toBe('runs');
     expect(laneForJob(KNOWLEDGE_INDEX_JOB)).toBe('runs');
@@ -205,9 +222,11 @@ describe('job lanes (PC-36)', () => {
     expect([TICKS_QUEUE, RUNS_QUEUE]).not.toContain(LEGACY_QUEUE_NAME);
   });
 
-  it('lane concurrency: ticks 4 and runs 2 by default, an env override, a typo refused', () => {
+  it('lane concurrency: ticks 4, batch 3 and runs 2 by default, an env override, a typo refused', () => {
     expect(laneConcurrency('ticks', {})).toBe(4);
+    expect(laneConcurrency('batch', {})).toBe(3);
     expect(laneConcurrency('runs', {})).toBe(2);
+    expect(laneConcurrency('batch', { JOB_BATCH_CONCURRENCY: '1' })).toBe(1);
     expect(laneConcurrency('runs', { JOB_RUNS_CONCURRENCY: ' 3 ' })).toBe(3);
     expect(laneConcurrency('ticks', { JOB_TICKS_CONCURRENCY: '' })).toBe(4);
     for (const bad of ['0', 'two', '2.5', '-1', '33']) {
@@ -347,17 +366,54 @@ describe('InMemoryJobQueue lanes (PC-36)', () => {
     await q.close();
   });
 
+  it('(1) the drain keeps its cadence while four long AI ticks hold the batch lane', async () => {
+    const q = new InMemoryJobQueue();
+    const longTicks = deferred();
+    const started: string[] = [];
+    for (const name of BATCH_TICKS) {
+      q.on(name, async () => {
+        started.push(name);
+        await longTicks.promise;
+      });
+    }
+    let drains = 0;
+    q.on('outreach.drain.tick', async () => {
+      drains++;
+    });
+    let imaps = 0;
+    q.on('mail.imap.tick', async () => {
+      imaps++;
+    });
+
+    for (const name of BATCH_TICKS) await q.enqueue(name, {});
+    await q.enqueueRepeatable('outreach.drain.tick', {}, { everyMs: 30, jobId: 'drain' });
+    await q.enqueueRepeatable('mail.imap.tick', {}, { everyMs: 120, jobId: 'imap' });
+    await vi.advanceTimersByTimeAsync(250); // drain slots at 30 ... 240, imap at 120, 240
+
+    // The first long AI tick holds the batch lane; the drain and the inbox
+    // sync never wait for any of them.
+    expect(started).toEqual(['autopilot.tick']);
+    expect(drains).toBe(8);
+    expect(imaps).toBe(2);
+
+    longTicks.resolve();
+    await q.drain();
+    expect(started).toEqual([...BATCH_TICKS]);
+    await q.close();
+  });
+
   it('(2) a tick is never stacked: at most one pending per type while its lane is busy', async () => {
     const q = new InMemoryJobQueue();
     const longTick = deferred();
-    q.on('knowledge.compact.tick', async () => {
+    // A long tick on the ticks lane itself (retention deleting a big backlog).
+    q.on('ops.retention.tick', async () => {
       await longTick.promise;
     });
     let drains = 0;
     q.on('outreach.drain.tick', async () => {
       drains++;
     });
-    await q.enqueue('knowledge.compact.tick', {});
+    await q.enqueue('ops.retention.tick', {});
     await q.enqueueRepeatable('outreach.drain.tick', {}, { everyMs: 30, jobId: 'drain' });
 
     await vi.advanceTimersByTimeAsync(300); // ten slots while the ticks lane is busy
@@ -475,11 +531,25 @@ describe('BullMQJobQueue lanes (PC-36, fakes)', () => {
     q.on(KNOWLEDGE_INDEX_JOB, async () => 'x');
     q.on('outreach.drain.tick', async () => 'x');
     q.on('mail.imap.tick', async () => 'x');
+    q.on('autopilot.tick', async () => 'x');
+    q.on('outreach.follow_up.tick', async () => 'x');
     expect(workers.map((w) => [w.queueName, w.concurrency])).toEqual([
       [RUNS_QUEUE, 2],
       [TICKS_QUEUE, 5],
+      [BATCH_QUEUE, 3],
     ]);
-    expect(q.activeLanes()).toEqual(['ticks', 'runs']);
+    expect(q.activeLanes()).toEqual(['ticks', 'batch', 'runs']);
+  });
+
+  it('the long AI ticks are scheduled on the batch queue, never on the ticks queue', async () => {
+    const { q, queue } = fakeBull();
+    for (const name of BATCH_TICKS) {
+      await q.enqueueRepeatable(name, {}, { everyMs: 300_000, jobId: name });
+    }
+    await q.enqueueRepeatable('outreach.drain.tick', {}, { everyMs: 30_000, jobId: 'd' });
+    expect(queue(BATCH_QUEUE).repeatables.map((r) => r.name)).toEqual([...BATCH_TICKS]);
+    expect(queue(TICKS_QUEUE).repeatables.map((r) => r.name)).toEqual(['outreach.drain.tick']);
+    expect(decodeJobId(await q.enqueue('autopilot.tick', {})).lane).toBe('batch');
   });
 
   it('connector.run goes to the runs queue with 3 attempts and exponential backoff', async () => {
@@ -716,7 +786,7 @@ describe('worker process (PC-36)', () => {
     vi.restoreAllMocks();
   });
 
-  it('(3) ROLE=worker runs both lanes and the schedule, moves the old queue, and serves no HTTP', async () => {
+  it('(3) ROLE=worker runs every lane and the schedule, moves the old queue, and serves no HTTP', async () => {
     const listen = vi.spyOn(net.Server.prototype, 'listen');
     const { q, queue, queues } = fakeBull();
     _setJobQueueForTests(q);
@@ -733,16 +803,23 @@ describe('worker process (PC-36)', () => {
     });
 
     expect(worker.plan.role).toBe('worker');
-    expect(q.activeLanes()).toEqual(['ticks', 'runs']);
+    expect(q.activeLanes()).toEqual(['ticks', 'batch', 'runs']);
     expect(migrate).toHaveBeenCalledTimes(1);
-    const scheduled = queue(TICKS_QUEUE)
-      .added.filter((a) => a.opts?.repeat)
-      .map((a) => a.name)
-      .sort();
-    expect(scheduled).toEqual(TICK_CATALOG.map((t) => t.name).sort());
+    const scheduledOn = (name: string) =>
+      queue(name)
+        .added.filter((a) => a.opts?.repeat)
+        .map((a) => a.name)
+        .sort();
+    const batch: readonly string[] = BATCH_TICKS;
+    expect(scheduledOn(TICKS_QUEUE)).toEqual(
+      TICK_CATALOG.map((t) => t.name)
+        .filter((n) => !batch.includes(n))
+        .sort(),
+    );
+    expect(scheduledOn(BATCH_QUEUE)).toEqual([...BATCH_TICKS].sort());
     expect((queues.get(RUNS_QUEUE)?.added ?? []).filter((a) => a.opts?.repeat)).toEqual([]);
     expect(listen).not.toHaveBeenCalled();
-    expect(logs.join('\n')).toMatch(/lanes ticks×4, runs×2/);
+    expect(logs.join('\n')).toMatch(/lanes ticks×4, batch×3, runs×2/);
 
     await worker.stop('test');
     await worker.stop('again');

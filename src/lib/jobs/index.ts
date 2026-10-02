@@ -4,12 +4,13 @@
 // on a microtask in this process) and BullMQ on Redis (production,
 // JOB_QUEUE_PROVIDER=bullmq; bullmq.ts).
 //
-// PC-36 (I065): jobs run on two lanes (lanes.ts) — 'ticks' for the
-// repeatable ticks and 'runs' for on-demand work (discovery runs, knowledge
-// indexing, learning) — so a long run never delays the 30 s drain tick or
-// the inbox sync. Which process consumes them is the process role
+// PC-36 (I065): jobs run on three lanes (lanes.ts) — 'ticks' for the short
+// repeatable ticks, 'batch' for the long AI ticks (autopilot, follow-ups,
+// compaction, health check) and 'runs' for on-demand work (discovery runs,
+// knowledge indexing, learning) — so a long run or a long AI pass never
+// delays the 30 s drain tick or the inbox sync. Which process consumes them is the process role
 // (role.ts): in production the web server only enqueues and a separate
-// worker service runs both lanes.
+// worker service runs every lane.
 //
 // The interface is intentionally tiny. Add capabilities only when a
 // concrete handler needs them, not speculatively.
@@ -144,13 +145,14 @@ export class InMemoryJobQueue implements IJobQueue {
    * One serial chain per lane. Jobs of a lane run one at a time, so
    * fire-and-forget enqueues (e.g. a crawl plan firing several connector
    * runs) can't execute concurrently and deadlock each other — or the
-   * caller's foreground DB writes — on shared rows. PC-36: the two lanes
-   * run side by side, like the two BullMQ workers, so a long connector run
-   * never holds up the drain tick. Retries are BullMQ's: here every job
-   * runs once.
+   * caller's foreground DB writes — on shared rows. PC-36: the lanes run
+   * side by side, like the BullMQ workers, so a long connector run or a
+   * long autopilot pass never holds up the drain tick. Retries are
+   * BullMQ's: here every job runs once.
    */
   private tails: Record<JobLane, Promise<void>> = {
     ticks: Promise.resolve(),
+    batch: Promise.resolve(),
     runs: Promise.resolve(),
   };
 

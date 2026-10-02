@@ -4,7 +4,7 @@
 //           jobs. It registers no queue worker and schedules no ticks;
 //           the ops watchdog (PC-08) runs here, independent of the worker.
 //   worker  the worker entry (src/worker.ts, `node worker.cjs`): runs the
-//           queue workers (both lanes) and schedules the ticks. It serves
+//           queue workers (every lane) and schedules the ticks. It serves
 //           no HTTP and runs no watchdog.
 //   all     both in one process (the default): local development and a
 //           single-container deploy.

@@ -64,7 +64,7 @@ Read the detail with the curl above, then:
 | `database` | Postgres container down or unreachable | `docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps`, then the postgres logs |
 | `redis` | Redis container down; nothing is scheduled or run | the same `ps`, then the redis logs |
 | `migrations` (`pending` lists tags) | the deploy skipped the migration step | host-side `pnpm db:migrate` |
-| `ticks` (`stale` lists names) | the worker is not running ticks: the `worker` container stopped or crash-loops, its ticks lane is blocked, or Redis is lost | `docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps worker`, then its logs (`… logs --tail=200 worker`, `grep -E '\[worker\]|\[jobs\]|\[startup\]'`), then the open incidents below |
+| `ticks` (`stale` lists names) | the worker is not running ticks: the `worker` container stopped or crash-loops, one of its lanes is blocked, or Redis is lost | `docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps worker`, then its logs (`… logs --tail=200 worker`, `grep -E '\[worker\]|\[jobs\]|\[startup\]'`), then the open incidents below |
 
 ## Tick staleness: the expected-slot rule
 
@@ -102,12 +102,15 @@ so a dead worker that writes nothing still turns stale.
 | `ops.retention.tick` | 24 h | 1 h |
 | `knowledge.compact.tick` | 7 days | 1 h |
 
-Since PC-36 the ticks have their own BullMQ queue and worker slots (the
-ticks lane, concurrency 4, in the `worker` service); discovery runs,
-knowledge indexing and learning run on the runs lane (concurrency 2). Long
-runs therefore no longer delay the 30 s drain tick. A stale drain tick now
-means the worker itself is down or its ticks lane is blocked (four ticks
-running long at once), which is a true signal that sending is delayed.
+Since PC-36 the short ticks have their own BullMQ queue and worker slots
+(the ticks lane, concurrency 4, in the `worker` service); the long AI ticks
+(autopilot, follow-ups, health check, compaction) run on the batch lane
+(concurrency 3), and discovery runs, knowledge indexing, learning and
+Re-classify all on the runs lane (concurrency 2). Long runs and long AI
+passes therefore no longer delay the 30 s drain tick. A stale drain tick
+now means the worker itself is down or its ticks lane is blocked, which is
+a true signal that sending is delayed. A stale autopilot or follow-up tick
+with a fresh drain points at the batch lane: three long passes at once.
 Under the in-memory queue (dev) each lane runs one job at a time and a
 tick is never stacked: while one waits, its interval adds no other.
 

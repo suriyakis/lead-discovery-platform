@@ -92,9 +92,11 @@ services:
       - app-storage:/app/storage
 
   # PC-36 (I065): the background-job worker. Same image as `app`, its own
-  # process: the ticks lane (send-queue drain, inbox sync, autopilot,
-  # sweepers, reaper; concurrency JOB_TICKS_CONCURRENCY, default 4) and the
-  # runs lane (discovery runs, knowledge indexing, learning;
+  # process: the ticks lane (send-queue drain, inbox sync, probes, crawl
+  # engine, sweepers, reaper; concurrency JOB_TICKS_CONCURRENCY, default 4),
+  # the batch lane (the long AI ticks: autopilot, follow-ups, health check,
+  # compaction; JOB_BATCH_CONCURRENCY, default 3) and the runs lane
+  # (discovery runs, knowledge indexing, learning, Re-classify all;
   # JOB_RUNS_CONCURRENCY, default 2), plus the repeatable tick schedule.
   # It serves no HTTP: no `ports:` here, and none in docker-compose.yml
   # either (compose merges port lists). The same storage volume, because

@@ -7,7 +7,7 @@
 //   2. move what still waits on the pre-lane BullMQ queue onto the lanes
 //      (best effort; BullMQJobQueue.migrateLegacyQueue);
 //   3. unless SCHEDULE_BACKGROUND_JOBS=0: register the tick handlers (the
-//      ticks lane's worker) and their repeatable schedules. A failed
+//      ticks and batch lanes' workers) and their repeatable schedules. A failed
 //      registration is a critical platform incident (PC-07).
 
 import { getJobQueue, type LegacyQueueMigration } from './index';

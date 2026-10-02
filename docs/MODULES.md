@@ -187,7 +187,7 @@ See `ISearchProvider` in `docs/ARCHITECTURE.md`.
 
 ### Job System
 
-**Phase.** 1 (interface + in-memory impl), 6+ (BullMQ for production), Phase 1 remediation PC-36 (a dedicated worker process, two lanes).
+**Phase.** 1 (interface + in-memory impl), 6+ (BullMQ for production), Phase 1 remediation PC-36 (a dedicated worker process, three lanes).
 
 **Lanes and processes (PC-36).** `src/lib/jobs/lanes.ts` (which lane a job type runs on — `ticks` for every catalogued tick, `runs` for `connector.run`, `knowledge.index`, `learning.process` — the lane concurrency and the `connector.run` retry policy), `src/lib/jobs/role.ts` (`ROLE=web|worker|all`: who consumes, who schedules, who runs the watchdog), `src/lib/jobs/background.ts` (the boot of a consuming process: handlers, the move off the pre-lane BullMQ queue, the tick schedule), `src/lib/jobs/worker-process.ts` + `src/worker.ts` (the worker entry, bundled by `scripts/build-worker.mjs`), `src/instrumentation-node.ts` (the web server's boot by role). Deploy: `docker-compose.prod.yml` (`app` + `worker`), `scripts/deploy/deploy-agregat.sh`, `docs/DEPLOYMENT.md`.
 

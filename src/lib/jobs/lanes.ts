@@ -1,13 +1,26 @@
 // PC-36 (I065): job lanes — which queue a job type runs on, how many of a
 // lane's jobs run at once, and which job types the queue retries.
 //
-// Two lanes, so slow work can never hold up the clock:
+// Three lanes, so slow work can never hold up the clock:
 //
-//   ticks  every catalogued repeatable tick (tick-catalog.ts): the 30 s
-//          send-queue drain, the 2-minute inbox sync, autopilot, the
-//          sweepers, the reaper … Short, periodic, judged by the
-//          heartbeat staleness rule (PC-07), so they must start on time.
-//          Concurrency 4 (JOB_TICKS_CONCURRENCY).
+//   ticks  the short repeatable ticks (tick-catalog.ts): the 30 s send-queue
+//          drain, the 2-minute inbox sync, the mailbox probes, the crawl
+//          engine (it only enqueues runs), the reaper, retention, the
+//          outbox sweepers. Judged by the heartbeat staleness rule (PC-07),
+//          so they must start on time. Concurrency 4
+//          (JOB_TICKS_CONCURRENCY).
+//   batch  the long scheduled passes (BATCH_TICKS): autopilot (a run per
+//          workspace, AI drafting, its lease held up to 30 min), the
+//          follow-up pass (AI composition, up to 50 min), knowledge
+//          compaction and the AI health check. Still ticks — catalogued,
+//          heartbeated, judged against their slot — but they await the AI
+//          provider for minutes, and under BullMQ's legacy repeat the next
+//          slot of a tick starts while an earlier one is still working
+//          another workspace. On the ticks lane four of them could hold
+//          every slot and delay the drain; here they only queue behind each
+//          other. Concurrency 3 (JOB_BATCH_CONCURRENCY): a long follow-up
+//          pass and a long autopilot tick still leave a slot for the next
+//          autopilot slot.
 //   runs   on-demand work that can take minutes to hours: discovery runs
 //          (connector.run), knowledge indexing (knowledge.index: OCR +
 //          embeddings), learning (learning.process: an AI call per
@@ -17,14 +30,10 @@
 //          CPUs and shares them with the web process and Postgres.
 //
 // Under BullMQ each lane is its own Redis queue with its own Worker, so a
-// crawl plan that fires five long runs fills the runs lane and the drain
-// tick still starts every 30 s. The in-memory queue (dev and tests) keeps
-// one serial chain per lane for the same reason.
-//
-// The two AI-heavy ticks (knowledge.compact.tick, health.check.tick) stay
-// on the ticks lane: they are scheduled, their heartbeat is judged against
-// their slot, and they await the AI provider rather than burn CPU. They
-// take one tick slot each while they run; the other three keep the clock.
+// crawl plan that fires five long runs fills the runs lane, four long AI
+// ticks fill the batch lane, and the drain tick still starts every 30 s.
+// The in-memory queue (dev and tests) keeps one serial chain per lane for
+// the same reason.
 //
 // Retries. The queue retries nothing by default: durable work keeps its
 // state in an outbox and a sweeper re-drives it (KL-03, ARCHITECTURE.md).
@@ -37,9 +46,9 @@
 // retry never races the reaper.
 
 import { z } from 'zod';
-import { TICK_CATALOG } from './tick-catalog';
+import { TICK_CATALOG, type TickName } from './tick-catalog';
 
-export const JOB_LANES = ['ticks', 'runs'] as const;
+export const JOB_LANES = ['ticks', 'batch', 'runs'] as const;
 export type JobLane = (typeof JOB_LANES)[number];
 
 export interface LaneDefinition {
@@ -58,7 +67,14 @@ export const LANE_DEFINITIONS: Readonly<Record<JobLane, LaneDefinition>> = {
     queueName: 'lead-platform-ticks',
     defaultConcurrency: 4,
     concurrencyEnv: 'JOB_TICKS_CONCURRENCY',
-    description: 'repeatable ticks (drain, inbox sync, autopilot, sweepers, reaper)',
+    description: 'short repeatable ticks (drain, inbox sync, probes, crawl engine, sweepers, reaper)',
+  },
+  batch: {
+    lane: 'batch',
+    queueName: 'lead-platform-batch',
+    defaultConcurrency: 3,
+    concurrencyEnv: 'JOB_BATCH_CONCURRENCY',
+    description: 'long scheduled passes (autopilot, follow-ups, knowledge compaction, health check)',
   },
   runs: {
     lane: 'runs',
@@ -73,11 +89,26 @@ export const LANE_DEFINITIONS: Readonly<Record<JobLane, LaneDefinition>> = {
  *  still waiting there onto the lanes at boot (BullMQJobQueue). */
 export const LEGACY_QUEUE_NAME = 'lead-platform';
 
-const TICK_NAMES: ReadonlySet<string> = new Set(TICK_CATALOG.map((t) => t.name));
+/**
+ * The catalogued ticks that run on the batch lane: each can spend minutes
+ * awaiting the AI provider (or a workspace's run lease), which must never
+ * take the slots of the drain and the inbox sync.
+ */
+export const BATCH_TICKS = [
+  'autopilot.tick',
+  'outreach.follow_up.tick',
+  'knowledge.compact.tick',
+  'health.check.tick',
+] as const satisfies readonly TickName[];
 
-/** Which lane a job type runs on: catalogued ticks on 'ticks', everything
- *  else (on-demand work) on 'runs'. */
+const TICK_NAMES: ReadonlySet<string> = new Set(TICK_CATALOG.map((t) => t.name));
+const BATCH_TICK_NAMES: ReadonlySet<string> = new Set(BATCH_TICKS);
+
+/** Which lane a job type runs on: the long ticks (BATCH_TICKS) on
+ *  'batch', the other catalogued ticks on 'ticks', everything else
+ *  (on-demand work) on 'runs'. */
 export function laneForJob(type: string): JobLane {
+  if (BATCH_TICK_NAMES.has(type)) return 'batch';
   return TICK_NAMES.has(type) ? 'ticks' : 'runs';
 }
 

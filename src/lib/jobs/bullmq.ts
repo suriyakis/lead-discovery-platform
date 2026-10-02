@@ -2,15 +2,17 @@
 // when JOB_QUEUE_PROVIDER=bullmq.
 //
 // PC-36 (I065): one Redis queue per lane (lanes.ts) — lead-platform-ticks
-// for the repeatable ticks, lead-platform-runs for on-demand work — each
-// with its own Worker and concurrency, so long discovery runs never take
-// the slots the 30 s drain tick and the inbox sync need. Job NAMES still
-// pick the handler (`connector.run`, `outreach.drain.tick`, …).
+// for the short repeatable ticks, lead-platform-batch for the long AI
+// ticks (autopilot, follow-ups, compaction, health check),
+// lead-platform-runs for on-demand work — each with its own Worker and
+// concurrency, so long discovery runs and long AI passes never take the
+// slots the 30 s drain tick and the inbox sync need. Job NAMES still pick
+// the handler (`connector.run`, `outreach.drain.tick`, …).
 //
 // Whether this process consumes jobs is decided at construction
 // (`consume`, from the process role): the web server (ROLE=web) only
 // enqueues — on() records the handler and starts no Worker — and the
-// worker service runs both lanes.
+// worker service runs every lane.
 //
 // Job ids carry their lane (`runs:123`): each Redis queue numbers its own
 // jobs, so status() and cancel() need to know which queue to ask. An id
@@ -156,6 +158,7 @@ export class BullMQJobQueue implements IJobQueue {
     // first job.
     this.concurrency = {
       ticks: opts.concurrency?.ticks ?? laneConcurrency('ticks', env),
+      batch: opts.concurrency?.batch ?? laneConcurrency('batch', env),
       runs: opts.concurrency?.runs ?? laneConcurrency('runs', env),
     };
     this.factories = opts.factories ?? {
