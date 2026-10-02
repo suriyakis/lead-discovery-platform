@@ -41,7 +41,10 @@ import { updateMailbox } from '@/lib/services/mailbox';
 import {
   MAILBOX_PAUSED_HOLD_REASON,
   OutreachQueueError,
+  SEND_GATE_REFUSALS,
+  _setSendGateForTests,
   drainQueue,
+  evaluateSendGate,
   getSendSettings,
   requeueQueueEntry,
   retryQueueEntry,
@@ -755,5 +758,64 @@ describe('one draft goes out once (PC-10 review)', () => {
       lastError: 'Sent, but recording it failed: boom',
     });
     await expect(requeueQueueEntry(ctx(s), first.id)).rejects.toThrow(/queue entry \d+/);
+  });
+});
+
+// ---- one pre-send gate (review: PC-10 Retry now bypassing the drain) --------
+
+describe('the drain and Retry now share one send gate (PC-10 review)', () => {
+  afterEach(() => _setSendGateForTests(null));
+
+  it('Retry now honours every refusal the drain honours', async () => {
+    const s = await setup();
+    const { entry } = await failedEntry(s, 'anna@target.com');
+    const waiting = await queuedDraft(s, 'carl@other.com');
+    const provider = new FlakyProvider(greylisted, 0);
+
+    // Whatever the gate refuses with — today's refusals and any added to
+    // SEND_GATE_REFUSALS later (the outbound stop, a hold) — stops both.
+    for (const reason of SEND_GATE_REFUSALS) {
+      _setSendGateForTests(async () => ({ open: false, reason }));
+      await db.update(outreachQueue).set({ status: 'failed' }).where(eq(outreachQueue.id, entry.id));
+
+      const drained = await drainQueue(ctx(s), { providerOverride: provider });
+      expect(drained).toMatchObject({ picked: 0, sent: 0, blocked: reason });
+      expect((await row(waiting.entry.id)).status).toBe('queued');
+
+      const retried = await retryQueueEntry(ctx(s), entry.id, { providerOverride: provider });
+      expect(retried).toMatchObject({ outcome: 'queued', reason });
+      expect(provider.calls).toBe(0);
+    }
+
+    // Open again: both send.
+    _setSendGateForTests(null);
+    await db.update(outreachQueue).set({ status: 'failed' }).where(eq(outreachQueue.id, entry.id));
+    expect((await retryQueueEntry(ctx(s), entry.id, { providerOverride: provider })).outcome).toBe(
+      'sent',
+    );
+  });
+
+  it('the real gate: the emergency pause first, then the daily cap of delivered mail', async () => {
+    const s = await setup();
+    const settings = await getSendSettings(ctx(s));
+    const now = new Date();
+    expect(await evaluateSendGate(ctx(s), settings, now)).toEqual({
+      open: true,
+      remaining: settings.dailyEmailLimit,
+    });
+    // A failed attempt uses none of the cap.
+    await deliveredTo(s, 'x@one.com', 'failed');
+    await deliveredTo(s, 'y@two.com');
+    expect(await evaluateSendGate(ctx(s), { ...settings, dailyEmailLimit: 2 }, now)).toEqual({
+      open: true,
+      remaining: 1,
+    });
+    expect(await evaluateSendGate(ctx(s), { ...settings, dailyEmailLimit: 1 }, now)).toEqual({
+      open: false,
+      reason: 'daily_limit',
+    });
+    expect(
+      await evaluateSendGate(ctx(s), { ...settings, dailyEmailLimit: 1, emergencyPause: true }, now),
+    ).toEqual({ open: false, reason: 'paused' });
   });
 });

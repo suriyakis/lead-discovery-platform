@@ -14,6 +14,7 @@ import {
 import {
   OutreachQueueError,
   type RetryQueueEntryResult,
+  type SendGateRefusal,
   type UpdateSendSettingsInput,
 } from '@/lib/services/outreach-queue';
 import { withFlash } from '@/lib/action-errors';
@@ -214,13 +215,7 @@ export function describeRetryOutcome(result: RetryQueueEntryResult): {
     case 'sent':
       return { kind: 'message', text: 'Sent.' };
     case 'queued':
-      return {
-        kind: 'message',
-        text:
-          result.reason === 'paused'
-            ? 'Put back in the queue. Sending is paused, so it goes out once the emergency pause is switched off.'
-            : "Put back in the queue. Today's email limit is used up, so it goes out when there is room again.",
-      };
+      return { kind: 'message', text: `Put back in the queue. ${heldBecause(result.reason)}` };
     case 'retrying':
       return {
         kind: 'error',
@@ -230,6 +225,33 @@ export function describeRetryOutcome(result: RetryQueueEntryResult): {
       return { kind: 'message', text: `Not sent now.${reason}` };
     case 'failed':
       return { kind: 'error', text: `It failed again.${reason}` };
+  }
+}
+
+/**
+ * Why Retry now put an email back without sending it: the send gate's
+ * refusal (services/outreach-queue.ts evaluateSendGate). Exhaustive on
+ * purpose: a refusal added to the gate does not compile until it is
+ * worded here.
+ */
+function heldBecause(reason: SendGateRefusal | undefined): string {
+  switch (reason) {
+    case 'paused':
+      return 'Sending is paused, so it goes out once the emergency pause is switched off.';
+    case 'daily_limit':
+      return "Today's email limit is used up, so it goes out when there is room again.";
+    case undefined:
+      return 'It goes out with the next send pass.';
+  }
+}
+
+/** The Send now flash when the send gate kept the whole pass from sending. */
+export function describeDrainBlocked(reason: SendGateRefusal): string {
+  switch (reason) {
+    case 'paused':
+      return 'Sending is paused, so nothing was sent. Turn off the emergency pause to resume.';
+    case 'daily_limit':
+      return "Nothing was sent: today's email limit has been reached.";
   }
 }
 

@@ -623,7 +623,7 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(queue[0]!.status).toBe('queued');
 
     const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
-    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0 });
+    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0, blocked: 'paused' });
     expect((await queueRows(s))[0]!.status).toBe('queued');
   });
 

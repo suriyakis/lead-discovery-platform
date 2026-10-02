@@ -21,7 +21,6 @@ import {
   OutreachQueueError,
   cancelQueueEntry,
   drainQueue,
-  getSendSettings,
   requeueQueueEntry,
   rescheduleQueueEntry,
   retryQueueEntry,
@@ -30,6 +29,7 @@ import {
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   REQUEUED_MESSAGE,
+  describeDrainBlocked,
   describeRetryOutcome,
   formatUtc,
   parseEntryId,
@@ -107,12 +107,11 @@ export async function drainSendQueueAction(formData: FormData): Promise<void> {
         r.picked === 1 ? 'email' : 'emails'
       }.`;
     }
-    // drainQueue returns all zeros when sending is paused; say so rather
+    // PC-10: when the send gate kept the pass from sending, say why rather
     // than implying the queue is simply empty.
-    const settings = await getSendSettings(ctx);
-    return settings.emergencyPause
-      ? 'Sending is paused, so nothing was sent. Turn off the emergency pause to resume.'
-      : "Nothing was sent: no emails are due yet, or today's limit has been reached.";
+    return r.blocked
+      ? describeDrainBlocked(r.blocked)
+      : 'Nothing was sent: no emails are due yet.';
   });
   backToQueue(view, 'message', message);
 }

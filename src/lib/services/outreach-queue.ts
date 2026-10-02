@@ -402,6 +402,58 @@ export async function listQueueEntries(
     .limit(Math.min(filter.limit ?? 200, 1000));
 }
 
+// ---- the pre-send gate (PC-10) ------------------------------------
+
+/** Why the gate keeps the queue from sending now. */
+export const SEND_GATE_REFUSALS = ['paused', 'daily_limit'] as const;
+export type SendGateRefusal = (typeof SEND_GATE_REFUSALS)[number];
+
+export type SendGateVerdict =
+  | { open: true; /** Emails the daily cap still allows. */ remaining: number }
+  | { open: false; reason: SendGateRefusal };
+
+type SendGate = (
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  settings: OutreachSendSettings,
+  now: Date,
+) => Promise<SendGateVerdict>;
+
+let sendGateOverride: SendGate | null = null;
+
+/** Tests: force the gate's verdict for every send path (null restores the
+ *  real gate). */
+export function _setSendGateForTests(gate: SendGate | null): void {
+  sendGateOverride = gate;
+}
+
+/**
+ * PC-10: THE gate in front of every send from the queue. drainQueue (the
+ * drain tick and "Send now") and retryQueueEntry (Retry now) both ask it
+ * before they send anything, so a manual path can never skip a check the
+ * drain applies. Checks today: the send-queue emergency pause, then the
+ * workspace daily cap (delivered mail only).
+ *
+ * INTEGRATION (automation-control lane, PC-05): the platform-wide outbound
+ * stop, the per-tenant holds, the go-live hold and the workspace
+ * automation pause are checked HERE, each as a new SendGateRefusal (the
+ * queue page's wording for them, in mailbox/queue/forms.ts, then fails to
+ * compile until it is written). Retry now is a manual send: the outbound
+ * stop and the holds refuse it exactly like the drain; under the workspace
+ * pause it may go out only with the operator's explicit confirmation —
+ * add that as an input of this gate, not as a check beside it.
+ */
+export async function evaluateSendGate(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  settings: OutreachSendSettings,
+  now: Date,
+): Promise<SendGateVerdict> {
+  if (sendGateOverride) return sendGateOverride(ctx, settings, now);
+  if (settings.emergencyPause) return { open: false, reason: 'paused' };
+  const remaining = await remainingDailyCap(ctx, settings, now);
+  if (remaining === 0) return { open: false, reason: 'daily_limit' };
+  return { open: true, remaining };
+}
+
 // ---- drain --------------------------------------------------------
 
 export interface DrainResult {
@@ -412,6 +464,8 @@ export interface DrainResult {
   /** PC-10: entries whose attempt failed for a retryable reason and that
    *  went back to the queue with a backoff (next_attempt_at). */
   retrying: number;
+  /** PC-10: set when the send gate kept the whole pass from sending. */
+  blocked?: SendGateRefusal;
 }
 
 export interface DrainOptions {
@@ -434,13 +488,13 @@ export async function drainQueue(
 ): Promise<DrainResult> {
   if (!canWrite(ctx)) throw denied('outreach.queue.drain');
   const settings = await getSendSettings(ctx);
-  if (settings.emergencyPause) {
-    return { ...EMPTY_DRAIN };
-  }
   const now = options.now ?? new Date();
 
-  const remainingCap = await remainingDailyCap(ctx, settings, now);
-  const limit = Math.min(options.limit ?? 50, remainingCap, 200);
+  const gate = await evaluateSendGate(ctx, settings, now);
+  if (!gate.open) {
+    return { ...EMPTY_DRAIN, blocked: gate.reason };
+  }
+  const limit = Math.min(options.limit ?? 50, gate.remaining, 200);
   if (limit === 0) {
     return { ...EMPTY_DRAIN };
   }
@@ -929,20 +983,21 @@ export async function requeueQueueEntry(
 }
 
 export interface RetryQueueEntryResult {
-  /** 'queued' = put back but not attempted now (sending paused, or the
-   *  daily limit is used up); otherwise the outcome of the attempt. */
+  /** 'queued' = put back but not attempted now (the send gate refused:
+   *  sending paused, the daily limit used up, …); otherwise the outcome
+   *  of the attempt. */
   outcome: EntryOutcome | 'queued';
-  /** Why it was not attempted now ('queued' only). */
-  reason?: 'paused' | 'daily_limit';
+  /** Why it was not attempted now ('queued' only): the gate's refusal. */
+  reason?: SendGateRefusal;
   entry: OutreachQueueEntry;
 }
 
 /**
  * Retry now: put the entry back (as requeueQueueEntry) and attempt it at
- * once through the same path as the drain — so suppression, geography,
- * mailbox state, the sending policy, the daily cap and the domain
- * cooldown all apply. Under the send-queue emergency pause, or with the
- * daily limit used up, it stays queued instead.
+ * once through the same path as the drain — the same send gate
+ * (evaluateSendGate: the emergency pause, the daily cap, and whatever is
+ * added there), then suppression, geography, mailbox state, the sending
+ * policy and the domain cooldown. When the gate refuses, it stays queued.
  */
 export async function retryQueueEntry(
   ctx: WorkspaceContext,
@@ -953,11 +1008,9 @@ export async function retryQueueEntry(
   const now = options.now ?? new Date();
   const requeued = await putBack(ctx, id, 'retry', now);
   const settings = await getSendSettings(ctx);
-  if (settings.emergencyPause) {
-    return { outcome: 'queued', reason: 'paused', entry: requeued };
-  }
-  if ((await remainingDailyCap(ctx, settings, now)) === 0) {
-    return { outcome: 'queued', reason: 'daily_limit', entry: requeued };
+  const gate = await evaluateSendGate(ctx, settings, now);
+  if (!gate.open) {
+    return { outcome: 'queued', reason: gate.reason, entry: requeued };
   }
   const outcome = await processEntry(ctx, requeued, settings, options.providerOverride, now);
   return { outcome, entry: await loadEntry(ctx, id) };

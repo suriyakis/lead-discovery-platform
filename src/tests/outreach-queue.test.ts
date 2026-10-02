@@ -261,7 +261,7 @@ describe('drainQueue', () => {
     const r = await drainQueue(ctx(s.workspaceA, s.ownerA), {
       providerOverride: new MockMailProvider(),
     });
-    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0 });
+    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0, blocked: 'paused' });
     const all = await listQueueEntries(ctx(s.workspaceA, s.ownerA));
     expect(all[0]!.status).toBe('queued');
   });
