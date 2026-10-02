@@ -1008,6 +1008,9 @@ describe('(3) accountable owner', { timeout: 60_000 }, () => {
     const t = await tenant();
     const mb = await makeMailbox(t);
     const row = await queueRow(t, mb.id);
+    // Autopilot switched on, so its tick is held (autopilot that is off is
+    // simply off, never counted as held).
+    await updateAutopilotSettings(t.owner, { autopilotEnabled: true, enableAutoApproveProjects: true });
     await setAccountStatus(pctx(), t.ownerId, 'suspended', 'chargeback');
 
     const first = await runDrainTick();
