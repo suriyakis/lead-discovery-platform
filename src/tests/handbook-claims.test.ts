@@ -388,6 +388,12 @@ describe('pipeline service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     // The only app caller is the Promote button on /leads.
     expect(filesContaining('app', 'ensureQualifiedLead(')).toEqual(['app/leads/page.tsx']);
     expect(readSrc('app/leads/page.tsx')).toContain('Promote to pipeline');
+    // The Pipeline page and the IA vocabulary say the same (not "approved").
+    const pipelinePage = readSrc('app/pipeline/page.tsx').replace(/\s+/g, ' ');
+    expect(pipelinePage).toContain('becomes a lead here when you promote it from Review › By product');
+    expect(pipelinePage).not.toMatch(/once it is approved/);
+    const ia = fs.readFileSync(path.join(process.cwd(), 'docs/design/IA.md'), 'utf8');
+    expect(ia).toMatch(/^\| Lead \| A record promoted to the pipeline for a product /m);
   });
 
   it('[handbook H-05] the stage list is fixed and closing a lead needs a close reason', async () => {
@@ -1555,15 +1561,15 @@ describe('Phase 0 claims from the other lanes', { timeout: DB_TEST_TIMEOUT_MS },
     }
   });
 
-  it('[handbook H-29] a failing page shows Try again, the dashboard and support with a reference code; an unknown address shows a not-found page', () => {
+  it('[handbook H-29] a failing page shows Try again, Today and support with a reference code; an unknown address shows a not-found page', () => {
     const error = readSrc('app/error.tsx');
     expect(error).toContain("'Try again'");
-    expect(error).toContain('href="/dashboard"');
+    expect(error).toContain('href="/today"');
     expect(error).toContain('href="/support"');
     expect(error).toContain('Reference <code>{error.digest}</code>');
     const notFound = readSrc('app/not-found.tsx');
     expect(notFound).toContain('404');
-    expect(notFound).toContain('href="/dashboard"');
+    expect(notFound).toContain('href="/today"');
     expect(notFound).toContain('href="/support"');
   });
 
@@ -1749,7 +1755,7 @@ describe('assistant (Ask the platform)', { timeout: DB_TEST_TIMEOUT_MS }, () => 
     // …and support usage is never debited, while the same usage is.
     const before = (await getTokenWallet(ctx(s))).balance;
     const usage = {
-      kind: 'ai.assistant',
+      kind: 'ai.assistant' as const,
       provider: 'anthropic',
       units: 100,
       costEstimateCents: 2,

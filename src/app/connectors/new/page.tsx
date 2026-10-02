@@ -91,7 +91,7 @@ export default async function NewConnectorPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/connectors">Connectors</Link> / New
         </p>
         <h1>New connector</h1>

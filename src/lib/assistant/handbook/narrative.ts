@@ -1,46 +1,63 @@
-// The platform handbook — the AI guide's knowledge of how the app works.
+// The handbook's narrative — the AI guide's knowledge of how the app
+// works, as prose (src/lib/assistant/handbook/; index.ts assembles it).
 // Deterministic in-code text beats RAG here: it's small, versioned with
 // the features it describes, and needs no indexing. The guide quotes it,
 // so every sentence must describe what the code does TODAY, not what a
 // flow is meant to do one day.
 //
+// Facts the code already holds are NOT written here: the "Where things
+// are" screens index (the navigation registry), the pipeline stages, the
+// reply classes, the language order, the autopilot steps and the billing
+// catalogue are generated blocks (./generated.ts), interpolated below, so
+// they change with the code. What does not work yet lives in
+// ./known-limitations.ts.
+//
 // Rules for editing (enforced by src/tests/assistant-handbook.test.ts):
 //   - In-app paths are written as [/path] (the assistant panel turns them
 //     into links). Only static routes that exist under src/app — never a
 //     dynamic one such as a lead's own page; say "open it from
-//     [/pipeline]" instead. Every sidebar route appears at least once.
+//     [/pipeline]" instead.
 //   - Behavioural claims carry a tag such as {H-07}. Each tag needs a test
 //     whose name contains "[handbook H-07]" (they live in
 //     src/tests/handbook-claims.test.ts). When you change the behaviour,
 //     that test fails: update the claim and the test together.
 //   - Tags are stripped before the text reaches the model
 //     (PLATFORM_HANDBOOK); HANDBOOK_SOURCE keeps them for the tests.
-//   - Whatever is broken or missing right now goes under "Known
-//     limitations right now", one line per issue, starting with its issue
-//     id (I…/X…). Delete the line in the PR that fixes the issue.
 
 import { BRAND_NAME } from '@/lib/brand';
+import type { AutopilotStepId } from '@/lib/autopilot/steps';
+import type { HandbookBlocks } from './generated';
 
-/** Heading of the section that lists what does not work yet. */
-export const KNOWN_LIMITATIONS_HEADING = '## Known limitations right now';
+/**
+ * What each autopilot step does, keyed by step (the order and names come
+ * from AUTOPILOT_STEPS). An empty note prints the step name alone.
+ */
+export const AUTOPILOT_STEP_NOTES: Readonly<Record<AutopilotStepId, string>> = {
+  auto_approve_projects: `review items still in "new" whose relevance
+  score reaches the threshold (default 70, or the product's higher one)
+  are approved and recorded as approved by autopilot — no person's name,
+  reason "autopilot" — and never teach the learning memory. Items a
+  person already gave a verdict on, and needs_review (geo-unverified)
+  items, are never auto-approved; an item that fits several products is
+  approved once. {H-07}`,
+  auto_enqueue_outreach: `for approved items, writes a draft, approves it
+  in the workspace owner's name and puts it in the send queue, oldest
+  approval first; nobody reviews those emails. It only takes items whose
+  pipeline lead has a contact email: the others get no draft and wait
+  (the run log counts them as needs_contact; see Known limitations,
+  I001). {H-08}`,
+  auto_crm_contact_sync: `new and changed qualified leads only; every push
+  shows on the lead's timeline.`,
+  auto_crm_deal_on_qualified: `only for leads whose contact is already
+  synced; every push shows on the lead's timeline.`,
+};
 
-export const HANDBOOK_SOURCE = `
+/** The narrative, with the generated blocks in place. */
+export function handbookNarrative(b: HandbookBlocks): string {
+  return `
 # ${BRAND_NAME} — how it works
 
-## Where things are
-Daily work: [/inbox] (one approval inbox: Review, Drafts, Replies and
-Follow-ups tabs), [/dashboard] (workspace overview), [/onboarding] (the
-setup checklist), [/notifications] (the event feed), [/health] (the
-weekly workspace health report).
-Discovery: [/connectors/engine], [/connectors], [/review], [/leads].
-Knowledge base: [/products], [/knowledge], [/documents], [/learning].
-Pipeline: [/pipeline], [/contacts].
-Outreach: [/drafts], [/communication], [/mailbox], [/mailbox/queue],
-[/mailbox/signatures], [/mailbox/suppression], [/mailbox/deliverability],
-[/settings/outreach].
-Workspace: [/settings/members], [/settings/integrations], [/settings/crm],
-[/settings/usage], [/settings/billing], [/settings/audit].
-Account: [/settings/account], [/support]. Emergency: [/autopilot].
+${b.screens}
 
 ## The pipeline
 1. PRODUCT PROFILES ([/products]) define what you sell: descriptions,
@@ -91,11 +108,7 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    CONTACT EMAIL, assign it to a teammate, add notes, set its own
    outreach language and move it through the stages. Nothing fills in
    the contact email for you, and no email can be queued for a lead
-   without one. {H-04} Stages, in order: raw_discovered → relevant →
-   contacted → replied → contact_identified → qualified → handed_over →
-   synced_to_crm; any stage can move to closed, and closing needs a
-   close reason (won, lost, no_response, wrong_fit, duplicate, spam,
-   other). {H-05} Promoted leads start at relevant. Stages move when you
+   without one. {H-04} ${b.pipelineStages} {H-05} Promoted leads start at relevant. Stages move when you
    move them: sending an email or getting a reply does not advance a
    lead; only a reply auto-action closes a lead, and only while an admin
    has switched it on under [/settings/outreach]; a CRM push sets
@@ -144,8 +157,8 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    {H-22} Follow-ups work the same way when you approve them.
 10. FOLLOW-UPS are configured on [/settings/outreach] (steps, spacing,
    approval). When one is due it is written by AI and either waits for
-   approval on [/communication/follow-ups] (also the Follow-ups tab of
-   [/inbox]) or, if you switched approval off, is sent without anyone
+   approval on [/communication/follow-ups] (also the Follow-ups section
+   of [/today]) or, if you switched approval off, is sent without anyone
    reviewing it. {H-15} A reply to your outreach on the thread
    (including an auto-reply or a delivery report about it) cancels the
    remaining follow-ups; newsletters and unrelated mail filed on the
@@ -161,9 +174,8 @@ thread or a mailbox's compose page) and drafts that answer a
 prospect's reply go out as personal mail, without the unsubscribe link
 and footer that cold emails and follow-ups carry. {H-26}
 Only mail that answers your outreach — a reply to one of your emails,
-an auto-reply, or a delivery report about one — gets a class: positive,
-redirect, question, interest, doc_request, negative, out_of_office,
-bounce, unsubscribe or irrelevant. {H-17} Newsletters, notifications
+an auto-reply, or a delivery report about one — gets a class:
+${b.replyClasses}. {H-17} Newsletters, notifications
 and other unrelated mail are filed on their thread without a class and
 trigger nothing (see Known limitations, X1). On a thread
 linked to a pipeline lead, and only while "Auto-draft replies" is on,
@@ -196,23 +208,8 @@ workspaces): without one its switches cannot be turned on, and a lapsed
 plan stops the runs. {H-11} It runs every 5 minutes and right after
 every discovery run that found records, but only while its master switch
 is on and automation is not paused (see Pausing below). {H-12} Every
-step is off until an admin turns it on:
-- Auto-approve: review items still in "new" whose relevance score
-  reaches the threshold (default 70, or the product's higher one) are
-  approved and recorded as approved by autopilot — no person's name,
-  reason "autopilot" — and never teach the learning memory. Items a
-  person already gave a verdict on, and needs_review (geo-unverified)
-  items, are never auto-approved; an item that fits several products is
-  approved once. {H-07}
-- Generate + enqueue: for approved items, writes a draft, approves it
-  in the workspace owner's name and puts it in the send queue, oldest
-  approval first; nobody reviews those emails. It only takes items whose
-  pipeline lead has a contact email: the others get no draft and wait
-  (the run log counts them as needs_contact; see Known limitations,
-  I001). {H-08}
-- CRM contact sync (new and changed qualified leads only) and CRM deal
-  on qualified (only for leads whose contact is already synced); every
-  push shows on the lead's timeline.
+step is off until an admin turns it on; a run takes them in this order:
+${b.autopilotSteps}
 Sending queued mail and reading mailboxes are not autopilot steps: they
 always run in the background (see Pausing below).
 Per-product overrides (pick a product on [/autopilot]) only narrow what
@@ -234,7 +231,8 @@ Pausing all automation — one switch for the whole workspace:
   wait for you), background AI (drafting, translation, compaction, learning from your decisions),
   auto top-up and the trash purge.
   Nothing fails or is lost — it waits — and a banner on every page says
-  who paused and when. {H-09}
+  who paused and when. {H-09} Anyone who can edit also reaches it from
+  "Emergency stop" at the foot of the sidebar.
 - While paused, mailboxes keep syncing so replies still arrive. An email
   you write yourself (a thread reply, compose, approving a follow-up)
   sends only after you tick "send anyway", which is recorded in the
@@ -277,16 +275,7 @@ every send) on [/mailbox/suppression].
 - Tokens are the prepaid currency for ALL metered work: discovery
   search, AI qualification, drafting, reply suggestions, translation.
   1 token ≈ €0.01. New workspaces start with 500 free tokens.
-- SUBSCRIPTIONS refill the wallet monthly: Starter €29/mo includes
-  3,500 tokens + up to 3 products, 2 mailboxes, autopilot. Pro €99/mo
-  includes 13,000 tokens + unlimited products, 10 mailboxes, BYOK,
-  priority support. Unused tokens roll over while subscribed. The
-  allowance lands when each invoice is PAID (trials run on the welcome
-  tokens).
-- Without a subscription: 1 product, 1 mailbox, no autopilot, no BYOK —
-  but token packs still work for metered usage.
-- One-time top-up packs for bursts: Ping €10 → 1,000, Pulse €49 →
-  5,500, Deep Dive €199 → 24,000 tokens.
+${b.billing}
 - When the wallet is empty, discovery, drafting and translation PAUSE
   until tokens arrive (pack purchase or the next allowance).
 - Questions to this guide are metered AI work too. With an empty wallet
@@ -385,12 +374,12 @@ evidence chain.
   of recent conversations. Admins can run it now.
 
 ## Contacting a human (/support)
-When the assistant can't solve it, [/support] (sidebar → Account →
-Support) messages the platform team directly — billing disputes, bugs,
+When the assistant can't solve it, [/support] (the account menu at the
+top right → Help & support) messages the platform team directly — billing disputes, bugs,
 feature requests. Replies arrive on the same page and as a
 notification. Available to every member, including viewers.
 If a page fails you get an error page with Try again and links to
-[/dashboard] and [/support]; quote the reference code it shows when
+[/today] and [/support]; quote the reference code it shows when
 you write to support. A mistyped or removed address shows a "page not
 found" page. {H-29}
 The platform team cannot sign in as you or act in your name: there is
@@ -426,13 +415,7 @@ platform settings is never filed in your workspace. {H-30}
   failing? (7) is the address on [/mailbox/suppression], or did the
   geography re-check block it?
 - "Emails in the wrong language": the first of these that is set wins —
-  (1) the lead's own language (on the lead's page, opened from
-  [/pipeline]); (2) the recipe's Language (on the recipe, under
-  [/connectors]); (3) the workspace default outreach language
-  ([/settings/outreach]); (4) the product's language ([/products]) —
-  note that a product description written in another language can
-  override the product's Language field; (5) the workspace native
-  language ([/settings/outreach]); otherwise English. {H-19}
+  ${b.languagePrecedence} {H-19}
   Translations can be reviewed on the draft before it is sent.
 - "Everything is paused": check (1) the banner at the top of the page —
   automation may be paused (owners and admins resume it on [/autopilot]),
@@ -441,29 +424,5 @@ platform settings is never filed in your workspace. {H-30}
   drafting and translation; (3) the autopilot master switch on
   [/autopilot]; (4) each mailbox's status under [/mailbox] — paused or
   failing.
-
-${KNOWN_LIMITATIONS_HEADING}
-- I001: Nothing creates pipeline leads or contact emails automatically. Approving a review item (by hand or by autopilot) does not make it contactable: promote it on [/leads], then set the contact email on the lead's page (opened from [/pipeline]). Autopilot's generate + enqueue skips an approved item until its lead has a contact email (no draft is written for it meanwhile) and picks it up on the next run after you add one. A draft autopilot approved before this fix without being able to queue it still blocks its lead: an admin can free it with "Archive (mark superseded)" on the draft's page so the next run tries again.
-- I002: On a draft's page the "Enqueue for send" form disappears once the draft is approved, so a hand-approved draft (cold email or AI reply draft) cannot be queued; only autopilot's generate + enqueue queues drafts today. The only manual route is sending the text yourself (from the thread on [/communication], or from a mailbox's compose page), which skips the queue's caps, cooldowns, business windows and geography re-check.
-- I005: Follow-ups are never scheduled after a cold email, so the follow-up cadence set on [/settings/outreach] sends nothing for cold outreach.
-- X1: Until Phase 0 every message synced from a mailbox was classified as if it were a reply, so newsletters and notifications raised "replied" notifications and, with the auto-suppress switches on, suppressed their senders (sometimes colleagues or customers) and closed their leads. Now only mail that answers your outreach is classified and can notify or act; everything else is filed on its thread with no class, no notification and no side effect, whatever the switches say. {H-25} Addresses suppressed and contacts created the old way stay until they are cleaned up: check [/mailbox/suppression] and have an admin revoke the ones you never meant to block.
-- I073: If the research provider chosen on [/settings/integrations] (Gemini or Perplexity) has no working key, discovery silently falls back to mock search: leads called "Mock result N" on example-*.test domains, possibly qualified at token cost. The run's log says provider=mock.
-- I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), and a class cannot be corrected.
 `.trim();
-
-const CLAIM_TAG_RE = /\{(H-\d{2})\}/g;
-
-/** Remove claim tags (and the space before them) for display. */
-export function stripClaimTags(text: string): string {
-  return text.replace(/ ?\{H-\d{2}\}/g, '');
-}
-
-/** What the assistant's model reads: the handbook without claim tags. */
-export const PLATFORM_HANDBOOK = stripClaimTags(HANDBOOK_SOURCE);
-
-/** Every claim tag in the handbook, e.g. ["H-01", "H-02", …], deduped. */
-export function handbookClaimTags(): string[] {
-  const tags = new Set<string>();
-  for (const m of HANDBOOK_SOURCE.matchAll(CLAIM_TAG_RE)) tags.add(m[1]!);
-  return [...tags].sort();
 }

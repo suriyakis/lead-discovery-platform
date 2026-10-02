@@ -95,8 +95,8 @@ describe('notification feed', () => {
 
   it('unread count + markNotificationsRead scoping', async () => {
     const s = await setup();
-    const a = await notify(s.workspaceA, { kind: 'x', title: 'one' });
-    await notify(s.workspaceA, { kind: 'x', title: 'two' });
+    const a = await notify(s.workspaceA, { kind: 'run.failed', title: 'one' });
+    await notify(s.workspaceA, { kind: 'run.failed', title: 'two' });
     expect(await unreadNotificationCount(ctx(s.workspaceA, s.ownerA))).toBe(2);
 
     const marked = await markNotificationsRead(ctx(s.workspaceA, s.ownerA), [a!.id]);
@@ -106,7 +106,7 @@ describe('notification feed', () => {
 
   it('never leaks across workspaces', async () => {
     const s = await setup();
-    await notify(s.workspaceA, { kind: 'x', title: 'A only' });
+    await notify(s.workspaceA, { kind: 'run.failed', title: 'A only' });
     const inB = await listNotifications(ctx(s.workspaceB, s.ownerB));
     expect(inB).toHaveLength(0);
     // Marking in B touches nothing in A.

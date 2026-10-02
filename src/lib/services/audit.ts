@@ -1,10 +1,13 @@
 import { and, desc, eq, gte, inArray, lt, lte, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog, type AuditLogEntry, type NewAuditLogEntry } from '@/lib/db/schema/audit';
+import type { AuditKind } from '@/lib/kinds/audit';
 import type { WorkspaceContext } from './context';
 
 export interface AuditEventInput {
-  kind: string;
+  /** A registered kind (src/lib/kinds/audit.ts): the audit logs show its
+   *  label, so an unregistered kind fails typecheck (DS-09). */
+  kind: AuditKind;
   entityType?: string | null;
   entityId?: string | bigint | number | null;
   payload?: Record<string, unknown>;

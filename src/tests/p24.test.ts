@@ -52,11 +52,11 @@ describe('listAuditAcrossWorkspaces', () => {
     const s = await setup();
     await recordAuditEvent(
       { workspaceId: s.workspaceA, userId: s.ownerA },
-      { kind: 'test.thing', entityType: 'thing', entityId: '1' },
+      { kind: 'contact.create', entityType: 'contact', entityId: '1' },
     );
     await recordAuditEvent(
       { workspaceId: s.workspaceB, userId: s.ownerA },
-      { kind: 'test.thing', entityType: 'thing', entityId: '2' },
+      { kind: 'contact.create', entityType: 'contact', entityId: '2' },
     );
     const all = await listAuditAcrossWorkspaces(
       platformCtx(s.superAdmin),
@@ -72,11 +72,11 @@ describe('listAuditAcrossWorkspaces', () => {
     const s = await setup();
     await recordAuditEvent(
       { workspaceId: s.workspaceA, userId: s.ownerA },
-      { kind: 'test.a' },
+      { kind: 'contact.create' },
     );
     await recordAuditEvent(
       { workspaceId: s.workspaceB, userId: s.ownerA },
-      { kind: 'test.b' },
+      { kind: 'contact.update' },
     );
     const onlyA = await listAuditAcrossWorkspaces(
       platformCtx(s.superAdmin),
@@ -89,17 +89,17 @@ describe('listAuditAcrossWorkspaces', () => {
     const s = await setup();
     await recordAuditEvent(
       { workspaceId: s.workspaceA, userId: s.ownerA },
-      { kind: 'kind.alpha' },
+      { kind: 'signature.create' },
     );
     await recordAuditEvent(
       { workspaceId: s.workspaceA, userId: s.ownerA },
-      { kind: 'kind.beta' },
+      { kind: 'signature.delete' },
     );
     const filtered = await listAuditAcrossWorkspaces(
       platformCtx(s.superAdmin),
-      { kind: 'kind.alpha' },
+      { kind: 'signature.create' },
     );
-    expect(filtered.every((e) => e.kind === 'kind.alpha')).toBe(true);
+    expect(filtered.every((e) => e.kind === 'signature.create')).toBe(true);
     expect(filtered.length).toBeGreaterThan(0);
   });
 
@@ -183,23 +183,23 @@ describe('distinctAuditKindsAcross', () => {
     const s = await setup();
     await recordAuditEvent(
       { workspaceId: s.workspaceA, userId: s.ownerA },
-      { kind: 'zeta.event' },
+      { kind: 'crm.push' },
     );
     await recordAuditEvent(
       { workspaceId: s.workspaceA, userId: s.ownerA },
-      { kind: 'alpha.event' },
+      { kind: 'contact.merge' },
     );
     await recordAuditEvent(
       { workspaceId: s.workspaceB, userId: s.ownerA },
-      { kind: 'alpha.event' },
+      { kind: 'contact.merge' },
     );
     const kinds = await distinctAuditKindsAcross(
       platformCtx(s.superAdmin),
     );
     const filtered = kinds.filter(
-      (k) => k === 'alpha.event' || k === 'zeta.event',
+      (k) => k === 'contact.merge' || k === 'crm.push',
     );
-    expect(filtered).toEqual(['alpha.event', 'zeta.event']);
+    expect(filtered).toEqual(['contact.merge', 'crm.push']);
   });
 
   it('rejects non-super-admin', async () => {

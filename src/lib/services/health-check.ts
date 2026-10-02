@@ -50,8 +50,13 @@ export class HealthCheckError extends Error {
   }
 }
 
+/** Finding severities, mildest first. DS-09: info reads neutral, warning
+ *  amber (src/lib/ui/tone.ts); there is no critical level yet. */
+export const HEALTH_FINDING_SEVERITIES = ['info', 'warning'] as const;
+export type HealthFindingSeverity = (typeof HEALTH_FINDING_SEVERITIES)[number];
+
 export interface HealthFinding {
-  severity: 'warning' | 'info';
+  severity: HealthFindingSeverity;
   code: string;
   message: string;
   href?: string;

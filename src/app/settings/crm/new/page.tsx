@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
-import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -56,10 +55,9 @@ export default async function NewCrmConnectionPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/settings/crm">CRM</Link> / New
         </p>
-        <SettingsNav />
         <h1>New CRM connection</h1>
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
 

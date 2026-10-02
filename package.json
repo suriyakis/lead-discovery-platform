@@ -23,7 +23,10 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:studio": "drizzle-kit studio",
-    "db:seed-demo": "tsx scripts/seed-demo.ts"
+    "db:seed-demo": "tsx scripts/seed-demo.ts",
+    "handbook:export": "tsx scripts/handbook-export.ts",
+    "brand:icons": "tsx scripts/brand-icons.ts",
+    "css:legacy-baseline": "tsx scripts/legacy-css-baseline.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.7.0",
@@ -58,6 +61,7 @@
     "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "axe-core": "4.11.4",
     "dotenv": "^16.4.7",
     "drizzle-kit": "^0.30.0",
     "eslint": "^9.18.0",

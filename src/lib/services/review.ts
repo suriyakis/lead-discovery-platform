@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import type { AuditKind } from '@/lib/kinds/audit';
 import { users } from '@/lib/db/schema/auth';
 import { sourceRecords, type SourceRecord } from '@/lib/db/schema/connectors';
 import { learningEvents, type OperatorVerdict } from '@/lib/db/schema/learning';
@@ -266,7 +267,7 @@ interface DecideInput {
   expectState?: ReviewItemState;
   autopilotProductIds?: readonly bigint[];
   /** One audit row for the whole call instead of one per item. */
-  bulkAudit?: { kind: string; entityType: string; payload: Record<string, unknown> };
+  bulkAudit?: { kind: AuditKind; entityType: string; payload: Record<string, unknown> };
   /** PC-11: extra fields on each item's audit row (autopilot: the run and
    *  the products it approved the item for). */
   auditPayload?: Record<string, unknown>;
@@ -664,7 +665,7 @@ const BULK_LIMIT = 500;
 export interface BulkArchiveOptions {
   decisionKey?: string | null;
   /** Audit row for the call (default: review.bulk_archive). */
-  audit?: { kind: string; entityType: string; payload: Record<string, unknown> };
+  audit?: { kind: AuditKind; entityType: string; payload: Record<string, unknown> };
   /** Shared reason chips (learning-chips.ts). A generalisable chip makes
    *  learning.process extract one rule per product-group (KL-03). */
   reasonCodes?: readonly string[];

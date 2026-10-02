@@ -1,41 +1,80 @@
-// Sidebar count badges. One small query per category. Returned values
-// are non-negative integers; missing tables return 0 so a partially-
-// migrated workspace doesn't crash the layout. Best-effort: errors
-// degrade to 0 with a console warning.
+// Navigation badge numbers (Sidebar, account menu). One small query per
+// number; the registry's count policy (src/lib/nav/registry.ts,
+// resolveNavCount) decides which ones show and in which tone. Returned
+// values are non-negative integers. Best-effort: an error degrades every
+// number to 0 with a console warning, so a partially migrated workspace
+// never breaks the layout. MOB-02 later turns this into a projection of
+// getAttentionSummary(); keep the keys in step with NavCountKey.
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
+import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
 import { reviewItems } from '@/lib/db/schema/review';
-import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { supportThreads } from '@/lib/db/schema/support';
+import type { NavCountKey, NavCountValues, NavSignalKey } from '@/lib/nav/registry';
 import type { WorkspaceContext } from './context';
 
-export interface NavCounts {
-  /** Drafts awaiting human review (status in draft / needs_edit). */
-  draftsPending: number;
-  /** Review items the operator hasn't decided on yet. */
+export interface NavCounts extends NavCountValues {
+  /** Review items nobody has decided on yet (new + needs_review). */
   reviewPending: number;
-  /** Pipeline leads not closed. */
-  leadsOpen: number;
-  /** Support threads with an unread admin reply. */
+  /** needs_review only: the Review badge turns amber only when > 0. */
+  reviewNeedsReview: number;
+  /** Drafts awaiting a person (status draft / needs_edit). */
+  draftsPending: number;
+  /** Follow-ups composed and waiting for approval. */
+  followUpsAwaiting: number;
+  /** The Outreach badge: drafts + follow-ups awaiting approval. */
+  outreachPending: number;
+  /** Support threads with an unread reply from the platform team. */
   supportUnread: number;
+  /** Gated until I084 (registry): not computed, never shown. */
+  repliesUnhandled: null;
 }
 
-const ZERO: NavCounts = {
-  draftsPending: 0,
+export const ZERO_NAV_COUNTS: NavCounts = {
   reviewPending: 0,
-  leadsOpen: 0,
+  reviewNeedsReview: 0,
+  draftsPending: 0,
+  followUpsAwaiting: 0,
+  outreachPending: 0,
   supportUnread: 0,
+  repliesUnhandled: null,
+};
+
+/**
+ * Compile-time guard: every tenant count key and gate signal the registry
+ * can ask for is produced here (adminSupportUnread is platform-wide;
+ * AppShell adds it for super-admins).
+ */
+export const NAV_COUNT_KEYS_PRODUCED: Record<
+  Exclude<NavCountKey, 'adminSupportUnread'> | NavSignalKey,
+  true
+> = {
+  reviewPending: true,
+  reviewNeedsReview: true,
+  outreachPending: true,
+  repliesUnhandled: true,
+  supportUnread: true,
 };
 
 export async function getNavCounts(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<NavCounts> {
   try {
-    const [draftsRow, reviewRow, leadsRow, supportRow] = await Promise.all([
+    const [reviewRows, draftsRow, followUpsRow, supportRow] = await Promise.all([
       db
-        .select({ n: sql<number>`count(*)::int` })
+        .select({ state: reviewItems.state, n: count() })
+        .from(reviewItems)
+        .where(
+          and(
+            eq(reviewItems.workspaceId, ctx.workspaceId),
+            inArray(reviewItems.state, ['new', 'needs_review']),
+          ),
+        )
+        .groupBy(reviewItems.state),
+      db
+        .select({ n: count() })
         .from(outreachDrafts)
         .where(
           and(
@@ -44,25 +83,16 @@ export async function getNavCounts(
           ),
         ),
       db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(reviewItems)
+        .select({ n: count() })
+        .from(outreachFollowUps)
         .where(
           and(
-            eq(reviewItems.workspaceId, ctx.workspaceId),
-            inArray(reviewItems.state, ['new', 'needs_review']),
+            eq(outreachFollowUps.workspaceId, ctx.workspaceId),
+            eq(outreachFollowUps.status, 'awaiting_approval'),
           ),
         ),
       db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(qualifiedLeads)
-        .where(
-          and(
-            eq(qualifiedLeads.workspaceId, ctx.workspaceId),
-            sql`${qualifiedLeads.state} <> 'closed'`,
-          ),
-        ),
-      db
-        .select({ n: sql<number>`count(*)::int` })
+        .select({ n: count() })
         .from(supportThreads)
         .where(
           and(
@@ -71,14 +101,21 @@ export async function getNavCounts(
           ),
         ),
     ]);
+    const byState = (state: string) =>
+      Number(reviewRows.find((r) => r.state === state)?.n ?? 0);
+    const draftsPending = Number(draftsRow[0]?.n ?? 0);
+    const followUpsAwaiting = Number(followUpsRow[0]?.n ?? 0);
     return {
-      draftsPending: draftsRow[0]?.n ?? 0,
-      reviewPending: reviewRow[0]?.n ?? 0,
-      leadsOpen: leadsRow[0]?.n ?? 0,
-      supportUnread: supportRow[0]?.n ?? 0,
+      reviewPending: byState('new') + byState('needs_review'),
+      reviewNeedsReview: byState('needs_review'),
+      draftsPending,
+      followUpsAwaiting,
+      outreachPending: draftsPending + followUpsAwaiting,
+      supportUnread: Number(supportRow[0]?.n ?? 0),
+      repliesUnhandled: null,
     };
   } catch (err) {
     console.warn('[nav-counts] degraded to zero:', err);
-    return ZERO;
+    return ZERO_NAV_COUNTS;
   }
 }

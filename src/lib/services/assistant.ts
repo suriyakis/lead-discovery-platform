@@ -25,7 +25,7 @@ import { productProfiles } from '@/lib/db/schema/products';
 import { reviewItems } from '@/lib/db/schema/review';
 import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { AIOutputError, getAIProviderForCtx, type AIGenOptions } from '@/lib/ai';
-import { PLATFORM_HANDBOOK } from '@/lib/assistant/handbook';
+import { HANDBOOK_VERSION, PLATFORM_HANDBOOK } from '@/lib/assistant/handbook';
 import { BRAND_NAME } from '@/lib/brand';
 import { getAutomationState } from './automation-policy';
 import { canAdminWorkspace, isSuperAdmin, type WorkspaceContext } from './context';
@@ -58,6 +58,8 @@ export interface AssistantAnswer {
   fallbackReason?: 'wallet_empty' | 'refusal';
   /** Codes of the rule findings the deterministic answer lists. */
   findings?: string[];
+  /** Model answers: the handbook version the model read (AP-03). */
+  handbookVersion?: string;
 }
 
 const MAX_QUESTION_LEN = 2000;
@@ -279,7 +281,7 @@ export async function askAssistant(
   if (!text) {
     throw new AssistantError(EMPTY_ANSWER_MESSAGE, 'empty_answer', { retryable: true });
   }
-  return { answer: text, source: 'ai' };
+  return { answer: text, source: 'ai', handbookVersion: HANDBOOK_VERSION };
 }
 
 /**

@@ -207,8 +207,7 @@ export default async function AdminUserDetail({
   return (
     <div className="dashboard-wrap">
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
-        <Link href="/admin">Admin</Link> /{' '}
+        <Link href="/admin">Platform console</Link> /{' '}
         <Link href="/admin/users">Users</Link> / {user.name ?? user.email}
       </p>
       <h1 style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>

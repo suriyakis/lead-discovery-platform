@@ -1,5 +1,5 @@
 // The one screen for a signed-in user who belongs to no workspace
-// (audit I117, deliverable ia:F-07). /dashboard renders it, and
+// (audit I117, deliverable ia:F-07). /today renders it, and
 // /onboarding and the settings pages send such users there. It replaces
 // the old dashboard card, which told them to check OWNER_EMAIL in the
 // server config. (The module pages' inline "You don't belong to a
@@ -16,6 +16,7 @@
 import Link from 'next/link';
 import { BrandHeader } from './BrandHeader';
 import { signOutAction } from '@/lib/auth-actions';
+import { BRAND_NAME } from '@/lib/brand';
 import {
   WORKSPACE_NAME_MAX,
   type WorkspaceStartState,
@@ -105,7 +106,7 @@ export function NoWorkspaceScreen({
             <span className="profile-card-eyebrow">Join your team</span>
             <h2 className="profile-card-title">Ask your admin to invite you</h2>
             <p className="profile-card-meta">
-              If your team already uses lead/sonar, ask one of its admins to
+              If your team already uses {BRAND_NAME}, ask one of its admins to
               add you under Settings › Members. They will need your account
               ID:
             </p>
@@ -114,7 +115,7 @@ export function NoWorkspaceScreen({
             </p>
             <p className="profile-card-meta">
               You are signed in as {email}. Once they have added you,{' '}
-              <Link href="/dashboard">reload this page</Link>.
+              <Link href="/today">reload this page</Link>.
             </p>
           </article>
         </section>

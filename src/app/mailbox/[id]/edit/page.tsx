@@ -113,7 +113,7 @@ export default async function EditMailboxPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/mailbox">Mailbox</Link> /{' '}
           <Link href={`/mailbox/${id}`}>{mailbox.name}</Link> / Edit
         </p>

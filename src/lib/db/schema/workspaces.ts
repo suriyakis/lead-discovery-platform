@@ -344,3 +344,5 @@ export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type NewWorkspaceMember = typeof workspaceMembers.$inferInsert;
 export type WorkspaceMemberRole = (typeof workspaceMemberRole.enumValues)[number];
 export type WorkspaceStatus = (typeof workspaceStatus.enumValues)[number];
+export type OnboardingStatus = (typeof onboardingStatus.enumValues)[number];
+export type SubscriptionStatus = (typeof subscriptionStatus.enumValues)[number];

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { Badge, StatusBadge } from '@/components/Badge';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -40,14 +41,12 @@ import {
   toUtcInputValue,
   type QueueView,
 } from './forms';
+import { outreachQueueStatus } from '@/lib/db/schema/outreach';
+import { labelFor, OUTREACH_QUEUE_STATUS_LABEL } from '@/lib/ui/labels';
 
+/** One tab per queue status, labelled from the one vocabulary (DS-09). */
 const STATUS_TABS: ReadonlyArray<{ key: QueueView; label: string }> = [
-  { key: 'queued', label: 'Queued' },
-  { key: 'sending', label: 'Sending' },
-  { key: 'sent', label: 'Sent' },
-  { key: 'failed', label: 'Failed' },
-  { key: 'skipped', label: 'Skipped' },
-  { key: 'cancelled', label: 'Cancelled' },
+  ...outreachQueueStatus.enumValues.map((key) => ({ key, label: OUTREACH_QUEUE_STATUS_LABEL[key] })),
   { key: 'all', label: 'All' },
 ];
 
@@ -87,7 +86,7 @@ export default async function QueuePage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/mailbox">Mailbox</Link> / Queue
       </p>
       <h1>Send queue</h1>
@@ -96,10 +95,11 @@ export default async function QueuePage({
 
       {/* PC-05: the workspace pause replaces the "Emergency pause (kill
           switch)" checkbox that sat in the settings form below (it wrote
-          a separate send-queue flag and only admins could reach it). */}
+          a separate send-queue flag and only admins could reach it). The
+          sidebar's interim Emergency stop (ia:F-10) links to it (#pause). */}
       <AutomationPauseControl overview={pauseOverview} returnTo="/mailbox/queue" />
 
-      <section>
+      <section id="send-settings">
         <h2>Send settings</h2>
         {isAdmin ? (
           <form action={saveSendSettingsAction} className="edit-draft-form">
@@ -213,7 +213,10 @@ export default async function QueuePage({
             </Link>
           ))}
         </div>
-        <h2>{statusKey === 'all' ? 'All entries' : `${statusKey} entries`} ({entries.length})</h2>
+        <h2>
+          {statusKey === 'all' ? 'All entries' : OUTREACH_QUEUE_STATUS_LABEL[statusKey]}{' '}
+          ({entries.length})
+        </h2>
         <p className="muted small">All times are in UTC.</p>
         {statusKey === 'failed' || statusKey === 'skipped' || statusKey === 'all' ? (
           <p className="muted small">
@@ -240,20 +243,17 @@ export default async function QueuePage({
                 <li key={e.id.toString()}>
                   <div className="lead-row">
                     <strong>{e.subject}</strong>
-                    <span className="badge">{e.status}</span>
+                    <StatusBadge set="outreach_queue_status" value={e.status} />
                     {kind ? (
-                      <span
-                        className={e.status === 'failed' ? 'badge badge-bad' : 'badge badge-warn'}
-                        title={kind.title}
-                      >
+                      <Badge tone={e.status === 'failed' ? 'danger' : 'attention'} title={kind.title}>
                         {kind.label}
-                      </span>
+                      </Badge>
                     ) : null}
                     <span className="muted">{e.toAddresses.join(', ')}</span>
                   </div>
                   <div className="lead-meta">
                     <span>scheduled {formatUtc(e.scheduledSendAt)}</span>
-                    <span>delay: {e.delayMode}</span>
+                    <span>delay: {labelFor('send_delay_mode', e.delayMode).toLowerCase()}</span>
                     <span>attempts: {e.attemptCount}</span>
                     {backoff ? <span>{backoff}</span> : null}
                     {e.status === 'sending' && e.claimedAt ? (

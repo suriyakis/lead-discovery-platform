@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
-import { SettingsNav } from '@/components/SettingsNav';
+import { StatusBadge } from '@/components/Badge';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -18,7 +18,9 @@ import {
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { addMemberAction, changeMemberRoleAction, removeMemberAction } from './actions';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { Field, Input, Select } from '@/components/ui';
 import { removeMemberConfirm } from '@/lib/confirm-copy';
+import { WORKSPACE_MEMBER_ROLE_DESCRIPTION, WORKSPACE_MEMBER_ROLE_LABEL } from '@/lib/ui/labels';
 
 export default async function MembersPage({
   searchParams,
@@ -36,7 +38,7 @@ export default async function MembersPage({
     if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -46,7 +48,6 @@ export default async function MembersPage({
 
         isSuperAdmin={session.user.role === 'super_admin'}
       >
-        <SettingsNav />
         <h1>Members</h1>
         <p className="form-error">Workspace admin access required.</p>
       </AppShell>
@@ -64,15 +65,15 @@ export default async function MembersPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/settings/integrations">Settings</Link> / Members
       </p>
-      <SettingsNav />
       <h1>Workspace members</h1>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <section>
+      {/* Cmd-K's "Add a teammate" action lands here. */}
+      <section id="add-member">
         <h2>Add existing user by id</h2>
         <p className="muted">
           For most cases use{' '}
@@ -84,20 +85,18 @@ export default async function MembersPage({
           <p className="muted">Only a workspace owner can grant the owner role.</p>
         )}
         <form action={addMemberAction} className="inline-form">
-          <label>
-            <span>User id</span>
-            <input type="text" name="userId" required maxLength={120} />
-          </label>
-          <label>
-            <span>Role</span>
-            <select name="role" defaultValue="member">
+          <Field label="User id">
+            <Input name="userId" required maxLength={120} autoComplete="off" />
+          </Field>
+          <Field label="Role">
+            <Select name="role" defaultValue="member">
               {roles.map((r) => (
-                <option key={r} value={r}>
-                  {r}
+                <option key={r} value={r} title={WORKSPACE_MEMBER_ROLE_DESCRIPTION[r]}>
+                  {WORKSPACE_MEMBER_ROLE_LABEL[r]}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Field>
           <button type="submit" className="primary-btn">
             Add
           </button>
@@ -112,7 +111,7 @@ export default async function MembersPage({
               <div className="lead-row">
                 <strong>{user.name ?? user.email}</strong>
                 <span className="muted">{user.email}</span>
-                <span className="badge">{member.role}</span>
+                <StatusBadge set="workspace_member_role" value={member.role} />
               </div>
               {user.id === session.user.id ? (
                 <p className="muted">— this is you</p>
@@ -122,16 +121,15 @@ export default async function MembersPage({
                 <div className="action-row" style={{ marginTop: '0.5rem' }}>
                   <form action={changeMemberRoleAction} className="inline-form">
                     <input type="hidden" name="userId" value={user.id} />
-                    <label>
-                      <span>Role</span>
-                      <select name="role" defaultValue={member.role}>
+                    <Field label="Role" layout="inline">
+                      <Select name="role" defaultValue={member.role}>
                         {roles.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
+                          <option key={r} value={r} title={WORKSPACE_MEMBER_ROLE_DESCRIPTION[r]}>
+                            {WORKSPACE_MEMBER_ROLE_LABEL[r]}
                           </option>
                         ))}
-                      </select>
-                    </label>
+                      </Select>
+                    </Field>
                     <button type="submit">Update</button>
                   </form>
                   <form action={removeMemberAction}>

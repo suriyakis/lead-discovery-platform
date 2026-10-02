@@ -1,14 +1,15 @@
 // Branded 404 for unmatched URLs and every notFound() call in the app.
 // Stays static (no session lookup) so it renders even when auth or the
-// database is having a bad day; /dashboard sends signed-out visitors to
+// database is having a bad day; /today sends signed-out visitors to
 // the sign-in page on its own.
 
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { BrandHeader } from '@/components/BrandHeader';
+import { BRAND_NAME } from '@/lib/brand';
 
 export const metadata: Metadata = {
-  title: 'Page not found · Leadsonar',
+  title: `Page not found · ${BRAND_NAME}`,
 };
 
 export default function NotFound() {
@@ -24,8 +25,8 @@ export default function NotFound() {
             belongs to a workspace you&apos;re not signed in to.
           </p>
           <div className="status-actions">
-            <Link href="/dashboard" className="primary-btn">
-              Go to your dashboard
+            <Link href="/today" className="primary-btn">
+              Go to Today
             </Link>
             <Link href="/support">Contact support</Link>
           </div>

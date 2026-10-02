@@ -45,8 +45,8 @@ export const auditLog = pgTable(
 );
 
 // Append-only usage / cost tracking. Per workspace, per provider.
-// `units` is kind-specific: tokens for ai.generate_text, queries for
-// search.query, bytes for storage.bytes, etc.
+// `units` is kind-specific: tokens for ai.* and embedding.embed, queries
+// for search.query, pages for ocr.pdf. Kinds: src/lib/kinds/usage.ts.
 export const usageLog = pgTable(
   'usage_log',
   {

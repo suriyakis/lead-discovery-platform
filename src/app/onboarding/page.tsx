@@ -1,5 +1,7 @@
 import Link from 'next/link';
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { appUrl } from '@/lib/app-origin';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   ArrowRight,
@@ -67,7 +69,7 @@ export default async function OnboardingPage({
     if (err instanceof AccountInactiveError) redirect('/pending');
     // No workspace yet: the dashboard is the screen that lets them create
     // one or explains how to be added (ia:F-07).
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -84,7 +86,7 @@ export default async function OnboardingPage({
     'use server';
     const c = await getWorkspaceContext();
     await markOnboardingComplete(c);
-    redirect('/dashboard');
+    redirect('/today');
   }
 
   async function chooseSetupMode(formData: FormData) {
@@ -109,11 +111,13 @@ export default async function OnboardingPage({
     if (planId !== 'starter' && planId !== 'pro') {
       redirect(`/onboarding?msg=${encodeURIComponent('Unknown plan id.')}`);
     }
+    // Stripe returns to this deployment, not to production (I155).
+    const requestHeaders = await headers();
     try {
       const result = await createCheckoutSession(c, {
         planId,
-        successUrl: 'https://discover.nulife.pl/onboarding?stripe=success',
-        cancelUrl: 'https://discover.nulife.pl/onboarding?stripe=canceled',
+        successUrl: appUrl('/onboarding?stripe=success', { headers: requestHeaders }),
+        cancelUrl: appUrl('/onboarding?stripe=canceled', { headers: requestHeaders }),
       });
       redirect(result.url);
     } catch (err) {
@@ -255,7 +259,7 @@ export default async function OnboardingPage({
           <section style={{ marginTop: '2rem' }}>
             <p className="muted small">
               Only workspace admins can finish the wizard.{' '}
-              <Link href="/dashboard">Skip to dashboard.</Link>
+              <Link href="/today">Skip to Today.</Link>
             </p>
           </section>
         )}

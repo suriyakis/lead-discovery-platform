@@ -94,7 +94,7 @@ export default async function NewMailboxPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/mailbox">Mailbox</Link> / New
         </p>
         <h1>New mailbox</h1>

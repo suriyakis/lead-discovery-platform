@@ -38,28 +38,30 @@ export interface TokenPack {
  *  Sonar-themed names (Leadsonar brand) — deliberately nothing like
  *  the Starter/Pro subscription plans, so the one-time-top-up vs
  *  monthly-allowance split stays unmistakable. */
-export function tokenPacks(): TokenPack[] {
+export function tokenPacks(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): TokenPack[] {
   return [
     {
       id: 'pack_s',
       name: 'Ping',
       tokens: 1_000,
-      priceId: process.env.STRIPE_PRICE_TOKENS_S ?? null,
-      display: process.env.STRIPE_PRICE_TOKENS_S_DISPLAY ?? '€10',
+      priceId: env.STRIPE_PRICE_TOKENS_S ?? null,
+      display: env.STRIPE_PRICE_TOKENS_S_DISPLAY ?? '€10',
     },
     {
       id: 'pack_m',
       name: 'Pulse',
       tokens: 5_500,
-      priceId: process.env.STRIPE_PRICE_TOKENS_M ?? null,
-      display: process.env.STRIPE_PRICE_TOKENS_M_DISPLAY ?? '€49',
+      priceId: env.STRIPE_PRICE_TOKENS_M ?? null,
+      display: env.STRIPE_PRICE_TOKENS_M_DISPLAY ?? '€49',
     },
     {
       id: 'pack_l',
       name: 'Deep Dive',
       tokens: 24_000,
-      priceId: process.env.STRIPE_PRICE_TOKENS_L ?? null,
-      display: process.env.STRIPE_PRICE_TOKENS_L_DISPLAY ?? '€199',
+      priceId: env.STRIPE_PRICE_TOKENS_L ?? null,
+      display: env.STRIPE_PRICE_TOKENS_L_DISPLAY ?? '€199',
     },
   ];
 }

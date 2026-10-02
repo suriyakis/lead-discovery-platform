@@ -1,0 +1,19 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* EmailPreview (DS-10): the sandboxed frame an email's HTML renders in.
+ * The frame is as tall as its content (EmailPreview.tsx measures it into
+ * --email-preview-h), never shorter than the old preview box. Inside it
+ * the document is a light mail-client canvas; none of this stylesheet
+ * reaches it. */
+
+@layer components {
+  .frame {
+    display: block;
+    width: 100%;
+    min-height: calc(var(--space-12) * 2);
+    height: var(--email-preview-h, calc(var(--space-12) * 2));
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color-scheme: light;
+  }
+}

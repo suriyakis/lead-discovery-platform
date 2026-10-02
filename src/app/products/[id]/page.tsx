@@ -193,7 +193,7 @@ export default async function EditProductPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/products">Products</Link> / {profile.name}
         </p>
         <h1>{profile.name}</h1>

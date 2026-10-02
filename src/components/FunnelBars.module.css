@@ -1,0 +1,102 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* FunnelBars (DS-09): one hue, stepped down the --seq ramp. The fill
+ * length is data (--v, a percentage, set inline as a custom property);
+ * every colour and size is a token. */
+
+@layer components {
+  .funnel {
+    display: grid;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 9rem) minmax(0, 1fr) 3em;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    text-decoration: none;
+  }
+
+  a.row:hover {
+    background: var(--surface-raised);
+    text-decoration: none;
+  }
+
+  a.row:focus-visible {
+    outline: var(--focus-outline);
+    outline-offset: 2px;
+  }
+
+  .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+  }
+
+  .track {
+    position: relative;
+    display: block;
+    height: 10px;
+    border-radius: var(--radius-full);
+    background: var(--well);
+    overflow: hidden;
+  }
+
+  .fill {
+    --step-colour: var(--seq-1);
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: calc(var(--v, 0) * 1%);
+    border-radius: inherit;
+    background: var(--step-colour);
+    transition: width var(--dur-3) var(--ease-out);
+  }
+
+  .fill[data-step='2'] {
+    --step-colour: var(--seq-2);
+  }
+
+  .fill[data-step='3'] {
+    --step-colour: var(--seq-3);
+  }
+
+  .fill[data-step='4'] {
+    --step-colour: var(--seq-4);
+  }
+
+  .fill[data-step='5'] {
+    --step-colour: var(--seq-5);
+  }
+
+  .fill[data-step='6'] {
+    --step-colour: var(--seq-6);
+  }
+
+  .fill[data-step='7'] {
+    --step-colour: var(--seq-7);
+  }
+
+  .count {
+    text-align: right;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-numeral);
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+
+  @media (min-width: 640px) {
+    .row {
+      grid-template-columns: 10rem minmax(0, 1fr) 3em;
+    }
+  }
+}

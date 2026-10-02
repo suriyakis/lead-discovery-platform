@@ -1,0 +1,36 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* Today › Needs you (was /inbox; DS-05, moved out of legacy.css in the
+ * DS-06 review): a tab's icon, label and count on one line, and the empty
+ * state of a tab with nothing waiting. Tokens only. */
+
+@layer components {
+  .tabLabel {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1_5);
+  }
+
+  .empty {
+    margin-top: var(--space-2);
+    padding: calc(var(--space-6) + var(--space-1)) var(--space-6);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    text-align: center;
+  }
+
+  .emptyTitle {
+    margin: 0;
+    font-weight: var(--weight-numeral);
+  }
+
+  .emptySub {
+    margin: var(--space-1_5) 0 0;
+    font-size: var(--text-sm);
+  }
+
+  .emptyCta {
+    margin: var(--space-3) 0 0;
+  }
+}

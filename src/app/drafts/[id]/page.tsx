@@ -193,7 +193,7 @@ export default async function DraftDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/drafts">Drafts</Link> / Draft {draft.id.toString()}
         </p>
         <h1>{draft.subject ?? `Draft ${draft.id}`}</h1>
@@ -573,11 +573,7 @@ async function ThreadContextSection({
           <li
             key={m.id.toString()}
             className={m.direction === 'inbound' ? 'msg-inbound' : 'msg-outbound'}
-            style={{
-              padding: '0.5rem 0.75rem',
-              marginBottom: '0.5rem',
-              borderLeft: `3px solid ${m.direction === 'inbound' ? 'oklch(0.75 0.15 220)' : 'oklch(0.85 0.05 100)'}`,
-            }}
+            style={{ padding: '0.5rem 0.75rem', marginBottom: '0.5rem' }}
           >
             <p className="muted" style={{ margin: 0 }}>
               <strong>{m.direction === 'inbound' ? '← ' : '→ '}</strong>

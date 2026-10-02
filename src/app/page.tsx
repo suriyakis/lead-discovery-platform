@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { BrandHeader } from '@/components/BrandHeader';
 import { auth, signIn } from '@/lib/auth';
+import { BRAND_NAME } from '@/lib/brand';
 import { teamLoginAction } from '@/lib/auth-actions';
 
 interface ModuleTile {
@@ -36,7 +37,7 @@ const LANDING_MODULES: ReadonlyArray<ModuleTile> = [
   {
     title: 'Qualify',
     blurb:
-      'A deterministic rule engine scores each record per product profile — keywords, sectors, lessons. Every verdict has reasons, evidence, and confidence.',
+      'AI scores each record per product profile — keywords, sectors, lessons — with deterministic rules as the fallback. Every verdict has reasons, evidence, and confidence.',
     icon: ListChecks,
     tone: 'amber',
   },
@@ -88,7 +89,7 @@ export default async function Home({
 }) {
   const session = await auth();
   if (session?.user) {
-    redirect('/dashboard');
+    redirect('/today');
   }
   const sp = await searchParams;
   const errorMsg =
@@ -116,7 +117,7 @@ export default async function Home({
               Find the right opportunities for the products you sell.
             </h1>
             <p className="hero-lede">
-              lead/sonar connects search, directories, tenders, company
+              {BRAND_NAME} connects search, directories, tenders, company
               websites, documents, and team feedback into a single workspace
               for discovering and qualifying B2B leads — with evidence,
               traceability, and a learning layer.
@@ -126,7 +127,7 @@ export default async function Home({
               <form
                 action={async () => {
                   'use server';
-                  await signIn('google', { redirectTo: '/dashboard' });
+                  await signIn('google', { redirectTo: '/today' });
                 }}
               >
                 <button type="submit" className="hero-cta-primary">

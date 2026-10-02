@@ -1,0 +1,197 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* ==========================================================================
+   Utilities (DS-06): the last layer, so a utility beats any component or
+   legacy rule without !important. Layout helpers, text helpers and the
+   reduced-motion switch. Tokens only.
+
+   `.muted` is not defined here: it is a legacy class on ~470 elements
+   with the same colour (--brand-muted is --fg-muted), and a top-layer copy
+   would override every contextual legacy colour on those elements. Use
+   `.subtle` or a component token until legacy retires it.
+   ========================================================================== */
+
+@layer utilities {
+  dialog:not([open]),
+  [hidden] {
+    display: none;
+  }
+
+  /* ---- Layout ---- */
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap, var(--space-4));
+    min-width: 0;
+  }
+
+  .cluster {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--gap, var(--space-2));
+    min-width: 0;
+  }
+
+  /* style="--min: 360px" on the element changes the column floor. */
+  .grid-auto {
+    --min: 280px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--min)), 1fr));
+    gap: var(--gap, var(--space-4));
+  }
+
+  [data-gap='1'] {
+    --gap: var(--space-1);
+  }
+
+  [data-gap='2'] {
+    --gap: var(--space-2);
+  }
+
+  [data-gap='3'] {
+    --gap: var(--space-3);
+  }
+
+  [data-gap='4'] {
+    --gap: var(--space-4);
+  }
+
+  [data-gap='6'] {
+    --gap: var(--space-6);
+  }
+
+  [data-gap='8'] {
+    --gap: var(--space-8);
+  }
+
+  .spacer {
+    flex: 1 1 0;
+  }
+
+  /* ---- Text ---- */
+  .mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .truncate {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wrap-anywhere {
+    overflow-wrap: anywhere;
+  }
+
+  .subtle {
+    color: var(--fg-subtle);
+  }
+
+  .t-label {
+    font: var(--weight-medium) var(--text-label) / var(--leading-label) var(--font-mono);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .t-xs {
+    font-size: var(--text-xs);
+    line-height: var(--leading-xs);
+  }
+
+  .t-sm {
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+  }
+
+  .t-md {
+    font-size: var(--text-md);
+    line-height: var(--leading-md);
+  }
+
+  .t-lg {
+    font-size: var(--text-lg);
+    line-height: var(--leading-lg);
+  }
+
+  .t-xl {
+    font-size: var(--text-xl);
+    line-height: var(--leading-xl);
+    letter-spacing: var(--tracking-tight);
+  }
+
+  .t-2xl {
+    font-size: var(--text-2xl);
+    line-height: var(--leading-2xl);
+    letter-spacing: var(--tracking-tight);
+  }
+
+  .t-num {
+    font-weight: var(--weight-numeral);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .medium {
+    font-weight: var(--weight-medium);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ---- Visibility by breakpoint (min-width only) ---- */
+  .hide-sm,
+  .hide-md {
+    display: none;
+  }
+
+  @media (min-width: 640px) {
+    .hide-sm {
+      display: revert-layer;
+    }
+
+    .only-sm {
+      display: none;
+    }
+  }
+
+  @media (min-width: 900px) {
+    .hide-md {
+      display: revert-layer;
+    }
+
+    .only-md {
+      display: none;
+    }
+  }
+
+  /* ---- Reduced motion ----
+     Users who ask the OS for less motion get no animation (the pulsing
+     hero dot, spinners), no movement on hover, and only short fades. It
+     lives in the top layer, so it beats every legacy and component rule
+     without !important (I177). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation: none;
+      transition-property: opacity;
+      transition-duration: var(--dur-1);
+      scroll-behavior: auto;
+    }
+  }
+}

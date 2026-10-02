@@ -1,9 +1,13 @@
 'use client';
 
-// P61-26: vibrant contacts list with selection-aware toolbar, bulk
-// archive / unarchive / tag, gradient initials avatars, tag pills.
-// Mirrors the CommunicationFolderView pattern: server owns the data,
-// this component owns the selection state.
+// P61-26: contacts list with selection-aware toolbar, bulk archive /
+// unarchive / tag, initials avatars and tag chips. Mirrors the
+// CommunicationFolderView pattern: server owns the data, this component
+// owns the selection state.
+//
+// DS-09: no hashed hues. Avatars are neutral initials and tags are neutral
+// <Tag> chips (a tag may carry one of six fixed hues once users can pick
+// one); colour is reserved for meaning.
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -14,6 +18,8 @@ import {
   TagsIcon,
   Trash2,
 } from 'lucide-react';
+import { StatusBadge, Tag } from '@/components/Badge';
+import styles from './ContactsListView.module.css';
 
 export interface ContactRow {
   id: string;
@@ -183,7 +189,6 @@ function ContactRowItem({
 }) {
   const display = row.name?.trim() || row.email;
   const initials = computeInitials(row.name, row.email);
-  const avatarGradient = gradientForKey(row.email);
   return (
     <li
       className={`contact-card${checked ? ' is-checked' : ''}${row.status === 'archived' ? ' is-archived' : ''}`}
@@ -198,7 +203,7 @@ function ContactRowItem({
           aria-label={`Select ${display}`}
         />
       </label>
-      <div className="contact-avatar" style={{ background: avatarGradient }}>
+      <div className={`contact-avatar ${styles.avatar}`} aria-hidden="true">
         {initials}
       </div>
       <div className="contact-card-main">
@@ -210,7 +215,7 @@ function ContactRowItem({
             <span className="contact-card-role">{row.role}</span>
           ) : null}
           {row.status === 'archived' ? (
-            <span className="badge badge-bad">archived</span>
+            <StatusBadge set="contact_status" value="archived" />
           ) : null}
         </div>
         <div className="contact-card-meta">
@@ -224,13 +229,7 @@ function ContactRowItem({
         {row.tags.length > 0 ? (
           <div className="contact-card-tags">
             {row.tags.map((t) => (
-              <span
-                key={t}
-                className="contact-tag"
-                style={{ background: tagColor(t) }}
-              >
-                {t}
-              </span>
+              <Tag key={t}>{t}</Tag>
             ))}
           </div>
         ) : null}
@@ -257,43 +256,4 @@ function computeInitials(name: string | null, email: string): string {
   if (parts.length === 0) return '?';
   if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
   return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
-}
-
-function hashString(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h * 31 + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
-
-const AVATAR_PALETTE = [
-  ['oklch(0.72 0.17 240)', 'oklch(0.55 0.18 280)'],
-  ['oklch(0.72 0.17 200)', 'oklch(0.55 0.18 160)'],
-  ['oklch(0.78 0.16 100)', 'oklch(0.6 0.17 60)'],
-  ['oklch(0.75 0.18 25)', 'oklch(0.55 0.18 350)'],
-  ['oklch(0.75 0.16 320)', 'oklch(0.55 0.17 260)'],
-  ['oklch(0.78 0.15 140)', 'oklch(0.55 0.17 190)'],
-  ['oklch(0.78 0.16 75)', 'oklch(0.6 0.17 30)'],
-  ['oklch(0.75 0.17 290)', 'oklch(0.55 0.17 250)'],
-];
-
-function gradientForKey(key: string): string {
-  const idx = hashString(key) % AVATAR_PALETTE.length;
-  const [a, b] = AVATAR_PALETTE[idx]!;
-  return `linear-gradient(135deg, ${a} 0%, ${b} 100%)`;
-}
-
-const TAG_PALETTE = [
-  'color-mix(in oklab, oklch(0.72 0.17 240) 28%, var(--brand-input))',
-  'color-mix(in oklab, oklch(0.72 0.17 160) 28%, var(--brand-input))',
-  'color-mix(in oklab, oklch(0.78 0.16 60) 28%, var(--brand-input))',
-  'color-mix(in oklab, oklch(0.75 0.18 25) 28%, var(--brand-input))',
-  'color-mix(in oklab, oklch(0.75 0.16 320) 28%, var(--brand-input))',
-  'color-mix(in oklab, oklch(0.78 0.15 140) 28%, var(--brand-input))',
-];
-
-function tagColor(tag: string): string {
-  const idx = hashString(tag) % TAG_PALETTE.length;
-  return TAG_PALETTE[idx]!;
 }

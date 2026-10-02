@@ -18,6 +18,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { cx } from '@/lib/ui/cx';
+import styles from './autopilot.module.css';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -249,7 +251,7 @@ export default async function AutopilotPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> / Autopilot
+        <Link href="/today">Today</Link> / Autopilot
       </p>
       <h1>Autopilot</h1>
       <p className="muted">
@@ -344,7 +346,7 @@ function MasterStrip({
 }>) {
   return (
     <section>
-      <div className="autopilot-master-strip">
+      <div className={cx('autopilot-master-strip', styles.masterStrip)}>
         <strong>Master state:</strong>
         <span
           className={
@@ -379,12 +381,12 @@ function AutonomousFlow({
       <ol className="autopilot-flow">
         {steps.map((s, idx) => (
           <li key={s.key} data-flow-step={s.key} data-flow-status={s.status}>
-            <div className={`flow-step flow-step-${s.status}`}>
+            <div className={cx('flow-step', `flow-step-${s.status}`, FLOW_STEP_CLASS[s.status])}>
               <span className="flow-step-icon">{FLOW_ICONS[s.status]}</span>
               <div>
                 <strong>{s.label}</strong>{' '}
                 <span className="muted small">{FLOW_STATUS_LABELS[s.status]}</span>
-                <p className="muted small flow-step-blurb">{s.blurb}</p>
+                <p className={cx('muted small flow-step-blurb', styles.blurb)}>{s.blurb}</p>
               </div>
             </div>
             {idx < steps.length - 1 ? (
@@ -398,6 +400,13 @@ function AutonomousFlow({
     </section>
   );
 }
+
+/** The states the legacy flow-step classes do not style (autopilot.module.css). */
+const FLOW_STEP_CLASS: Readonly<Partial<Record<FlowStep['status'], string>>> = {
+  always: styles.stepAlways,
+  held: styles.stepHeld,
+  partial: styles.stepPartial,
+};
 
 const FLOW_ICONS: Readonly<Record<FlowStep['status'], string>> = {
   on: '✓',

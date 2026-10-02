@@ -26,6 +26,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import bcrypt from 'bcryptjs';
 import * as s from '../src/lib/db/schema';
 import { polarityForRule, type LessonCategory } from '../src/lib/services/learning-categories';
+import type { UsageKind } from '../src/lib/kinds/usage';
 
 // Only ever usable against the throwaway databases allowed below.
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD || 'demo-local-only-password';
@@ -3262,7 +3263,10 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   ]);
 
   // ======================= usage + token ledger =======================
-  const USAGE_KINDS: { kind: string; provider: string; perDay: [number, number]; units: [number, number]; cents: [number, number] }[] = [
+  // Kinds are the registered usage kinds (src/lib/kinds/usage.ts), so the
+  // Usage page shows the demo with the labels production rows get.
+  // `uploads` marks the knowledge-upload bursts (embedding + OCR days).
+  const USAGE_KINDS: { kind: UsageKind; provider: string; perDay: [number, number]; units: [number, number]; cents: [number, number]; uploads?: true }[] = [
     { kind: 'ai.qualification', provider: 'gemini', perDay: [1, 3], units: [18_000, 90_000], cents: [10, 32] },
     { kind: 'ai.outreach', provider: 'openai', perDay: [1, 3], units: [3_000, 9_000], cents: [6, 18] },
     { kind: 'ai.suggestion', provider: 'openai', perDay: [0, 2], units: [1_500, 4_000], cents: [3, 9] },
@@ -3270,14 +3274,14 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     { kind: 'research.query', provider: 'gemini', perDay: [0, 2], units: [1, 1], cents: [6, 14] },
     { kind: 'search.query', provider: 'serpapi', perDay: [1, 3], units: [4, 12], cents: [5, 15] },
     { kind: 'embedding.embed', provider: 'openai', perDay: [0, 1], units: [5_000, 60_000], cents: [1, 3] },
-    { kind: 'rag.index_knowledge_source', provider: 'openai', perDay: [0, 0], units: [3, 12], cents: [1, 2] },
+    { kind: 'embedding.embed', provider: 'openai', perDay: [0, 0], units: [3_000, 12_000], cents: [1, 2], uploads: true },
     { kind: 'ocr.pdf', provider: 'mistral', perDay: [0, 0], units: [2, 14], cents: [2, 8] },
     { kind: 'ai.health_check', provider: 'anthropic', perDay: [0, 0], units: [20_000, 40_000], cents: [40, 70] },
     { kind: 'ai.learning_synthesis', provider: 'openai', perDay: [0, 0], units: [10_000, 30_000], cents: [15, 35] },
   ];
   const usagePayload = (kind: string, provider: string, units: number): Record<string, unknown> => {
     const model =
-      provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'anthropic' ? 'claude-sonnet-4-6' : provider === 'mistral' ? 'mistral-ocr-latest' : kind === 'embedding.embed' || kind.startsWith('rag.') ? 'text-embedding-3-small' : 'gpt-5-mini';
+      provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'anthropic' ? 'claude-sonnet-4-6' : provider === 'mistral' ? 'mistral-ocr-latest' : kind === 'embedding.embed' ? 'text-embedding-3-small' : 'gpt-5-mini';
     if (kind.startsWith('ai.')) {
       const inputTokens = Math.round(units * 0.82);
       return { model, inputTokens, outputTokens: units - inputTokens, keySource: 'platform' };
@@ -3286,7 +3290,6 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     if (kind === 'search.query') return { query: pick(RECIPES.flatMap((r) => r.queries)), keySource: 'platform' };
     if (kind === 'research.query') return { keySource: 'platform', inputTokens: between(800, 2400), outputTokens: between(300, 900), searchQueries: between(2, 5) };
     if (kind === 'ocr.pdf') return { model, filename: pick(['NW-FS-EN1366-3-summary.pdf', 'supplier-cert-scan.pdf']), pages: units, keySource: 'platform' };
-    if (kind.startsWith('rag.')) return { chunkCount: units, model };
     return { keySource: 'platform' };
   };
   const usageRows: s.NewUsageLogEntry[] = [];
@@ -3294,7 +3297,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     for (const k of USAGE_KINDS) {
       let n = between(k.perDay[0], k.perDay[1]);
       if ((k.kind === 'ai.health_check' && (d === 8 || d === 1)) || (k.kind === 'ai.learning_synthesis' && (d === 4 || d === 11 || d === 18 || d === 25))) n = 1;
-      if ((k.kind === 'rag.index_knowledge_source' || k.kind === 'ocr.pdf') && [33, 31, 28, 21, 19, 12, 6].map((x) => x - 4).includes(d)) n = 1;
+      if ((k.uploads || k.kind === 'ocr.pdf') && [33, 31, 28, 21, 19, 12, 6].map((x) => x - 4).includes(d)) n = 1;
       for (let i = 0; i < n; i++) {
         const cents = between(k.cents[0], k.cents[1]);
         const units = between(k.units[0], k.units[1]);

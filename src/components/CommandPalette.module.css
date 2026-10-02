@@ -1,0 +1,53 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* Cmd-K (DS-05, ia:F-10; moved out of legacy.css in the DS-06 review):
+ * the parts the registry-driven palette added (a result's description
+ * line, the footer's toggle hint) and the visible Search button in the
+ * header and the console. The palette's frame (.cmdk-*) is still legacy
+ * until its page wave. Tokens only, mobile first: the Search button shows
+ * its icon only on a narrow header, its label and shortcut from 900px. */
+
+@layer components {
+  .itemText {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .itemDesc {
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+  }
+
+  .footerEnd {
+    margin-left: auto;
+  }
+
+  /* ---- The Search button ---- */
+  .trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .triggerLabel {
+    display: none;
+  }
+
+  .triggerKbd {
+    display: none;
+    padding: 1px var(--space-1_5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  @media (min-width: 900px) {
+    .triggerLabel,
+    .triggerKbd {
+      display: inline;
+    }
+  }
+}

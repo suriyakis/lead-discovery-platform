@@ -41,7 +41,7 @@ export default async function AccountSettingsPage({
     if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -93,7 +93,7 @@ export default async function AccountSettingsPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> / Account
+        <Link href="/today">Today</Link> / Account
       </p>
       <h1
         style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}

@@ -12,6 +12,7 @@ import { redirect } from 'next/navigation';
 import { eq, inArray } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
 import { ViewerTimeZoneField } from '@/components/ViewerTimeZoneField';
+import { Field, Input, Select } from '@/components/ui';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -24,6 +25,7 @@ import { listAuditEvents } from '@/lib/services/audit';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { users } from '@/lib/db/schema/auth';
+import { auditKindLabel, auditKindOptions } from '@/lib/ui/labels';
 import {
   formatDateTimeInZone,
   parseDateTimeLocal,
@@ -55,7 +57,7 @@ export default async function WorkspaceAuditPage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
   if (!canAdminWorkspace(ctx)) {
@@ -111,7 +113,7 @@ export default async function WorkspaceAuditPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/settings/integrations">Settings</Link> / Audit log
       </p>
       <h1>Audit log</h1>
@@ -121,43 +123,39 @@ export default async function WorkspaceAuditPage({
       </p>
 
       <form className="leads-controls" method="get">
-        <label>
-          Kind
-          <select name="kind" defaultValue={kindFilter ?? ''}>
+        <Field label="Kind" layout="inline">
+          <Select name="kind" defaultValue={kindFilter ?? ''}>
             <option value="">All</option>
-            {kinds.map((k) => (
-              <option key={k.kind} value={k.kind}>
-                {k.kind}
+            {auditKindOptions(kinds.map((k) => k.kind)).map((o) => (
+              <option key={o.kind} value={o.kind}>
+                {o.label}
               </option>
             ))}
-          </select>
-        </label>
-        <label>
-          Since
-          <input
+          </Select>
+        </Field>
+        <Field label="Since" layout="inline">
+          <Input
             type="datetime-local"
             name="since"
             defaultValue={since ? toDateTimeLocalValue(since, timeZone) : ''}
           />
-        </label>
-        <label>
-          Until
-          <input
+        </Field>
+        <Field label="Until" layout="inline">
+          <Input
             type="datetime-local"
             name="until"
             defaultValue={until ? toDateTimeLocalValue(until, timeZone) : ''}
           />
-        </label>
-        <label>
-          Limit
-          <select name="limit" defaultValue={safeLimit.toString()}>
+        </Field>
+        <Field label="Limit" layout="inline">
+          <Select name="limit" defaultValue={safeLimit.toString()}>
             {ALLOWED_LIMITS.map((n) => (
               <option key={n} value={n}>
                 {n}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </Field>
         <ViewerTimeZoneField current={requestedZone} />
         <button type="submit">Apply</button>
       </form>
@@ -178,7 +176,7 @@ export default async function WorkspaceAuditPage({
                     <span className="muted">
                       {formatDateTimeInZone(e.createdAt, timeZone)}
                     </span>{' '}
-                    <strong>{e.kind}</strong>
+                    <strong title={e.kind}>{auditKindLabel(e.kind)}</strong>
                     {e.entityType ? (
                       <span className="muted">
                         {' '}

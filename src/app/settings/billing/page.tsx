@@ -1,9 +1,10 @@
 import Link from 'next/link';
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { Coins, CreditCard } from 'lucide-react';
+import { appUrl } from '@/lib/app-origin';
 import { AppShell } from '@/components/AppShell';
 import { BuyTokensButtons } from '@/components/BuyTokensButtons';
-import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import { getAvailablePlans, getPlanById } from '@/lib/billing/plans';
 import { tokenPacks } from '@/lib/billing/tokens';
@@ -42,7 +43,7 @@ export default async function BillingPage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -90,10 +91,12 @@ export default async function BillingPage({
   async function openPortal() {
     'use server';
     const c = await getWorkspaceContext();
+    // Stripe returns to this deployment, not to production (I155).
+    const requestHeaders = await headers();
     try {
       const result = await createPortalSession(
         c,
-        'https://discover.nulife.pl/settings/billing',
+        appUrl('/settings/billing', { headers: requestHeaders }),
       );
       redirect(result.url);
     } catch (err) {
@@ -115,11 +118,12 @@ export default async function BillingPage({
     if (planId !== 'starter' && planId !== 'pro') {
       redirect(`/settings/billing?err=${encodeURIComponent('Unknown plan.')}`);
     }
+    const requestHeaders = await headers();
     try {
       const result = await createCheckoutSession(c, {
         planId,
-        successUrl: 'https://discover.nulife.pl/settings/billing?stripe=success',
-        cancelUrl: 'https://discover.nulife.pl/settings/billing?stripe=canceled',
+        successUrl: appUrl('/settings/billing?stripe=success', { headers: requestHeaders }),
+        cancelUrl: appUrl('/settings/billing?stripe=canceled', { headers: requestHeaders }),
       });
       redirect(result.url);
     } catch (err) {
@@ -152,7 +156,6 @@ export default async function BillingPage({
             hosted billing portal.
           </p>
         </header>
-        <SettingsNav />
 
         {sp.msg ? <p className="form-info">{sp.msg}</p> : null}
         {sp.err ? <p className="form-error">{sp.err}</p> : null}

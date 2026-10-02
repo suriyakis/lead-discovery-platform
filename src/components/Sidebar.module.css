@@ -1,0 +1,144 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* The Sidebar's own styles (DS-05; moved out of legacy.css in the DS-06
+ * review, so legacy.css gains nothing for new chrome): the column of
+ * groups under static headings, the count at the end of a link, the
+ * interim Emergency stop at the foot, and the phone strip. Tokens only.
+ *
+ * The link itself (.sidebar-link: its padding, hover, active bar) and the
+ * shell's collapse are still legacy.css until the visual Phase 2 shell;
+ * this module sits in @layer components, so the strip overrides those
+ * legacy rules where it has to.
+ *
+ * Interim breakpoint: the strip turns on at (max-width: 800px), where the
+ * legacy app shell (.app-body, .sidebar) collapses, and Sidebar.tsx's
+ * COMPACT_SIDEBAR_QUERY matches it. The Phase 2 drawer replaces both; the
+ * CSS budget allows this query in this file only (INTERIM_BREAKPOINTS in
+ * src/tests/helpers/css-budget.ts). */
+
+@layer components {
+  .nav {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Groups (Work, Build, Workspace, Platform) under static headings: the
+     sidebar has 8 or 9 items, so nothing folds. */
+  .group + .group {
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--border);
+  }
+
+  .heading {
+    margin: 0;
+    padding: var(--space-1_5) calc(var(--space-2) + var(--space-0_5));
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .count {
+    margin-left: auto;
+  }
+
+  /* The interim Emergency stop (ia:F-10, removed by ia:F-18): set apart at
+     the foot, in the danger tone, and it says what it does not stop. */
+  .foot {
+    margin-top: var(--space-4);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border);
+  }
+
+  .stop {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(var(--space-2) + var(--space-0_5));
+    padding: var(--space-2) calc(var(--space-2) + var(--space-0_5));
+    border: 1px solid var(--danger-line);
+    border-radius: var(--radius-md);
+    color: var(--fg);
+    font-size: var(--text-sm);
+    text-decoration: none;
+  }
+
+  .stop:hover {
+    background: var(--danger-soft);
+    text-decoration: none;
+  }
+
+  .stopIcon {
+    margin-top: var(--space-0_5);
+    color: var(--tone-danger);
+  }
+
+  .stopText {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .stopNote {
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+  }
+
+  /* Phone: one horizontally scrolling strip of the same items above the
+     page, about one row instead of a screen of links (I058). Group
+     headings give way, and the current item is underlined. */
+  @media (max-width: 800px) {
+    .sidebar {
+      padding: var(--space-2) var(--space-3);
+    }
+
+    .nav {
+      flex-direction: row;
+      gap: var(--space-1);
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scrollbar-width: thin;
+    }
+
+    .group,
+    .list {
+      display: flex;
+      flex-direction: row;
+      flex: 0 0 auto;
+      gap: var(--space-1);
+      margin: 0;
+    }
+
+    .group + .group {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+
+    .heading {
+      display: none;
+    }
+
+    .link {
+      white-space: nowrap;
+    }
+
+    /* The strip clips anything outside it, so the focus ring sits inside. */
+    .link:focus-visible {
+      outline-offset: -2px;
+    }
+
+    .link[aria-current='page']::before {
+      top: auto;
+      right: calc(var(--space-2) + var(--space-0_5));
+      bottom: 0;
+      left: calc(var(--space-2) + var(--space-0_5));
+      width: auto;
+      height: 2px;
+    }
+
+    .foot {
+      margin-top: var(--space-2);
+      padding-top: var(--space-2);
+    }
+  }
+}

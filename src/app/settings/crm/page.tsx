@@ -14,7 +14,6 @@ import {
   isCsvExportFileName,
   listCrmConnections,
 } from '@/lib/services/crm';
-import { SettingsNav } from '@/components/SettingsNav';
 import type { CrmConnection } from '@/lib/db/schema/crm';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
@@ -39,7 +38,7 @@ export default async function CrmSettingsPage({
     if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -63,10 +62,9 @@ export default async function CrmSettingsPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/settings/integrations">Settings</Link> / CRM
         </p>
-        <SettingsNav />
         <div className="page-header">
           <h1>CRM &amp; Export</h1>
           <Link href="/settings/crm/new" className="primary-btn">

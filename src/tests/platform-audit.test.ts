@@ -132,7 +132,7 @@ describe('PlatformContext entry points', () => {
     expect('workspaceId' in pctx).toBe(false);
   });
 
-  it('requirePlatformAdmin redirects signed-out users to / and members to /dashboard', async () => {
+  it('requirePlatformAdmin redirects signed-out users to / and members to /today', async () => {
     const s = await setup();
     const redirectTarget = async () => {
       try {
@@ -146,7 +146,7 @@ describe('PlatformContext entry points', () => {
     mockedAuth.mockResolvedValue(null);
     expect(await redirectTarget()).toBe('/');
     mockedAuth.mockResolvedValue(sessionFor(s.ownerA, 'member'));
-    expect(await redirectTarget()).toBe('/dashboard');
+    expect(await redirectTarget()).toBe('/today');
   });
 
   it('requirePlatformAdmin works for a super-admin with no workspace at all', async () => {
@@ -313,7 +313,7 @@ describe('rows with no workspace: platform events vs deleted workspaces', () => 
     // with workspace_id NULL next to the platform rows.
     await recordAuditEvent(
       { workspaceId: s.tenantB, userId: s.ownerB },
-      { kind: 'product.create', entityType: 'product', entityId: 1 },
+      { kind: 'product_profile.create', entityType: 'product_profile', entityId: 1 },
     );
     await setAccountStatus(pctx, s.memberB, 'suspended', 'spam');
     await archiveWorkspace(pctx, s.tenantB, 'closing');
@@ -321,7 +321,7 @@ describe('rows with no workspace: platform events vs deleted workspaces', () => 
     // A live tenant's row must never show up in either no-workspace view.
     await recordAuditEvent(
       { workspaceId: s.tenantA, userId: s.ownerA },
-      { kind: 'product.create', entityType: 'product', entityId: 2 },
+      { kind: 'product_profile.create', entityType: 'product_profile', entityId: 2 },
     );
 
     const kindsOf = (rows: Array<{ kind: string }>) => rows.map((r) => r.kind).sort();
@@ -338,7 +338,7 @@ describe('rows with no workspace: platform events vs deleted workspaces', () => 
       noWorkspaceOrigin: 'deleted_workspace',
       limit: 1000,
     });
-    expect(kindsOf(orphaned)).toEqual(['admin.workspace.archive', 'product.create']);
+    expect(kindsOf(orphaned)).toEqual(['admin.workspace.archive', 'product_profile.create']);
     expect(orphaned.every((r) => r.workspaceId === null)).toBe(true);
 
     // workspaceId null alone still returns both kinds of row.
@@ -352,7 +352,7 @@ describe('rows with no workspace: platform events vs deleted workspaces', () => 
       noWorkspaceOrigin: 'platform',
       limit: 1000,
     });
-    expect(kindsOf(tenantA)).toEqual(['product.create']);
+    expect(kindsOf(tenantA)).toEqual(['product_profile.create']);
 
     // Labels: the orphaned rows no longer read as platform events.
     for (const r of platform) {

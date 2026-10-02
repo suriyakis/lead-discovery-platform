@@ -163,3 +163,5 @@ export type NewWorkspaceHold = typeof workspaceHolds.$inferInsert;
 export type AutomationCapability = (typeof AUTOMATION_CAPABILITIES)[number];
 export type WorkspaceHoldState = (typeof workspaceHoldState.enumValues)[number];
 export type WorkspaceHoldSource = (typeof workspaceHoldSource.enumValues)[number];
+export type WorkspaceHoldScope = (typeof workspaceHoldScope.enumValues)[number];
+export type WorkspaceHoldKind = (typeof workspaceHoldKind.enumValues)[number];

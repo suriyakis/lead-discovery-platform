@@ -58,8 +58,7 @@ export default async function AdminWorkspacesPage({
   return (
     <div className="dashboard-wrap">
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
-        <Link href="/admin">Admin</Link> / Workspaces
+        <Link href="/admin">Platform console</Link> / Workspaces
       </p>
       <h1>Workspaces</h1>
       <p className="muted">

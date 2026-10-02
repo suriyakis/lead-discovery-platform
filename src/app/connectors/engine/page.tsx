@@ -390,6 +390,7 @@ export default async function CrawlEnginePage({
                                 type="checkbox"
                                 name="recipeIds"
                                 value={r.id}
+                                data-tone="live"
                                 defaultChecked={p.recipeIds
                                   .map(String)
                                   .includes(r.id)}
@@ -561,6 +562,7 @@ export default async function CrawlEnginePage({
                       type="checkbox"
                       name="recipeIds"
                       value={r.id}
+                      data-tone="live"
                       disabled={!r.active}
                     />
                     <span>

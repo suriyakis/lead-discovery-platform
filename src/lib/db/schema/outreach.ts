@@ -195,7 +195,9 @@ export const outreachDrafts = pgTable(
 export type OutreachDraft = typeof outreachDrafts.$inferSelect;
 export type NewOutreachDraft = typeof outreachDrafts.$inferInsert;
 export type OutreachDraftStatus = (typeof outreachDraftStatus.enumValues)[number];
-export type OutreachDraftMethod = 'rules' | 'ai' | 'hybrid';
+/** outreach_drafts.method values (DS-09 registry; the column is text). */
+export const outreachDraftMethods = ['rules', 'ai', 'hybrid'] as const;
+export type OutreachDraftMethod = (typeof outreachDraftMethods)[number];
 
 /**
  * Phase 19: outreach queue. Approved drafts (or one-off scheduled sends)

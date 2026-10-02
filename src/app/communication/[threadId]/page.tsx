@@ -277,7 +277,7 @@ export default async function CommunicationDetail({
           fontSize: '0.85rem',
         }}
       >
-        <Link href="/dashboard">Dashboard</Link>
+        <Link href="/today">Today</Link>
         <span aria-hidden>/</span>
         <Link href="/communication">Communication</Link>
         <span aria-hidden>/</span>

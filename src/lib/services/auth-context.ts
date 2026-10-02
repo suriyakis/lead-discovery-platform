@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { HOME_PATH } from '@/lib/nav/registry';
 import { auth } from '@/lib/auth';
 import { type WorkspaceContext } from './context';
 import { makePlatformContext, type PlatformContext } from './platform-context';
@@ -89,7 +90,7 @@ export async function getPlatformContext(): Promise<PlatformContext> {
 /**
  * Guard for every /admin page and every server action they define: returns
  * the PlatformContext, or redirects — signed-out users to `/`, signed-in
- * users who are not super-admins to `/dashboard`.
+ * users who are not super-admins to Today (HOME_PATH).
  *
  * Call it at the top of the page AND inside each server action (actions
  * are separately reachable POST endpoints, so the page guard alone does
@@ -100,7 +101,7 @@ export async function requirePlatformAdmin(): Promise<PlatformContext> {
     return await getPlatformContext();
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof PlatformAdminRequiredError) redirect('/dashboard');
+    if (err instanceof PlatformAdminRequiredError) redirect(HOME_PATH);
     throw err;
   }
 }

@@ -139,7 +139,7 @@ describe('askAssistant', () => {
     // maxTokens no longer bounds the visible answer on every model (the
     // per-model output floors), so the prompt asks for brevity itself.
     expect(stub.lastInput!.system).toMatch(/under\s+about 250 words/);
-    expect(stub.lastInput!.system).not.toContain('Lead Discovery Platform');
+    expect(stub.lastInput!.system).not.toMatch(/Lead\s+Discovery\s+Platform/i);
     // The model reads the handbook without its claim tags.
     expect(prompt).toContain('Known limitations right now');
     expect(prompt).not.toMatch(/\{H-\d{2}\}/);

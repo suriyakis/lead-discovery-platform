@@ -97,7 +97,7 @@ export default async function ConnectorDetailPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/connectors">Connectors</Link> / {connector.name}
       </p>
       <h1>{connector.name}</h1>

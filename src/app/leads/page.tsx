@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Archive, Trash2 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { Badge, BadgeGroup, ScoreChip, StatusBadge } from '@/components/Badge';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { Pagination } from '@/components/Pagination';
 import { SelectAllVisible } from '@/components/SelectAllVisible';
@@ -17,6 +18,7 @@ import { PipelineServiceError, ensureQualifiedLead } from '@/lib/services/pipeli
 import { withFlash } from '@/lib/action-errors';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import type { ProductProfile } from '@/lib/db/schema/products';
+import { labelFor } from '@/lib/ui/labels';
 import { bulkArchiveAction, bulkDeleteAction } from './actions';
 
 const SORT_OPTIONS = [
@@ -263,18 +265,20 @@ export default async function LeadsPage({
                         name="ids"
                         value={qualification.id.toString()}
                         form={BULK_FORM_ID}
+                        data-tone="live"
                         aria-label={`Select lead ${title}`}
                       />
                     </label>
                     <div className="lead-row">
                       <Link href={linkHref}>{title}</Link>
-                      <span
-                        className={
-                          qualification.isRelevant ? 'badge badge-good' : 'badge badge-bad'
-                        }
-                      >
-                        score {qualification.relevanceScore}
-                      </span>
+                      {/* The verdict carries the tone; the score is a plain
+                          primary chip (DS-09). Not relevant is no failure. */}
+                      <BadgeGroup>
+                        <ScoreChip value={qualification.relevanceScore} label="Score" />
+                        <Badge tone={qualification.isRelevant ? 'success' : 'neutral'}>
+                          {qualification.isRelevant ? 'Relevant' : 'Not relevant'}
+                        </Badge>
+                      </BadgeGroup>
                       <span className="muted">→ {product.name}</span>
                     </div>
                     {snippet ? <p className="muted">{snippet}</p> : null}
@@ -291,10 +295,14 @@ export default async function LeadsPage({
                     <div className="lead-meta">
                       {domain ? <span>{domain}</span> : null}
                       <span>conf {qualification.confidence}</span>
-                      <span>via {qualification.method}</span>
-                      {reviewItem ? <span>review: {reviewItem.state}</span> : null}
+                      <span>via {labelFor('qualification_method', qualification.method)}</span>
+                      {reviewItem ? (
+                        <StatusBadge set="review_item_state" value={reviewItem.state} size="sm" />
+                      ) : null}
                       {qualification.operatorVerdict === 'not_fit' ? (
-                        <span className="badge badge-bad">marked Not a fit</span>
+                        <Badge tone="danger" size="sm">
+                          marked Not a fit
+                        </Badge>
                       ) : null}
                       <span>{qualification.createdAt.toLocaleString()}</span>
                     </div>

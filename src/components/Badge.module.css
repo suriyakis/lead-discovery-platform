@@ -1,0 +1,244 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* The signal family (DS-09): Badge, CountBadge, ScoreChip and Tag
+ * (components/Badge.tsx). Each reads one tone colour (--t) plus its chip
+ * fill (--t-soft) and border (--t-line); [data-tone] picks them from
+ * tokens.css, and with no tone a badge is neutral. Tokens only; shown in
+ * every tone at /dev/gallery. */
+
+@layer components {
+  .badge,
+  .score,
+  .count,
+  .tag {
+    --t: var(--tone-neutral);
+    --t-soft: var(--neutral-soft);
+    --t-line: var(--neutral-line);
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    max-width: 100%;
+    vertical-align: middle;
+    white-space: nowrap;
+    line-height: 1;
+    /* Labels are sentence case: never inherit a heading's capitals or
+       tracking (a score chip inside a legacy h2, a badge in a table head). */
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  /* ---- Tones ---- */
+  .badge[data-tone='muted'],
+  .score[data-tone='muted'],
+  .count[data-tone='muted'] {
+    --t: var(--tone-muted);
+    --t-soft: transparent;
+    --t-line: var(--border-subtle);
+  }
+
+  .badge[data-tone='info'],
+  .score[data-tone='info'],
+  .count[data-tone='info'] {
+    --t: var(--tone-info);
+    --t-soft: var(--info-soft);
+    --t-line: var(--info-line);
+  }
+
+  .badge[data-tone='live'],
+  .score[data-tone='live'],
+  .count[data-tone='live'] {
+    --t: var(--tone-live);
+    --t-soft: var(--live-soft);
+    --t-line: var(--live-line);
+  }
+
+  .badge[data-tone='ai'],
+  .score[data-tone='ai'],
+  .count[data-tone='ai'] {
+    --t: var(--tone-ai);
+    --t-soft: var(--ai-soft);
+    --t-line: var(--ai-line);
+  }
+
+  .badge[data-tone='attention'],
+  .score[data-tone='attention'],
+  .count[data-tone='attention'] {
+    --t: var(--tone-attention);
+    --t-soft: var(--attention-soft);
+    --t-line: var(--attention-line);
+  }
+
+  .badge[data-tone='success'],
+  .score[data-tone='success'],
+  .count[data-tone='success'] {
+    --t: var(--tone-success);
+    --t-soft: var(--success-soft);
+    --t-line: var(--success-line);
+  }
+
+  .badge[data-tone='danger'],
+  .score[data-tone='danger'],
+  .count[data-tone='danger'] {
+    --t: var(--tone-danger);
+    --t-soft: var(--danger-soft);
+    --t-line: var(--danger-line);
+  }
+
+  /* ---- Badge: a value's label (sentence case; mono for machine values) ---- */
+  .badge {
+    gap: var(--space-1_5);
+    height: 22px;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--t-line);
+    border-radius: var(--radius-xs);
+    background: var(--t-soft);
+    color: var(--t);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+  }
+
+  .badge[data-variant='mono'] {
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+  }
+
+  .badge[data-size='sm'] {
+    height: 18px;
+    padding: 0 var(--space-1_5);
+    font-size: var(--text-label);
+  }
+
+  .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .dot {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-full);
+    background: currentColor;
+  }
+
+  .badge[data-pulse] > .dot {
+    animation: pulse var(--dur-pulse) var(--ease-in-out) infinite;
+  }
+
+  /* ---- CountBadge: a number. Neutral unless a decision waits ---- */
+  .count {
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 var(--space-1_5);
+    border-radius: var(--radius-full);
+    background: color-mix(in oklab, var(--t) 16%, transparent);
+    color: var(--t);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-numeral);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .count[data-tone='attention'],
+  .count[data-tone='danger'] {
+    background: var(--t);
+    color: var(--on-primary);
+  }
+
+  /* ---- ScoreChip: a 0–100 score, mono, primary unless a rule says ---- */
+  .score {
+    --t: var(--tone-info);
+    --t-soft: var(--info-soft);
+    --t-line: var(--info-line);
+    gap: var(--space-0_5);
+    height: 22px;
+    padding: 0 var(--space-1_5);
+    border: 1px solid var(--t-line);
+    border-radius: var(--radius-xs);
+    background: var(--t-soft);
+    color: var(--t);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-numeral);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .scoreNote {
+    font-weight: var(--weight-regular);
+    font-size: var(--text-label);
+    color: var(--fg-subtle);
+  }
+
+  .scoreLabel {
+    margin-right: var(--space-1);
+    font-family: var(--font-sans);
+    font-weight: var(--weight-medium);
+  }
+
+  /* ---- BadgeGroup: a wrapping row of chips ---- */
+  .group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1_5);
+    min-width: 0;
+    max-width: 100%;
+    vertical-align: middle;
+  }
+
+  /* ---- Tag: a user's tag. Neutral; one of six fixed hues on request ---- */
+  .tag {
+    --t: var(--fg-muted);
+    gap: var(--space-1_5);
+    height: 22px;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    color: var(--t);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+  }
+
+  .tag[data-hue] {
+    border-color: color-mix(in oklab, var(--t) 40%, transparent);
+    background: color-mix(in oklab, var(--t) 10%, transparent);
+  }
+
+  .tag[data-hue='1'] {
+    --t: var(--tag-1);
+  }
+
+  .tag[data-hue='2'] {
+    --t: var(--tag-2);
+  }
+
+  .tag[data-hue='3'] {
+    --t: var(--tag-3);
+  }
+
+  .tag[data-hue='4'] {
+    --t: var(--tag-4);
+  }
+
+  .tag[data-hue='5'] {
+    --t: var(--tag-5);
+  }
+
+  .tag[data-hue='6'] {
+    --t: var(--tag-6);
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 0.4;
+    }
+
+    50% {
+      opacity: 1;
+    }
+  }
+}

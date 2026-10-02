@@ -171,6 +171,15 @@ export const knowledgeIndexStatus = pgEnum('knowledge_index_status', [
   'failed',
 ]);
 export type KnowledgeIndexStatus = (typeof knowledgeIndexStatus.enumValues)[number];
+/**
+ * knowledge_sources.external_status (DS-09: a registry, not free text).
+ * The auto-attach pipeline writes 'pending' on create and flips the row to
+ * 'indexed' on any success or 'failed' when every provider failed
+ * (services/knowledge-sources.ts). Stored as text; src/lib/ui/tone.ts and
+ * labels.ts map every value.
+ */
+export const knowledgeSourceExternalStatus = ['pending', 'indexed', 'failed'] as const;
+export type KnowledgeSourceExternalStatus = (typeof knowledgeSourceExternalStatus)[number];
 
 export const knowledgeSources = pgTable(
   'knowledge_sources',
@@ -214,9 +223,12 @@ export const knowledgeSources = pgTable(
     /** Phase 50: provider-specific opaque id (`file-...` for OpenAI; for
      *  pgvector this stays NULL since chunks reference the row by id). */
     externalFileId: text('external_file_id'),
-    /** Phase 50: 'pending' | 'indexed' | 'failed'. Auto-attach pipeline
-     *  writes 'pending' on create, flips on success / failure. */
-    externalStatus: text('external_status').notNull().default('pending'),
+    /** Phase 50: knowledgeSourceExternalStatus above. Auto-attach
+     *  pipeline writes 'pending' on create, flips on success / failure. */
+    externalStatus: text('external_status')
+      .$type<KnowledgeSourceExternalStatus>()
+      .notNull()
+      .default('pending'),
     externalError: text('external_error'),
     externalIndexedAt: timestamp('external_indexed_at', {
       mode: 'date',
@@ -321,3 +333,4 @@ export const knowledgeSourceProducts = pgTable(
 );
 
 export type KnowledgeSourceProduct = typeof knowledgeSourceProducts.$inferSelect;
+export type KnowledgePurposeCategory = (typeof knowledgePurposeCategory.enumValues)[number];

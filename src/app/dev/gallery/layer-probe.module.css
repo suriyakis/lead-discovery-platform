@@ -1,0 +1,14 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* Cascade-layer probe (DS-06). One class, specificity (0,1,0), in the
+ * components layer. Legacy's `.thread-list li` (0,1,1) also matches the
+ * row and sets a 14px padding; the layer order makes this rule win anyway,
+ * even when this module's chunk loads before the global stylesheets
+ * (e2e/design-foundation.spec.ts). */
+
+@layer components {
+  .probe {
+    padding: var(--space-1) var(--space-3);
+    border-color: var(--success-line);
+  }
+}

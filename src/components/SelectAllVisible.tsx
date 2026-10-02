@@ -38,6 +38,7 @@ export function SelectAllVisible({ formId, label = 'Select all on this page' }: 
         ref={ref}
         id={id}
         type="checkbox"
+        data-tone="live"
         onChange={onChange}
         aria-label={label}
       />

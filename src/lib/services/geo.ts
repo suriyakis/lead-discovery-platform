@@ -26,7 +26,10 @@
 
 import type { ClassifiableRecord, ClassificationVerdict } from './qualification-engine';
 
-export type GeoStatus = 'no_gate' | 'match' | 'mismatch' | 'unverified';
+/** Gate outcomes (qualifications.geo_status, text). DS-09 maps each one
+ *  to a tone and a label (src/lib/ui/tone.ts, labels.ts). */
+export const GEO_STATUSES = ['no_gate', 'match', 'mismatch', 'unverified'] as const;
+export type GeoStatus = (typeof GEO_STATUSES)[number];
 
 // ---- ISO 3166-1 alpha-2 -----------------------------------------------
 

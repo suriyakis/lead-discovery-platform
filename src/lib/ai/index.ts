@@ -19,6 +19,7 @@ import {
   type ReasoningVendor,
 } from './model-profiles';
 import type { ZodSchema } from 'zod';
+import type { AiUsageKind } from '@/lib/kinds/usage';
 
 export { AIOutputError, type AIOutputFailureKind } from './errors';
 export type { AIReasoningEffort } from './model-profiles';
@@ -591,7 +592,7 @@ class MeteredAIProvider implements IAIProvider {
     /** Exposed for unwrapAIProvider (test seam) — treat as private. */
     public readonly inner: IAIProvider,
     private readonly workspaceId: bigint,
-    private readonly kind: string,
+    private readonly kind: AiUsageKind,
     private readonly keySource: 'workspace' | 'platform',
   ) {}
 
@@ -713,7 +714,7 @@ function billingTags(
 function metered(
   provider: IAIProvider,
   ctx: { workspaceId: bigint },
-  kind: string,
+  kind: AiUsageKind,
   keySource: 'workspace' | 'platform',
 ): IAIProvider {
   return new MeteredAIProvider(provider, ctx.workspaceId, kind, keySource);
@@ -771,7 +772,7 @@ export async function getAIProviderForCtx(
   ctx: { workspaceId: bigint },
   /** Usage-log kind for metering — lets callers keep billing itemization
    *  meaningful ('ai.qualification' vs generic 'ai.generate'). */
-  usageKind: string = 'ai.generate',
+  usageKind: AiUsageKind = 'ai.generate',
 ): Promise<IAIProvider> {
   // Test injection wins — `_setAIProviderForTests(stub)` writes `cached`,
   // and tests rely on getAIProviderForCtx returning the same stub.
@@ -1146,7 +1147,7 @@ export async function getAIProviderById(
   ctx: { workspaceId: bigint },
   providerId: 'openai' | 'anthropic',
   /** Usage-log kind for metering (billing itemization). */
-  usageKind: string = 'ai.generate',
+  usageKind: AiUsageKind = 'ai.generate',
 ): Promise<IAIProvider | null> {
   // Test injection wins, same as getAIProviderForCtx, so unit tests
   // that stub the provider don't need to know which vendor a stage

@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
-import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -16,6 +15,8 @@ import {
   summarizeUsageByKeySource,
 } from '@/lib/services/usage';
 import { TableScroll } from '@/components/TableScroll';
+import { StatusBadge } from '@/components/Badge';
+import { usageKindLabel } from '@/lib/ui/labels';
 
 const RANGES = [
   { key: 'today' as const, label: 'Today', ms: 24 * 60 * 60 * 1000 },
@@ -52,7 +53,7 @@ export default async function UsagePage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -81,10 +82,9 @@ export default async function UsagePage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Settings
+          <Link href="/today">Today</Link> / Settings
         </p>
         <h1>Settings</h1>
-        <SettingsNav />
 
         <div className="state-tabs">
           {RANGES.map((r) => (
@@ -146,9 +146,7 @@ export default async function UsagePage({
                 <tbody>
                   {totals.map((row, i) => (
                     <tr key={i}>
-                      <td>
-                        <code>{row.kind}</code>
-                      </td>
+                      <td title={row.kind}>{usageKindLabel(row.kind)}</td>
                       <td>{row.provider}</td>
                       <td className="num">{row.eventCount.toLocaleString()}</td>
                       <td className="num">{row.totalUnits.toString()}</td>
@@ -172,10 +170,10 @@ export default async function UsagePage({
           <section>
             <h2>By key source</h2>
             <p className="muted">
-              <span className="badge badge-good">Workspace</span> = your own API key:
-              the provider bills you directly and no tokens are charged.{' '}
-              <span className="badge">Platform</span> = the platform&apos;s key: usage
-              is charged in tokens. <code>mock</code> = test provider, no cost.
+              <StatusBadge set="usage_key_source" value="workspace" />: the provider
+              bills you directly and no tokens are charged.{' '}
+              <StatusBadge set="usage_key_source" value="platform" />: usage is charged
+              in tokens. <StatusBadge set="usage_key_source" value="mock" />: no cost.
             </p>
             <TableScroll label="Usage by key source">
               <table className="data-table">
@@ -192,22 +190,10 @@ export default async function UsagePage({
                 <tbody>
                   {byKey.map((row, i) => (
                     <tr key={i}>
-                      <td>
-                        <code>{row.kind}</code>
-                      </td>
+                      <td title={row.kind}>{usageKindLabel(row.kind)}</td>
                       <td>{row.provider}</td>
                       <td>
-                        <span
-                          className={
-                            row.keySource === 'workspace'
-                              ? 'badge badge-good'
-                              : row.keySource === 'platform'
-                                ? 'badge'
-                                : 'badge badge-bad'
-                          }
-                        >
-                          {row.keySource}
-                        </span>
+                        <StatusBadge set="usage_key_source" value={row.keySource} />
                       </td>
                       <td className="num">{row.eventCount.toLocaleString()}</td>
                       {showTokens ? (
