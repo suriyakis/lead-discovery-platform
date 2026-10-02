@@ -1,7 +1,7 @@
 // Shared pieces of the mail bulk actions (trash, restore, spam, not-spam,
 // delete permanently, retry) behind the folder views on /communication
-// (src/app/communication/actions.ts) and /mailbox/[id]
-// (src/app/mailbox/[id]/actions.ts). The two used to carry line-for-line
+// (src/app/(app)/communication/actions.ts) and /mailbox/[id]
+// (src/app/(app)/mailbox/[id]/actions.ts). The two used to carry line-for-line
 // copies; only where they redirect differs.
 //
 // A plain module, not 'use server': these are helpers, and every export

@@ -14,7 +14,7 @@ import type { AttentionSummary } from '@/lib/attention/types';
 import { makeWorkspaceContext } from '@/lib/services/context';
 import { getDashboardSignals } from '@/lib/services/dashboard-signals';
 import { getActiveWorkspaceSummary } from '@/lib/services/workspace';
-import { TodayOverview } from '@/app/today/_overview';
+import { TodayOverview } from '@/app/(app)/today/_overview';
 import { renderToHtml } from './helpers/next-render';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 

@@ -555,15 +555,15 @@ describe('checked colours come from tones, not accent-color', () => {
     const src = (f: string) => readFileSync(path.join(ROOT, f), 'utf8');
     const toned = (f: string, ctx: string, tone: string) =>
       new RegExp(`className="${ctx}"[^>]*>\\s*<input\\b[^>]*data-tone="${tone}"`).test(src(f));
-    expect(toned('src/app/settings/outreach/page.tsx', 'followup-step-remove', 'danger')).toBe(
+    expect(toned('src/app/(app)/settings/outreach/page.tsx', 'followup-step-remove', 'danger')).toBe(
       true,
     );
-    expect(src('src/app/connectors/engine/page.tsx').match(/data-tone="live"/g)).toHaveLength(2);
+    expect(src('src/app/(app)/connectors/engine/page.tsx').match(/data-tone="live"/g)).toHaveLength(2);
     expect(toned('src/components/SelectAllVisible.tsx', 'bulk-select-all', 'live')).toBe(true);
     for (const f of [
-      'src/app/review/page.tsx',
-      'src/app/leads/page.tsx',
-      'src/app/learning/page.tsx',
+      'src/app/(app)/review/page.tsx',
+      'src/app/(app)/leads/page.tsx',
+      'src/app/(app)/learning/page.tsx',
     ])
       expect(toned(f, 'row-select', 'live'), f).toBe(true);
   });

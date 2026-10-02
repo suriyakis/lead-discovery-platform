@@ -17,8 +17,8 @@ import { db } from '@/lib/db/client';
 import { workspaces, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { costCentsToTokens } from '@/lib/billing/tokens';
 import { recordUsage, summarizeTokenDebits } from '@/lib/services/usage';
-import UsagePage from '@/app/settings/usage/page';
-import BillingPage from '@/app/settings/billing/page';
+import UsagePage from '@/app/(app)/settings/usage/page';
+import BillingPage from '@/app/(app)/settings/billing/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { renderToHtml } from './helpers/next-render';
 

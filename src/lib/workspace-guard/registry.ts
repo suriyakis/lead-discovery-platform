@@ -61,3 +61,57 @@ export const GUARDED_ACTIONS = {
 export type GuardedActionId = keyof typeof GUARDED_ACTIONS;
 
 export const GUARDED_ACTION_IDS = Object.keys(GUARDED_ACTIONS) as GuardedActionId[];
+
+/**
+ * DS-07: whether a guarded server action re-renders the workspace frame
+ * when it succeeds (refreshChrome(): the sidebar badges, the bell, the
+ * automation banners). Every id is classified, so a new guarded action
+ * has to decide. 'none' is for actions that only hand a value back to the
+ * page (translations, AI suggestions) and change no count or banner, and
+ * for API routes (withWorkspaceGuardRoute), whose callers refresh the
+ * badges themselves with refreshAttention().
+ */
+export const GUARDED_ACTION_CHROME: Readonly<Record<GuardedActionId, 'refresh' | 'none'>> = {
+  'review.approve': 'refresh',
+  'review.reject': 'refresh',
+  'review.ignore': 'refresh',
+  'review.flag': 'refresh',
+  'review.archive': 'refresh',
+  'review.generate_draft': 'refresh',
+  'review.bulk_archive': 'refresh',
+  'review.bulk_delete': 'refresh',
+  'draft.approve': 'refresh',
+  'draft.enqueue': 'refresh',
+  'draft.reject': 'refresh',
+  'draft.regenerate': 'refresh',
+  'draft.archive': 'refresh',
+  'draft.translate': 'none',
+  'follow_up.approve': 'refresh',
+  'follow_up.skip': 'refresh',
+  'follow_up.reject': 'refresh',
+  'communication.reply': 'none',
+  'communication.compose': 'refresh',
+  'communication.compose_translate': 'none',
+  'communication.suggest_reply': 'none',
+  'communication.translate': 'none',
+  'queue.save_settings': 'refresh',
+  'queue.cancel': 'refresh',
+  'queue.reschedule': 'refresh',
+  'queue.retry': 'refresh',
+  'queue.requeue': 'refresh',
+  'queue.mark_delivered': 'refresh',
+  'queue.drain': 'refresh',
+  'autopilot.save_defaults': 'refresh',
+  'autopilot.save_product': 'refresh',
+  'autopilot.clear_product': 'refresh',
+  'autopilot.pause_product': 'refresh',
+  'autopilot.resume_product': 'refresh',
+  'autopilot.run_now': 'refresh',
+  'automation.pause': 'refresh',
+  'automation.undo_pause': 'refresh',
+  'automation.resume': 'refresh',
+  'billing.buy_tokens': 'refresh',
+  'billing.subscribe': 'refresh',
+  'billing.auto_topup': 'refresh',
+  'assistant.ask': 'none',
+};

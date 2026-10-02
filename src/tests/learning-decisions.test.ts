@@ -55,7 +55,7 @@ import {
   seedReviewItem,
 } from '@/lib/services/review';
 import { getLearnFromReplies, updateLearnFromReplies } from '@/lib/services/workspace';
-import LeadsPage from '@/app/leads/page';
+import LeadsPage from '@/app/(app)/leads/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { renderToHtml } from './helpers/next-render';
 

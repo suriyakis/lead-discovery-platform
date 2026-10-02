@@ -1,0 +1,13 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* DS-07: the error and not-found cards of a workspace page, centred in the
+ * frame's content column (the frame's header and sidebar stay around them).
+ * Tokens only. */
+
+@layer components {
+  .status {
+    display: grid;
+    place-items: start center;
+    padding-block: var(--space-8);
+  }
+}

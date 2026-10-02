@@ -26,11 +26,11 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { NavCountBadge } from './NavCountBadge';
 import { NavIcon } from './NavIcon';
+import { useFrameAttention } from './ShellAttention';
 import styles from './Sidebar.module.css';
 import { cx } from '@/lib/ui/cx';
 import { navCountsFromAttention } from '@/lib/attention/project';
 import type { AttentionSummary } from '@/lib/attention/types';
-import { useAttention } from '@/lib/attention/use-attention';
 import {
   INTERIM_EMERGENCY_STOP,
   NAV_GROUPS,
@@ -55,7 +55,9 @@ export interface SidebarProps {
   /**
    * MOB-02: the attention summary AppShell rendered with. The badges are
    * its projection, kept current in the browser by useAttention() (the
-   * poll, focus, reconnects, refreshAttention() after a mutation).
+   * poll, focus, reconnects, refreshAttention() after a mutation). Inside
+   * the workspace frame the frame's ShellAttention provider supplies it
+   * (DS-07: the sidebar lives in the (app) layout, not in each page).
    */
   attention?: AttentionSummary | null;
   /** Badge numbers used while there is no summary (no workspace yet: a
@@ -81,8 +83,9 @@ export function Sidebar({
   const pathname = usePathname() ?? '';
   const viewer: NavViewer = { role, isSuperAdmin };
   const areas = sidebarAreas(viewer);
-  // No summary (no workspace yet, or a caller with fixed numbers): no poll.
-  const live = useAttention(attention, { enabled: Boolean(attention) });
+  // Inside the workspace frame: the frame's summary (DS-07). Outside it,
+  // its own seed kept live; no summary (fixed numbers, tests): no poll.
+  const live = useFrameAttention(attention);
   const projected = live ? navCountsFromAttention(live) : null;
   const counts: SidebarCounts = projected
     ? { values: projected.values, unknown: projected.unknown }

@@ -132,7 +132,7 @@ describe('one name (I139)', () => {
     expect(BRAND_DESCRIPTION.startsWith('Ping the market')).toBe(true);
     // The places I139 found the old title now read the constant.
     for (const f of [
-      'src/app/mailbox/[id]/test/page.tsx',
+      'src/app/(app)/mailbox/[id]/test/page.tsx',
       'src/app/api/signatures/send-test/route.ts',
       'src/lib/services/assistant.ts',
       'src/lib/assistant/handbook/narrative.ts',

@@ -7,7 +7,7 @@
 // permission check with no catch, and the user got Next's generic error
 // page. Cancel and reschedule had the same missing catch. These tests
 // render the page per role and run the actions from
-// src/app/mailbox/queue/actions.ts against the database.
+// src/app/(app)/mailbox/queue/actions.ts against the database.
 
 import { pauseAutomation } from '@/lib/services/automation-pause';
 import { PAUSED_MESSAGE } from '@/lib/services/automation-gate';
@@ -20,7 +20,7 @@ import { outreachQueue } from '@/lib/db/schema/outreach';
 import { makeWorkspaceContext } from '@/lib/services/context';
 import { workspaceMembers, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { OutreachQueueError, getSendSettings } from '@/lib/services/outreach-queue';
-import * as queueActions from '@/app/mailbox/queue/actions';
+import * as queueActions from '@/app/(app)/mailbox/queue/actions';
 import {
   formatUtc,
   parseEntryId,
@@ -30,8 +30,8 @@ import {
   queueErrorMessage,
   queueHref,
   toUtcInputValue,
-} from '@/app/mailbox/queue/forms';
-import QueuePage from '@/app/mailbox/queue/page';
+} from '@/app/(app)/mailbox/queue/forms';
+import QueuePage from '@/app/(app)/mailbox/queue/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { postedFromCurrentPage } from './helpers/workspace-guard';
 import { expectRedirect, renderToHtml } from './helpers/next-render';

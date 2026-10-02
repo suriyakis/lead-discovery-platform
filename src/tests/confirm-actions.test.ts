@@ -571,9 +571,9 @@ const CONFIRMED_ACTIONS: ReadonlyArray<{ file: string; actions: readonly string[
   { file: 'src/app/admin/support/[id]/page.tsx', actions: ['setStatus'] },
   { file: 'src/app/admin/providers/page.tsx', actions: ['removeKey', 'saveDefaults'] },
   // The action moved to ./actions.ts (ia:F-04); the form still confirms.
-  { file: 'src/app/settings/members/page.tsx', actions: ['removeMemberAction'] },
+  { file: 'src/app/(app)/settings/members/page.tsx', actions: ['removeMemberAction'] },
   {
-    file: 'src/app/settings/integrations/page.tsx',
+    file: 'src/app/(app)/settings/integrations/page.tsx',
     actions: [
       'switchSetupMode',
       'clearKey',
@@ -583,8 +583,8 @@ const CONFIRMED_ACTIONS: ReadonlyArray<{ file: string; actions: readonly string[
       'clearPerplexity',
     ],
   },
-  { file: 'src/app/autopilot/page.tsx', actions: ['clearOverlay'] },
-  { file: 'src/app/settings/crm/[id]/page.tsx', actions: ['archive'] },
+  { file: 'src/app/(app)/autopilot/page.tsx', actions: ['clearOverlay'] },
+  { file: 'src/app/(app)/settings/crm/[id]/page.tsx', actions: ['archive'] },
 ];
 
 interface FormBlock {

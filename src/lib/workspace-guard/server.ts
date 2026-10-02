@@ -34,7 +34,9 @@ import {
 } from '@/lib/services/auth-context';
 import type { WorkspaceContext } from '@/lib/services/context';
 import { runWithPinnedWorkspace } from '@/lib/services/pinned-workspace';
-import type { GuardedActionId } from './registry';
+import { isNextRedirectError } from '@/lib/server-redirect';
+import { refreshChrome } from '@/lib/shell/refresh';
+import { GUARDED_ACTION_CHROME, type GuardedActionId } from './registry';
 import {
   EXPECTED_WORKSPACE_FIELD,
   EXPECTED_WORKSPACE_HEADER,
@@ -209,7 +211,17 @@ export function withWorkspaceGuard<A extends unknown[], R>(
       if (options.onMismatch) return options.onMismatch(mismatch);
       redirect(workspaceChangedHref(expected, await refererPath()));
     }
-    return runWithPinnedWorkspace(ctx, () => action(...args));
+    // DS-07: a decision re-renders the workspace frame in the same
+    // response (badges, bell, banners), whether it returns or redirects.
+    const refreshes = GUARDED_ACTION_CHROME[id] === 'refresh';
+    try {
+      const result = await runWithPinnedWorkspace(ctx, () => action(...args));
+      if (refreshes) refreshChrome();
+      return result;
+    } catch (err) {
+      if (refreshes && isNextRedirectError(err)) refreshChrome();
+      throw err;
+    }
   };
   return mark(guarded, id);
 }

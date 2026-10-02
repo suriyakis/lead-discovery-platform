@@ -13,7 +13,7 @@ import { workspaceHealthReports } from '@/lib/db/schema/health';
 import { mailboxes } from '@/lib/db/schema/mailing';
 import { workspaceMembers } from '@/lib/db/schema/workspaces';
 import { setPlatformOutboundStop } from '@/lib/services/holds';
-import HealthPage from '@/app/health/page';
+import HealthPage from '@/app/(app)/health/page';
 import { renderToHtml } from './helpers/next-render';
 import { platformCtx } from './helpers/platform';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';

@@ -898,6 +898,8 @@ export const UNLISTED_ROUTES: Readonly<Record<string, string>> = {
   '/mailbox/threads/[id]': 'Legacy URL: a permanent redirect to /communication/[threadId].',
   '/test-only/error-boundary':
     'Test probe that throws on purpose; 404 unless ENABLE_TEST_ROUTES=1.',
+  '/test-only/shell-error':
+    'Test probe: a workspace page that throws, to show the error stays inside the workspace frame (DS-07); 404 unless ENABLE_TEST_ROUTES=1.',
   '/dev/gallery':
     'Design-system component gallery (DS-06) for design review; 404 unless ENABLE_TEST_ROUTES=1.',
   '/workspace-changed':

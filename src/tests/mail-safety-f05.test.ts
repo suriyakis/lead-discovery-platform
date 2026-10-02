@@ -49,7 +49,7 @@ import { drainQueue, sendModeForDraft } from '@/lib/services/outreach-queue';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { createSignature } from '@/lib/services/signatures';
 import { addSuppression } from '@/lib/services/suppression';
-import { buildComposeSendInput } from '@/app/mailbox/[id]/compose/compose-input';
+import { buildComposeSendInput } from '@/app/(app)/mailbox/[id]/compose/compose-input';
 import { GET, HEAD, POST } from '@/app/api/unsubscribe/[token]/route';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 

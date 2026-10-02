@@ -28,7 +28,7 @@ import {
 import { archiveWorkspace } from '@/lib/services/admin';
 import { resolveWorkspaceContextForUser } from '@/lib/services/workspace-resolution';
 import { listMyWorkspaces, setActiveWorkspace } from '@/lib/services/workspace';
-import TodayPage from '@/app/today/page';
+import TodayPage from '@/app/(app)/today/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { platformCtx } from './helpers/platform';
 import { expectRedirect, renderToHtml } from './helpers/next-render';

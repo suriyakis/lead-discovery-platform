@@ -40,16 +40,16 @@ import {
   guardedActionId,
   withWorkspaceGuard,
 } from '@/lib/workspace-guard/server';
-import * as reviewItemActions from '@/app/review/[id]/actions';
-import * as reviewBulkActions from '@/app/review/actions';
-import * as queueActions from '@/app/mailbox/queue/actions';
-import * as composeActions from '@/app/mailbox/[id]/compose/actions';
+import * as reviewItemActions from '@/app/(app)/review/[id]/actions';
+import * as reviewBulkActions from '@/app/(app)/review/actions';
+import * as queueActions from '@/app/(app)/mailbox/queue/actions';
+import * as composeActions from '@/app/(app)/mailbox/[id]/compose/actions';
 import * as pauseActions from '@/lib/automation-pause-actions';
-import * as autopilotActions from '@/app/autopilot/actions';
+import * as autopilotActions from '@/app/(app)/autopilot/actions';
 import { POST as replyPOST } from '@/app/api/communication/reply/route';
 import { POST as assistantPOST } from '@/app/api/assistant/route';
 import { POST as buyTokensPOST } from '@/app/api/stripe/buy-tokens/route';
-import WorkspaceChangedPage from '@/app/workspace-changed/page';
+import WorkspaceChangedPage from '@/app/(app)/workspace-changed/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 import { queuedDraft, setupQueueWorkspace, type QueueSetup } from './helpers/outreach-fixtures';
@@ -103,51 +103,55 @@ const read = (rel: string) => readFileSync(path.join(ROOT, rel), 'utf8');
 
 /** Each registered id → the module (repo path, no extension) and the export it must wrap. */
 const WRAPPED: ReadonlyArray<readonly [GuardedActionId, string, string]> = [
-  ['review.approve', 'src/app/review/[id]/actions', 'approveReviewItemAction'],
-  ['review.reject', 'src/app/review/[id]/actions', 'rejectReviewItemAction'],
-  ['review.ignore', 'src/app/review/[id]/actions', 'ignoreReviewItemAction'],
-  ['review.flag', 'src/app/review/[id]/actions', 'flagReviewItemAction'],
-  ['review.archive', 'src/app/review/[id]/actions', 'archiveReviewItemAction'],
-  ['review.generate_draft', 'src/app/review/[id]/actions', 'generateDraftAction'],
-  ['review.bulk_archive', 'src/app/review/actions', 'bulkArchiveAction'],
-  ['review.bulk_delete', 'src/app/review/actions', 'bulkDeleteAction'],
-  ['draft.approve', 'src/app/drafts/[id]/actions', 'approveDraftAction'],
-  ['draft.enqueue', 'src/app/drafts/[id]/actions', 'enqueueDraftAction'],
-  ['draft.reject', 'src/app/drafts/[id]/actions', 'rejectDraftAction'],
-  ['draft.regenerate', 'src/app/drafts/[id]/actions', 'regenerateDraftAction'],
-  ['draft.archive', 'src/app/drafts/[id]/actions', 'archiveDraftAction'],
-  ['draft.translate', 'src/app/drafts/[id]/actions', 'translateDraftAction'],
-  ['follow_up.approve', 'src/app/communication/follow-ups/actions', 'approveFollowUpAction'],
-  ['follow_up.skip', 'src/app/communication/follow-ups/actions', 'cancelThreadFollowUpsAction'],
-  ['follow_up.reject', 'src/app/communication/follow-ups/actions', 'rejectFollowUpAction'],
+  ['review.approve', 'src/app/(app)/review/[id]/actions', 'approveReviewItemAction'],
+  ['review.reject', 'src/app/(app)/review/[id]/actions', 'rejectReviewItemAction'],
+  ['review.ignore', 'src/app/(app)/review/[id]/actions', 'ignoreReviewItemAction'],
+  ['review.flag', 'src/app/(app)/review/[id]/actions', 'flagReviewItemAction'],
+  ['review.archive', 'src/app/(app)/review/[id]/actions', 'archiveReviewItemAction'],
+  ['review.generate_draft', 'src/app/(app)/review/[id]/actions', 'generateDraftAction'],
+  ['review.bulk_archive', 'src/app/(app)/review/actions', 'bulkArchiveAction'],
+  ['review.bulk_delete', 'src/app/(app)/review/actions', 'bulkDeleteAction'],
+  ['draft.approve', 'src/app/(app)/drafts/[id]/actions', 'approveDraftAction'],
+  ['draft.enqueue', 'src/app/(app)/drafts/[id]/actions', 'enqueueDraftAction'],
+  ['draft.reject', 'src/app/(app)/drafts/[id]/actions', 'rejectDraftAction'],
+  ['draft.regenerate', 'src/app/(app)/drafts/[id]/actions', 'regenerateDraftAction'],
+  ['draft.archive', 'src/app/(app)/drafts/[id]/actions', 'archiveDraftAction'],
+  ['draft.translate', 'src/app/(app)/drafts/[id]/actions', 'translateDraftAction'],
+  ['follow_up.approve', 'src/app/(app)/communication/follow-ups/actions', 'approveFollowUpAction'],
+  [
+    'follow_up.skip',
+    'src/app/(app)/communication/follow-ups/actions',
+    'cancelThreadFollowUpsAction',
+  ],
+  ['follow_up.reject', 'src/app/(app)/communication/follow-ups/actions', 'rejectFollowUpAction'],
   ['communication.reply', 'src/app/api/communication/reply/route', 'POST'],
-  ['communication.compose', 'src/app/mailbox/[id]/compose/actions', 'sendComposeAction'],
+  ['communication.compose', 'src/app/(app)/mailbox/[id]/compose/actions', 'sendComposeAction'],
   [
     'communication.compose_translate',
-    'src/app/mailbox/[id]/compose/actions',
+    'src/app/(app)/mailbox/[id]/compose/actions',
     'translateComposeAction',
   ],
   ['communication.suggest_reply', 'src/app/api/communication/suggest-reply/route', 'POST'],
   ['communication.translate', 'src/app/api/translate/route', 'POST'],
-  ['queue.save_settings', 'src/app/mailbox/queue/actions', 'saveSendSettingsAction'],
-  ['queue.cancel', 'src/app/mailbox/queue/actions', 'cancelQueuedEmailAction'],
-  ['queue.reschedule', 'src/app/mailbox/queue/actions', 'rescheduleQueuedEmailAction'],
-  ['queue.retry', 'src/app/mailbox/queue/actions', 'retryQueuedEmailAction'],
-  ['queue.requeue', 'src/app/mailbox/queue/actions', 'requeueQueuedEmailAction'],
-  ['queue.mark_delivered', 'src/app/mailbox/queue/actions', 'markQueuedEmailDeliveredAction'],
-  ['queue.drain', 'src/app/mailbox/queue/actions', 'drainSendQueueAction'],
-  ['autopilot.save_defaults', 'src/app/autopilot/actions', 'saveAutopilotDefaultsAction'],
-  ['autopilot.save_product', 'src/app/autopilot/actions', 'saveProductAutopilotAction'],
-  ['autopilot.clear_product', 'src/app/autopilot/actions', 'clearProductAutopilotAction'],
-  ['autopilot.pause_product', 'src/app/autopilot/actions', 'pauseProductAction'],
-  ['autopilot.resume_product', 'src/app/autopilot/actions', 'resumeProductAction'],
-  ['autopilot.run_now', 'src/app/autopilot/actions', 'runAutopilotNowAction'],
+  ['queue.save_settings', 'src/app/(app)/mailbox/queue/actions', 'saveSendSettingsAction'],
+  ['queue.cancel', 'src/app/(app)/mailbox/queue/actions', 'cancelQueuedEmailAction'],
+  ['queue.reschedule', 'src/app/(app)/mailbox/queue/actions', 'rescheduleQueuedEmailAction'],
+  ['queue.retry', 'src/app/(app)/mailbox/queue/actions', 'retryQueuedEmailAction'],
+  ['queue.requeue', 'src/app/(app)/mailbox/queue/actions', 'requeueQueuedEmailAction'],
+  ['queue.mark_delivered', 'src/app/(app)/mailbox/queue/actions', 'markQueuedEmailDeliveredAction'],
+  ['queue.drain', 'src/app/(app)/mailbox/queue/actions', 'drainSendQueueAction'],
+  ['autopilot.save_defaults', 'src/app/(app)/autopilot/actions', 'saveAutopilotDefaultsAction'],
+  ['autopilot.save_product', 'src/app/(app)/autopilot/actions', 'saveProductAutopilotAction'],
+  ['autopilot.clear_product', 'src/app/(app)/autopilot/actions', 'clearProductAutopilotAction'],
+  ['autopilot.pause_product', 'src/app/(app)/autopilot/actions', 'pauseProductAction'],
+  ['autopilot.resume_product', 'src/app/(app)/autopilot/actions', 'resumeProductAction'],
+  ['autopilot.run_now', 'src/app/(app)/autopilot/actions', 'runAutopilotNowAction'],
   ['automation.pause', 'src/lib/automation-pause-actions', 'pauseAutomationAction'],
   ['automation.undo_pause', 'src/lib/automation-pause-actions', 'undoPauseAction'],
   ['automation.resume', 'src/lib/automation-pause-actions', 'resumeAutomationAction'],
   ['billing.buy_tokens', 'src/app/api/stripe/buy-tokens/route', 'POST'],
-  ['billing.subscribe', 'src/app/settings/billing/actions', 'subscribeToPlanAction'],
-  ['billing.auto_topup', 'src/app/settings/billing/actions', 'saveAutoTopupAction'],
+  ['billing.subscribe', 'src/app/(app)/settings/billing/actions', 'subscribeToPlanAction'],
+  ['billing.auto_topup', 'src/app/(app)/settings/billing/actions', 'saveAutoTopupAction'],
   ['assistant.ask', 'src/app/api/assistant/route', 'POST'],
 ];
 
@@ -312,7 +316,7 @@ describe('every guarded action is reached with the page’s workspace (MOB-06)',
   });
 
   it('client components that call a guarded action directly pass expectedWorkspaceId', () => {
-    const composeForm = read('src/app/mailbox/[id]/compose/ComposeForm.tsx');
+    const composeForm = read('src/app/(app)/mailbox/[id]/compose/ComposeForm.tsx');
     expect(composeForm).toContain('useExpectedWorkspace()');
     expect(composeForm.match(/expectedWorkspaceId,?\n/g)?.length).toBeGreaterThanOrEqual(2);
   });
@@ -345,16 +349,20 @@ describe('every guarded action is reached with the page’s workspace (MOB-06)',
   });
 
   it('the app shell provides the page’s workspace and the switch notice', () => {
+    // DS-07: the (app) layout renders the shell once for every page; the
+    // shell's state (this session's workspace) is resolved in one place.
+    expect(read('src/app/(app)/layout.tsx')).toContain('<AppShell>{children}</AppShell>');
     const shell = read('src/components/AppShell.tsx');
     expect(shell).toContain('<WorkspaceGuardProvider workspace={pageWorkspace}>');
     expect(shell).toContain('<WorkspaceSwitchNotice />');
-    expect(shell).toContain('resolveSessionWorkspaceContext(session.user)');
+    expect(shell).toContain('<WorkspaceDriftNotice />');
+    expect(read('src/lib/shell/state.ts')).toContain('resolveSessionWorkspaceContext({');
   });
 
   it('links to /go are plain <a> (never prefetched by next/link)', () => {
     const offenders = UI_FILES.filter((f) => /<Link[^>]*href=\{?[^>]*\/go\?/.test(read(f)));
     expect(offenders).toEqual([]);
-    expect(read('src/app/notifications/page.tsx')).toContain('notificationHref(n)');
+    expect(read('src/app/(app)/notifications/page.tsx')).toContain('notificationHref(n)');
   });
 });
 

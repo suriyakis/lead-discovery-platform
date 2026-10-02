@@ -91,7 +91,7 @@ import { raiseOpsEvent } from '@/lib/services/ops-events';
 import { drainQueue, getSendCapUsage, updateSendSettings } from '@/lib/services/outreach-queue';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { setPlatformSecret } from '@/lib/services/secrets';
-import { TodayAttention } from '@/app/today/_attention';
+import { TodayAttention } from '@/app/(app)/today/_attention';
 import { renderToHtml } from './helpers/next-render';
 import { platformCtx } from './helpers/platform';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';

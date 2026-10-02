@@ -245,8 +245,8 @@ describe('badge tones (DS-02 item 3, I151)', () => {
 
   it('the four support pages render the thread status through SupportStatusBadge', () => {
     const pages: Record<string, SupportBadgeAudience> = {
-      'src/app/support/page.tsx': 'customer',
-      'src/app/support/[id]/page.tsx': 'customer',
+      'src/app/(app)/support/page.tsx': 'customer',
+      'src/app/(app)/support/[id]/page.tsx': 'customer',
       'src/app/admin/support/page.tsx': 'admin',
       'src/app/admin/support/[id]/page.tsx': 'admin',
     };

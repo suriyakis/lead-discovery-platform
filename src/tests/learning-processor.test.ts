@@ -83,7 +83,7 @@ vi.mock('@/lib/services/auth-context', () => {
   };
 });
 
-import * as reviewActions from '@/app/review/[id]/actions';
+import * as reviewActions from '@/app/(app)/review/[id]/actions';
 import { GET as getReceiptRoute } from '@/app/api/learning/receipts/[decisionId]/route';
 
 // ---- fixtures -------------------------------------------------------------------

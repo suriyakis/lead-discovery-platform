@@ -9,8 +9,10 @@
 // alike, with the right item marked. It replaces the per-page
 // SettingsNav copies.
 //
-// AppShell wraps every page in <AreaFrame>. Pages outside any area, or
-// in an area with a single page, render untouched.
+// AppShell (rendered once by the (app) layout, DS-07) wraps every page in
+// <AreaFrame>. Pages outside any area, or in an area with a single page,
+// render untouched. The frame reads the pathname on the client, so it
+// follows client navigation without the layout re-rendering.
 //
 // Styles in AreaNav.module.css (the Settings sub-nav is a strip above the
 // page below 1200px, a column beside it from there). The plain class
@@ -27,20 +29,32 @@ import {
   type NavViewer,
 } from '@/lib/nav/resolve';
 import { cx } from '@/lib/ui/cx';
+import { navCountsFromAttention } from '@/lib/attention/project';
 import styles from './AreaNav.module.css';
 import { NavCountBadge } from './NavCountBadge';
+import { useShellAttention } from './ShellAttention';
 
 export interface AreaFrameProps {
   viewer: NavViewer;
+  /** Fixed badge numbers (tests, static renders). Inside the workspace
+   *  frame the numbers come from the frame's attention summary instead. */
   navCounts?: NavCountValues;
+  /** Keys of `navCounts` that failed to load ("—"). */
+  unknownCounts?: ReadonlySet<string>;
   children?: React.ReactNode;
+}
+
+/** The badge numbers the tabs show, and which of them failed to load. */
+interface TabCounts {
+  values?: NavCountValues;
+  unknown?: ReadonlySet<string>;
 }
 
 interface NavLinksProps {
   area: NavArea;
   tabs: NavTab[];
   pathname: string;
-  navCounts?: NavCountValues;
+  counts: TabCounts;
 }
 
 /**
@@ -56,13 +70,25 @@ interface NavLinksProps {
  */
 export function AreaFrame(props: Readonly<AreaFrameProps>) {
   const search = useSearchParams();
-  return <AreaFrameView {...props} search={search?.toString() ?? ''} />;
+  // DS-07: the frame lives in the (app) layout and is not re-rendered on
+  // client navigation, so its tab badges follow the frame's live summary.
+  const summary = useShellAttention()?.summary ?? null;
+  const live = summary ? navCountsFromAttention(summary) : null;
+  return (
+    <AreaFrameView
+      {...props}
+      navCounts={live ? live.values : props.navCounts}
+      unknownCounts={live ? live.unknown : props.unknownCounts}
+      search={search?.toString() ?? ''}
+    />
+  );
 }
 
 /** AreaFrame with the query given explicitly (tests, static renders). */
 export function AreaFrameView({
   viewer,
   navCounts,
+  unknownCounts,
   children,
   search,
 }: Readonly<AreaFrameProps & { search: string }>) {
@@ -82,7 +108,7 @@ export function AreaFrameView({
         area={location.area}
         tabs={tabs}
         pathname={pathname}
-        navCounts={navCounts}
+        counts={{ values: navCounts, unknown: unknownCounts }}
         search={search}
       />
       <div className={cx('area-frame-content', styles.content)}>{children}</div>
@@ -94,12 +120,12 @@ function AreaNavLinks({
   area,
   tabs,
   pathname,
-  navCounts,
+  counts,
   search,
 }: Readonly<NavLinksProps & { search: string }>) {
   const current = resolveNavLocation(pathname, search)?.tab?.id ?? null;
   if (area.navStyle === 'subnav') {
-    return <SubNav area={area} tabs={tabs} current={current} navCounts={navCounts} />;
+    return <SubNav area={area} tabs={tabs} current={current} counts={counts} />;
   }
   return (
     <nav className={cx('area-tabs', styles.tabs)} aria-label={`${area.label} pages`}>
@@ -109,7 +135,7 @@ function AreaNavLinks({
           tab={tab}
           current={tab.id === current}
           className={cx('area-tab', styles.tab)}
-          navCounts={navCounts}
+          counts={counts}
         />
       ))}
     </nav>
@@ -120,12 +146,12 @@ function SubNav({
   area,
   tabs,
   current,
-  navCounts,
+  counts,
 }: Readonly<{
   area: NavArea;
   tabs: NavTab[];
   current: string | null;
-  navCounts?: NavCountValues;
+  counts: TabCounts;
 }>) {
   const sections: Array<{ heading: string; tabs: NavTab[] }> = [];
   for (const tab of tabs) {
@@ -146,7 +172,7 @@ function SubNav({
                   tab={tab}
                   current={tab.id === current}
                   className={cx('area-subnav-link', styles.subnavLink)}
-                  navCounts={navCounts}
+                  counts={counts}
                 />
               </li>
             ))}
@@ -161,9 +187,9 @@ function AreaLink({
   tab,
   current,
   className,
-  navCounts,
-}: Readonly<{ tab: NavTab; current: boolean; className: string; navCounts?: NavCountValues }>) {
-  const count = resolveNavCount(tab.count, navCounts);
+  counts,
+}: Readonly<{ tab: NavTab; current: boolean; className: string; counts: TabCounts }>) {
+  const count = resolveNavCount(tab.count, counts.values, { unknown: counts.unknown });
   return (
     <Link
       href={tab.href}

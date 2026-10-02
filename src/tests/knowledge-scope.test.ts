@@ -61,10 +61,10 @@ import {
   suggestReply,
 } from '@/lib/services/reply-assistant';
 import { createLesson } from '@/lib/services/learning';
-import DocumentsPage from '@/app/documents/page';
-import DocumentDetail from '@/app/documents/[id]/page';
-import KnowledgeSourceDetail from '@/app/knowledge/[id]/page';
-import NewKnowledgeSourcePage from '@/app/knowledge/new/page';
+import DocumentsPage from '@/app/(app)/documents/page';
+import DocumentDetail from '@/app/(app)/documents/[id]/page';
+import KnowledgeSourceDetail from '@/app/(app)/knowledge/[id]/page';
+import NewKnowledgeSourcePage from '@/app/(app)/knowledge/new/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { runQueuedIndexJobs } from './helpers/knowledge';
 import { expectRedirect, renderToHtml } from './helpers/next-render';

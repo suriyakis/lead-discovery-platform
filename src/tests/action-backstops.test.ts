@@ -18,9 +18,9 @@ import { createConnector, createRecipe, startRun } from '@/lib/services/connecto
 import { archiveReviewItem } from '@/lib/services/review';
 import { preauthorizeEmail } from '@/lib/services/users';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ReviewDetailPage from '@/app/review/[id]/page';
-import * as reviewActions from '@/app/review/[id]/actions';
-import * as recipeActions from '@/app/connectors/[id]/recipes/[recipeId]/actions';
+import ReviewDetailPage from '@/app/(app)/review/[id]/page';
+import * as reviewActions from '@/app/(app)/review/[id]/actions';
+import * as recipeActions from '@/app/(app)/connectors/[id]/recipes/[recipeId]/actions';
 import * as adminUserActions from '@/app/admin/users/actions';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { platformCtx } from './helpers/platform';

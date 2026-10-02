@@ -5,7 +5,7 @@
 // closed over local helpers; Next could not serialise those closures, so
 // the bulk Trash / Spam buttons failed in production with "Functions
 // cannot be passed directly to Client Components". They now live in
-// src/app/mailbox/[id]/actions.ts, bound to the mailbox id. These tests
+// src/app/(app)/mailbox/[id]/actions.ts, bound to the mailbox id. These tests
 // run those actions against the database the way the page wires them, and
 // render the page itself. server-action-closures.test.ts guards the
 // closure rule for every page.
@@ -22,8 +22,8 @@ import {
   spamMailboxMessages,
   trashMailboxMessages,
   unspamMailboxMessages,
-} from '@/app/mailbox/[id]/actions';
-import MailboxDetail from '@/app/mailbox/[id]/page';
+} from '@/app/(app)/mailbox/[id]/actions';
+import MailboxDetail from '@/app/(app)/mailbox/[id]/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 

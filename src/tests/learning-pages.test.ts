@@ -11,9 +11,9 @@ import { eq } from 'drizzle-orm';
 import { makeWorkspaceContext, type WorkspaceContext } from '@/lib/services/context';
 import { createLesson, getLesson, learningErrorMessage } from '@/lib/services/learning';
 import { createProductProfile } from '@/lib/services/product-profile';
-import NewLessonPage from '@/app/learning/new/page';
-import EditLessonPage from '@/app/learning/[id]/page';
-import LearningPage from '@/app/learning/page';
+import NewLessonPage from '@/app/(app)/learning/new/page';
+import EditLessonPage from '@/app/(app)/learning/[id]/page';
+import LearningPage from '@/app/(app)/learning/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 

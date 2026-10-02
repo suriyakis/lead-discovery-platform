@@ -13,7 +13,7 @@ import type { ReactNode } from 'react';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import PlatformAuditPage from '@/app/admin/audit/page';
-import WorkspaceAuditPage from '@/app/settings/audit/page';
+import WorkspaceAuditPage from '@/app/(app)/settings/audit/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { renderToHtml } from './helpers/next-render';
 

@@ -271,7 +271,7 @@ describe('the attention store: what it keeps', () => {
     expect(store.getSnapshot().summary?.degraded).toBe(true);
   });
 
-  it('an older answer never replaces a newer server summary; another workspace always does', async () => {
+  it('an older answer never replaces a newer server summary, whatever its workspace', async () => {
     const f = fake();
     const store = createAttentionStore(f.env);
     store.subscribe(() => {});
@@ -279,13 +279,22 @@ describe('the attention store: what it keeps', () => {
     f.respond(() => json(summary({ at: Date.now() - 10_000, reviewOpen: 9 })));
     await store.refresh('focus');
     expect(store.getSnapshot().summary?.counts['review.open']).toBe(5);
-    // The workspace was switched in another tab.
+    // DS-07: an answer for another workspace that was in flight while this
+    // tab switched is older than the new frame's seed: it never replaces it.
     f.respond(() => json(summary({ at: Date.now() - 10_000, reviewOpen: 2, workspaceId: '2' })));
+    await store.refresh('focus');
+    expect(store.getSnapshot().summary).toMatchObject({ workspaceId: '1' });
+    // The workspace was switched in another tab: the newer answer is adopted
+    // (the workspace frame shows it as drift, not as its own numbers).
+    f.respond(() => json(summary({ at: Date.now() + 1000, reviewOpen: 2, workspaceId: '2' })));
     await store.refresh('focus');
     expect(store.getSnapshot().summary).toMatchObject({ workspaceId: '2' });
     // A newer server render of the same workspace is adopted.
     store.seed(summary({ at: Date.now() + 5000, reviewOpen: 1, workspaceId: '2' }));
     expect(store.getSnapshot().summary?.counts['review.open']).toBe(1);
+    // A server render for another workspace (this tab switched) always replaces.
+    store.seed(summary({ at: Date.now() - 60_000, reviewOpen: 7, workspaceId: '1' }));
+    expect(store.getSnapshot().summary).toMatchObject({ workspaceId: '1' });
   });
 
   it('the last reader leaving removes the poll and every listener', async () => {

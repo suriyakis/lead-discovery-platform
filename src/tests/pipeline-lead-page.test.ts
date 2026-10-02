@@ -18,7 +18,7 @@ import { productProfiles } from '@/lib/db/schema/products';
 import { reviewItems } from '@/lib/db/schema/review';
 import { makeWorkspaceContext } from '@/lib/services/context';
 import { createCrmConnection } from '@/lib/services/crm';
-import PipelineLeadDetail from '@/app/pipeline/[id]/page';
+import PipelineLeadDetail from '@/app/(app)/pipeline/[id]/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 

@@ -79,10 +79,10 @@ vi.mock('next/navigation', async (importOriginal) => ({
 }));
 
 const { AppShell } = await import('@/components/AppShell');
-const { default: TodayPage } = await import('@/app/today/page');
-const { NeedsYou } = await import('@/app/today/_needs-you');
-const { default: DraftsPage } = await import('@/app/drafts/page');
-const { default: HealthPage } = await import('@/app/health/page');
+const { default: TodayPage } = await import('@/app/(app)/today/page');
+const { NeedsYou } = await import('@/app/(app)/today/_needs-you');
+const { default: DraftsPage } = await import('@/app/(app)/drafts/page');
+const { default: HealthPage } = await import('@/app/(app)/health/page');
 const { GET: attentionGET } = await import('@/app/api/attention/route');
 
 // ---- helpers ------------------------------------------------------------------

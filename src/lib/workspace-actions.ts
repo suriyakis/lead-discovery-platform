@@ -32,8 +32,9 @@ export async function setActiveWorkspaceAction(workspaceIdRaw: string): Promise<
     sessionToken: token,
   });
   // Force every cached server component to re-render with the new
-  // workspace context. The "layout" scope catches the AppShell layout
-  // shell as well as every page below it.
+  // workspace context. The "layout" scope catches the (app) layout's
+  // workspace frame (DS-07: its assistant and palette are keyed by the
+  // workspace, so they start afresh) as well as every page below it.
   revalidatePath('/', 'layout');
 }
 

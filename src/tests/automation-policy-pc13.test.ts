@@ -101,8 +101,8 @@ import { createMailbox } from '@/lib/services/mailbox';
 import { handleClassifiedReply } from '@/lib/services/outreach-reply-handler';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import type { ReplyClassification } from '@/lib/services/reply-classifier';
-import AutopilotPage from '@/app/autopilot/page';
-import CrawlEnginePage from '@/app/connectors/engine/page';
+import AutopilotPage from '@/app/(app)/autopilot/page';
+import CrawlEnginePage from '@/app/(app)/connectors/engine/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { renderToHtml } from './helpers/next-render';
 
@@ -1037,7 +1037,7 @@ describe('dead toggles are gone (PC-13 (3), I019, I067)', { timeout: 60_000 }, (
   });
 
   it('/settings/outreach no longer offers "Auto-send replies"', () => {
-    const page = readSrc('app/settings/outreach/page.tsx');
+    const page = readSrc('app/(app)/settings/outreach/page.tsx');
     expect(page).not.toContain('Auto-send replies');
     expect(page).toContain('never sent on its own');
   });
@@ -1143,11 +1143,11 @@ describe('pages (PC-13 (4), (5))', { timeout: 60_000 }, () => {
     }
     expect(html).toContain('href="/autopilot"');
     expect(html).toContain('Autopilot ON');
-    const actions = await import('@/app/connectors/engine/actions');
+    const actions = await import('@/app/(app)/connectors/engine/actions');
     expect(Object.keys(actions).sort()).toEqual(
       ['createPlan', 'deletePlanAction', 'reclassifyAll', 'runPlanAction', 'savePlan'].sort(),
     );
-    expect(readSrc('app/connectors/engine/actions.ts')).not.toMatch(/updateAutopilotSettings/);
+    expect(readSrc('app/(app)/connectors/engine/actions.ts')).not.toMatch(/updateAutopilotSettings/);
   });
 
   it('/autopilot renders exactly the resolver flow, and its copy has no dead switches', async () => {

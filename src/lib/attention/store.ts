@@ -115,10 +115,13 @@ export function createAttentionStore(env: AttentionEnv): AttentionStore {
         set({ loading: false, error: 'invalid' });
         return;
       }
-      // A different workspace (switched in another tab) always replaces.
+      // The newer one wins, whatever its workspace: an answer for another
+      // workspace computed after the frame's (a switch in another tab) is
+      // adopted — the workspace frame shows it as drift, not as its own
+      // numbers (DS-07) — but one that was in flight across a switch in
+      // THIS tab is older than the new frame's seed and never replaces it.
       const current = snapshot.summary;
-      const next =
-        current && current.workspaceId !== body.workspaceId ? body : newerSummary(current, body);
+      const next = newerSummary(current, body);
       set({
         summary: next,
         loading: false,
@@ -195,6 +198,8 @@ export function createAttentionStore(env: AttentionEnv): AttentionStore {
     getSnapshot: () => snapshot,
     seed(summary) {
       if (!summary) return;
+      // A server render is the frame's own state: one for another workspace
+      // (this tab switched) always replaces what the store held.
       const current = snapshot.summary;
       const next =
         current && current.workspaceId !== summary.workspaceId

@@ -9,7 +9,7 @@ it". Every surface reads it; none keeps a second diagnostic query (I129):
 | Weekly report (`runWorkspaceHealthCheck`) | same, plus the AI conversation review | refreshes it |
 | 6-hourly notify sweep (`runDiagnosticsSweep`, `health.check.tick`) | same, every active workspace, no AI | refreshes it |
 | Assistant `<workspace_state>` (`assistant.ts`) | same, the 12 most severe findings plus counts | refreshes it |
-| Today "Needs fixing" (`app/today/_attention.tsx`) | `getWorkspaceDiagnostics(ctx)` | 30 s per workspace |
+| Today "Needs fixing" (`app/(app)/today/_attention.tsx`) | `getWorkspaceDiagnostics(ctx)` | 30 s per workspace |
 | Attention summary (`src/lib/attention`, `GET /api/attention`, the sidebar; MOB-02) | `getWorkspaceDiagnostics(ctx, { maxAgeMs: DIAGNOSTICS_ATTENTION_MAX_AGE_MS })` | stale-while-revalidate: a settled result up to 5 min old at once, refreshed in the background |
 
 ## Files
