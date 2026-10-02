@@ -12,6 +12,7 @@ import {
   type UpdateReplyAutoActionsInput,
 } from '@/lib/services/reply-auto-actions';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
 /**
  * Save the four reply auto-action switches. The form always posts every
@@ -20,8 +21,12 @@ import { isNextRedirectError } from '@/lib/server-redirect';
  * session (signed out, inactive, no workspace) redirects like every other
  * Phase 0 action instead of reaching the error page; resolved outside the
  * try, since requireActionContext() redirects by throwing.
+ *
+ * MOB-06: behind the expected-workspace guard — the switches decide what
+ * happens to inbound mail without a person, so a stale tab must not flip
+ * them in the workspace another tab switched to.
  */
-export async function saveReplyAutoActions(formData: FormData): Promise<void> {
+async function saveReplyAutoActionsForm(formData: FormData): Promise<void> {
   const ctx = await requireActionContext();
   const input: UpdateReplyAutoActionsInput = {};
   for (const key of REPLY_AUTO_ACTION_KEYS) {
@@ -41,3 +46,8 @@ export async function saveReplyAutoActions(formData: FormData): Promise<void> {
     redirect(`/settings/outreach?error=${encodeURIComponent(m)}`);
   }
 }
+
+export const saveReplyAutoActions = withWorkspaceGuard(
+  'settings.reply_auto_actions',
+  saveReplyAutoActionsForm,
+);

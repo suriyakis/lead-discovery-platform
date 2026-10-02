@@ -17,6 +17,7 @@ import { Alert } from '@/components/Alert';
 import { FindingList } from '@/components/FindingList';
 import { ScoreChip } from '@/components/Badge';
 import { TableScroll } from '@/components/TableScroll';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { Field, Select, Switch } from '@/components/ui';
 import { getWorkspaceDiagnostics } from '@/lib/diagnostics/engine';
 import { isProblem } from '@/lib/diagnostics/types';
@@ -135,6 +136,7 @@ export default async function HealthPage({
           {isAdmin ? (
             <div className={styles.controls}>
               <form action={saveHealthCheckSettingsAction} className={styles.settings}>
+                <ExpectedWorkspaceField />
                 <Switch
                   name="enabled"
                   label="Scheduled check with AI review"
@@ -156,6 +158,7 @@ export default async function HealthPage({
                 </button>
               </form>
               <form action={runHealthCheckNowAction}>
+                <ExpectedWorkspaceField />
                 <button type="submit" className="ghost-btn">
                   <Play className="lucide" aria-hidden="true" /> Run check now
                 </button>

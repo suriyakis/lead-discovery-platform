@@ -14,6 +14,7 @@ import type {
   ReplyAutoActionsImpact,
 } from '@/lib/services/reply-auto-actions';
 import { Switch } from '@/components/ui';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 
 const ROWS: ReadonlyArray<{ key: ReplyAutoActionKey; title: string; sub: string }> = [
   {
@@ -145,6 +146,8 @@ export function ReplyAutoActionsCard({
     </section>
   ) : (
     <form action={action} className="config-card" aria-label="Reply auto-actions">
+      {/* MOB-06: the save action is guarded; post the page's workspace. */}
+      <ExpectedWorkspaceField />
       {body}
     </form>
   );

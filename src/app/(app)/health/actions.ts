@@ -4,7 +4,9 @@
 // they never close over page-local helpers. The services enforce
 // admin-only and write the audit row; a stale session redirects like every
 // other action (requireActionContext, outside the try: it redirects by
-// throwing).
+// throwing). Both are behind the expected-workspace guard (MOB-06): a run
+// spends AI tokens and the settings switch the scheduled spend on, so a
+// stale tab must not do either in the workspace another tab switched to.
 
 import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';
@@ -14,6 +16,7 @@ import {
   updateHealthCheckSettings,
 } from '@/lib/services/health-check';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
 const HEALTH_PATH = '/health';
 
@@ -26,7 +29,7 @@ function healthErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function runHealthCheckNowAction(): Promise<void> {
+async function runHealthCheckNowForm(_formData?: FormData): Promise<void> {
   const ctx = await requireActionContext();
   try {
     await runHealthCheckNow(ctx);
@@ -39,8 +42,10 @@ export async function runHealthCheckNowAction(): Promise<void> {
   }
 }
 
+export const runHealthCheckNowAction = withWorkspaceGuard('health.run_check', runHealthCheckNowForm);
+
 /** The form posts `enabled` (a Switch: "on" or absent) and `intervalDays`. */
-export async function saveHealthCheckSettingsAction(formData: FormData): Promise<void> {
+async function saveHealthCheckSettingsForm(formData: FormData): Promise<void> {
   const ctx = await requireActionContext();
   const enabled = formData.get('enabled') === 'on';
   const intervalDays = Number(formData.get('intervalDays'));
@@ -60,3 +65,8 @@ export async function saveHealthCheckSettingsAction(formData: FormData): Promise
     );
   }
 }
+
+export const saveHealthCheckSettingsAction = withWorkspaceGuard(
+  'health.save_settings',
+  saveHealthCheckSettingsForm,
+);

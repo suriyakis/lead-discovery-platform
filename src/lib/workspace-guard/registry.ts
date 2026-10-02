@@ -50,6 +50,13 @@ export const GUARDED_ACTIONS = {
   'automation.pause': 'Pause all automation',
   'automation.undo_pause': 'Undo a pause',
   'automation.resume': 'Resume automation',
+  // Inbound auto-actions (decide what happens to replies without a person)
+  'settings.reply_auto_actions': 'Save the reply auto-actions',
+  // Discovery (re-classifying spends AI tokens on every record)
+  'discovery.reclassify_all': 'Re-classify every record',
+  // Health (the AI conversation review spends tokens)
+  'health.run_check': 'Run the health check now',
+  'health.save_settings': 'Change the scheduled health check',
   // Billing (spend)
   'billing.buy_tokens': 'Buy a token pack',
   'billing.subscribe': 'Subscribe to a plan',
@@ -110,6 +117,10 @@ export const GUARDED_ACTION_CHROME: Readonly<Record<GuardedActionId, 'refresh' |
   'automation.pause': 'refresh',
   'automation.undo_pause': 'refresh',
   'automation.resume': 'refresh',
+  'settings.reply_auto_actions': 'refresh',
+  'discovery.reclassify_all': 'refresh',
+  'health.run_check': 'refresh',
+  'health.save_settings': 'refresh',
   'billing.buy_tokens': 'refresh',
   'billing.subscribe': 'refresh',
   'billing.auto_topup': 'refresh',

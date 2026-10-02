@@ -17,6 +17,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -179,6 +180,7 @@ export default async function CrawlEnginePage({
                 <Settings2 className="lucide" /> Change on Autopilot
               </Link>
               <form action={reclassifyAll}>
+                <ExpectedWorkspaceField />
                 <button
                   type="submit"
                   className="ghost-btn"

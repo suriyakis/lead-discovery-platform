@@ -46,6 +46,9 @@ import * as queueActions from '@/app/(app)/mailbox/queue/actions';
 import * as composeActions from '@/app/(app)/mailbox/[id]/compose/actions';
 import * as pauseActions from '@/lib/automation-pause-actions';
 import * as autopilotActions from '@/app/(app)/autopilot/actions';
+import * as engineActions from '@/app/(app)/connectors/engine/actions';
+import * as healthActions from '@/app/(app)/health/actions';
+import * as replyAutoActions from '@/app/(app)/settings/outreach/actions';
 import { POST as replyPOST } from '@/app/api/communication/reply/route';
 import { POST as assistantPOST } from '@/app/api/assistant/route';
 import { POST as buyTokensPOST } from '@/app/api/stripe/buy-tokens/route';
@@ -149,6 +152,14 @@ const WRAPPED: ReadonlyArray<readonly [GuardedActionId, string, string]> = [
   ['automation.pause', 'src/lib/automation-pause-actions', 'pauseAutomationAction'],
   ['automation.undo_pause', 'src/lib/automation-pause-actions', 'undoPauseAction'],
   ['automation.resume', 'src/lib/automation-pause-actions', 'resumeAutomationAction'],
+  [
+    'settings.reply_auto_actions',
+    'src/app/(app)/settings/outreach/actions',
+    'saveReplyAutoActions',
+  ],
+  ['discovery.reclassify_all', 'src/app/(app)/connectors/engine/actions', 'reclassifyAll'],
+  ['health.run_check', 'src/app/(app)/health/actions', 'runHealthCheckNowAction'],
+  ['health.save_settings', 'src/app/(app)/health/actions', 'saveHealthCheckSettingsAction'],
   ['billing.buy_tokens', 'src/app/api/stripe/buy-tokens/route', 'POST'],
   ['billing.subscribe', 'src/app/(app)/settings/billing/actions', 'subscribeToPlanAction'],
   ['billing.auto_topup', 'src/app/(app)/settings/billing/actions', 'saveAutoTopupAction'],
@@ -308,6 +319,7 @@ describe('every guarded action is reached with the page’s workspace (MOB-06)',
     for (const file of [
       'src/components/FollowUpApprovalRow.tsx',
       'src/components/AutomationPauseControl.tsx',
+      'src/app/(app)/settings/outreach/ReplyAutoActionsCard.tsx',
     ]) {
       const forms = formsIn(read(file));
       expect(forms.length, file).toBeGreaterThan(0);
@@ -561,6 +573,28 @@ describe('a stale tab after a workspace switch (MOB-06)', () => {
       const res = await call();
       expect(res.status).toBe(409);
       expect((await res.json()).error).toBe('workspace_changed');
+    }
+    expect(await snapshot(w)).toEqual(before);
+  });
+
+  it('re-classify, the health check and the reply auto-actions are refused the same way', async () => {
+    // Each spends AI tokens or decides what happens to inbound mail; a
+    // stale tab must do neither in the workspace another tab switched to.
+    const w = await world();
+    await switchInAnotherTab(w);
+    const before = await snapshot(w);
+    const one = w.one.toString();
+    for (const run of [
+      () => engineActions.reclassifyAll(claimedForm(one)),
+      () => healthActions.runHealthCheckNowAction(claimedForm(one)),
+      () =>
+        healthActions.saveHealthCheckSettingsAction(
+          claimedForm(one, { enabled: 'on', intervalDays: '7' }),
+        ),
+      () =>
+        replyAutoActions.saveReplyAutoActions(claimedForm(one, { autoSuppressUnsubscribe: 'on' })),
+    ]) {
+      expect((await expectRedirect(run)).startsWith(`/workspace-changed?ws=${one}`)).toBe(true);
     }
     expect(await snapshot(w)).toEqual(before);
   });

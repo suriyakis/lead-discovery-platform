@@ -14,6 +14,7 @@ import {
   updateCrawlPlan,
 } from '@/lib/services/crawl-engine';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
 function bigintArrayFromFormData(formData: FormData, name: string): bigint[] {
   const out: bigint[] = [];
@@ -141,7 +142,9 @@ export async function runPlanAction(formData: FormData): Promise<void> {
   }
 }
 
-export async function reclassifyAll(formData: FormData): Promise<void> {
+// MOB-06: re-classifying every record spends AI tokens, so a stale tab
+// (the browser switched workspace in another tab) is refused.
+async function reclassifyAllForm(formData: FormData): Promise<void> {
   const c = await getWorkspaceContext();
   try {
     const { reclassifyWorkspace } = await import('@/lib/services/qualification');
@@ -161,6 +164,8 @@ export async function reclassifyAll(formData: FormData): Promise<void> {
   }
   void formData;
 }
+
+export const reclassifyAll = withWorkspaceGuard('discovery.reclassify_all', reclassifyAllForm);
 
 export async function deletePlanAction(formData: FormData): Promise<void> {
   const c = await getWorkspaceContext();
