@@ -167,7 +167,7 @@ The review queue. State, assigned user, comments (separate `review_comments` tab
 Linked to a workspace, product profile, and target entity (company/contact/opportunity).
 
 ### `learning_events`, `learning_lessons` (Phase 5)
-`learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12.
+`learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12. An event recorded for an autopilot decision has `user_id` NULL (PC-11); a review item autopilot approved has `approved_by_user_id` NULL and `approval_reason` 'autopilot'.
 
 ### `remediation_runs`, `remediation_log` (Phase 0, flow:F-06)
 Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`). Not tenant-owned: a run spans workspaces and is driven by a platform super admin.

@@ -91,6 +91,9 @@ export interface FeedbackInput {
   actionType: string;
   originalComment?: string | null;
   confidence?: number;
+  /** PC-11 (I034): 'autopilot' for a decision autopilot made — its event
+   *  carries no person (user_id NULL). Default 'operator'. */
+  origin?: 'operator' | 'autopilot';
 }
 
 /**
@@ -123,7 +126,7 @@ export async function recordFeedback(
   return db.transaction(async (tx) => {
     const eventRow: NewLearningEvent = {
       workspaceId: ctx.workspaceId,
-      userId: ctx.userId,
+      userId: input.origin === 'autopilot' ? null : ctx.userId,
       entityType: input.entityType ?? null,
       entityId: input.entityId ?? null,
       productProfileId: input.productProfileId ?? null,

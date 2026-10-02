@@ -17,11 +17,39 @@
 // in id order, and the deal step skips leads whose contact is not synced
 // (I072).
 //
+// PC-11 (I018): every candidate query filters in SQL before its LIMIT, so
+// the per-run cap only counts work the step will do and a backlog drains
+// across runs. Auto-approve: the product's enablement and threshold, one
+// candidate per review item (approved once, origin 'autopilot', via
+// autopilotApproveReviewItem). Generate + queue: no live draft for the pair
+// yet, its pipeline lead has a plausible contact email (I001: no draft is
+// written for a lead nobody can be emailed at — those pairs are counted as
+// needs_contact), oldest approval first. The CRM steps push with origin
+// 'autopilot' and every succeeded push is on the lead's timeline. A step's
+// errors are reported once per run as an ops incident, one per step per
+// day (autopilot-incidents.ts).
+//
 // All steps lean on existing services so the autopilot stays a thin
 // orchestrator: it never reaches into the DB to do work that already has
 // a service entry point.
 
-import { and, asc, desc, eq, exists, gte, isNotNull, notExists, notInArray, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  exists,
+  gte,
+  inArray,
+  isNotNull,
+  ne,
+  notExists,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import {
@@ -54,8 +82,15 @@ import {
   type AutomationPolicy,
   type AutopilotStepKey,
 } from './automation-policy';
+import {
+  LOG_ONCE_INCIDENT_SINK,
+  reportAutopilotStepErrors,
+  type AutopilotIncidentSink,
+  type AutopilotStepErrors,
+} from './autopilot-incidents';
+import { plausibleEmailSql } from './contacts';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
-import { approveReviewItem } from './review';
+import { autopilotApproveReviewItem } from './review';
 import { approveOutreachDraft, generateOutreachDraft } from './outreach';
 import { enqueueDraft } from './outreach-queue';
 import { defaultMailbox } from './mailbox';
@@ -505,6 +540,9 @@ export interface AutopilotRunResult {
 export interface RunOptions {
   /** Test seam — the CRM connector the CRM steps push through. */
   crmConnectorOverride?: ICRMConnector;
+  /** PC-11: where step errors are reported, once per step and run (default:
+   *  logged once per step and day; PC-07's raiseOpsEvent once integrated). */
+  incidentSink?: AutopilotIncidentSink;
 }
 
 export async function runOnce(
@@ -547,24 +585,78 @@ export async function runOnce(
   // step's own capability (a Sending or CRM-sync hold skips just that
   // step, recorded with why). Each step re-checks before every item too
   // (itemHeld), and PC-13 re-reads the item's product pause.
+  const tally = new StepErrorTally();
   for (const step of AUTOPILOT_STEP_KEYS) {
     if (!policy.autopilot.steps[step]) continue;
     const capability = AUTOPILOT_STEP_CAPABILITY[step];
     const held = capability ? await heldStep(ctx, runId, step, capability) : null;
-    steps.push(held ?? (await STEP_RUNNERS[step](ctx, runId, policy, options)));
+    steps.push(held ?? (await runStep(step, { ctx, runId, policy, options, tally })));
   }
+
+  // PC-11: each step that had errors → one incident report for this run.
+  await reportAutopilotStepErrors(options.incidentSink ?? LOG_ONCE_INCIDENT_SINK, {
+    workspaceId: ctx.workspaceId,
+    runId,
+    at: ranAt,
+    errors: tally.byStep,
+  });
 
   return { runId, ranAt, steps };
 }
 
 type StepResult = AutopilotRunResult['steps'][number];
 
-type StepRunner = (
-  ctx: WorkspaceContext,
-  runId: string,
-  policy: AutomationPolicy,
-  options: RunOptions,
-) => Promise<StepResult>;
+/** What a step runner gets: the run, its policy and the error tally. */
+interface StepRun {
+  ctx: WorkspaceContext;
+  runId: string;
+  policy: AutomationPolicy;
+  options: RunOptions;
+  tally: StepErrorTally;
+}
+
+type StepRunner = (run: StepRun) => Promise<StepResult>;
+
+/** PC-11: the errors of each step in one run (failed items, failed CRM
+ *  pushes, a step that threw). */
+class StepErrorTally {
+  readonly byStep = new Map<AutopilotStepKey, AutopilotStepErrors>();
+
+  add(step: AutopilotStepKey, message: string): void {
+    const seen = this.byStep.get(step);
+    if (seen) seen.count++;
+    else this.byStep.set(step, { count: 1, first: message });
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Record an item's error on the run log and count it for the step. */
+async function itemError(
+  run: StepRun,
+  step: AutopilotStepKey,
+  message: string,
+  entityType: string,
+  entityId: string,
+): Promise<void> {
+  run.tally.add(step, message);
+  await recordStep(run.ctx, run.runId, step, 'error', message, entityType, entityId);
+}
+
+/** Run one step. A step that throws (its candidate query, say) is recorded
+ *  as an error and counted; the run goes on with the next step. */
+async function runStep(step: AutopilotStepKey, run: StepRun): Promise<StepResult> {
+  try {
+    return await STEP_RUNNERS[step](run);
+  } catch (err) {
+    const detail = errorMessage(err).slice(0, 500);
+    run.tally.add(step, detail);
+    await recordStep(run.ctx, run.runId, step, 'error', detail);
+    return { step, outcome: 'error', detail };
+  }
+}
 
 // ---- steps -------------------------------------------------------
 
@@ -630,69 +722,128 @@ function productSkipNote(n: number): string {
   return n > 0 ? ` product_skipped=${n}` : '';
 }
 
-async function stepAutoApproveProjects(
-  ctx: WorkspaceContext,
-  runId: string,
-  policy: AutomationPolicy,
-): Promise<StepResult> {
+/** review_items ⨝ qualifications: one row per (item, product classified). */
+function itemQualificationJoin(): SQL | undefined {
+  return and(
+    eq(qualifications.workspaceId, reviewItems.workspaceId),
+    eq(qualifications.sourceRecordId, reviewItems.sourceRecordId),
+  );
+}
+
+/** PC-11 (I018): the score reaches the product's threshold — the policy's
+ *  (the higher of the workspace's and the product's) — in SQL. */
+function reachesApprovalThreshold(policy: AutomationPolicy): SQL | undefined {
+  const base = policy.autopilot.autoApproveThreshold;
+  const raised = policy.products.filter((p) => p.autoApproveThreshold > base);
+  const atBase = gte(qualifications.relevanceScore, base);
+  if (raised.length === 0) return atBase;
+  return or(
+    and(
+      notInArray(
+        qualifications.productProfileId,
+        raised.map((p) => p.productProfileId),
+      ),
+      atBase,
+    ),
+    ...raised.map((p) =>
+      and(
+        eq(qualifications.productProfileId, p.productProfileId),
+        gte(qualifications.relevanceScore, p.autoApproveThreshold),
+      ),
+    ),
+  );
+}
+
+/**
+ * PC-11 (I018): a qualification that makes autopilot approve its review
+ * item, in SQL, so the per-run cap only counts items autopilot acts on: the
+ * item is still 'new', the qualification relevant, its product runs the
+ * step (not switched off or paused, autopilot not off for it) and the score
+ * reaches that product's threshold.
+ */
+function autoApproveEligible(ctx: WorkspaceContext, policy: AutomationPolicy): SQL | undefined {
+  return and(
+    eq(reviewItems.workspaceId, ctx.workspaceId),
+    eq(reviewItems.state, 'new'),
+    eq(qualifications.isRelevant, true),
+    excludeProducts(policy, 'auto_approve_projects', qualifications.productProfileId),
+    reachesApprovalThreshold(policy),
+  );
+}
+
+async function stepAutoApproveProjects(run: StepRun): Promise<StepResult> {
+  const { ctx, runId, policy } = run;
   const step = 'auto_approve_projects';
-  // Review items still 'new' with a relevant qualification, best first;
-  // each product's threshold (never below the workspace's) is applied per
-  // item.
+  // One candidate per review item (its best eligible score), best first:
+  // an item relevant to several products is approved once.
+  const bestScore = sql<number>`max(${qualifications.relevanceScore})`.mapWith(Number);
   const candidates = await db
-    .select({ ri: reviewItems, q: qualifications })
+    .select({ reviewItemId: reviewItems.id, score: bestScore })
     .from(reviewItems)
-    .innerJoin(
-      qualifications,
-      and(
-        eq(qualifications.workspaceId, reviewItems.workspaceId),
-        eq(qualifications.sourceRecordId, reviewItems.sourceRecordId),
-      ),
-    )
-    .where(
-      and(
-        eq(reviewItems.workspaceId, ctx.workspaceId),
-        eq(reviewItems.state, 'new'),
-        eq(qualifications.isRelevant, true),
-        excludeProducts(policy, step, qualifications.productProfileId),
-      ),
-    )
-    .orderBy(desc(qualifications.relevanceScore))
+    .innerJoin(qualifications, itemQualificationJoin())
+    .where(autoApproveEligible(ctx, policy))
+    .groupBy(reviewItems.id)
+    .orderBy(desc(bestScore), asc(reviewItems.id))
     .limit(policy.autopilot.maxApprovalsPerRun);
+
+  // The products each candidate is approved for.
+  const productsByItem = new Map<string, bigint[]>();
+  if (candidates.length > 0) {
+    const rows = await db
+      .select({
+        reviewItemId: reviewItems.id,
+        productProfileId: qualifications.productProfileId,
+      })
+      .from(reviewItems)
+      .innerJoin(qualifications, itemQualificationJoin())
+      .where(
+        and(
+          autoApproveEligible(ctx, policy),
+          inArray(
+            reviewItems.id,
+            candidates.map((c) => c.reviewItemId),
+          ),
+        ),
+      )
+      .orderBy(asc(reviewItems.id), asc(qualifications.productProfileId));
+    for (const r of rows) {
+      const key = r.reviewItemId.toString();
+      productsByItem.set(key, [...(productsByItem.get(key) ?? []), r.productProfileId]);
+    }
+  }
 
   let approved = 0;
   let productSkipped = 0;
-  for (const row of candidates) {
+  for (const c of candidates) {
     if (await itemHeld(ctx, runId, step, ['autopilot'])) break;
-    if (await productSkips(ctx, policy, step, row.q.productProfileId)) {
+    // PC-13: a product paused since the run started no longer counts.
+    const products: bigint[] = [];
+    for (const productId of productsByItem.get(c.reviewItemId.toString()) ?? []) {
+      if (!(await productSkips(ctx, policy, step, productId))) products.push(productId);
+    }
+    if (products.length === 0) {
       productSkipped++;
       continue;
     }
-    if (row.q.relevanceScore < productPolicy(policy, row.q.productProfileId).autoApproveThreshold) {
-      continue;
-    }
     try {
-      await approveReviewItem(ctx, row.ri.id);
-      approved++;
+      const r = await autopilotApproveReviewItem(ctx, c.reviewItemId, {
+        runId,
+        productProfileIds: products,
+      });
+      if (r.approved) approved++;
       await recordStep(
         ctx,
         runId,
         step,
-        'success',
-        `score=${row.q.relevanceScore} product=${row.q.productProfileId}`,
+        r.approved ? 'success' : 'skipped',
+        r.approved
+          ? `score=${c.score} products=${products.join(',')}`
+          : 'no longer new: someone decided it first',
         'review_item',
-        row.ri.id.toString(),
+        c.reviewItemId.toString(),
       );
     } catch (err) {
-      await recordStep(
-        ctx,
-        runId,
-        step,
-        'error',
-        err instanceof Error ? err.message : String(err),
-        'review_item',
-        row.ri.id.toString(),
-      );
+      await itemError(run, step, errorMessage(err), 'review_item', c.reviewItemId.toString());
     }
   }
   return {
@@ -702,11 +853,54 @@ async function stepAutoApproveProjects(
   };
 }
 
-async function stepAutoEnqueueOutreach(
+/**
+ * PC-11 (I018, I001): the (approved item, relevant product) pairs generate
+ * + queue still has to do, in SQL before the LIMIT: the product runs the
+ * step; the pair has no draft other than superseded ones (a drafted pair
+ * never uses up the cap again); and the pair's pipeline lead has a
+ * plausible contact email — `contact: 'waiting'` selects the pairs that
+ * lack one instead (counted for the run log, never drafted).
+ */
+function enqueuePairs(
   ctx: WorkspaceContext,
-  runId: string,
   policy: AutomationPolicy,
-): Promise<StepResult> {
+  contact: 'has_email' | 'waiting',
+): SQL | undefined {
+  const leadWithEmail = db
+    .select({ id: qualifiedLeads.id })
+    .from(qualifiedLeads)
+    .where(
+      and(
+        eq(qualifiedLeads.workspaceId, reviewItems.workspaceId),
+        eq(qualifiedLeads.reviewItemId, reviewItems.id),
+        eq(qualifiedLeads.productProfileId, qualifications.productProfileId),
+        plausibleEmailSql(qualifiedLeads.contactEmail),
+      ),
+    );
+  return and(
+    eq(reviewItems.workspaceId, ctx.workspaceId),
+    eq(reviewItems.state, 'approved'),
+    eq(qualifications.isRelevant, true),
+    excludeProducts(policy, 'auto_enqueue_outreach', qualifications.productProfileId),
+    notExists(
+      db
+        .select({ id: outreachDrafts.id })
+        .from(outreachDrafts)
+        .where(
+          and(
+            eq(outreachDrafts.workspaceId, reviewItems.workspaceId),
+            eq(outreachDrafts.reviewItemId, reviewItems.id),
+            eq(outreachDrafts.productProfileId, qualifications.productProfileId),
+            ne(outreachDrafts.status, 'superseded'),
+          ),
+        ),
+    ),
+    contact === 'has_email' ? exists(leadWithEmail) : notExists(leadWithEmail),
+  );
+}
+
+async function stepAutoEnqueueOutreach(run: StepRun): Promise<StepResult> {
+  const { ctx, runId, policy } = run;
   const step = 'auto_enqueue_outreach';
   // Approved review items with a relevant qualification and no draft for
   // that product yet: generate a draft + enqueue.
@@ -717,25 +911,20 @@ async function stepAutoEnqueueOutreach(
     await recordStep(ctx, runId, step, 'skipped', 'no default mailbox');
     return { step, outcome: 'skipped', detail: 'no default mailbox' };
   }
+  // Oldest approval first, so every pair gets its turn across runs.
   const candidates = await db
     .select({ ri: reviewItems, q: qualifications })
     .from(reviewItems)
-    .innerJoin(
-      qualifications,
-      and(
-        eq(qualifications.workspaceId, reviewItems.workspaceId),
-        eq(qualifications.sourceRecordId, reviewItems.sourceRecordId),
-      ),
-    )
-    .where(
-      and(
-        eq(reviewItems.workspaceId, ctx.workspaceId),
-        eq(reviewItems.state, 'approved'),
-        eq(qualifications.isRelevant, true),
-        excludeProducts(policy, step, qualifications.productProfileId),
-      ),
-    )
+    .innerJoin(qualifications, itemQualificationJoin())
+    .where(enqueuePairs(ctx, policy, 'has_email'))
+    .orderBy(asc(reviewItems.approvedAt), asc(reviewItems.id), asc(qualifications.productProfileId))
     .limit(policy.autopilot.maxEnqueuesPerRun);
+  const [waiting] = await db
+    .select({ n: count() })
+    .from(reviewItems)
+    .innerJoin(qualifications, itemQualificationJoin())
+    .where(enqueuePairs(ctx, policy, 'waiting'));
+  const needsContact = Number(waiting?.n ?? 0);
 
   let enqueued = 0;
   let productSkipped = 0;
@@ -747,21 +936,6 @@ async function stepAutoEnqueueOutreach(
     }
     const productMailboxId =
       productPolicy(policy, row.q.productProfileId).defaultMailboxId ?? mailboxId;
-
-    // Skip if this (review_item, product) already has a non-superseded draft.
-    const existing = await db
-      .select({ id: outreachDrafts.id })
-      .from(outreachDrafts)
-      .where(
-        and(
-          eq(outreachDrafts.workspaceId, ctx.workspaceId),
-          eq(outreachDrafts.reviewItemId, row.ri.id),
-          eq(outreachDrafts.productProfileId, row.q.productProfileId),
-          sql`${outreachDrafts.status} <> 'superseded'`,
-        ),
-      )
-      .limit(1);
-    if (existing[0]) continue;
 
     try {
       const draft = await generateOutreachDraft(ctx, {
@@ -789,21 +963,15 @@ async function stepAutoEnqueueOutreach(
         draft.id.toString(),
       );
     } catch (err) {
-      await recordStep(
-        ctx,
-        runId,
-        step,
-        'error',
-        err instanceof Error ? err.message : String(err),
-        'review_item',
-        row.ri.id.toString(),
-      );
+      await itemError(run, step, errorMessage(err), 'review_item', row.ri.id.toString());
     }
   }
   return {
     step,
     outcome: 'success',
-    detail: `enqueued=${enqueued}/${candidates.length}${productSkipNote(productSkipped)}`,
+    detail: `enqueued=${enqueued}/${candidates.length}${
+      needsContact > 0 ? ` needs_contact=${needsContact}` : ''
+    }${productSkipNote(productSkipped)}`,
   };
 }
 
@@ -855,12 +1023,24 @@ function needsCrmPush(
   );
 }
 
-async function stepAutoCrmContactSync(
-  ctx: WorkspaceContext,
-  runId: string,
-  policy: AutomationPolicy,
-  options: RunOptions,
-): Promise<StepResult> {
+/** Record one CRM push on the run log; a failed push is an error of the
+ *  step (counted for its incident) like a thrown one. */
+async function recordCrmPush(
+  run: StepRun,
+  step: AutopilotStepKey,
+  leadId: bigint,
+  entry: { outcome: string; error: string | null },
+): Promise<boolean> {
+  if (entry.outcome === 'succeeded') {
+    await recordStep(run.ctx, run.runId, step, 'success', null, 'qualified_lead', leadId.toString());
+    return true;
+  }
+  await itemError(run, step, entry.error ?? `push ${entry.outcome}`, 'qualified_lead', leadId.toString());
+  return false;
+}
+
+async function stepAutoCrmContactSync(run: StepRun): Promise<StepResult> {
+  const { ctx, runId, policy, options } = run;
   const step = 'auto_crm_contact_sync';
   const conn = await crmConnectionFor(ctx, policy);
   if (!conn) {
@@ -877,7 +1057,7 @@ async function stepAutoCrmContactSync(
     .where(
       and(
         eq(qualifiedLeads.workspaceId, ctx.workspaceId),
-        sql`${qualifiedLeads.state} IN ('qualified', 'handed_over')`,
+        inArray(qualifiedLeads.state, ['qualified', 'handed_over']),
         excludeProducts(policy, step, qualifiedLeads.productProfileId),
         needsCrmPush(ctx, conn.id, 'contact', new Date()),
       ),
@@ -899,27 +1079,11 @@ async function stepAutoCrmContactSync(
         leadId: lead.id,
         advanceState: false,
         connectorOverride: options.crmConnectorOverride,
+        origin: 'autopilot',
       });
-      if (r.entry.outcome === 'succeeded') synced++;
-      await recordStep(
-        ctx,
-        runId,
-        step,
-        r.entry.outcome === 'succeeded' ? 'success' : 'error',
-        r.entry.error ?? null,
-        'qualified_lead',
-        lead.id.toString(),
-      );
+      if (await recordCrmPush(run, step, lead.id, r.entry)) synced++;
     } catch (err) {
-      await recordStep(
-        ctx,
-        runId,
-        step,
-        'error',
-        err instanceof Error ? err.message : String(err),
-        'qualified_lead',
-        lead.id.toString(),
-      );
+      await itemError(run, step, errorMessage(err), 'qualified_lead', lead.id.toString());
     }
   }
   return {
@@ -929,12 +1093,8 @@ async function stepAutoCrmContactSync(
   };
 }
 
-async function stepAutoCrmDealOnQualified(
-  ctx: WorkspaceContext,
-  runId: string,
-  policy: AutomationPolicy,
-  options: RunOptions,
-): Promise<StepResult> {
+async function stepAutoCrmDealOnQualified(run: StepRun): Promise<StepResult> {
+  const { ctx, runId, policy, options } = run;
   const step = 'auto_crm_deal_on_qualified';
   const conn = await crmConnectionFor(ctx, policy);
   if (!conn) {
@@ -988,27 +1148,11 @@ async function stepAutoCrmDealOnQualified(
         connectionId: conn.id,
         leadId: lead.id,
         connectorOverride: options.crmConnectorOverride,
+        origin: 'autopilot',
       });
-      if (r.entry.outcome === 'succeeded') created++;
-      await recordStep(
-        ctx,
-        runId,
-        step,
-        r.entry.outcome === 'succeeded' ? 'success' : 'error',
-        r.entry.error ?? null,
-        'qualified_lead',
-        lead.id.toString(),
-      );
+      if (await recordCrmPush(run, step, lead.id, r.entry)) created++;
     } catch (err) {
-      await recordStep(
-        ctx,
-        runId,
-        step,
-        'error',
-        err instanceof Error ? err.message : String(err),
-        'qualified_lead',
-        lead.id.toString(),
-      );
+      await itemError(run, step, errorMessage(err), 'qualified_lead', lead.id.toString());
     }
   }
   return {
@@ -1019,8 +1163,8 @@ async function stepAutoCrmDealOnQualified(
 }
 
 const STEP_RUNNERS: Readonly<Record<AutopilotStepKey, StepRunner>> = {
-  auto_approve_projects: (ctx, runId, policy) => stepAutoApproveProjects(ctx, runId, policy),
-  auto_enqueue_outreach: (ctx, runId, policy) => stepAutoEnqueueOutreach(ctx, runId, policy),
+  auto_approve_projects: stepAutoApproveProjects,
+  auto_enqueue_outreach: stepAutoEnqueueOutreach,
   auto_crm_contact_sync: stepAutoCrmContactSync,
   auto_crm_deal_on_qualified: stepAutoCrmDealOnQualified,
 };

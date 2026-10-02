@@ -539,7 +539,7 @@ describe('send queue', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 // ---- autopilot service ---------------------------------------------
 
 describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
-  it('[handbook H-07] the background tick auto-approves "new" items at the threshold in the owner\'s name, never needs_review ones', async () => {
+  it('[handbook H-07] the background tick auto-approves "new" items at the threshold as autopilot (no person), never needs_review ones', async () => {
     const s = await setup();
     const { items } = await discover(s, { count: 2 });
     expect(items).toHaveLength(2);
@@ -559,13 +559,18 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     const approved = await reviewItem(fresh.id);
     expect(approved.state).toBe('approved');
-    expect(approved.approvedByUserId).toBe(s.ownerId);
+    // PC-11 (I034): a machine decision carries no person's name.
+    expect(approved.approvedByUserId).toBeNull();
+    expect(approved.approvalReason).toBe('autopilot');
     expect((await reviewItem(geoHeld.id)).state).toBe('needs_review');
   });
 
-  it('[handbook H-08] generate + enqueue writes, approves (as the owner) and queues a draft with no human step', async () => {
+  it('[handbook H-08] generate + enqueue writes, approves (as the owner) and queues a draft with no human step, only for a lead with a contact email', async () => {
     const s = await setup();
-    const { product, items } = await discover(s);
+    const { product, items } = await discover(s, { count: 2 });
+    // The second approved item has no pipeline lead (no contact email):
+    // it gets no draft and waits (PC-11, I001).
+    await approveReviewItem(adminCtx(s), items[1]!.id);
     await approveReviewItem(adminCtx(s), items[0]!.id);
     const lead = await ensureQualifiedLead(ctx(s), items[0]!.id, product.id);
     await updateContact(ctx(s), lead.id, { contactEmail: 'anna@target.com' });

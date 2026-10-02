@@ -1190,14 +1190,14 @@ describe('the /autopilot flow copy matches the behaviour (PC-13 (5))', () => {
         label: '3. Auto-approve',
         status: 'on',
         blurb:
-          'Review items still "new" scoring 70 or more are approved in the workspace owner\'s name; no person looks at them.',
+          'Review items still "new" scoring 70 or more are approved once each, recorded as autopilot\'s decision; no person looks at them.',
       },
       {
         key: 'generate_queue',
         label: '4. Generate + queue',
         status: 'on',
         blurb:
-          "For each approved item, writes a template draft per relevant product, approves it in the owner's name and queues it; nobody reviews these emails.",
+          "For each approved item whose pipeline lead has a contact email, writes a template draft per relevant product, approves it in the owner's name and queues it, oldest approval first; nobody reviews these emails.",
       },
       {
         key: 'send_queue',

@@ -190,6 +190,16 @@ its steps either inherits the workspace or is off for it, and its approval
 threshold can only be higher. To run a step for some products only, switch
 it on for the workspace and off for the others.
 
+What autopilot picks each run: auto-approve takes the best-scoring
+"new" items that reach their product's threshold, one item at a time
+however many products it fits, and records the approval as autopilot's
+(no person's name). Generate + queue takes approved items oldest first,
+but only those whose pipeline lead has a contact email; the others get
+no draft and wait — the autopilot log counts them as `needs_contact` —
+until you add an email on the lead's page. A product switched off or
+paused never uses up the per-run limits of the others. CRM pushes appear
+on the lead's timeline, and a lead is pushed again only after it changed.
+
 Approved emails in the send queue always go out (every 30 seconds, within
 each mailbox's window) and mailboxes are read every 2 minutes while
 **Mailbox auto-sync** is on in `/settings/outreach` — neither is an

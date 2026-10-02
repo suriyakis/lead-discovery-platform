@@ -1437,7 +1437,7 @@ export function autopilotFlow(policy: AutomationPolicy, productId: bigint | null
       label: '3. Auto-approve',
       ...stepFlow(
         'auto_approve_projects',
-        `Review items still "new" scoring ${threshold} or more are approved in the workspace owner's name; no person looks at them.`,
+        `Review items still "new" scoring ${threshold} or more are approved once each, recorded as autopilot's decision; no person looks at them.`,
         'Off: you approve every review item yourself.',
       ),
     },
@@ -1446,7 +1446,7 @@ export function autopilotFlow(policy: AutomationPolicy, productId: bigint | null
       label: '4. Generate + queue',
       ...stepFlow(
         'auto_enqueue_outreach',
-        "For each approved item, writes a template draft per relevant product, approves it in the owner's name and queues it; nobody reviews these emails.",
+        "For each approved item whose pipeline lead has a contact email, writes a template draft per relevant product, approves it in the owner's name and queues it, oldest approval first; nobody reviews these emails.",
         'Off: you write, approve and queue every first email yourself.',
       ),
     },
