@@ -591,6 +591,8 @@ async function processEntry(
         await settleClaimed(entry.id, {
           status: 'skipped',
           nextAttemptAt: null,
+          // An earlier attempt's failure kind no longer describes the row.
+          lastFailureKind: null,
           lastError: alreadyDeliveredMessage(delivered),
         });
         return 'skipped';

@@ -750,6 +750,7 @@ describe('one draft goes out once (PC-10 review)', () => {
     const skipped = await row(first.id);
     expect(skipped.status).toBe('skipped');
     expect(skipped.lastError).toMatch(/already been sent/);
+    expect(skipped.lastFailureKind).toBeNull();
   });
 
   it('a row recorded sent without a mail row (after-delivery failure) also blocks a re-send', async () => {
