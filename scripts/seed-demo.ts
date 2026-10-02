@@ -3024,7 +3024,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
       { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/products/aerogel-blankets', title: 'Aerogel blankets — product page', summary: 'Public product page with applications and FAQs.', language: 'en', purposeCategory: 'marketing', tags: ['website'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(19), indexStatus: 'indexed', indexedAt: ago(19), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: ADMIN_ID, createdAt: ago(19), updatedAt: ago(19) },
       { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/guides/fire-stopping-installation', title: 'Fire stopping installation guide', summary: null, language: 'en', purposeCategory: 'technical', tags: ['guide'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'failed', externalError: 'Fetch failed: HTTP 404 Not Found', indexStatus: 'failed', lastIndexError: 'Fetch failed: HTTP 404 Not Found', createdBy: MEMBER_ID, createdAt: ago(6), updatedAt: ago(6) },
       { workspaceId: A, kind: 'text', textExcerpt: 'Objection: "Aerogel is too expensive." Answer: compare installed cost per metre, not material cost — thinner insulation saves scaffolding days and avoids re-spacing lines. Typical payback via labour alone on congested racks.', title: 'Objection handling — price', summary: 'How to answer the "too expensive" objection.', language: 'en', purposeCategory: 'objection_handling', tags: ['sales'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(12), indexStatus: 'indexed', indexedAt: ago(12), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: MEMBER_ID, createdAt: ago(12), updatedAt: ago(12) },
-      { workspaceId: A, kind: 'text', textExcerpt: 'Internal: we do not yet hold a German abZ for the sealant range; quote EN 1366-3 classification only. Expected abZ Q2 2027.', title: 'Internal note — DE approvals', summary: null, language: 'en', purposeCategory: 'internal_note', tags: ['internal', 'de'], scopeKind: 'products', externalStatus: 'pending', indexStatus: 'queued', createdBy: ADMIN_ID, createdAt: ago(0, 6), updatedAt: ago(0, 6) },
+      { workspaceId: A, kind: 'text', textExcerpt: 'Internal: we do not yet hold a German abZ for the sealant range; quote EN 1366-3 classification only. Expected abZ Q2 2027.', title: 'Internal note — DE approvals', summary: null, language: 'en', purposeCategory: 'internal_note', tags: ['internal', 'de'], scopeKind: 'products', externalStatus: 'pending', indexStatus: 'stale', createdBy: ADMIN_ID, createdAt: ago(0, 6), updatedAt: ago(0, 6) },
     ])
     .returning();
   // KL-05: scope rows (knowledge_source_products), one list per source above.
@@ -3051,10 +3051,16 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   const chunkRows: s.NewDocumentChunk[] = [];
   const jobRows: s.NewIndexingJob[] = [];
   for (const ks of ksRows) {
-    if (ks.externalStatus !== 'indexed') {
-      jobRows.push({ workspaceId: A, knowledgeSourceId: ks.id, status: ks.externalStatus === 'failed' ? 'failed' : 'queued', error: ks.externalError ?? null, startedAt: ks.externalStatus === 'failed' ? ks.createdAt : null, finishedAt: ks.externalStatus === 'failed' ? plus(ks.createdAt, 4_000) : null, triggeredBy: ks.createdBy, createdAt: ks.createdAt });
+    // KL-06 honest status: a seeded source is never left 'queued' — with
+    // no worker draining the outbox (e2e and demo copies run with
+    // SCHEDULE_BACKGROUND_JOBS=0) it would never settle and /knowledge
+    // would poll forever. The never-indexed one is 'stale' ("Not indexed
+    // yet", Re-index) with no run; the failed one keeps its failed run.
+    if (ks.externalStatus === 'failed') {
+      jobRows.push({ workspaceId: A, knowledgeSourceId: ks.id, status: 'failed', error: ks.externalError ?? null, attempts: 1, reason: 'create', startedAt: ks.createdAt, finishedAt: plus(ks.createdAt, 4_000), triggeredBy: ks.createdBy, createdAt: ks.createdAt });
       continue;
     }
+    if (ks.externalStatus !== 'indexed') continue;
     const n = between(2, 5);
     const base = ks.summary ?? ks.textExcerpt ?? ks.title;
     for (let i = 0; i < n; i++) {
@@ -3076,7 +3082,10 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     }
     jobRows.push({ workspaceId: A, knowledgeSourceId: ks.id, status: 'succeeded', chunkCount: n, embeddingModel: 'text-embedding-3-small', startedAt: ks.createdAt, finishedAt: plus(ks.createdAt, between(3, 40) * 1000), triggeredBy: ks.createdBy, createdAt: ks.createdAt });
   }
-  jobRows.push({ workspaceId: A, documentId: doc(4).id, status: 'running', startedAt: ago(0, 0, 1), triggeredBy: ADMIN_ID, createdAt: ago(0, 0, 1) });
+  // A document-level run from before KL-05, closed the way the KL-06
+  // migration closes such rows (history only: documents index through
+  // their source now).
+  jobRows.push({ workspaceId: A, documentId: doc(4).id, status: 'failed', error: 'Document-level run from before KL-05; documents are indexed through their knowledge source.', startedAt: ago(0, 0, 1), finishedAt: ago(0, 0, 1), triggeredBy: ADMIN_ID, createdAt: ago(0, 0, 1) });
   await db.insert(s.documentChunks).values(chunkRows);
   await db.insert(s.indexingJobs).values(jobRows);
   await db.insert(s.productVectorStores).values([
