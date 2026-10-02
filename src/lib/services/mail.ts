@@ -58,6 +58,7 @@ import { isAfterDelivery, tagAfterDelivery, tagTransportFailure } from '@/lib/ma
 import { outreachQueue } from '@/lib/db/schema/outreach';
 import { resolveSendInterrupted } from '@/lib/ops/work-incidents';
 import {
+  DELIVERED_MESSAGE_STATUSES,
   draftIsBeingSent,
   findDeliveredCopyOfDraft,
   markDraftQueueEntriesSent,
@@ -578,6 +579,10 @@ async function sendAndRecord(
   // Phase 58: schedule auto follow-ups when this is the FIRST outbound
   // on a thread linked to a qualified lead. Best-effort — failures log
   // but never break the send.
+  // PC-10: the first DELIVERED outbound. A failed attempt reached nobody
+  // (as for the caps and the cooldown): a first touch that went out on an
+  // automatic retry shares the thread with its failed attempts and still
+  // gets its follow-ups.
   try {
     const outboundCount = await db
       .select({ id: mailMessages.id })
@@ -587,6 +592,7 @@ async function sendAndRecord(
           eq(mailMessages.workspaceId, ctx.workspaceId),
           eq(mailMessages.threadId, thread.id),
           eq(mailMessages.direction, 'outbound'),
+          inArray(mailMessages.status, [...DELIVERED_MESSAGE_STATUSES]),
         ),
       );
     if (outboundCount.length === 1) {

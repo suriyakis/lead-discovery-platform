@@ -20,8 +20,15 @@ import { db } from '@/lib/db/client';
 import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
 import { auditLog } from '@/lib/db/schema/audit';
 import { mailMessages, mailboxes, suppressionList } from '@/lib/db/schema/mailing';
+import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
 import { opsEvents } from '@/lib/db/schema/ops';
-import { outreachDrafts, outreachQueue, outreachSendSettings } from '@/lib/db/schema/outreach';
+import {
+  outreachDrafts,
+  outreachQueue,
+  outreachSendSettings,
+  outreachThreadState,
+} from '@/lib/db/schema/outreach';
+import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import {
   LOCAL_MAX_ATTEMPTS,
   SEND_BACKOFF_BASE_MS,
@@ -847,3 +854,40 @@ describe('the bounce-loop check counts emails, not retries (PC-10 review)', () =
   });
 });
 
+// ---- follow-ups after a retried first touch (review: PC-10) -----------------
+
+describe('follow-ups after a retried first touch (PC-10 review)', () => {
+  it('a first touch that goes out on its second attempt still schedules its follow-ups', async () => {
+    const s = await setup();
+    const { entry } = await queuedDraft(s, 'anna@target.com');
+    const provider = new FlakyProvider(greylisted, 1);
+    await drainQueue(ctx(s), { providerOverride: provider });
+    const [failedCopy] = await outbound(s.workspaceId);
+    expect(failedCopy!.status).toBe('failed');
+
+    // The thread belongs to the lead's outreach.
+    const [lead] = await db
+      .select()
+      .from(qualifiedLeads)
+      .where(eq(qualifiedLeads.workspaceId, s.workspaceId));
+    await db.insert(outreachThreadState).values({
+      workspaceId: s.workspaceId,
+      qualifiedLeadId: lead!.id,
+      threadId: failedCopy!.threadId!,
+      stage: 'discovery',
+    });
+
+    await dueNow(entry.id);
+    expect((await drainQueue(ctx(s), { providerOverride: provider })).sent).toBe(1);
+    const sent = (await outbound(s.workspaceId)).find((m) => m.status === 'sent')!;
+    // The failed attempt and the delivered one share the thread …
+    expect(sent.threadId).toBe(failedCopy!.threadId);
+    // … and the delivered one is the first touch: follow-ups are scheduled.
+    const followUps = await db
+      .select()
+      .from(outreachFollowUps)
+      .where(eq(outreachFollowUps.threadId, sent.threadId!));
+    expect(followUps.length).toBeGreaterThan(0);
+    expect(followUps.every((f) => f.qualifiedLeadId === lead!.id)).toBe(true);
+  });
+});
