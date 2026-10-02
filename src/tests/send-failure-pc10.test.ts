@@ -819,3 +819,31 @@ describe('the drain and Retry now share one send gate (PC-10 review)', () => {
     ).toEqual({ open: false, reason: 'paused' });
   });
 });
+
+// ---- bounce loops count emails, not retries (review: PC-10) -----------------
+
+describe('the bounce-loop check counts emails, not retries (PC-10 review)', () => {
+  it('five temporary failures of one queued email raise no bounce loop; three different failing emails do', async () => {
+    const s = await setup();
+    const { copies } = await gaveUpWithFiveCopies(s);
+    expect(copies.every((c) => c.spamReason === null && c.spamAt === null)).toBe(true);
+    const loopAudits = () =>
+      db.select().from(auditLog).where(eq(auditLog.kind, 'mail.bounce_loop_auto_spam'));
+    expect(await loopAudits()).toHaveLength(0);
+
+    // A second email to the same address fails: one earlier email failed
+    // (its five copies count once), still no loop.
+    const second = await queuedDraft(s, 'anna@target.com');
+    await drainQueue(ctx(s), { providerOverride: new FlakyProvider(relayDenied) });
+    expect((await row(second.entry.id)).status).toBe('failed');
+    expect(await loopAudits()).toHaveLength(0);
+
+    // A third different email failing to it is the loop.
+    await queuedDraft(s, 'anna@target.com');
+    await drainQueue(ctx(s), { providerOverride: new FlakyProvider(relayDenied) });
+    const last = (await outbound(s.workspaceId)).at(-1)!;
+    expect(last.spamReason).toBe('bounce_loop');
+    expect(await loopAudits()).toHaveLength(1);
+  });
+});
+

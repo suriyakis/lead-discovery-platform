@@ -15,6 +15,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   or,
   sql,
   type SQL,
@@ -348,7 +349,9 @@ async function sendAndRecord(
       const primaryAddress = input.to[0]?.address ?? null;
       const isLoop =
         primaryAddress !== null &&
-        (await detectBounceLoop(ctx, mailbox.id, primaryAddress));
+        (await detectBounceLoop(ctx, mailbox.id, primaryAddress, {
+          excludeDraftId: input.sourceDraftId ?? null,
+        }));
       const failedThread = await ensureThread(ctx, mailbox.id, {
         subject,
         inReplyTo: input.inReplyTo ?? null,
@@ -1827,15 +1830,27 @@ export const BOUNCE_LOOP_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  *
  *  Workspace-scoped, mailbox-scoped, recipient-exact-match. The address
  *  is checked against the `to_addresses[]` array, not against from /
- *  cc / bcc — bounce loops only make sense for the primary recipient. */
+ *  cc / bcc — bounce loops only make sense for the primary recipient.
+ *
+ *  PC-10: a loop is different EMAILS failing, not one email retried. The
+ *  queue retries a temporary failure up to 5 times and every attempt
+ *  leaves a failed copy, so copies are counted per email: the failed
+ *  copies of one draft count once, and those of `excludeDraftId` (the
+ *  email being sent now) not at all. Mail without a draft counts per row. */
 export async function detectBounceLoop(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   mailboxId: bigint,
   recipient: string,
+  options: { excludeDraftId?: bigint | null } = {},
 ): Promise<boolean> {
   const cutoff = new Date(Date.now() - BOUNCE_LOOP_WINDOW_MS);
+  const excludeDraftId = options.excludeDraftId ?? null;
   const rows = await db
-    .select({ c: sql<number>`COUNT(*)::int` })
+    .select({
+      // Raw SQL: one key per email — the draft when there is one, else
+      // the row itself.
+      c: sql<number>`COUNT(DISTINCT COALESCE('d' || ${mailMessages.sourceDraftId}::text, 'm' || ${mailMessages.id}::text))::int`,
+    })
     .from(mailMessages)
     .where(
       and(
@@ -1845,6 +1860,9 @@ export async function detectBounceLoop(
         inArray(mailMessages.status, ['failed', 'bounced']),
         sql`${recipient} = ANY (${mailMessages.toAddresses})`,
         gt(mailMessages.createdAt, cutoff),
+        excludeDraftId !== null
+          ? or(isNull(mailMessages.sourceDraftId), ne(mailMessages.sourceDraftId, excludeDraftId))
+          : undefined,
       ),
     );
   const count = rows[0]?.c ?? 0;
