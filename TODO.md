@@ -1109,6 +1109,76 @@ Engineering (Phase 1 unless noted):
 - [ ] **P0-F23 (X5).** Dev-only hydration mismatch on `/drafts`, `/leads`, `/pipeline`, `/review`, `/communication/follow-ups` under `next dev --turbopack` (`e2e/known-issues.json`, devServerOnly). Confirmed dev-only on the integration branch: against a production build (`next build` + `next start`), the Playwright smoke passed every route and 120 extra loads of these six routes (10 each at 1440 and 390 px) showed 0 page errors and 0 console errors. Owner: accept as dev-only, or chase it with the turbopack dev server.
 - [ ] **P0-F24 (housekeeping).** One early mail-safety test run applied 0061–0065 to the shared default `lead_test` DB; a checkout without them must recreate `lead_test` before testing.
 
+## Phase 1 — safe and controllable (audit 2026-10-01)
+
+**Goal.** Make every automatic action stoppable, visible and safe before
+new feature work: one pause and one holds model in front of every send,
+spend and decision; heartbeats, incidents, readiness and owner alerts;
+failing mailboxes that hold their mail and recover without getting our IP
+banned; a dedicated worker; one diagnostics engine behind /health, Today
+and the guide; tenant-safe sessions; the Sonar Instrument design
+foundation and the knowledge/learning foundation. Built in six lanes and
+integrated on `phase1/integration` in two waves (A: automation-control,
+ops-visibility, knowledge-foundation, design-foundation; B: workers and
+diagnostics, on top of A).
+
+**Merge and deploy order.** `phase1/integration` as one release.
+Migrations 0066–0078 run host-side with `pnpm db:migrate` (0066–0068
+automation control, 0069–0072 ops visibility, 0073 knowledge foundation,
+0074–0076 workers, 0077–0078 diagnostics), regenerated in merge order with
+each lane's hand-written SQL in its file's `-- custom:begin … -- custom:end`
+block; rollbacks in `drizzle/rollback/`. The "Release steps: Phase 1 …"
+sections of docs/DEPLOYMENT.md are part of the deploy, not optional
+(P1-F01 to P1-F05).
+
+### Delivered
+
+- [x] **PC-05 (automation-control).** One workspace pause stops all automation (drain, follow-ups, autopilot, scheduled crawls, inbound auto-actions held, background AI, auto top-up, trash purge) while inbox sync keeps reading; the gate is re-checked per item (no queue row is claimed after the pause time); a failing or paused mailbox defers its rows; the wallet gate. Any write role pauses, owners and admins resume; a person's own send under the pause needs an explicit "send anyway" (audited).
+- [x] **PC-06 (automation-control).** One holds model (tenant and platform holds, all work or per capability, with history), the accountable-owner rule and a platform-wide outbound stop above it all; holds stop manual work too. Legacy disabled feature flags import as `pending_review` holds, not enforced until the owner confirms them.
+- [x] **flow:F-07 (automation-control).** Per-workspace go-live hold: a workspace starts not live for cold, follow-up and AI-reply mail until a super-admin releases it (audited); a person's own mail always sends.
+- [x] **PC-13, PC-11 (automation-control).** One automation policy (narrow-only product overrides, honest autopilot switches and flow view); autopilot selects in SQL before its cap, decides once per item and reports step errors.
+- [x] **PC-07, PC-08, PC-10, PC-35 (ops-visibility).** Job heartbeats, the `ops_events` incident stream and `/api/ready` with a 10-minute boot grace; owner alerts to ntfy (`NTFY_URL` + `NTFY_TOPIC`; absent = off, logged once) with dedupe, a 6-hour re-alert, the daily digest and the stale-tick watchdog; the stuck-work reaper and the send-failure model; log noise cut at the source and a daily retention tick.
+- [x] **KL-01, KL-02, KL-03, KL-05, KL-06 (knowledge-foundation).** Rule scope model and one lifecycle; the decision record with a transactional learning outbox; the learning processor with its ledger, voiding and sweeper; the knowledge scope join table and one retrieval predicate; indexing as a job with honest status.
+- [x] **DS-05, DS-06, DS-08, DS-09, DS-10 (design-foundation).** One navigation registry, the `/today` home (`/dashboard` and `/inbox` redirect) and the generated handbook map; Sonar Instrument tokens, cascade layers and the component gallery; one name "Leadsonar" and the hybrid brand mark; one meaning map and the Badge family; form controls styled once.
+- [x] **PC-36 (workers).** A dedicated worker process (`ROLE=web|worker|all`), job lanes `ticks` / `batch` / `runs`, the compose `worker` service and the versioned deploy script; the web watchdog raises `worker.absent` when no worker consumes a lane.
+- [x] **PC-12 (workers).** Work leases (visible in the console, expiring after a crash) around autopilot, the drain (the daily cap counted under the lease), each mailbox sync and probe and each recipe run; one inbound-sync path; each follow-up claimed once.
+- [x] **PC-09 (workers).** Mailbox health: failures classified (auth / connection / ambiguous), fail2ban-safe probing and recovery by class, one incident and one tenant notification per episode, "back online"; a reviewed backfill for mailboxes failing since before.
+- [x] **PC-38 (workers).** Shared Postgres rate limits, single-flight AI buttons, Re-classify all as a background run; an nginx `limit_req` snippet for the owner to apply.
+- [x] **AP-06, MOB-02 (diagnostics).** One diagnostics engine behind `/health`, Today's "Needs fixing", `/api/attention` and the assistant, with a free 6-hourly notify sweep and a calibrated score; one attention summary behind every count (`useAttention`).
+- [x] **MOB-06, DS-07 (diagnostics).** Tenant-safe sessions (the workspace is per session), `/go` workspace links and the expected-workspace guard on every action that sends, spends or decides; the workspace frame mounted once in the `(app)` route group.
+- [x] **P1-INT (integration).** Wave A: controls alert the owner and incidents reach the ops stream (PC-05/PC-06 × PC-07/PC-08). Wave B: the diagnostics migrations regenerated after the workers'; the `mailbox.failing` finding keyed and worded for PC-09 (incident fingerprint, recovery plan, `unprobed`); one finding per failing mailbox (no `ops.mailbox.failing` twin); Compact now, Synthesize now and product autofill behind the workspace guard; the worker's boot log names every tick (I155); handbook claim H-62.
+- [x] **P1-DRILL.** `scripts/drill/phase1-drill.ts` with `smtp-sink.ts` and `ntfy-stub.ts`: pause mid-drain, resume, a Sending hold against a manual compose, refused logins → failing + ntfy alert + held rows, recovery, the learning outbox, a stopped tick → `/api/ready` 503, and the same findings on `/health`, Today, `/api/attention` and the assistant. Runbook and the last result: docs/drills/phase1-drill.md.
+
+**Handbook claims that changed** (the guide answers from these; pins in
+`src/tests/handbook-claims.test.ts`): the pause, H-09 and H-10 (one pause
+for all automation, inbox sync keeps reading, "send anyway" for a person's
+own mail, owners and admins resume, a 10-second undo); a paused, failing
+or archived mailbox holds its mail, H-23; the go-live hold, H-32; holds
+and the platform stop, H-62 (new: they stop a person's own mail too and
+only the platform releases them); the mailbox lifecycle, H-16 (classified
+failures, probes, "back online"); `/health`, Today's problems and the
+notify sweep, H-61; Today as the home page (the generated "Where things
+are"). Owner alerts (ntfy) reach the platform owner, not tenants: they are
+documented in docs/OPS_MONITORING.md, not in the tenant handbook.
+
+### Follow-ups (not done)
+
+Owner actions (platform owner, around the deploy; the steps are in docs/DEPLOYMENT.md):
+- [ ] **P1-F01 (PC-36, step 0, required).** Before deploying, replace `~/deploy-discover.sh` with the one-line wrapper around `scripts/deploy/deploy-agregat.sh` and check that its `--dry-run` prints OK. The old script recreates `app` only, which now runs `ROLE=web`: no worker would run anything in the background.
+- [ ] **P1-F02 (PC-36, PC-07, PC-08).** Before the deploy: Redis runs; `.env` has `APP_URL=https://discover.nulife.pl`, `NTFY_TOPIC` (plus `NTFY_URL` / `NTFY_TOKEN` when not on ntfy.sh) and `OPS_READY_TOKEN`. After it: the `/api/ready` detail lists every tick ok or pending, no `worker.absent` incident is open, "Send test alert" on `/admin/providers` arrives, and the external uptime monitor points at `/api/ready`.
+- [ ] **P1-F03 (PC-05, PC-06, flow:F-07).** Before the deploy, run `scripts/remediation/check-accountable-owners.ts` and fix or accept what it lists. After it, release the workspaces that should keep sending (go-live), run `import-legacy-feature-flags.ts --apply`, then confirm or discard each `pending_review` hold on `/admin/workspaces/[id]`.
+- [ ] **P1-F04 (PC-09).** After the deploy, give the owner the mailbox health backfill dry run, then apply it with `--apply --expect <fingerprint>` after sign-off. Until then the two prod mailboxes failing since before stay silent and unprobed.
+- [ ] **P1-F05 (PC-38).** Apply the nginx `limit_req` snippet on agregat (`scripts/deploy/nginx/`) and check it with the curl loop in docs/DEPLOYMENT.md.
+- [ ] **P1-F06.** Run the Phase 1 drill on the release commit before go-live (`pnpm build && pnpm build:worker && pnpm exec tsx scripts/drill/phase1-drill.ts`) and record the result in docs/drills/phase1-drill.md.
+- [ ] **P1-F07 (DS-08).** Upstream PR to suriyakis/market-navigator for the shared brand mark (the `Nav.tsx` patch the design lane prepared; lanes never open PRs).
+
+Engineering:
+- [ ] **P1-F08 (contract PR, one release after Phase 1).** Drop the PC-05 `emergency_pause` mirror columns, `feature_flags` (after P1-F03's review) and the KL legacy columns (`learning_lessons.product_profile_id` / `enabled`, `knowledge_sources.product_profile_ids`, `product_profiles.document_source_ids`); drop `knowledge_sources.scope_kind`'s default and declare `document_chunks.knowledge_source_id` notNull in TS; remove AP-06's deprecated `collectRuleFindings` wrapper.
+- [ ] **P1-F09 (flow:F-15).** Flag approved leads whose verdict dropped after a re-classification, and product-scoped re-qualification (PC-38 left both to F-15).
+- [ ] **P1-F10 (CI).** `bullmq-redis-pc36` runs only with `TEST_REDIS_URL`: give CI a Redis service and run it there; run the Phase 1 drill in CI too (it needs Docker for Redis and about 15 minutes for the boot grace).
+- [ ] **P1-F11 (MOB-06).** `/api/signatures/redesign` (AI, rate-limited by PC-38) and a crawl plan's Run now are not behind the expected-workspace guard: decide whether they count as spending and register them.
+- [ ] **P1-F12 (PC-05, PC-09).** Rows a failing mailbox held go out 15 minutes after it recovers (the gate's deferral, seen in the drill); a "send held mail now" control after a recovery would shorten that.
+
 ## Discovered along the way
 
 > 2026-07-10 `reply-classifier.test.ts > bounce auto-suppresses` failed once in a full-suite run with `PostgresError: deadlock detected`, passes in isolation — flaky test-infra race (likely truncateAll vs in-flight work from a previous file). Worth a look if it recurs.
