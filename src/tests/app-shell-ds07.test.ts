@@ -648,6 +648,75 @@ describe('keeping the persistent frame fresh (ia:F-09, DS-07)', () => {
     expect(freshness.workspaceDrifted('7', null)).toBe(false);
     expect(freshness.workspaceDrifted(null, summary('8'))).toBe(false);
   });
+
+  it('the idle return asks for the newest summary first and never swaps tenants under the pointer', async () => {
+    // The frame is workspace 7; while this tab was away another tab
+    // switched the browser to 8. The poll was paused (hidden), so only the
+    // fetch made on return knows.
+    const clock = { now: 0, visible: true };
+    const win = new FakeTarget();
+    const doc = new FakeTarget();
+    const refreshed: string[] = [];
+    let serverSays = summary('8');
+    const fetches: string[] = [];
+    const f = freshness.createShellFreshness({
+      now: () => clock.now,
+      isVisible: () => clock.visible,
+      window: win,
+      document: doc,
+      refresh: (reason) => refreshed.push(reason),
+      shouldRefresh: () =>
+        freshness.idleRefreshAllowed({
+          frameWorkspaceId: '7',
+          fetchLatest: async () => {
+            fetches.push('attention');
+            return serverSays;
+          },
+        }),
+    });
+    f.start();
+
+    win.fire('blur');
+    clock.now = freshness.SHELL_IDLE_REFRESH_MS + 1;
+    win.fire('focus');
+    await f.settled();
+    expect(fetches).toEqual(['attention']);
+    expect(refreshed).toEqual([]);
+    expect(f.skipped).toEqual(['idle-return']);
+
+    // Back in the frame's workspace (switched back in the other tab): the
+    // next idle return refreshes as before.
+    serverSays = summary('7');
+    win.fire('blur');
+    clock.now += freshness.SHELL_IDLE_REFRESH_MS;
+    win.fire('focus');
+    await f.settled();
+    expect(refreshed).toEqual(['idle-return']);
+
+    // Unmounted while the answer was on its way: no refresh afterwards.
+    win.fire('blur');
+    clock.now += freshness.SHELL_IDLE_REFRESH_MS;
+    win.fire('focus');
+    f.stop();
+    await f.settled();
+    expect(refreshed).toEqual(['idle-return']);
+  });
+
+  it('idleRefreshAllowed: drift says no; the same workspace, no frame or a failed fetch says yes', async () => {
+    const ok = (s: ReturnType<typeof summary> | null) => async () => s;
+    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(summary('8')) })).toBe(false);
+    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(summary('7')) })).toBe(true);
+    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(null) })).toBe(true);
+    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: null, fetchLatest: ok(summary('8')) })).toBe(true);
+    expect(
+      await freshness.idleRefreshAllowed({
+        frameWorkspaceId: '7',
+        fetchLatest: async () => {
+          throw new Error('offline');
+        },
+      }),
+    ).toBe(true);
+  });
 });
 
 // ---- refreshChrome ------------------------------------------------------------------

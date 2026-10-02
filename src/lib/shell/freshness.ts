@@ -10,7 +10,9 @@
 // changes only when the layout renders again. Three things make it render
 // again from the browser:
 //   1. coming back to the tab after SHELL_IDLE_REFRESH_MS away (blurred
-//      or hidden): one router.refresh();
+//      or hidden): one router.refresh() — after asking for the newest
+//      summary, and only if it is still the frame's workspace
+//      (idleRefreshAllowed());
 //   2. the polled summary's automation state differing from the one the
 //      frame was rendered with (someone paused, a hold landed, the
 //      platform stopped outbound): one router.refresh() per new state, so
@@ -63,6 +65,29 @@ export function workspaceDrifted(
   return Boolean(frameWorkspaceId && latest && latest.workspaceId !== frameWorkspaceId);
 }
 
+/**
+ * Whether an idle-return refresh may re-render the frame. The tab was away
+ * (polls pause while hidden), so the summary it holds can predate a switch
+ * made in another tab meanwhile: ask for the newest one FIRST, and refresh
+ * only when it is still the frame's workspace. Otherwise the refresh would
+ * re-render the frame for the session's new workspace — a silent tenant
+ * swap under the pointer, and the drift notice gone with it. A failed
+ * fetch is not drift (the frame refreshes as before).
+ */
+export async function idleRefreshAllowed(input: {
+  frameWorkspaceId: string | null;
+  fetchLatest: () => Promise<AttentionSummary | null>;
+}): Promise<boolean> {
+  if (!input.frameWorkspaceId) return true;
+  let latest: AttentionSummary | null = null;
+  try {
+    latest = await input.fetchLatest();
+  } catch {
+    latest = null;
+  }
+  return !workspaceDrifted(input.frameWorkspaceId, latest);
+}
+
 export type ShellRefreshReason = 'idle-return' | 'chrome-state';
 
 /** What the idle tracker needs from the browser (tests pass fakes). */
@@ -74,6 +99,12 @@ export interface ShellFreshnessEnv {
   /** Fires 'visibilitychange'. */
   document: EventTarget | null;
   refresh(reason: ShellRefreshReason): void;
+  /**
+   * Asked right before a refresh; false (or a promise of false) skips it.
+   * ShellRefresher answers with idleRefreshAllowed(): no refresh while
+   * this browser is in another workspace than the frame's.
+   */
+  shouldRefresh?(reason: ShellRefreshReason): boolean | Promise<boolean>;
   /** Default SHELL_IDLE_REFRESH_MS. */
   idleMs?: number;
 }
@@ -83,18 +114,49 @@ export interface ShellFreshness {
   stop(): void;
   /** Refreshes asked for so far (tests). */
   readonly refreshes: ReadonlyArray<ShellRefreshReason>;
+  /** Refreshes shouldRefresh() turned down (tests). */
+  readonly skipped: ReadonlyArray<ShellRefreshReason>;
+  /** Resolves once every pending shouldRefresh() answer is acted on (tests). */
+  settled(): Promise<void>;
 }
 
 /**
  * Trigger 1: a tab that comes back (focus, or visible again) after being
- * away for at least `idleMs` refreshes the frame once. Focus and
- * visibilitychange usually fire together; the second finds the tab no
- * longer away and does nothing.
+ * away for at least `idleMs` refreshes the frame once — unless
+ * shouldRefresh() says no. Focus and visibilitychange usually fire
+ * together; the second finds the tab no longer away and does nothing.
  */
 export function createShellFreshness(env: ShellFreshnessEnv): ShellFreshness {
   const idleMs = env.idleMs ?? SHELL_IDLE_REFRESH_MS;
   const refreshes: ShellRefreshReason[] = [];
+  const skipped: ShellRefreshReason[] = [];
+  const pending = new Set<Promise<void>>();
+  let running = false;
   let awaySince: number | null = env.isVisible() ? null : env.now();
+
+  const act = (reason: ShellRefreshReason, ok: boolean) => {
+    // Stopped (unmounted) while the answer was on its way: nothing to do.
+    if (!running) return;
+    if (!ok) {
+      skipped.push(reason);
+      return;
+    }
+    refreshes.push(reason);
+    env.refresh(reason);
+  };
+  const ask = (reason: ShellRefreshReason) => {
+    const verdict = env.shouldRefresh ? env.shouldRefresh(reason) : true;
+    if (typeof verdict === 'boolean') {
+      act(reason, verdict);
+      return;
+    }
+    const p = verdict.then(
+      (ok) => act(reason, ok),
+      () => act(reason, true),
+    );
+    pending.add(p);
+    void p.finally(() => pending.delete(p));
+  };
 
   const leave = () => {
     awaySince ??= env.now();
@@ -103,26 +165,31 @@ export function createShellFreshness(env: ShellFreshnessEnv): ShellFreshness {
     if (awaySince === null) return;
     const away = env.now() - awaySince;
     awaySince = null;
-    if (away >= idleMs) {
-      refreshes.push('idle-return');
-      env.refresh('idle-return');
-    }
+    if (away >= idleMs) ask('idle-return');
   };
   const onVisibility = () => (env.isVisible() ? back() : leave());
 
   return {
     start() {
+      running = true;
       env.window?.addEventListener('blur', leave);
       env.window?.addEventListener('focus', back);
       env.document?.addEventListener('visibilitychange', onVisibility);
     },
     stop() {
+      running = false;
       env.window?.removeEventListener('blur', leave);
       env.window?.removeEventListener('focus', back);
       env.document?.removeEventListener('visibilitychange', onVisibility);
     },
     get refreshes() {
       return refreshes;
+    },
+    get skipped() {
+      return skipped;
+    },
+    async settled() {
+      while (pending.size > 0) await Promise.all([...pending]);
     },
   };
 }
