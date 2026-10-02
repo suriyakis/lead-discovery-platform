@@ -238,6 +238,14 @@ describe('learnFromReplyOutcome', () => {
       );
     expect(events).toHaveLength(1);
     expect(events[0]!.productProfileId).toBe(product.id);
+    // A machine classification, not an operator decision (I034): never
+    // claimed by learning.process, never mined by the weekly synthesis.
+    expect(events[0]).toMatchObject({
+      origin: 'system',
+      processingStatus: 'skipped',
+      processingNote: 'machine',
+      decisionId: null,
+    });
   });
 
   it('negative reply weakens; neutral classes are ignored', async () => {
@@ -425,6 +433,27 @@ describe('synthesizeWorkspaceLearningUnattended', () => {
     const r = await synthesizeWorkspaceLearningUnattended(s.workspaceA);
     expect(r.ran).toBe(false);
     expect(r.skippedReason).toBe('insufficient_events');
+    expect(stub.calls).toBe(0);
+  });
+
+  it('never mines reply outcomes: they are machine events (I034)', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    await updateLearnFromReplies(c, true);
+    const product = await createProductProfile(c, { name: 'P', shortDescription: 'x' });
+    for (let i = 0; i < 15; i++) {
+      await learnFromReplyOutcome(c, {
+        messageId: BigInt(900 + i),
+        replyClass: i % 2 === 0 ? 'negative' : 'interest',
+        classifierConfidence: 80,
+        productProfileId: product.id,
+        precedingDraftId: null,
+      });
+    }
+    const stub = new StubJson({ proposals: [] });
+    _setAIProviderForTests(stub);
+    const r = await synthesizeWorkspaceLearningUnattended(s.workspaceA);
+    expect(r).toMatchObject({ ran: false, skippedReason: 'insufficient_events', eventsExamined: 0 });
     expect(stub.calls).toBe(0);
   });
 

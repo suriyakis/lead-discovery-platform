@@ -151,7 +151,7 @@ Full column lists: [`docs/DATABASE_MODEL.md`](DATABASE_MODEL.md).
 ## Other sources of rules
 
 - **Draft edits** (`learnFromDraftEdit`): a material rewrite of an AI draft is diffed into an `outreach_style` rule (`source = 'draft_edit'`).
-- **Reply outcomes** (`learnFromReplyOutcome`): off unless the workspace owner switches `learn_from_replies` on; KL-15 owns the remaining gates.
+- **Reply outcomes** (`learnFromReplyOutcome`): off unless the workspace owner switches `learn_from_replies` on; KL-15 owns the remaining gates. Its event is a machine classification: `origin = 'system'`, closed `skipped` / `machine` at once, so neither the learning processor nor the weekly synthesis (operator events only) ever treats it as a decision.
 - **Weekly synthesis** (`learning-synthesis.ts`): mines live operator decisions for patterns and proposes rules.
 - **Compaction** (`knowledge-compaction.ts`): merges near-duplicates and retires stale rules.
 

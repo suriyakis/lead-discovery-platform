@@ -12,9 +12,10 @@
 //   2. Reply outcomes     → a lead's classified reply judges the last
 //                           outbound draft: positive intent reinforces the
 //                           draft's matched lessons, negative weakens them.
-//                           Also appends a learning_event so the weekly
-//                           synthesizer can mine reply patterns. OFF unless
-//                           the workspace switched learn_from_replies on.
+//                           Also appends a learning_event (origin 'system':
+//                           a machine classification, never mined as an
+//                           operator decision). OFF unless the workspace
+//                           switched learn_from_replies on.
 //   3. Draft edits        → when an operator materially rewrites an AI
 //                           draft, an AI diff extracts a generalized
 //                           outreach_style lesson (source='draft_edit').
@@ -103,8 +104,13 @@ export async function learnFromReplyOutcome(
         skippedReason: 'learn_from_replies_off',
       };
     }
-    // Raw event for the weekly synthesizer — reply outcomes per product are
-    // exactly the pattern material it mines ("consultancies never reply").
+    // The outcome on record (KL-15 builds on it). It is a machine
+    // classification, not an operator decision: origin 'system', closed
+    // 'skipped' / 'machine' at once, so no operator-only consumer — the
+    // learning processor, the weekly synthesis (origin = 'operator') —
+    // ever treats it as something a person decided (I034: machines never
+    // teach). The column defaults (origin 'operator', status 'done') are
+    // for operator rows only.
     await db.insert(learningEvents).values({
       workspaceId: ctx.workspaceId,
       userId: null,
@@ -114,6 +120,10 @@ export async function learnFromReplyOutcome(
       actionType: direction === 'up' ? 'reply_positive' : 'reply_negative',
       originalComment: null,
       confidence: Math.max(0, Math.min(100, Math.round(input.classifierConfidence))),
+      origin: 'system',
+      processingStatus: 'skipped',
+      processingNote: 'machine',
+      processedAt: new Date(),
     });
 
     let reinforcedCount = 0;
