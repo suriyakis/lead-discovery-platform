@@ -38,11 +38,20 @@
 //       It ends 'succeeded' (or 'stopped' with the reason), audited as
 //       qualification.reclassify_workspace like the old synchronous pass.
 //
-//   An abandoned run never blocks the button: when someone asks again and
-//   the existing run is 'running' while its lease is free (its worker
-//   died), or 'queued' for more than RECLASSIFY_QUEUE_GRACE_MS with no
-//   live job in the queue (the job was lost), it is failed as interrupted
-//   and a new run starts.
+//   A run is never thrown away half done (review of PC-38: a deploy used to
+//   cut it off, and the next click started again from record 0, paying
+//   for the records already classified):
+//     - a worker that is stopping (SIGTERM, jobs/shutdown.ts) ends the run
+//       between two records: its progress is saved, it goes back to
+//       'queued' and a new job is enqueued for it, which the next worker
+//       resumes after last_record_id;
+//     - a job that takes the action's lease and finds its run 'running'
+//       takes it over (no other job can be working it), and resumes it;
+//     - when someone asks again and the existing run is 'running' while
+//       its lease is free (its worker died), or 'queued' for more than
+//       RECLASSIFY_QUEUE_GRACE_MS since its last sign of life with no live
+//       job in the queue (the job was lost), the click resumes THAT run
+//       (back to 'queued', a new job) instead of starting a new one.
 //
 // Re-classification refreshes the AI's verdicts only (upsertQualification
 // never touches the operator's columns, KL-02). Flagging approved leads
@@ -61,6 +70,7 @@ import {
   type QualificationRunStopReason,
 } from '@/lib/db/schema/qualification-runs';
 import { getJobQueue, NonRetryableJobError } from '@/lib/jobs';
+import { jobShutdownRequested } from '@/lib/jobs/shutdown';
 import { formatUtc } from '@/lib/format-utc';
 import { describeError } from '@/lib/ops/mask';
 import {
@@ -90,8 +100,9 @@ export const RECLASSIFY_BATCH_SIZE = 50;
 /** The job's lease lasts this long without a renewal (it renews at every
  *  record), so a worker that died frees the button within it. */
 export const RECLASSIFY_LEASE_TTL_MS = 15 * 60_000;
-/** A queued run younger than this is never judged lost (its job may be
- *  being enqueued right now). */
+/** A queued run that showed a sign of life (requested, resumed, requeued)
+ *  more recently than this is never judged lost (its job may be being
+ *  enqueued right now). */
 export const RECLASSIFY_QUEUE_GRACE_MS = 2 * 60_000;
 /** The job waits this long, in steps, for a click that holds the lease
  *  for a moment (it is checking whether a run is active). */
@@ -246,8 +257,11 @@ export function describeRunProgress(
  */
 async function isAbandoned(run: QualificationRun): Promise<boolean> {
   if (run.status === 'running') return true;
-  // 'queued': lost only when old enough and its job is not in the queue.
-  if (Date.now() - run.createdAt.getTime() < RECLASSIFY_QUEUE_GRACE_MS) return false;
+  // 'queued': lost only when its last sign of life (the request, or the
+  // resume / requeue that put it back) is old enough and its job is not in
+  // the queue.
+  const since = (run.heartbeatAt ?? run.createdAt).getTime();
+  if (Date.now() - since < RECLASSIFY_QUEUE_GRACE_MS) return false;
   const queue = getJobQueue();
   if (!queue.hasLiveJob) return false;
   try {
@@ -263,19 +277,37 @@ async function isAbandoned(run: QualificationRun): Promise<boolean> {
   }
 }
 
-async function settleAbandoned(run: QualificationRun): Promise<void> {
-  const what =
-    run.status === 'running'
-      ? 'Interrupted: the worker stopped before it finished'
-      : 'Interrupted: its background job was lost before it started';
-  await db
+/**
+ * Take an abandoned run over: back to 'queued' with its progress kept, so
+ * the job enqueued for it continues after last_record_id. Under the
+ * action's lease (no job can claim it meanwhile).
+ */
+async function resumeAbandoned(
+  ctx: WorkspaceContext,
+  run: QualificationRun,
+): Promise<QualificationRun> {
+  const [row] = await db
     .update(qualificationRuns)
-    .set({
-      status: 'failed',
-      error: `${what} (${describeRunProgress(run)} done). Start it again.`,
-      finishedAt: sql`now()`,
-    })
-    .where(and(eq(qualificationRuns.id, run.id), eq(qualificationRuns.status, run.status)));
+    .set({ status: 'queued', heartbeatAt: sql`now()`, error: null })
+    .where(and(eq(qualificationRuns.id, run.id), eq(qualificationRuns.status, run.status)))
+    .returning();
+  if (!row) throw alreadyRunning(RECLASSIFY_ACTION, null);
+  await recordAuditEvent(ctx, {
+    kind: 'qualification.reclassify_requested',
+    entityType: 'workspace',
+    entityId: ctx.workspaceId,
+    payload: {
+      runId: row.id.toString(),
+      resumed: true,
+      abandonedAs: run.status,
+      processedRecords: run.processedRecords,
+      fromRecordId: run.lastRecordId?.toString() ?? null,
+      records: run.totalRecords,
+      products: run.productCount,
+      upToRecordId: run.upToRecordId.toString(),
+    },
+  });
+  return row;
 }
 
 function alreadyRunningMessage(run: QualificationRun): string {
@@ -296,11 +328,12 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /**
- * The "Re-classify all" button: start a background run, or say why not.
- * Returns the queued run. Throws QualificationRunError (permission_denied,
- * invalid_input, queue_unavailable), TokenError (empty wallet),
- * AutomationGateError (a hold) or ActionGuardError (already running, rate
- * limited) — all before any AI call.
+ * The "Re-classify all" button: start a background run (or resume the
+ * workspace's abandoned one), or say why not. Returns the queued run — a
+ * resumed one has processedRecords > 0. Throws QualificationRunError
+ * (permission_denied, invalid_input, queue_unavailable), TokenError (empty
+ * wallet), AutomationGateError (a hold) or ActionGuardError (already
+ * running, rate limited) — all before any AI call.
  */
 export async function requestReclassification(ctx: WorkspaceContext): Promise<QualificationRun> {
   if (!canAdminWorkspace(ctx)) {
@@ -317,13 +350,12 @@ export async function requestReclassification(ctx: WorkspaceContext): Promise<Qu
   const run = await singleFlight(ctx, RECLASSIFY_ACTION, async () => {
     // (The lease is free here: no job is working a run of this workspace.)
     const active = await activeRun(ctx);
-    if (active) {
-      if (!(await isAbandoned(active))) {
-        throw alreadyRunning(RECLASSIFY_ACTION, null, alreadyRunningMessage(active));
-      }
-      await settleAbandoned(active);
+    if (active && !(await isAbandoned(active))) {
+      throw alreadyRunning(RECLASSIFY_ACTION, null, alreadyRunningMessage(active));
     }
     return withRateLimit(ctx, RECLASSIFY_ACTION, async () => {
+      // Its worker died or its job was lost: carry on where it stopped.
+      if (active) return resumeAbandoned(ctx, active);
       const scope = await reclassifyScope(ctx);
       if (scope.products === 0) {
         throw new QualificationRunError(
@@ -410,15 +442,19 @@ export async function requestReclassification(ctx: WorkspaceContext): Promise<Qu
       run.id.toString(),
       describeError(err).message,
     );
-    await db
-      .update(qualificationRuns)
-      .set({
-        status: 'failed',
-        error:
-          'The background queue was unavailable, so nothing was classified. Try again in a few minutes.',
-        finishedAt: sql`now()`,
-      })
-      .where(and(eq(qualificationRuns.id, run.id), eq(qualificationRuns.status, 'queued')));
+    // A resumed run keeps its progress: it stays queued, and the next
+    // click (past the grace period) resumes it again.
+    if (run.processedRecords === 0) {
+      await db
+        .update(qualificationRuns)
+        .set({
+          status: 'failed',
+          error:
+            'The background queue was unavailable, so nothing was classified. Try again in a few minutes.',
+          finishedAt: sql`now()`,
+        })
+        .where(and(eq(qualificationRuns.id, run.id), eq(qualificationRuns.status, 'queued')));
+    }
     throw new QualificationRunError(
       'The background queue is unavailable right now, so nothing was started. Try again in a few minutes.',
       'queue_unavailable',
@@ -429,8 +465,10 @@ export async function requestReclassification(ctx: WorkspaceContext): Promise<Qu
 // ---- the job -------------------------------------------------------------
 
 export interface ReclassifyJobOutcome {
-  status: 'skipped' | 'succeeded' | 'stopped';
-  /** skipped: why; stopped: the stop reason. */
+  /** requeued: the worker is stopping; the run went back to 'queued' with
+   *  its progress and a new job resumes it. */
+  status: 'skipped' | 'succeeded' | 'stopped' | 'requeued';
+  /** skipped: why; stopped: the stop reason; requeued: 'shutdown'. */
   reason?: string;
   runId: string;
   processedRecords?: number;
@@ -479,21 +517,40 @@ export async function runReclassificationJob(payload: unknown): Promise<Reclassi
     throw new NonRetryableJobError(`qualification_runs ${runId} workspaceId mismatch`);
   }
 
+  // A worker that is stopping starts no run (BullMQ stops fetching jobs on
+  // close; one fetched just before stays queued for the next click).
+  if (jobShutdownRequested()) {
+    return { status: 'skipped', reason: 'shutting_down', runId: p.runId };
+  }
   const lease = await acquireRunLease(ctx);
   if (!lease) {
     // Someone holds the action's lease for longer than a click takes:
-    // another job working this workspace. The run stays queued; the next
-    // request finds it lost and settles it.
+    // another job working this workspace, or a dead worker's lease that
+    // has not expired yet. The run stays as it is; the next request finds
+    // it abandoned and resumes it.
     return { status: 'skipped', reason: 'lease_held', runId: p.runId };
   }
+  let outcome: ReclassifyJobOutcome;
   try {
+    // Holding the action's lease, no other job works a run of this
+    // workspace: a 'running' run is one whose worker died (a re-delivered
+    // job after a crash) and is taken over where it stopped.
     const [claimed] = await db
       .update(qualificationRuns)
-      .set({ status: 'running', startedAt: sql`now()`, heartbeatAt: sql`now()` })
-      .where(and(eq(qualificationRuns.id, runId), eq(qualificationRuns.status, 'queued')))
+      .set({
+        status: 'running',
+        startedAt: sql`COALESCE(${qualificationRuns.startedAt}, now())`,
+        heartbeatAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(qualificationRuns.id, runId),
+          inArray(qualificationRuns.status, [...ACTIVE_QUALIFICATION_RUN_STATUSES]),
+        ),
+      )
       .returning();
-    if (!claimed) return { status: 'skipped', reason: 'not_queued', runId: p.runId };
-    return await workRun(ctx, claimed, lease);
+    if (!claimed) return { status: 'skipped', reason: 'not_active', runId: p.runId };
+    outcome = await workRun(ctx, claimed, lease);
   } finally {
     try {
       await lease.release();
@@ -503,6 +560,29 @@ export async function runReclassificationJob(payload: unknown): Promise<Reclassi
         describeError(err).message,
       );
     }
+  }
+  // After the release: the next worker's job takes the same lease.
+  if (outcome.status === 'requeued') await requeueRun(p);
+  return outcome;
+}
+
+/** Enqueue a new job for a run the stopping worker handed back. If the
+ *  queue cannot take it, the run stays queued with its progress and the
+ *  next click resumes it. */
+async function requeueRun(p: ReclassifyJobPayload): Promise<void> {
+  try {
+    const jobId = await getJobQueue().enqueue(RECLASSIFY_JOB, p, {
+      tag: `reclassify:${p.workspaceId}`,
+    });
+    await db
+      .update(qualificationRuns)
+      .set({ jobId })
+      .where(and(eq(qualificationRuns.id, BigInt(p.runId)), eq(qualificationRuns.status, 'queued')));
+  } catch (err) {
+    console.error(
+      `[reclassify] run ${p.runId} could not be requeued; the next Re-classify all resumes it:`,
+      describeError(err).message,
+    );
   }
 }
 
@@ -536,6 +616,8 @@ async function workRun(
     lastRecordId: run.lastRecordId,
   };
   let stop: QualificationRunStopReason | null = null;
+  /** The worker is stopping: hand the rest of the run to the next one. */
+  let handBack = false;
 
   try {
     batches: for (;;) {
@@ -560,6 +642,10 @@ async function workRun(
       if (batch.length === 0) break;
 
       for (const record of batch) {
+        if (jobShutdownRequested()) {
+          handBack = true;
+          break batches;
+        }
         if (!(await lease.checkpoint())) {
           stop = 'lease_lost';
           break batches;
@@ -601,6 +687,27 @@ async function workRun(
       })
       .where(and(eq(qualificationRuns.id, run.id), eq(qualificationRuns.status, 'running')));
     throw err;
+  }
+
+  if (handBack) {
+    // Progress saved, back to 'queued' (still this workspace's one active
+    // run); runReclassificationJob enqueues the job that resumes it after
+    // last_record_id once the lease is released.
+    await db
+      .update(qualificationRuns)
+      .set({ ...progress, status: 'queued', heartbeatAt: sql`now()` })
+      .where(and(eq(qualificationRuns.id, run.id), eq(qualificationRuns.status, 'running')));
+    console.log(
+      `[reclassify] run ${run.id} handed back at ${describeRunProgress({ ...progress, totalRecords: run.totalRecords })}: the worker is stopping; the next one resumes it.`,
+    );
+    return {
+      status: 'requeued',
+      reason: 'shutdown',
+      runId: run.id.toString(),
+      processedRecords: progress.processedRecords,
+      qualificationCount: progress.qualificationCount,
+      failedRecords: progress.failedRecords,
+    };
   }
 
   const status = stop ? 'stopped' : 'succeeded';

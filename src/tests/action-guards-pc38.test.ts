@@ -38,7 +38,8 @@ import { qualificationRuns, type QualificationRun } from '@/lib/db/schema/qualif
 import { rateLimitBuckets } from '@/lib/db/schema/rate-limits';
 import { workLeases } from '@/lib/db/schema/work-leases';
 import { workspaces } from '@/lib/db/schema/workspaces';
-import { getJobQueue, NonRetryableJobError } from '@/lib/jobs';
+import { _setJobQueueForTests, getJobQueue, NonRetryableJobError, type IJobQueue } from '@/lib/jobs';
+import { _resetJobShutdownForTests, requestJobShutdown } from '@/lib/jobs/shutdown';
 import { registerJobHandlers } from '@/lib/jobs/bootstrap';
 import { describeActionError } from '@/lib/action-errors';
 import { reclassifyAllConfirm } from '@/lib/confirm-copy';
@@ -333,6 +334,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  _resetJobShutdownForTests();
   ai.gate = null;
   ai.onCall = null;
   for (const l of held.splice(0)) await l.release();
@@ -710,38 +712,154 @@ describe(
       expect(await runsOf(s.ws)).toEqual([]);
     });
 
-    it('a run whose worker died is failed as interrupted, and a new run starts', async () => {
-      const s = await setup(2);
+    it('a run whose worker died is resumed where it stopped, not started again', async () => {
+      const s = await setup(3);
+      const startedAt = new Date(Date.now() - 60 * 60_000);
       const [dead] = await db
         .insert(qualificationRuns)
         .values({
           workspaceId: s.ws,
           status: 'running',
-          upToRecordId: s.recordIds[1]!,
-          totalRecords: 2,
+          upToRecordId: s.recordIds[2]!,
+          totalRecords: 3,
           productCount: 1,
           processedRecords: 1,
-          startedAt: new Date(Date.now() - 60 * 60_000),
-          heartbeatAt: new Date(Date.now() - 60 * 60_000),
+          qualificationCount: 1,
+          lastRecordId: s.recordIds[0]!,
+          startedAt,
+          heartbeatAt: startedAt,
         })
         .returning();
       // Its lease expired with it: the page says it stopped making progress.
       expect(describeReclassifyStatus(dead!, false)?.text).toMatch(
-        /^Re-classification stopped making progress at 1 of 2 records/,
+        /^Re-classification stopped making progress at 1 of 3 records .* Press Re-classify all to resume it from there\.$/,
       );
 
-      const fresh = await requestReclassification(s.admin);
-      expect(fresh.id).not.toBe(dead!.id);
-      expect(await runById(dead!.id)).toMatchObject({
-        status: 'failed',
-        error:
-          'Interrupted: the worker stopped before it finished (1 of 2 records done). Start it again.',
-      });
+      actAs(s.admin);
+      const url = await redirectOf(engineActions.reclassifyAll(form()));
+      expect(url.searchParams.get('message')).toBe(
+        'Re-classification resumed at 1 of 3 records: its worker stopped before it finished, so the records already done are not classified again. It runs in the background; progress shows below.',
+      );
+      // The same run, back in the queue with its progress (no new run).
+      expect(await runsOf(s.ws)).toHaveLength(1);
       await drain();
-      expect(await runById(fresh.id)).toMatchObject({ status: 'succeeded', processedRecords: 2 });
+      expect(await runById(dead!.id)).toMatchObject({
+        status: 'succeeded',
+        processedRecords: 3,
+        qualificationCount: 3,
+        lastRecordId: s.recordIds[2],
+        startedAt,
+      });
+      // Only the two records after the cursor were classified.
+      expect(ai.calls).toBe(2);
+      const resumed = await db
+        .select({ payload: auditLog.payload })
+        .from(auditLog)
+        .where(and(eq(auditLog.workspaceId, s.ws), eq(auditLog.kind, 'qualification.reclassify_requested')));
+      expect(resumed.map((r) => r.payload)).toEqual([
+        expect.objectContaining({ runId: dead!.id.toString(), resumed: true, abandonedAs: 'running', processedRecords: 1 }),
+      ]);
     });
 
-    it('a queued run whose job was lost is settled after the grace period; a young one is not', async () => {
+    it('a stopping worker hands the run back between two records; the next worker resumes after the last one', async () => {
+      const s = await setup(5);
+      const enqueued: Array<{ type: string; payload: Record<string, unknown> }> = [];
+      const capture: IJobQueue = {
+        id: 'memory',
+        enqueue: async (type, payload) => {
+          enqueued.push({ type, payload });
+          return `captured-${enqueued.length}`;
+        },
+        status: async () => ({ state: 'pending' }),
+        cancel: async () => {},
+        on: () => {},
+        enqueueRepeatable: async () => {},
+        hasLiveJob: async () => true,
+      };
+      // The suite's queue (its handlers are registered once, in beforeAll)
+      // comes back afterwards.
+      const suiteQueue = getJobQueue();
+      _setJobQueueForTests(capture);
+      try {
+        const run = await requestReclassification(s.admin);
+        expect(enqueued).toHaveLength(1);
+        const payload = enqueued[0]!.payload;
+
+        // SIGTERM arrives while the second record is being classified.
+        ai.onCall = (n) => {
+          if (n === 2) requestJobShutdown('SIGTERM');
+        };
+        const first = await runReclassificationJob(payload);
+        expect(first).toMatchObject({ status: 'requeued', reason: 'shutdown', processedRecords: 2 });
+        expect(ai.calls).toBe(2);
+        const handedBack = await runById(run.id);
+        expect(handedBack).toMatchObject({
+          status: 'queued',
+          processedRecords: 2,
+          qualificationCount: 2,
+          lastRecordId: s.recordIds[1],
+          stopReason: null,
+          jobId: 'captured-2',
+        });
+        // Its lease is free for the next worker, and a job for it is queued.
+        expect(await db.select().from(workLeases).where(eq(workLeases.workspaceId, s.ws))).toEqual([]);
+        expect(enqueued).toHaveLength(2);
+        expect(enqueued[1]).toEqual({ type: RECLASSIFY_JOB, payload });
+        expect(describeReclassifyStatus(handedBack, false)).toMatchObject({
+          active: true,
+          text: 'Re-classification resumes at 2 of 5 records (2 qualification(s) written so far), waiting for a worker.',
+        });
+        // A click meanwhile is told it is already on its way.
+        await expect(requestReclassification(s.admin)).rejects.toMatchObject({ code: 'already_running' });
+
+        // The stopping worker starts nothing more.
+        expect(await runReclassificationJob(payload)).toMatchObject({ status: 'skipped', reason: 'shutting_down' });
+
+        // The next worker (a new process) resumes it after record 2.
+        _resetJobShutdownForTests();
+        ai.onCall = null;
+        const second = await runReclassificationJob(enqueued[1]!.payload);
+        expect(second).toMatchObject({ status: 'succeeded', processedRecords: 5 });
+        expect(ai.calls).toBe(5); // 2 + 3: no record twice
+        expect(await runById(run.id)).toMatchObject({
+          status: 'succeeded',
+          processedRecords: 5,
+          qualificationCount: 5,
+          lastRecordId: s.recordIds[4],
+        });
+      } finally {
+        _setJobQueueForTests(suiteQueue);
+      }
+    });
+
+    it('a re-delivered job whose run is still marked running takes it over once the lease is free', async () => {
+      const s = await setup(3);
+      const [dead] = await db
+        .insert(qualificationRuns)
+        .values({
+          workspaceId: s.ws,
+          status: 'running',
+          upToRecordId: s.recordIds[2]!,
+          totalRecords: 3,
+          productCount: 1,
+          processedRecords: 2,
+          qualificationCount: 2,
+          lastRecordId: s.recordIds[1]!,
+          startedAt: new Date(Date.now() - 30 * 60_000),
+          heartbeatAt: new Date(Date.now() - 30 * 60_000),
+        })
+        .returning();
+      const outcome = await runReclassificationJob({
+        runId: dead!.id.toString(),
+        workspaceId: s.ws.toString(),
+        userId: s.admin.userId,
+        role: 'admin',
+      });
+      expect(outcome).toMatchObject({ status: 'succeeded', processedRecords: 3 });
+      expect(ai.calls).toBe(1);
+    });
+
+    it('a queued run whose job was lost is resumed after the grace period; a young one is not', async () => {
       const s = await setup(1);
       const insertQueued = (ageMs: number) =>
         db
@@ -764,14 +882,13 @@ describe(
       await db.delete(qualificationRuns).where(eq(qualificationRuns.id, young!.id));
 
       const [lost] = await insertQueued(RECLASSIFY_QUEUE_GRACE_MS + 60_000);
-      const fresh = await requestReclassification(s.admin);
-      expect(await runById(lost!.id)).toMatchObject({
-        status: 'failed',
-        error:
-          'Interrupted: its background job was lost before it started (0 of 1 records done). Start it again.',
-      });
+      const resumed = await requestReclassification(s.admin);
+      // The same run gets a new job; nothing new is created.
+      expect(resumed.id).toBe(lost!.id);
+      expect(resumed.jobId).toBeTruthy();
+      expect(await runsOf(s.ws)).toHaveLength(1);
       await drain();
-      expect(await runById(fresh.id)).toMatchObject({ status: 'succeeded' });
+      expect(await runById(lost!.id)).toMatchObject({ status: 'succeeded', processedRecords: 1 });
     });
 
     it('one queued or running run per workspace, enforced by the database too', async () => {
@@ -799,7 +916,7 @@ describe(
       ).rejects.toThrow();
     });
 
-    it('the job validates its payload: another workspace is refused, a run not queued is skipped', async () => {
+    it('the job validates its payload: another workspace is refused, a run already over is skipped', async () => {
       const s = await setup(1);
       const other = await setup(1);
       const run = await requestReclassification(s.admin);
@@ -819,7 +936,7 @@ describe(
           workspaceId: s.ws.toString(),
           userId: s.owner.userId,
         }),
-      ).toEqual({ status: 'skipped', reason: 'not_queued', runId: run.id.toString() });
+      ).toEqual({ status: 'skipped', reason: 'not_active', runId: run.id.toString() });
       expect(RECLASSIFY_JOB).toBe('qualification.reclassify');
     });
 

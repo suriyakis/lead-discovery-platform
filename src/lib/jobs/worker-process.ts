@@ -12,7 +12,10 @@
 // running ones DEFAULT_CLOSE_GRACE_MS to finish (compose allows 30 s),
 // then exit. A job cut off there is handed to the next worker as stalled;
 // a discovery run it had started is failed by the stuck-work reaper
-// (PC-10) — a retry never runs a started run twice.
+// (PC-10) — a retry never runs a started run twice. Jobs that work item by
+// item ask jobShutdownRequested() (shutdown.ts) between items: a
+// Re-classify all run saves its progress and requeues itself, and the next
+// worker resumes it after its last record.
 
 import { getBootInfo } from './boot';
 import { startBackgroundWork, type BackgroundStartOptions } from './background';
@@ -20,6 +23,7 @@ import { getJobQueue, type IJobQueue } from './index';
 import { DEFAULT_CLOSE_GRACE_MS } from './bullmq';
 import { JOB_LANES } from './lanes';
 import { planWorkerProcess, jobQueueProvider, type Env, type ProcessPlan } from './role';
+import { requestJobShutdown } from './shutdown';
 
 export interface WorkerProcessDeps {
   env: Env;
@@ -80,6 +84,9 @@ export async function startWorkerProcess(
     plan,
     stop(reason: string) {
       stopping ??= (async () => {
+        // Long jobs that work item by item (Re-classify all) see this
+        // between items, save their progress and requeue the rest.
+        requestJobShutdown(reason);
         d.log(
           `[worker] stopping (${reason}): running jobs get ${d.closeGraceMs / 1000}s to finish.`,
         );

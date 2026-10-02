@@ -52,6 +52,7 @@ import {
 } from '@/lib/jobs/role';
 import { TICK_CATALOG } from '@/lib/jobs/tick-catalog';
 import { startWorkerProcess } from '@/lib/jobs/worker-process';
+import { _resetJobShutdownForTests, jobShutdownRequested } from '@/lib/jobs/shutdown';
 import { startBackgroundWork } from '@/lib/jobs/background';
 import { registerNodeRuntime } from '@/instrumentation-node';
 import { KNOWLEDGE_INDEX_JOB } from '@/lib/services/knowledge-index-queue';
@@ -824,10 +825,14 @@ describe('worker process (PC-36)', () => {
     expect(listen).not.toHaveBeenCalled();
     expect(logs.join('\n')).toMatch(/lanes ticks×4, batch×3, runs×2/);
 
+    expect(jobShutdownRequested()).toBe(false);
     await worker.stop('test');
     await worker.stop('again');
     expect(q.activeLanes()).toEqual([]);
     expect(listen).not.toHaveBeenCalled();
+    // Long jobs see the stop between items (Re-classify all hands its run back).
+    expect(jobShutdownRequested()).toBe(true);
+    _resetJobShutdownForTests();
   });
 
   it('refuses to start on the in-memory queue or as a web role, before anything runs', async () => {

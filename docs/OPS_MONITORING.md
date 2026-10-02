@@ -381,9 +381,15 @@ Postgres:
 lane): admins only, one `qualification_runs` row per run, batches of 50
 records with progress saved after each, stopped by an empty wallet
 (`no_tokens`) or a Background AI hold (`held`); the Crawl Engine page shows
-the progress. A run whose worker died (its lease expired) or whose job was
-lost is failed as interrupted the next time someone presses the button. To
-see runs:
+the progress. A run is never thrown away half done: a worker that is
+stopping (a deploy's SIGTERM) ends it between two records, saves its
+progress, puts it back to `queued` and enqueues a job that the next worker
+resumes after `last_record_id` (log line `[reclassify] run … handed
+back`); a re-delivered job that finds its run still `running` with the
+lease free takes it over; and a run whose worker died (its lease expired)
+or whose job was lost is resumed, not restarted, the next time someone
+presses the button (an audit row `qualification.reclassify_requested` with
+`resumed: true`). To see runs:
 
 ```sql
 SELECT id, workspace_id, status, stop_reason, processed_records, total_records,

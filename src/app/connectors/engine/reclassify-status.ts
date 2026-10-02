@@ -42,6 +42,16 @@ export function describeReclassifyStatus(
   const base = { processed: run.processedRecords, total: run.totalRecords };
   switch (run.status) {
     case 'queued':
+      // A run handed back by a stopping worker, or resumed after its worker
+      // died, keeps its progress.
+      if (run.processedRecords > 0) {
+        return {
+          ...base,
+          tone: 'info',
+          active: true,
+          text: `Re-classification resumes at ${done(run)} (${written(run)} so far), waiting for a worker.`,
+        };
+      }
       return {
         ...base,
         tone: 'info',
@@ -54,7 +64,7 @@ export function describeReclassifyStatus(
           ...base,
           tone: 'error',
           active: false,
-          text: `Re-classification stopped making progress at ${done(run)} (last progress ${formatUtc(run.heartbeatAt ?? run.startedAt ?? run.createdAt)}). Press Re-classify all to start it again.`,
+          text: `Re-classification stopped making progress at ${done(run)} (last progress ${formatUtc(run.heartbeatAt ?? run.startedAt ?? run.createdAt)}). Press Re-classify all to resume it from there.`,
         };
       }
       const pct =

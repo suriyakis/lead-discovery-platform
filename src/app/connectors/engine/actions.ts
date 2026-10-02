@@ -22,7 +22,11 @@ import { requireActionContext } from '@/lib/action-context';
 import { describeActionError, withFlash } from '@/lib/action-errors';
 import { ActionGuardError, guardAction } from '@/lib/services/action-guards';
 import { AutomationGateError } from '@/lib/services/automation-gate';
-import { QualificationRunError, requestReclassification } from '@/lib/services/qualification-runs';
+import {
+  QualificationRunError,
+  describeRunProgress,
+  requestReclassification,
+} from '@/lib/services/qualification-runs';
 import { TokenError } from '@/lib/services/token-ledger';
 
 const ENGINE_PATH = '/connectors/engine';
@@ -170,7 +174,10 @@ export async function reclassifyAll(formData: FormData): Promise<void> {
   let message: string;
   try {
     const run = await requestReclassification(c);
-    message = `Re-classification started: ${run.totalRecords.toLocaleString('en-US')} record(s) against ${run.productCount} active product(s). It runs in the background; progress shows below.`;
+    message =
+      run.processedRecords > 0
+        ? `Re-classification resumed at ${describeRunProgress(run)}: its worker stopped before it finished, so the records already done are not classified again. It runs in the background; progress shows below.`
+        : `Re-classification started: ${run.totalRecords.toLocaleString('en-US')} record(s) against ${run.productCount} active product(s). It runs in the background; progress shows below.`;
   } catch (err) {
     const failure = describeActionError(
       err,

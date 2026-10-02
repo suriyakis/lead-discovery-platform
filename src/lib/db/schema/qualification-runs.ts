@@ -16,15 +16,17 @@ import { workspaces } from './workspaces';
  * PC-38 (I028): the lifecycle of a "Re-classify all" run.
  *
  *   queued     requested; its qualification.reclassify job waits on the
- *              runs lane
+ *              runs lane. Also a run handed back by a stopping worker, or
+ *              one taken over after its worker died, with its progress
+ *              kept: its next job resumes it after last_record_id
  *   running    the job claimed it and works through the records
  *   succeeded  every record up to up_to_record_id was classified
  *   stopped    ended early on purpose, progress kept: stop_reason
  *              'no_tokens' (the wallet ran dry), 'held' (a Background AI
  *              hold or the platform stopped it), 'lease_lost' (another
  *              holder took the run's lease over)
- *   failed     an unexpected error, or the run was found abandoned (its
- *              worker died or its job was lost) when someone asked again
+ *   failed     an unexpected error, or the queue could not take a fresh
+ *              run's job (an abandoned run is resumed, not failed)
  */
 export const QUALIFICATION_RUN_STATUSES = [
   'queued',
