@@ -1070,9 +1070,52 @@ describe('one policy for every tick (F-08)', { timeout: 60_000 }, () => {
     expect(tickVerdict(base, 'outreach.drain.tick')).toEqual({ run: true });
     expect(tickVerdict(base, 'autopilot.tick')).toEqual({ run: false, off: 'autopilot is off' });
     expect(tickVerdict(base, 'crawl.engine.tick')).toEqual({ run: true });
-    const paused = buildAutomationPolicy(inputs({ state: { pause: pause() } }));
+    const paused = buildAutomationPolicy(
+      inputs({ state: { pause: pause() }, autopilot: { enabled: true } }),
+    );
     expect(tickVerdict(paused, 'autopilot.tick')).toMatchObject({ run: false, held: { reason: 'paused' } });
     expect(tickVerdict(paused, 'mail.imap.tick')).toEqual({ run: true });
+    const noSync = buildAutomationPolicy(inputs({ workspace: { imapAutoSyncEnabled: false } }));
+    expect(tickVerdict(noSync, 'mail.imap.tick')).toEqual({ run: false, off: 'mailbox auto-sync is off' });
+    const noPlans = buildAutomationPolicy(inputs({ enabledCrawlPlans: 0 }));
+    expect(tickVerdict(noPlans, 'crawl.engine.tick')).toEqual({ run: false, off: 'no crawl plan is enabled' });
+  });
+
+  it('tickVerdict: autopilot that is off is off, never held, so a free plan is not logged every 5 minutes', () => {
+    const freeOff = buildAutomationPolicy(inputs({ state: { planAllowsAutopilot: false } }));
+    expect(tickVerdict(freeOff, 'autopilot.tick')).toEqual({ run: false, off: 'autopilot is off' });
+    const pausedOff = buildAutomationPolicy(inputs({ state: { pause: pause() } }));
+    expect(tickVerdict(pausedOff, 'autopilot.tick')).toEqual({ run: false, off: 'autopilot is off' });
+    // Switched on without a plan that includes it: held, and counted.
+    const freeOn = buildAutomationPolicy(
+      inputs({ state: { planAllowsAutopilot: false }, autopilot: { enabled: true } }),
+    );
+    expect(tickVerdict(freeOn, 'autopilot.tick')).toMatchObject({
+      run: false,
+      held: { reason: 'plan_no_autopilot' },
+    });
+  });
+
+  it('the autopilot tick neither counts nor logs a free-plan workspace whose autopilot is off', async () => {
+    await tenant({ plan: 'free' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await runAutopilotTick();
+      expect(r).toMatchObject({ stepsRun: 0, held: 0, failed: 0 });
+      expect(warn.mock.calls.filter(([m]) => String(m).includes('[autopilot.tick]'))).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('tickVerdict: other ticks still ask the gate before the configuration', () => {
+    const paused = buildAutomationPolicy(
+      inputs({ state: { pause: pause() }, workspace: { followUpEnabled: false } }),
+    );
+    expect(tickVerdict(paused, 'outreach.follow_up.tick')).toMatchObject({
+      run: false,
+      held: { reason: 'paused' },
+    });
     const noSync = buildAutomationPolicy(inputs({ workspace: { imapAutoSyncEnabled: false } }));
     expect(tickVerdict(noSync, 'mail.imap.tick')).toEqual({ run: false, off: 'mailbox auto-sync is off' });
     const noPlans = buildAutomationPolicy(inputs({ enabledCrawlPlans: 0 }));

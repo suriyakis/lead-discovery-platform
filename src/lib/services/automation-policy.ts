@@ -827,7 +827,10 @@ export type TickVerdict =
 /**
  * Whether a background tick does its work in this workspace now. The gate
  * is asked first (a held workspace is counted as held whatever its
- * configuration), then the configuration. A tick's service still
+ * configuration), then the configuration. Autopilot is the exception:
+ * autopilot that is off is skipped silently before the gate, because the
+ * gate's plan check would otherwise count (and log, every 5 minutes) every
+ * workspace whose plan lacks autopilot as held. A tick's service still
  * re-checks the gate before every item it works on.
  */
 export function tickVerdict(policy: AutomationPolicy, tick: AutomationTick): TickVerdict {
@@ -837,10 +840,9 @@ export function tickVerdict(policy: AutomationPolicy, tick: AutomationTick): Tic
   };
   switch (tick) {
     case 'autopilot.tick':
-      return (
-        held('autopilot') ??
-        (policy.autopilot.enabled ? { run: true } : { run: false, off: 'autopilot is off' })
-      );
+      return policy.autopilot.enabled
+        ? (held('autopilot') ?? { run: true })
+        : { run: false, off: 'autopilot is off' };
     case 'outreach.drain.tick':
       return held('sending') ?? { run: true };
     case 'mail.imap.tick':
