@@ -135,6 +135,9 @@ class FakeQueue implements LaneQueue {
     this.repeatables = this.repeatables.filter((r) => r.key !== key);
     return this.repeatables.length < before;
   }
+  async getWorkersCount() {
+    return 0;
+  }
   async close() {
     this.closed = true;
   }

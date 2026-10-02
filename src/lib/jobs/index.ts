@@ -116,6 +116,12 @@ export interface IJobQueue {
   /** PC-36: move what still waits on the pre-lane queue onto the lanes
    *  (BullMQ only; run once at worker boot, idempotent). */
   migrateLegacyQueue?(): Promise<LegacyQueueMigration>;
+  /**
+   * PC-36: how many workers, in any process, consume each lane (BullMQ
+   * only — an in-memory queue's consumer is always this process). The
+   * watchdog of a web process alerts when a lane has none.
+   */
+  laneWorkerCounts?(): Promise<Record<JobLane, number>>;
   /** Stop: no new jobs start; running ones get up to `graceMs` to finish. */
   close?(options?: { graceMs?: number }): Promise<void>;
 }

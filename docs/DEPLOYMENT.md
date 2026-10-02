@@ -139,7 +139,7 @@ The script is versioned (PC-00 / PC-36), so every deploy change is reviewed in a
 5. `docker-compose … up -d --no-build --force-recreate --no-deps app worker`: postgres and redis are left alone;
 6. the status of both containers, the worker's first log lines (`[worker] running; no HTTP is served by this process.`), and `/api/health` on 127.0.0.1:3001.
 
-`DEPLOY_HOST`, `DEPLOY_DIR` and `DEPLOY_BRANCH` override the defaults. The old WSL script `~/deploy-discover.sh` becomes a one-line wrapper once this is on `main` (before that, `main` has no `worker` service and the new script would fail at step 5):
+`DEPLOY_HOST`, `DEPLOY_DIR` and `DEPLOY_BRANCH` override the defaults. The old WSL script `~/deploy-discover.sh` becomes a one-line wrapper in the same release that brings PC-36 to `main` (release step 0 below; before that, `main` has no `worker` service and the new script would fail at step 5):
 
 ```bash
 #!/usr/bin/env bash
@@ -164,9 +164,19 @@ That's the whole deploy. **No manual editing on the server.** If you need to deb
 
 The release that adds the `worker` service:
 
+0. **Before the deploy: switch the operator's deploy script (required, same release).** The WSL script `~/deploy-discover.sh` recreates `app` only (`up -d --force-recreate --no-deps app`). From this release `app` runs `ROLE=web` and only enqueues, so a deploy with the old script leaves **no worker at all**: the send queue, inbox sync, follow-ups, autopilot, discovery runs and the reaper all stop. Once this release is on `main`, and before deploying it, replace the old script with the wrapper:
+
+   ```bash
+   cp ~/deploy-discover.sh ~/deploy-discover.sh.pre-pc36
+   printf '%s\n' '#!/usr/bin/env bash' 'exec ~/projects/lead-discovery-platform/scripts/deploy/deploy-agregat.sh "$@"' > ~/deploy-discover.sh
+   chmod +x ~/deploy-discover.sh
+   ~/deploy-discover.sh --dry-run | grep -q 'up -d --no-build --force-recreate --no-deps app worker' && echo OK
+   ```
+
+   Check: the last line prints `OK`. If the old script runs by mistake anyway, the web process notices: from 3 minutes after its boot, two consecutive watchdog checks with no worker on a lane open the critical `worker.absent` incident (an ntfy alert at once when `NTFY_TOPIC` is set) and log `[ops] CRITICAL: no background worker consumes …` every minute; `docker-compose … up -d worker` fixes it.
 1. **Before the deploy.** Redis runs (`docker-compose … ps redis`). `.env` has `APP_URL` set to the public URL (`https://discover.nulife.pl`): the base compose file used to override it with `http://localhost:3000` in production, which was the base of the tracking-pixel and unsubscribe links in sent mail; from this release the app and the worker take it from `.env`. Nothing in `.env` needs `ROLE` or `JOB_QUEUE_PROVIDER` (the prod compose file sets both per service).
 2. **Deploy** with the script above. The first run creates the `worker` container. At its boot the worker moves what still waits on the old single queue (`lead-platform`) onto the lanes and removes the old tick schedules (log line `Pre-lane queue migrated: …`); a job that was running in the old app container when it stopped is settled by the reaper (discovery runs) or the outbox sweepers (learning, indexing).
-3. **Check.** `docker-compose … ps` shows `app` and `worker` up; `docker-compose … logs app | grep ROLE=web` shows the web role; within about 2 minutes the token-protected `/api/ready` detail lists every tick `ok` or `pending` with the worker's `bootId` (docs/OPS_MONITORING.md).
+3. **Check.** `docker-compose … ps` shows `app` and `worker` up; `docker-compose … logs app | grep ROLE=web` shows the web role; within about 2 minutes the token-protected `/api/ready` detail lists every tick `ok` or `pending` with the worker's `bootId` (docs/OPS_MONITORING.md); after 5 minutes `docker-compose … logs app | grep 'no background worker'` prints nothing and no `worker.absent` incident is open.
 
 ### Release steps: Phase 1 automation control (PC-05, PC-06, PC-13, flow:F-07)
 
@@ -249,7 +259,7 @@ If a migration is the problem, **reverting code is not enough**. Revert the sche
 
 - `GET /api/health`: liveness. Returns 200 `{ ok: true }` whenever the process answers and does no I/O (no database, Redis or queue check), so container and nginx checks never flap on a slow dependency.
 - `GET /api/ready`: readiness (PC-07). Returns 200 or 503 after checking the database, Redis (with `JOB_QUEUE_PROVIDER=bullmq`), applied migrations and every background tick's heartbeat (the expected-slot rule, with a 10-minute grace after a deploy). Point the external uptime monitor here. The full report needs `Authorization: Bearer $OPS_READY_TOKEN`. Setup, the staleness table and the incident stream (`ops_events`) are in [`docs/OPS_MONITORING.md`](OPS_MONITORING.md).
-- The worker serves no HTTP and has no endpoint of its own. A worker that is down, stuck or cut off from Redis shows as stale ticks: `/api/ready` turns 503 (after the boot grace) and the watchdog in the web process sends a `tick.stale` owner alert. `docker-compose … logs --tail=200 worker` is the first step.
+- The worker serves no HTTP and has no endpoint of its own. A worker that is down, stuck or cut off from Redis shows as stale ticks: `/api/ready` turns 503 (after the boot grace) and the watchdog in the web process sends a `tick.stale` owner alert. A worker that is not running at all (the container stopped, or never created) also opens the critical `worker.absent` incident within about 5 minutes of the web process booting. `docker-compose … logs --tail=200 worker` is the first step.
 - Nginx `proxy_read_timeout` is generous because some background jobs are long; user-facing endpoints stay snappy. Run heavy work as jobs.
 
 ### What goes where on the server

@@ -169,6 +169,29 @@ describe.skipIf(!REDIS_URL)('BullMQ lanes on a real Redis (PC-36)', () => {
     expect(ran).toBe(1);
   });
 
+  it('a web process counts the workers of every lane, in whatever process they run', async () => {
+    const web = queue({ consume: false });
+    expect(await web.laneWorkerCounts()).toEqual({ ticks: 0, batch: 0, runs: 0 });
+
+    // The worker service registers its handlers: one worker per lane.
+    const worker = queue();
+    worker.on('outreach.drain.tick', async () => 'ok');
+    worker.on('autopilot.tick', async () => 'ok');
+    worker.on('connector.run', async () => 'ok');
+    await waitFor(async () => {
+      const c = await web.laneWorkerCounts();
+      return c.ticks >= 1 && c.batch >= 1 && c.runs >= 1;
+    });
+
+    // It stops: the web process sees the lanes empty again.
+    await worker.close({ graceMs: 1000 });
+    open.splice(open.indexOf(worker), 1);
+    await waitFor(async () => {
+      const c = await web.laneWorkerCounts();
+      return c.ticks === 0 && c.batch === 0 && c.runs === 0;
+    });
+  });
+
   it('(4) a retried connector.run whose row was reaped is skipped (real retry with backoff)', async () => {
     await truncateAll();
     const s = await setup();

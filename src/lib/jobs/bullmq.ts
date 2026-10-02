@@ -88,6 +88,8 @@ export interface LaneQueue {
   getJobs(types: JobType[], start?: number, end?: number): Promise<Array<QueuedJob | undefined>>;
   getRepeatableJobs(): Promise<Array<{ key: string; name: string }>>;
   removeRepeatableByKey(key: string): Promise<boolean>;
+  /** Workers (in any process) connected to this queue (Redis CLIENT LIST). */
+  getWorkersCount(): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -211,6 +213,19 @@ export class BullMQJobQueue implements IJobQueue {
   /** Lanes with a running worker in this process (diagnostics, tests). */
   activeLanes(): JobLane[] {
     return JOB_LANES.filter((lane) => this.workers.has(lane));
+  }
+
+  /**
+   * PC-36: how many workers, in ANY process, consume each lane right now
+   * (BullMQ names its worker connections, Redis lists them). The web
+   * process's watchdog asks this to notice that no worker service runs
+   * (ops/worker-presence.ts). Throws when Redis cannot answer.
+   */
+  async laneWorkerCounts(): Promise<Record<JobLane, number>> {
+    const counts = await Promise.all(
+      JOB_LANES.map(async (lane) => [lane, await this.laneQueue(lane).getWorkersCount()] as const),
+    );
+    return Object.fromEntries(counts) as Record<JobLane, number>;
   }
 
   private jobOptions(type: string, options: JobOptions): JobsOptions {

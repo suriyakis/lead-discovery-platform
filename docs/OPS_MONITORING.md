@@ -131,6 +131,7 @@ incidents:
 | `worker.error` | platform (critical) | the BullMQ worker emits `error` (usually Redis) | the next completed job |
 | `jobs.schedule_registration_failed` | platform (critical) | startup could not schedule the ticks | the next successful registration |
 | `tick.stale` | platform | the watchdog sees a tick stale (outside the boot grace) on 2 consecutive checks (PC-08) | a watchdog check sees it running again |
+| `worker.absent` | platform (critical) | the watchdog of a web process sees a job lane (ticks, batch, runs) with no worker consuming it, 3 min or more after that process booted, on 2 consecutive checks (PC-36): the `worker` service is not running, so nothing in the background runs. One incident, `payload.lanesWithoutWorker` names the lanes; every such check also logs `[ops] CRITICAL: no background worker consumes …` | a watchdog check sees a worker on every lane |
 | `send.interrupted` | workspace (error) | the stuck-work reaper failed a queued send cut off mid-flight with no sent copy (PC-10); one per queue row | an operator retries, requeues or marks that row delivered (manual); or the row turns out sent: a late drain or an Errors-folder retry settles it (auto) |
 | `run.failed` | workspace (warning) | a discovery run ended `failed`, incl. every search query failing (PC-10); one per recipe, occurrences counted | the recipe's next run that succeeds or partly succeeds |
 | `run.stuck` | workspace (error) | the reaper failed a run with no progress for 15 min, or pending for 60 min with its job gone from the queue (PC-10); one per recipe | as `run.failed`, and the recipe's next run that ends by itself (failed, cancelled). Both run kinds also resolve once the recipe or connector is deleted or switched off (the reaper tick checks) |
@@ -473,7 +474,14 @@ process with `ROLE=all`), started at boot by the Next.js startup hook
 (`src/lib/ops/watchdog.ts`), first check 30 s after boot, then every 60 s.
 It is not a queued job, and since PC-36 it does not run in the worker: it
 keeps working when Redis, the `worker` container or one of its lanes is what
-broke, and reports that as stale ticks. It does **not** survive the web
+broke, and reports that as stale ticks. Each check also asks Redis how many
+workers consume each lane (`Queue.getWorkersCount`, `src/lib/ops/worker-presence.ts`):
+from 3 minutes after the web process booted, a lane with no worker on two
+consecutive checks opens the critical `worker.absent` incident above, which
+pages the owner at once. That is the case of a deploy that recreated `app`
+but not `worker` (the pre-PC-36 `~/deploy-discover.sh`). On the in-memory
+queue there is nothing to check; if Redis cannot answer, the check is
+skipped (logged once) and the readiness `redis` check reports it. It does **not** survive the web
 process: if that process dies or hangs, so does the watchdog, which is why
 the external monitor above is still required. It does not start with
 `SCHEDULE_BACKGROUND_JOBS=0`.
