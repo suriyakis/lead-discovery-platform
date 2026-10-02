@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Languages } from 'lucide-react';
+import { useExpectedWorkspace } from '@/components/WorkspaceGuard';
 import { translateComposeAction, sendComposeAction } from './actions';
 import { SIGNATURE_DEFAULT, SIGNATURE_NONE } from './compose-input';
 
@@ -45,6 +46,9 @@ export function ComposeForm({
   automationPaused = false,
 }: Props) {
   const router = useRouter();
+  // MOB-06: both actions are guarded — they run only in the workspace this
+  // page was rendered for.
+  const expectedWorkspaceId = useExpectedWorkspace()?.id;
   const [to, setTo] = useState(initialTo);
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
@@ -73,7 +77,16 @@ export function ComposeForm({
     setBusy(true);
     setError('');
     try {
-      const r = await translateComposeAction({ subject, body, targetLanguage: target });
+      const r = await translateComposeAction({
+        subject,
+        body,
+        targetLanguage: target,
+        expectedWorkspaceId,
+      });
+      if (!r.ok) {
+        setError(r.error);
+        return;
+      }
       setTSubject(r.subject);
       setTBody(r.body);
       setShown(true);
@@ -100,6 +113,7 @@ export function ComposeForm({
       draftId,
       signature,
       confirmPaused: pauseNotice && confirmPaused,
+      expectedWorkspaceId,
     });
     if (res.ok) {
       router.push(res.threadId ? `/communication/${res.threadId}` : '/mailbox');

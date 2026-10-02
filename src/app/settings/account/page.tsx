@@ -53,7 +53,8 @@ export default async function AccountSettingsPage({
   if (!userRows[0]) redirect('/');
   const me = userRows[0];
 
-  const memberships = await listMyWorkspaces(ctx.userId);
+  // MOB-06: the active one is this session's workspace.
+  const memberships = await listMyWorkspaces(ctx.userId, { activeWorkspaceId: ctx.workspaceId });
 
   async function saveName(formData: FormData) {
     'use server';

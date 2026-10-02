@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Bell, Check } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
@@ -14,6 +13,7 @@ import {
   listNotifications,
   markAllNotificationsRead,
   markNotificationsRead,
+  notificationHref,
 } from '@/lib/services/notifications';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
@@ -82,7 +82,12 @@ export default async function NotificationsPage() {
           <p className="muted">Nothing yet — when a lead replies or something needs your attention, it lands here.</p>
         ) : (
           <ul className="profile-list">
-            {rows.map((n) => (
+            {rows.map((n) => {
+              // MOB-06: through /go with the notification's workspace — a
+              // plain <a>, since /go switches the session and must never be
+              // prefetched.
+              const href = notificationHref(n);
+              return (
               <li
                 key={n.id.toString()}
                 style={n.readAt ? { opacity: 0.6 } : undefined}
@@ -91,10 +96,10 @@ export default async function NotificationsPage() {
                   {/* Every kind is registered (src/lib/kinds/notification.ts):
                       its label and tone come from labels.ts / tone.ts. */}
                   <StatusBadge set="notification_kind" value={n.kind} />
-                  {n.href ? (
-                    <Link href={n.href}>
+                  {href ? (
+                    <a href={href}>
                       <strong>{n.title}</strong>
-                    </Link>
+                    </a>
                   ) : (
                     <strong>{n.title}</strong>
                   )}
@@ -112,7 +117,8 @@ export default async function NotificationsPage() {
                   <span className="muted">{n.createdAt.toLocaleString()}</span>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>

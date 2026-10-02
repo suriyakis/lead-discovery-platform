@@ -1,0 +1,24 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* MOB-06: the "Switched to …" notice /go leaves on the page it lands on.
+ * A toast-sized Alert pinned under the header, centred, never wider than
+ * the viewport minus the gutters. */
+
+@layer components {
+  .notice {
+    position: fixed;
+    top: calc(var(--header-h) + var(--space-2));
+    left: 50%;
+    z-index: var(--z-overlay);
+    width: min(28rem, calc(100vw - 2 * var(--gutter)));
+    transform: translateX(-50%);
+    box-shadow: var(--shadow-pop);
+    border-radius: var(--radius-md);
+  }
+
+  .noticeText {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+}

@@ -11,9 +11,14 @@
 //
 // Server component built from existing classes only (no new CSS); the
 // full status pill / bottom sheet is MOB-07 / PC-15.
+//
+// MOB-06: all three actions are guarded; each form carries the page's
+// workspace, so a tab left open on another workspace cannot pause, undo or
+// resume this one (it answers workspace_changed).
 
 import { ConfirmFormButton } from './ConfirmFormButton';
 import { Alert } from './Alert';
+import { ExpectedWorkspaceField } from './WorkspaceGuard';
 import { formatUtc } from '@/lib/format-utc';
 import { resumeAutomationConfirm } from '@/lib/confirm-copy';
 import { PAUSE_REASON_MAX, type AutomationPauseOverview } from '@/lib/services/automation-pause';
@@ -50,6 +55,7 @@ export function AutomationPauseControl({
           {overview.undoUntil ? (
             <form action={undoPauseAction} className="action-row">
               <input type="hidden" name="returnTo" value={returnTo} />
+              <ExpectedWorkspaceField />
               <button type="submit" className="ghost-btn">
                 Undo pause
               </button>
@@ -75,6 +81,7 @@ export function AutomationPauseControl({
           {overview.canResume ? (
             <form action={resumeAutomationAction} className="inline-form">
               <input type="hidden" name="returnTo" value={returnTo} />
+              <ExpectedWorkspaceField />
               <label>
                 <span>Reason (optional)</span>
                 <input type="text" name="reason" maxLength={PAUSE_REASON_MAX} />
@@ -108,6 +115,7 @@ export function AutomationPauseControl({
           {overview.canPause ? (
             <form action={pauseAutomationAction} className="inline-form">
               <input type="hidden" name="returnTo" value={returnTo} />
+              <ExpectedWorkspaceField />
               <label>
                 <span>Reason (optional)</span>
                 <input type="text" name="reason" maxLength={PAUSE_REASON_MAX} />

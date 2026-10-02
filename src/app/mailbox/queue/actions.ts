@@ -14,6 +14,10 @@
 // The redirects happen outside the try blocks, and each catch re-throws
 // NEXT_REDIRECT first, so a successful redirect is never mistaken for a
 // failure.
+//
+// MOB-06: every action here is guarded — the page's forms post the
+// workspace it was rendered for, and after a switch in another tab the
+// action is refused before any queue row changes (src/lib/workspace-guard).
 
 import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';
@@ -43,8 +47,9 @@ import {
   type QueueOperation,
   type QueueView,
 } from './forms';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
-export async function saveSendSettingsAction(formData: FormData): Promise<void> {
+async function saveSendSettingsForm(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const parsed = parseSendSettingsForm(formData);
@@ -52,8 +57,12 @@ export async function saveSendSettingsAction(formData: FormData): Promise<void> 
   await runOrFlash(view, 'settings', () => updateSendSettings(ctx, parsed.value));
   backToQueue(view, 'message', 'Send settings saved.');
 }
+export const saveSendSettingsAction = withWorkspaceGuard(
+  'queue.save_settings',
+  saveSendSettingsForm,
+);
 
-export async function cancelQueuedEmailAction(formData: FormData): Promise<void> {
+async function cancelQueuedEmailForm(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const id = parseEntryId(formData.get('id'));
@@ -61,8 +70,9 @@ export async function cancelQueuedEmailAction(formData: FormData): Promise<void>
   await runOrFlash(view, 'cancel', () => cancelQueueEntry(ctx, id));
   backToQueue(view, 'message', 'Email cancelled. It will not be sent.');
 }
+export const cancelQueuedEmailAction = withWorkspaceGuard('queue.cancel', cancelQueuedEmailForm);
 
-export async function rescheduleQueuedEmailAction(formData: FormData): Promise<void> {
+async function rescheduleQueuedEmailForm(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const id = parseEntryId(formData.get('id'));
@@ -72,6 +82,10 @@ export async function rescheduleQueuedEmailAction(formData: FormData): Promise<v
   await runOrFlash(view, 'reschedule', () => rescheduleQueueEntry(ctx, id, when));
   backToQueue(view, 'message', `Rescheduled for ${formatUtc(when)}.`);
 }
+export const rescheduleQueuedEmailAction = withWorkspaceGuard(
+  'queue.reschedule',
+  rescheduleQueuedEmailForm,
+);
 
 /**
  * PC-10: Retry now — put a failed / skipped / cancelled email back and
@@ -80,7 +94,7 @@ export async function rescheduleQueuedEmailAction(formData: FormData): Promise<v
  * automation is paused the form carries the operator's "send anyway"
  * (confirmPaused); without it the email is only put back.
  */
-export async function retryQueuedEmailAction(formData: FormData): Promise<void> {
+async function retryQueuedEmailForm(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const id = parseEntryId(formData.get('id'));
@@ -92,9 +106,10 @@ export async function retryQueuedEmailAction(formData: FormData): Promise<void> 
   const flash = describeRetryOutcome(result);
   backToQueue(view, flash.kind, flash.text);
 }
+export const retryQueuedEmailAction = withWorkspaceGuard('queue.retry', retryQueuedEmailForm);
 
 /** PC-10: Requeue — put it back for the background send pass. */
-export async function requeueQueuedEmailAction(formData: FormData): Promise<void> {
+async function requeueQueuedEmailForm(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const id = parseEntryId(formData.get('id'));
@@ -102,12 +117,13 @@ export async function requeueQueuedEmailAction(formData: FormData): Promise<void
   await runOrFlash(view, 'requeue', () => requeueQueueEntry(ctx, id));
   backToQueue(view, 'message', REQUEUED_MESSAGE);
 }
+export const requeueQueuedEmailAction = withWorkspaceGuard('queue.requeue', requeueQueuedEmailForm);
 
 /**
  * PC-10: Mark as delivered — an email cut off mid-send that the operator
  * found in the Sent folder. Any write role; the service enforces it.
  */
-export async function markQueuedEmailDeliveredAction(formData: FormData): Promise<void> {
+async function markQueuedEmailDeliveredForm(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const id = parseEntryId(formData.get('id'));
@@ -115,8 +131,12 @@ export async function markQueuedEmailDeliveredAction(formData: FormData): Promis
   await runOrFlash(view, 'mark_delivered', () => markQueueEntryDelivered(ctx, id));
   backToQueue(view, 'message', MARKED_DELIVERED_MESSAGE);
 }
+export const markQueuedEmailDeliveredAction = withWorkspaceGuard(
+  'queue.mark_delivered',
+  markQueuedEmailDeliveredForm,
+);
 
-export async function drainSendQueueAction(formData: FormData): Promise<void> {
+async function drainSendQueueForm(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const message = await runOrFlash(view, 'drain', async () => {
@@ -140,6 +160,7 @@ export async function drainSendQueueAction(formData: FormData): Promise<void> {
   });
   backToQueue(view, 'message', message);
 }
+export const drainSendQueueAction = withWorkspaceGuard('queue.drain', drainSendQueueForm);
 
 // ---- helpers (module scope: never captured by an action's closure) ----
 

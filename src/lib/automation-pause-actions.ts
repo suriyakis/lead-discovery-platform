@@ -4,6 +4,10 @@
 // Module scope (never closures over a page), each resolving the context
 // outside its try block and redirecting back to the page it came from
 // with a flash; NEXT_REDIRECT is re-thrown by describeActionError.
+//
+// MOB-06: guarded — the form posts the workspace its page shows, so a tab
+// left open on another workspace cannot pause or resume the one this
+// browser has since switched to (src/lib/workspace-guard).
 
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
@@ -21,6 +25,7 @@ import {
   parsePauseReturnTo,
   pauseSourceFor,
 } from '@/lib/automation-pause-form';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
 const MESSAGES = {
   permission_denied: 'Your role cannot do that here. Owners and admins resume automation.',
@@ -33,7 +38,7 @@ async function device() {
   return deviceFromUserAgent(h.get('user-agent'));
 }
 
-export async function pauseAutomationAction(formData: FormData): Promise<void> {
+async function pauseAutomationForm(formData: FormData): Promise<void> {
   const page = parsePauseReturnTo(formData.get('returnTo'));
   const ctx = await requireActionContext();
   let flash: { message?: string; error?: string };
@@ -53,8 +58,9 @@ export async function pauseAutomationAction(formData: FormData): Promise<void> {
   }
   redirect(withFlash(`${page}#pause`, flash));
 }
+export const pauseAutomationAction = withWorkspaceGuard('automation.pause', pauseAutomationForm);
 
-export async function undoPauseAction(formData: FormData): Promise<void> {
+async function undoPauseForm(formData: FormData): Promise<void> {
   const page = parsePauseReturnTo(formData.get('returnTo'));
   const ctx = await requireActionContext();
   let flash: { message?: string; error?: string };
@@ -66,8 +72,9 @@ export async function undoPauseAction(formData: FormData): Promise<void> {
   }
   redirect(withFlash(`${page}#pause`, flash));
 }
+export const undoPauseAction = withWorkspaceGuard('automation.undo_pause', undoPauseForm);
 
-export async function resumeAutomationAction(formData: FormData): Promise<void> {
+async function resumeAutomationForm(formData: FormData): Promise<void> {
   const page = parsePauseReturnTo(formData.get('returnTo'));
   const ctx = await requireActionContext();
   let flash: { message?: string; error?: string };
@@ -89,3 +96,4 @@ export async function resumeAutomationAction(formData: FormData): Promise<void> 
   }
   redirect(withFlash(`${page}#pause`, flash));
 }
+export const resumeAutomationAction = withWorkspaceGuard('automation.resume', resumeAutomationForm);

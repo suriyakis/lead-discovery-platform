@@ -1,7 +1,9 @@
 import { redirect } from 'next/navigation';
 import { HOME_PATH } from '@/lib/nav/registry';
 import { auth } from '@/lib/auth';
+import { readRequestSession } from '@/lib/session-token';
 import { type WorkspaceContext } from './context';
+import { pinnedWorkspaceContext } from './pinned-workspace';
 import { makePlatformContext, type PlatformContext } from './platform-context';
 import {
   NoWorkspaceError,
@@ -47,9 +49,16 @@ export { NoWorkspaceError, resolveWorkspaceContextForUser };
  *   - NoWorkspaceError when authenticated but no resolvable workspace
  *
  * Selection logic (incl. the god-mode branch for super-admins) lives in
- * resolveWorkspaceContextForUser — see workspace-resolution.ts.
+ * resolveWorkspaceContextForUser — see workspace-resolution.ts. MOB-06:
+ * the workspace is this SESSION's (the request cookie names the session
+ * row), so two browsers signed in as one user each keep their own.
+ *
+ * Inside a guarded action (withWorkspaceGuard) it returns the context the
+ * guard checked and pinned, without resolving again.
  */
 export async function getWorkspaceContext(): Promise<WorkspaceContext> {
+  const pinned = pinnedWorkspaceContext();
+  if (pinned) return pinned;
   const session = await auth();
   if (!session?.user?.id) throw new AuthRequiredError();
   // Phase 15: every authenticated user passes the accountStatus gate
@@ -61,10 +70,24 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
   ) {
     throw new AccountInactiveError(session.user.accountStatus);
   }
-  return resolveWorkspaceContextForUser(
-    session.user.id,
-    session.user.role === 'super_admin',
-  );
+  return resolveSessionWorkspaceContext(session.user);
+}
+
+/**
+ * The workspace of THIS request's session for an already-loaded user,
+ * without the accountStatus gate — for the app shell, which renders its
+ * chrome for every signed-in user and gates nothing itself. Pages and
+ * actions use getWorkspaceContext().
+ */
+export async function resolveSessionWorkspaceContext(user: {
+  id: string;
+  role: 'member' | 'super_admin';
+}): Promise<WorkspaceContext> {
+  const { token, userAgent } = await readRequestSession();
+  return resolveWorkspaceContextForUser(user.id, user.role === 'super_admin', {
+    sessionToken: token,
+    userAgent,
+  });
 }
 
 /**

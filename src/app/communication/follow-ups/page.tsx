@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Timer, SlidersHorizontal } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { Badge, CountBadge, StatusBadge } from '@/components/Badge';
 import { CommunicationTabs } from '@/components/CommunicationTabs';
 import { auth } from '@/lib/auth';
@@ -10,14 +11,7 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import {
-  FollowUpServiceError,
-  approveFollowUp,
-  cancelFollowUps,
-  countFollowUpsByStatus,
-  listFollowUps,
-  rejectFollowUp,
-} from '@/lib/services/follow-up';
+import { countFollowUpsByStatus, listFollowUps } from '@/lib/services/follow-up';
 import { countCommunicationByStatus } from '@/lib/services/communication';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -28,6 +22,11 @@ import { FollowUpApprovalRow } from '@/components/FollowUpApprovalRow';
 import { loadAutomationState } from '@/lib/services/automation-gate';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { followUpStatus, type FollowUpStatus } from '@/lib/db/schema/follow-ups';
+import {
+  approveFollowUpAction,
+  cancelThreadFollowUpsAction,
+  rejectFollowUpAction,
+} from './actions';
 import {
   FOLLOW_UP_STATUS_DESCRIPTION,
   FOLLOW_UP_STATUS_LABEL,
@@ -126,100 +125,11 @@ export default async function FollowUpsPage({
     }
   }
 
-  async function cancel(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const threadIdRaw = String(formData.get('threadId') ?? '');
-    if (!/^\d+$/.test(threadIdRaw)) {
-      redirect('/communication/follow-ups?error=invalid_thread_id');
-    }
-    const threadId = BigInt(threadIdRaw);
-    try {
-      const n = await cancelFollowUps(c, threadId, 'manual_cancel');
-      redirect(
-        `/communication/follow-ups?status=${activeStatus}&message=${encodeURIComponent(
-          `Cancelled ${n} pending follow-up${n === 1 ? '' : 's'}.`,
-        )}`,
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof Error ? err.message : 'cancel failed';
-      redirect(
-        `/communication/follow-ups?status=${activeStatus}&error=${encodeURIComponent(m)}`,
-      );
-    }
-  }
-
-  async function approve(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const idRaw = String(formData.get('id') ?? '');
-    if (!/^\d+$/.test(idRaw)) {
-      redirect('/communication/follow-ups?error=invalid_id');
-    }
-    const id = BigInt(idRaw);
-    const subject = String(formData.get('subject') ?? '').trim();
-    const body = String(formData.get('body') ?? '').trim();
-    const translatedSubject = String(formData.get('translatedSubject') ?? '').trim();
-    const translatedBody = String(formData.get('translatedBody') ?? '').trim();
-    const targetLanguage = String(formData.get('targetLanguage') ?? '').trim();
-    try {
-      const updated = await approveFollowUp(c, id, {
-        subject: subject || undefined,
-        body: body || undefined,
-        translatedSubject: translatedSubject || undefined,
-        translatedBody: translatedBody || undefined,
-        targetLanguage: targetLanguage || undefined,
-        // PC-05: "send anyway" ticked while automation is paused.
-        confirmPaused: formData.get('confirmPaused') === 'on',
-      });
-      redirect(
-        `/communication/follow-ups?status=${activeStatus}&message=${encodeURIComponent(
-          `Approved step ${updated.stepNumber}/${updated.totalSteps} — sent.`,
-        )}`,
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m =
-        err instanceof FollowUpServiceError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : 'approve failed';
-      redirect(
-        `/communication/follow-ups?status=${activeStatus}&error=${encodeURIComponent(m)}`,
-      );
-    }
-  }
-
-  async function reject(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const idRaw = String(formData.get('id') ?? '');
-    if (!/^\d+$/.test(idRaw)) {
-      redirect('/communication/follow-ups?error=invalid_id');
-    }
-    const id = BigInt(idRaw);
-    try {
-      await rejectFollowUp(c, id);
-      redirect(
-        `/communication/follow-ups?status=${activeStatus}&message=${encodeURIComponent(
-          'Follow-up rejected.',
-        )}`,
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m =
-        err instanceof FollowUpServiceError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : 'reject failed';
-      redirect(
-        `/communication/follow-ups?status=${activeStatus}&error=${encodeURIComponent(m)}`,
-      );
-    }
-  }
+  // Server actions (./actions.ts), bound to the tab to come back to.
+  // MOB-06: all three are guarded; their forms carry the page's workspace.
+  const cancel = cancelThreadFollowUpsAction.bind(null, activeStatus);
+  const approve = approveFollowUpAction.bind(null, activeStatus);
+  const reject = rejectFollowUpAction.bind(null, activeStatus);
 
   // PC-05: approving while automation is paused needs "send anyway".
   const automationPaused = (await loadAutomationState(ctx.workspaceId)).pause !== null;
@@ -374,6 +284,7 @@ export default async function FollowUpsPage({
                     ) : null}
                     {r.status === 'pending' ? (
                       <form action={cancel} style={{ display: 'inline' }}>
+                        <ExpectedWorkspaceField />
                         <input
                           type="hidden"
                           name="threadId"
@@ -423,6 +334,7 @@ export default async function FollowUpsPage({
                       style={{ marginTop: '0.4rem', display: 'inline' }}
                     >
                       <input type="hidden" name="id" value={r.id.toString()} />
+                      <ExpectedWorkspaceField />
                       <button
                         type="submit"
                         className="ghost-btn"

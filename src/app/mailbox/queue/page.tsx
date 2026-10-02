@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { Badge, StatusBadge } from '@/components/Badge';
 import { auth } from '@/lib/auth';
 import {
@@ -103,6 +104,7 @@ export default async function QueuePage({
         <h2>Send settings</h2>
         {isAdmin ? (
           <form action={saveSendSettingsAction} className="edit-draft-form">
+            <ExpectedWorkspaceField />
             <input type="hidden" name="status" value={statusKey} />
             <fieldset className="ks-kind-fields">
               <legend className="muted">Limits</legend>
@@ -195,6 +197,7 @@ export default async function QueuePage({
             the ones that are already due right away.
           </p>
           <form action={drainSendQueueAction}>
+            <ExpectedWorkspaceField />
             <input type="hidden" name="status" value={statusKey} />
             <button type="submit">Send due emails now</button>
           </form>
@@ -287,6 +290,7 @@ export default async function QueuePage({
                   {canAct && e.status === 'queued' ? (
                     <div className="action-row" style={{ marginTop: '0.5rem' }}>
                       <form action={cancelQueuedEmailAction}>
+                        <ExpectedWorkspaceField />
                         <input type="hidden" name="status" value={statusKey} />
                         <input type="hidden" name="id" value={e.id.toString()} />
                         <button type="submit" className="ghost-btn">
@@ -294,6 +298,7 @@ export default async function QueuePage({
                         </button>
                       </form>
                       <form action={rescheduleQueuedEmailAction} className="inline-form">
+                        <ExpectedWorkspaceField />
                         <input type="hidden" name="status" value={statusKey} />
                         <input type="hidden" name="id" value={e.id.toString()} />
                         <label>
@@ -312,6 +317,7 @@ export default async function QueuePage({
                   {canAct && isRecoverableQueueStatus(e.status) ? (
                     <div className="action-row" style={{ marginTop: '0.5rem' }}>
                       <form action={retryQueuedEmailAction}>
+                        <ExpectedWorkspaceField />
                         <input type="hidden" name="status" value={statusKey} />
                         <input type="hidden" name="id" value={e.id.toString()} />
                         {/* PC-05: Retry now is a manual send; while automation
@@ -336,6 +342,7 @@ export default async function QueuePage({
                         )}
                       </form>
                       <form action={requeueQueuedEmailAction}>
+                        <ExpectedWorkspaceField />
                         <input type="hidden" name="status" value={statusKey} />
                         <input type="hidden" name="id" value={e.id.toString()} />
                         {interrupted ? (
@@ -353,6 +360,7 @@ export default async function QueuePage({
                       </form>
                       {interrupted ? (
                         <form action={markQueuedEmailDeliveredAction}>
+                          <ExpectedWorkspaceField />
                           <input type="hidden" name="status" value={statusKey} />
                           <input type="hidden" name="id" value={e.id.toString()} />
                           <ConfirmFormButton message={MARK_DELIVERED_CONFIRM} className="ghost-btn">

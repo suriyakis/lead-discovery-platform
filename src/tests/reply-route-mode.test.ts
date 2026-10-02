@@ -40,7 +40,8 @@ describe('POST /api/communication/reply', () => {
     const res = await POST(
       new Request('http://localhost/api/communication/reply', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // MOB-06: the composer sends its page's workspace (the stub's 1).
+        headers: { 'Content-Type': 'application/json', 'x-expected-workspace': '1' },
         body: JSON.stringify({
           threadId: '1',
           mailboxId: '2',

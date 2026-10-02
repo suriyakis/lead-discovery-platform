@@ -10,11 +10,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { connectorRuns } from '@/lib/db/schema/connectors';
 import { outreachQueue } from '@/lib/db/schema/outreach';
-import {
-  markQueuedEmailDeliveredAction,
-  requeueQueuedEmailAction,
-  retryQueuedEmailAction,
-} from '@/app/mailbox/queue/actions';
+import * as queueActions from '@/app/mailbox/queue/actions';
 import { MARKED_DELIVERED_MESSAGE, REQUEUED_MESSAGE } from '@/app/mailbox/queue/forms';
 import QueuePage from '@/app/mailbox/queue/page';
 import { cancelRunAction } from '@/app/connectors/[id]/runs/[runId]/actions';
@@ -25,6 +21,7 @@ import { addSuppression } from '@/lib/services/suppression';
 import { reapStuckSends } from '@/lib/services/stuck-work';
 import { pauseAutomation } from '@/lib/services/automation-pause';
 import { truncateAll } from './helpers/db';
+import { postedFromCurrentPage } from './helpers/workspace-guard';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 import {
   FlakyProvider,
@@ -52,6 +49,22 @@ vi.mock('@/components/AutoRefresh', async () => {
     AutoRefresh: () => createElement('span', { 'data-auto-refresh': 'on' }),
   };
 });
+
+// MOB-06: the actions are guarded; each call posts from the page the
+// signed-in user would see right now (their current workspace).
+const currentUser = () => session.current?.user;
+const markQueuedEmailDeliveredAction = postedFromCurrentPage(
+  queueActions.markQueuedEmailDeliveredAction,
+  currentUser,
+);
+const requeueQueuedEmailAction = postedFromCurrentPage(
+  queueActions.requeueQueuedEmailAction,
+  currentUser,
+);
+const retryQueuedEmailAction = postedFromCurrentPage(
+  queueActions.retryQueuedEmailAction,
+  currentUser,
+);
 
 function signInAs(userId: string): void {
   session.current = { user: { id: userId, role: 'member', accountStatus: 'active' } };

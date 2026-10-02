@@ -1,6 +1,6 @@
 'use server';
 
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { HOME_PATH } from './nav/registry';
 import { signOut } from './auth';
@@ -27,7 +27,9 @@ export async function teamLoginAction(formData: FormData): Promise<void> {
   if (!user) {
     redirect('/?error=invalid_credentials');
   }
-  const minted = await createSessionForUser(user.id);
+  const minted = await createSessionForUser(user.id, {
+    userAgent: (await headers()).get('user-agent'),
+  });
   const jar = await cookies();
   jar.set({
     name: minted.cookieName,

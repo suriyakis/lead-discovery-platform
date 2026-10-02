@@ -33,6 +33,8 @@ export interface SendComposeInput {
   signature?: string;
   /** PC-05: "send anyway" while automation is paused. */
   confirmPaused?: boolean;
+  /** MOB-06: the workspace the compose page was rendered for. */
+  expectedWorkspaceId?: string;
 }
 
 export type ComposeSendInputResult =

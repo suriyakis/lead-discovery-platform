@@ -468,6 +468,8 @@ describe('send queue', { timeout: DB_TEST_TIMEOUT_MS }, () => {
       fd.set('fixedDelayMinutes', String(before.fixedDelayMinutes));
       fd.set('randomDelayMinMinutes', String(before.randomDelayMinMinutes));
       fd.set('randomDelayMaxMinutes', String(before.randomDelayMaxMinutes));
+      // MOB-06: the queue page posts the workspace it was rendered for.
+      fd.set('expectedWorkspaceId', s.workspaceId.toString());
       return fd;
     };
 

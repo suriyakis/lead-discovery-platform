@@ -526,6 +526,13 @@
       "when": 1790940368226,
       "tag": "0074_p1_diagnostics_notify_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1790950645386,
+      "tag": "0075_p1_diagnostics_session_workspace",
+      "breakpoints": true
     }
   ]
 }

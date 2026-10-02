@@ -85,9 +85,12 @@ async function redirectOf(run: Promise<unknown>): Promise<URL> {
   throw new Error('expected the action to redirect');
 }
 
+/** A form as the page posts it: with the page's workspace (MOB-06) —
+ *  the acting user's, as the page was rendered for them. */
 function form(fields: Record<string, string> = {}): FormData {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
+  if (session.ctx) fd.set('expectedWorkspaceId', session.ctx.workspaceId.toString());
   return fd;
 }
 
@@ -177,11 +180,11 @@ describe('review detail actions', () => {
     const id = s.itemId.toString();
     for (const run of [
       () => reviewActions.rejectReviewItemAction(id, form({ reason: 'no' })),
-      () => reviewActions.ignoreReviewItemAction(id),
-      () => reviewActions.flagReviewItemAction(id),
+      () => reviewActions.ignoreReviewItemAction(id, form()),
+      () => reviewActions.flagReviewItemAction(id, form()),
       () => reviewActions.commentOnReviewItemAction(id, form({ comment: 'hello' })),
       () => reviewActions.generateDraftAction(id, form({ productId: '1', method: 'rules' })),
-      () => reviewActions.archiveReviewItemAction(id),
+      () => reviewActions.archiveReviewItemAction(id, form()),
     ]) {
       const to = await redirectOf(run());
       expect(to.pathname).toBe(`/review/${id}`);
@@ -208,7 +211,7 @@ describe('review detail actions', () => {
   it('acting on an item that no longer exists lands on the queue with a notice', async () => {
     const s = await setup();
     actAs(s.member);
-    const to = await redirectOf(reviewActions.ignoreReviewItemAction('987654'));
+    const to = await redirectOf(reviewActions.ignoreReviewItemAction('987654', form()));
     expect(to.pathname).toBe('/review');
     expect(to.searchParams.get('message')).toMatch(/no longer exists/);
   });
@@ -252,10 +255,10 @@ describe('review detail actions', () => {
   it('archive is admin-only and says so', async () => {
     const s = await setup();
     actAs(s.member);
-    const to = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString()));
+    const to = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString(), form()));
     expect(to.searchParams.get('error')).toMatch(/Only workspace admins/);
     actAs(s.admin);
-    const ok = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString()));
+    const ok = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString(), form()));
     expect(ok.pathname).toBe('/review');
     expect(await itemState(s.itemId)).toBe('archived');
   });
@@ -271,14 +274,14 @@ describe('review detail actions', () => {
       reviewActions.generateDraftAction(s.itemId.toString(), form({ productId: 'abc' })),
     );
     expect(noProduct.searchParams.get('error')).toMatch(/Pick a product/);
-    const badId = await redirectOf(reviewActions.flagReviewItemAction('1; drop table'));
+    const badId = await redirectOf(reviewActions.flagReviewItemAction('1; drop table', form()));
     expect(badId.pathname).toBe('/review');
   });
 
   it('a stale form after sign-out goes to the sign-in page', async () => {
     const s = await setup();
     actAs(null);
-    const to = await redirectOf(reviewActions.flagReviewItemAction(s.itemId.toString()));
+    const to = await redirectOf(reviewActions.flagReviewItemAction(s.itemId.toString(), form()));
     expect(to.pathname).toBe('/');
   });
 });

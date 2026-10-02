@@ -900,6 +900,8 @@ export const UNLISTED_ROUTES: Readonly<Record<string, string>> = {
     'Test probe that throws on purpose; 404 unless ENABLE_TEST_ROUTES=1.',
   '/dev/gallery':
     'Design-system component gallery (DS-06) for design review; 404 unless ENABLE_TEST_ROUTES=1.',
+  '/workspace-changed':
+    'Where a refused form lands when this browser switched workspace in another tab after the page rendered (MOB-06).',
 };
 
 // ---- actions, the interim stop, the account menu, the mobile tab bar ----

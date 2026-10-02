@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Languages } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -9,29 +10,28 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace } from '@/lib/services/context';
-import {
-  OutreachServiceError,
-  approveOutreachDraft,
-  archiveOutreachDraft,
-  editOutreachDraft,
-  generateDraftTranslation,
-  generateOutreachDraft,
-  getOutreachDraft,
-  rejectOutreachDraft,
-  saveDraftTranslation,
-} from '@/lib/services/outreach';
-import { enqueueDraft } from '@/lib/services/outreach-queue';
+import { OutreachServiceError, getOutreachDraft } from '@/lib/services/outreach';
 import { listMailboxes } from '@/lib/services/mailbox';
 import { getLanguageName } from '@/lib/i18n/language';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import {
+  approveDraftAction,
+  archiveDraftAction,
+  enqueueDraftAction,
+  regenerateDraftAction,
+  rejectDraftAction,
+  saveDraftEditsAction,
+  saveDraftTranslationAction,
+  translateDraftAction,
+} from './actions';
 
 export default async function DraftDetail({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ msg?: string; error?: string }>;
+  searchParams: Promise<{ msg?: string; message?: string; error?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) redirect('/');
@@ -74,111 +74,28 @@ export default async function DraftDetail({
     draft.status === 'rejected' ||
     draft.status === 'superseded';
 
-  // ---- server actions ----
-  async function saveEdits(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const subject = String(formData.get('subject') ?? '').trim() || null;
-    const body = String(formData.get('body') ?? '');
-    await editOutreachDraft(c, id, { subject, body });
-    redirect(`/drafts/${id}`);
-  }
-  async function enqueueForSend(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const mailboxIdRaw = String(formData.get('mailboxId') ?? '');
-    if (!/^\d+$/.test(mailboxIdRaw)) return;
-    const delayMode = String(formData.get('delayMode') ?? 'random') as
-      | 'immediate'
-      | 'fixed'
-      | 'random';
-    try {
-      await enqueueDraft(c, {
-        draftId: id,
-        mailboxId: BigInt(mailboxIdRaw),
-        delayMode,
-      });
-      redirect('/mailbox/queue?message=Enqueued');
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof Error ? err.message : 'failed';
-      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function approve() {
-    'use server';
-    const c = await getWorkspaceContext();
-    await approveOutreachDraft(c, id);
-    redirect(`/drafts/${id}`);
-  }
-  async function reject(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const reason = String(formData.get('reason') ?? '').trim() || null;
-    await rejectOutreachDraft(c, id, reason);
-    redirect(`/drafts/${id}`);
-  }
-  async function regenerate(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const method = (String(formData.get('method') ?? 'rules') as 'rules' | 'ai' | 'hybrid');
-    const created = await generateOutreachDraft(c, {
-      reviewItemId: reviewItem.id,
-      productProfileId: product.id,
-      method,
-    });
-    redirect(`/drafts/${created.id}`);
-  }
-  async function archive() {
-    'use server';
-    const c = await getWorkspaceContext();
-    await archiveOutreachDraft(c, id);
-    redirect('/drafts');
-  }
+  // ---- server actions (./actions.ts, bound to this draft) ----
+  // MOB-06: the ones that send, spend or decide are guarded; their forms
+  // carry <ExpectedWorkspaceField/>.
+  const idKey = id.toString();
+  const saveEdits = saveDraftEditsAction.bind(null, idKey);
+  const enqueueForSend = enqueueDraftAction.bind(null, idKey);
+  const approve = approveDraftAction.bind(null, idKey);
+  const reject = rejectDraftAction.bind(null, idKey);
+  const regenerate = regenerateDraftAction.bind(null, idKey);
+  const archive = archiveDraftAction.bind(null, idKey);
+  const genTranslation = translateDraftAction.bind(null, idKey);
+  const saveTranslation = saveDraftTranslationAction.bind(null, idKey);
 
   // Phase 63: the operator-reviewed translation (what actually gets sent).
   // Generated/edited on demand via the actions below; null until then.
   const nativeLang = (draft.language ?? 'en').toLowerCase().split('-')[0] ?? 'en';
 
-  async function genTranslation() {
-    'use server';
-    const c = await getWorkspaceContext();
-    try {
-      const d = await generateDraftTranslation(c, id);
-      redirect(
-        `/drafts/${id}?message=${encodeURIComponent(
-          d.targetLanguage
-            ? `Translation generated (${getLanguageName(d.targetLanguage)}) — review/edit below.`
-            : 'Recipient language matches your draft — nothing to translate.',
-        )}`,
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof OutreachServiceError ? err.message : 'translate failed';
-      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function saveTranslation(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    try {
-      await saveDraftTranslation(c, id, {
-        subject: String(formData.get('subjectTranslated') ?? '').trim() || null,
-        body: String(formData.get('bodyTranslated') ?? ''),
-      });
-      redirect(`/drafts/${id}?message=Translation+saved`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof OutreachServiceError ? err.message : 'save failed';
-      redirect(`/drafts/${id}?error=${encodeURIComponent(m)}`);
-    }
-  }
-
   const banner = sp.error
     ? { tone: 'error' as const, text: sp.error }
-    : sp.msg === 'already-english'
+    : sp.message
+      ? { tone: 'info' as const, text: sp.message }
+      : sp.msg === 'already-english'
       ? {
           tone: 'info' as const,
           text: "Product language is English — kept the body as-is.",
@@ -341,6 +258,8 @@ export default async function DraftDetail({
               </p>
               {!isTerminal ? (
                 <form action={saveTranslation} className="edit-draft-form">
+                  {/* Re-translate (formAction below) is guarded. */}
+                  <ExpectedWorkspaceField />
                   <label>
                     <span>Subject ({getLanguageName(draft.targetLanguage)})</span>
                     <input
@@ -400,6 +319,7 @@ export default async function DraftDetail({
               </p>
               {!isTerminal ? (
                 <form action={genTranslation}>
+                  <ExpectedWorkspaceField />
                   <button type="submit" className="primary-btn">
                     <Languages className="primary-btn-icon" aria-hidden="true" />{' '}
                     Show translation
@@ -415,12 +335,14 @@ export default async function DraftDetail({
             <h2>Decisions</h2>
             <div className="action-row">
               <form action={approve}>
+                <ExpectedWorkspaceField />
                 <button type="submit" className="primary-btn">
                   Approve
                 </button>
               </form>
             </div>
             <form action={reject} className="reject-form">
+              <ExpectedWorkspaceField />
               <label>
                 <span>Reject with reason</span>
                 <input
@@ -434,6 +356,7 @@ export default async function DraftDetail({
             </form>
             {sendableMailboxes.length > 0 ? (
               <form action={enqueueForSend} className="inline-form" style={{ marginTop: '0.75rem' }}>
+                <ExpectedWorkspaceField />
                 <label>
                   <span>Send via</span>
                   <select name="mailboxId" required defaultValue="">
@@ -468,6 +391,7 @@ export default async function DraftDetail({
             current draft becomes <code>superseded</code> in the audit trail.
           </p>
           <form action={regenerate} className="inline-form">
+            <ExpectedWorkspaceField />
             <label>
               <span>Method</span>
               <select name="method" defaultValue={draft.method}>
@@ -484,6 +408,7 @@ export default async function DraftDetail({
           <section>
             <h2>Admin</h2>
             <form action={archive}>
+              <ExpectedWorkspaceField />
               <button type="submit" className="ghost-btn">
                 Archive (mark superseded)
               </button>

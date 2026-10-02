@@ -14,6 +14,11 @@
 //   not_found (item deleted in the meantime)               → ?message= on /review
 //
 // Unexpected errors still propagate to app/error.tsx.
+//
+// MOB-06: the decisions (approve, reject, ignore, flag, archive) and
+// Generate draft (spends tokens) are guarded: the page's forms post the
+// workspace it was rendered for, and after a switch in another tab the
+// action is refused before anything changes (src/lib/workspace-guard).
 
 import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';
@@ -31,6 +36,7 @@ import {
   rejectReviewItem,
 } from '@/lib/services/review';
 import { TokenError } from '@/lib/services/token-ledger';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
 const ITEM_GONE = 'That review item no longer exists — it may have been deleted.';
 const READ_ONLY =
@@ -96,32 +102,36 @@ async function runTransition(
   redirect(itemPath(id));
 }
 
-export async function approveReviewItemAction(rawId: string, formData: FormData): Promise<void> {
+async function approveReviewItemForm(rawId: string, formData: FormData): Promise<void> {
   const reason = reasonFrom(formData);
   const decisionKey = decisionKeyFrom(formData);
   await runTransition(rawId, 'approve', (ctx, id) =>
     approveReviewItem(ctx, id, reason, { decisionKey }),
   );
 }
+export const approveReviewItemAction = withWorkspaceGuard('review.approve', approveReviewItemForm);
 
-export async function rejectReviewItemAction(rawId: string, formData: FormData): Promise<void> {
+async function rejectReviewItemForm(rawId: string, formData: FormData): Promise<void> {
   const reason = reasonFrom(formData);
   const decisionKey = decisionKeyFrom(formData);
   await runTransition(rawId, 'reject', (ctx, id) =>
     rejectReviewItem(ctx, id, reason, { decisionKey }),
   );
 }
+export const rejectReviewItemAction = withWorkspaceGuard('review.reject', rejectReviewItemForm);
 
-export async function ignoreReviewItemAction(rawId: string, formData?: FormData): Promise<void> {
+async function ignoreReviewItemForm(rawId: string, formData?: FormData): Promise<void> {
   const decisionKey = decisionKeyFrom(formData);
   await runTransition(rawId, 'ignore', (ctx, id) => ignoreReviewItem(ctx, id, { decisionKey }));
 }
+export const ignoreReviewItemAction = withWorkspaceGuard('review.ignore', ignoreReviewItemForm);
 
-export async function flagReviewItemAction(rawId: string): Promise<void> {
+async function flagReviewItemForm(rawId: string, _formData?: FormData): Promise<void> {
   await runTransition(rawId, 'flag', (ctx, id) => flagForReview(ctx, id));
 }
+export const flagReviewItemAction = withWorkspaceGuard('review.flag', flagReviewItemForm);
 
-export async function archiveReviewItemAction(rawId: string, formData?: FormData): Promise<void> {
+async function archiveReviewItemForm(rawId: string, formData?: FormData): Promise<void> {
   const id = parseItemId(rawId);
   if (id === null) redirect('/review');
   const decisionKey = decisionKeyFrom(formData);
@@ -138,6 +148,7 @@ export async function archiveReviewItemAction(rawId: string, formData?: FormData
   }
   redirect('/review');
 }
+export const archiveReviewItemAction = withWorkspaceGuard('review.archive', archiveReviewItemForm);
 
 export async function commentOnReviewItemAction(rawId: string, formData: FormData): Promise<void> {
   const id = parseItemId(rawId);
@@ -160,7 +171,7 @@ export async function commentOnReviewItemAction(rawId: string, formData: FormDat
   redirect(itemPath(id));
 }
 
-export async function generateDraftAction(rawId: string, formData: FormData): Promise<void> {
+async function generateDraftForm(rawId: string, formData: FormData): Promise<void> {
   const id = parseItemId(rawId);
   if (id === null) redirect('/review');
   const productId = parseItemId(String(formData.get('productId') ?? ''));
@@ -202,3 +213,4 @@ export async function generateDraftAction(rawId: string, formData: FormData): Pr
   }
   redirect(`/drafts/${draftId}`);
 }
+export const generateDraftAction = withWorkspaceGuard('review.generate_draft', generateDraftForm);

@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import { Coins, CreditCard } from 'lucide-react';
 import { appUrl } from '@/lib/app-origin';
 import { AppShell } from '@/components/AppShell';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { BuyTokensButtons } from '@/components/BuyTokensButtons';
 import { auth } from '@/lib/auth';
 import { getAvailablePlans, getPlanById } from '@/lib/billing/plans';
@@ -18,14 +19,10 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import {
-  BillingError,
-  createCheckoutSession,
-  createPortalSession,
-} from '@/lib/services/billing';
+import { BillingError, createPortalSession } from '@/lib/services/billing';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { isNextRedirectError } from '@/lib/server-redirect';
-import type { PlanId } from '@/lib/billing/plans';
+import { saveAutoTopupAction, subscribeToPlanAction } from './actions';
 import { TableScroll } from '@/components/TableScroll';
 
 export default async function BillingPage({
@@ -67,26 +64,11 @@ export default async function BillingPage({
   }));
   const recentTokenTx = await listTokenTransactions(ctx, { limit: 15 });
 
-  async function saveAutoTopup(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    if (!canAdminWorkspace(c)) {
-      redirect('/settings/billing?err=Only+admins+can+change+auto+top-up');
-    }
-    const enabled = formData.get('enabled') === 'on';
-    const packId = String(formData.get('packId') ?? 'pack_s');
-    await db
-      .update(workspaces)
-      .set({
-        autoTopupEnabled: enabled,
-        autoTopupPackId: packId,
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaces.id, c.workspaceId));
-    redirect(
-      `/settings/billing?msg=${encodeURIComponent(enabled ? 'Auto top-up enabled.' : 'Auto top-up disabled.')}`,
-    );
-  }
+  // MOB-06: the two actions that spend are guarded (./actions.ts); their
+  // forms carry the page's workspace. Buying a token pack is guarded in
+  // /api/stripe/buy-tokens.
+  const saveAutoTopup = saveAutoTopupAction;
+  const subscribeToPlan = subscribeToPlanAction;
 
   async function openPortal() {
     'use server';
@@ -107,33 +89,6 @@ export default async function BillingPage({
           : err instanceof Error
             ? err.message
             : 'portal failed';
-      redirect(`/settings/billing?err=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function subscribeToPlan(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const planId = String(formData.get('planId') ?? '') as PlanId;
-    if (planId !== 'starter' && planId !== 'pro') {
-      redirect(`/settings/billing?err=${encodeURIComponent('Unknown plan.')}`);
-    }
-    const requestHeaders = await headers();
-    try {
-      const result = await createCheckoutSession(c, {
-        planId,
-        successUrl: appUrl('/settings/billing?stripe=success', { headers: requestHeaders }),
-        cancelUrl: appUrl('/settings/billing?stripe=canceled', { headers: requestHeaders }),
-      });
-      redirect(result.url);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m =
-        err instanceof BillingError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : 'checkout failed';
       redirect(`/settings/billing?err=${encodeURIComponent(m)}`);
     }
   }
@@ -210,6 +165,7 @@ export default async function BillingPage({
               className="inline-form"
               style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}
             >
+              <ExpectedWorkspaceField />
               <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                 <input
                   type="checkbox"
@@ -389,6 +345,7 @@ export default async function BillingPage({
                   {isAdmin && stripeConfigured ? (
                     <form action={subscribeToPlan}>
                       <input type="hidden" name="planId" value={p.id} />
+                      <ExpectedWorkspaceField />
                       <button type="submit" className="primary-btn">
                         {p.trialDays > 0
                           ? `Start ${p.trialDays}-day trial`

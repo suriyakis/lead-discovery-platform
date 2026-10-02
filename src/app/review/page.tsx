@@ -17,6 +17,7 @@ import { countReviewItems, getStateCounts, listReviewItems } from '@/lib/service
 import { newDecisionKey } from '@/lib/services/learning-decisions';
 import type { ReviewItemState } from '@/lib/db/schema/review';
 import { REVIEW_ITEM_STATE_LABEL } from '@/lib/ui/labels';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { bulkArchiveAction, bulkDeleteAction } from './actions';
 
 /** The state tabs, labelled from the one vocabulary (DS-09). */
@@ -159,6 +160,8 @@ export default async function ReviewPage({
           className="bulk-toolbar"
         >
           <input type="hidden" name="state" value={stateKey} />
+          {/* MOB-06: both bulk actions are guarded. */}
+          <ExpectedWorkspaceField />
           {/* KL-02: the bulk archive is one decision; a resubmit is a no-op. */}
           <input type="hidden" name="decisionKey" value={newDecisionKey()} />
           {fromRaw ? <input type="hidden" name="from" value={fromRaw} /> : null}

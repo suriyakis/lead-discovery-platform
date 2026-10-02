@@ -37,6 +37,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       // serialize a BigInt". Rebuild session.user from primitives
       // explicitly so only JSON-safe fields cross the boundary. The
       // session shape is augmented in src/types/next-auth.d.ts.
+      //
+      // MOB-06: `session` arrives as the whole sessions row plus the user,
+      // so it carries the bigint sessions.activeWorkspaceId and the
+      // sessionToken itself. Returning it would break serialisation and
+      // hand the httpOnly cookie's value to /api/auth/session; return only
+      // the user and the expiry. The session's workspace is read on the
+      // server from the cookie (src/lib/session-token.ts).
       const u = user as {
         id: string;
         name?: string | null;
@@ -46,16 +53,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         role?: 'member' | 'super_admin';
         accountStatus?: 'pending' | 'active' | 'suspended' | 'rejected';
       };
-      session.user = {
-        id: u.id,
-        name: u.name ?? null,
-        email: u.email,
-        image: u.image ?? null,
-        emailVerified: u.emailVerified ?? null,
-        role: u.role ?? 'member',
-        accountStatus: u.accountStatus ?? 'pending',
+      const expires: unknown = session.expires;
+      return {
+        user: {
+          id: u.id,
+          name: u.name ?? null,
+          email: u.email,
+          image: u.image ?? null,
+          emailVerified: u.emailVerified ?? null,
+          role: u.role ?? 'member',
+          accountStatus: u.accountStatus ?? 'pending',
+        },
+        expires: expires instanceof Date ? expires.toISOString() : String(expires),
       };
-      return session;
     },
   },
   events: {

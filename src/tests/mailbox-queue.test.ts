@@ -20,12 +20,7 @@ import { outreachQueue } from '@/lib/db/schema/outreach';
 import { makeWorkspaceContext } from '@/lib/services/context';
 import { workspaceMembers, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { OutreachQueueError, getSendSettings } from '@/lib/services/outreach-queue';
-import {
-  cancelQueuedEmailAction,
-  drainSendQueueAction,
-  rescheduleQueuedEmailAction,
-  saveSendSettingsAction,
-} from '@/app/mailbox/queue/actions';
+import * as queueActions from '@/app/mailbox/queue/actions';
 import {
   formatUtc,
   parseEntryId,
@@ -38,6 +33,7 @@ import {
 } from '@/app/mailbox/queue/forms';
 import QueuePage from '@/app/mailbox/queue/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { postedFromCurrentPage } from './helpers/workspace-guard';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 
 // Sign in through a plain session object instead of Auth.js;
@@ -52,6 +48,14 @@ vi.mock('@/lib/auth', () => ({ auth: async () => session.current }));
 vi.mock('@/components/AppShell', () => ({
   AppShell: ({ children }: { children: ReactNode }) => children,
 }));
+
+// MOB-06: the actions are guarded; each call posts from the page the
+// signed-in user would see right now (their current workspace).
+const currentUser = () => session.current?.user;
+const cancelQueuedEmailAction = postedFromCurrentPage(queueActions.cancelQueuedEmailAction, currentUser);
+const drainSendQueueAction = postedFromCurrentPage(queueActions.drainSendQueueAction, currentUser);
+const rescheduleQueuedEmailAction = postedFromCurrentPage(queueActions.rescheduleQueuedEmailAction, currentUser);
+const saveSendSettingsAction = postedFromCurrentPage(queueActions.saveSendSettingsAction, currentUser);
 
 function signInAs(userId: string): void {
   session.current = { user: { id: userId, role: 'member', accountStatus: 'active' } };

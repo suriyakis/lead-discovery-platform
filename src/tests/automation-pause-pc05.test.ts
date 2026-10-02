@@ -1629,6 +1629,8 @@ describe('pause service (ia:F-18 / MOB-07 backend)', { timeout: 60_000 }, () => 
     const fd = new FormData();
     fd.set('returnTo', '/mailbox/queue');
     fd.set('reason', 'bad list');
+    // MOB-06: the page posts the workspace it was rendered for.
+    fd.set('expectedWorkspaceId', t.workspaceId.toString());
     const target = await expectRedirect(() => pauseAutomationAction(fd));
     const url = new URL(target, 'http://app.test');
     expect(url.pathname).toBe('/mailbox/queue');

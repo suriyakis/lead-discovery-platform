@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { auth } from '@/lib/auth';
 import { flashText } from '@/lib/action-errors';
 import {
@@ -269,6 +270,7 @@ export default async function ReviewDetail({
                       ) : null}
                       {canEdit && !isArchived && qualification.operatorVerdict !== 'not_fit' ? (
                         <form action={generateDraft} className="generate-draft-form">
+                          <ExpectedWorkspaceField />
                           <input type="hidden" name="productId" value={product.id.toString()} />
                           <select name="method" defaultValue="rules">
                             <option value="rules">rules</option>
@@ -305,14 +307,17 @@ export default async function ReviewDetail({
             <h2>Actions</h2>
             <div className="action-row">
               <form action={ignore}>
+                <ExpectedWorkspaceField />
                 {decisionKey()}
                 <button type="submit">Ignore</button>
               </form>
               <form action={flag}>
+                <ExpectedWorkspaceField />
                 <button type="submit">Flag for review</button>
               </form>
               {canAdminWorkspace(ctx) ? (
                 <form action={archive}>
+                  <ExpectedWorkspaceField />
                   {decisionKey()}
                   <button type="submit" className="ghost-btn">
                     Archive
@@ -322,6 +327,7 @@ export default async function ReviewDetail({
             </div>
 
             <form action={approve} className="approve-form">
+              <ExpectedWorkspaceField />
               {decisionKey()}
               <label>
                 <span>Approve — why does this fit? (optional, teaches the knowledge base)</span>
@@ -336,6 +342,7 @@ export default async function ReviewDetail({
             </form>
 
             <form action={reject} className="reject-form">
+              <ExpectedWorkspaceField />
               {decisionKey()}
               <label>
                 <span>Reject — why doesn&apos;t this fit? (teaches the knowledge base)</span>

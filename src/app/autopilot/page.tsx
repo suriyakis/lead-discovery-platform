@@ -18,6 +18,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 import { cx } from '@/lib/ui/cx';
 import styles from './autopilot.module.css';
 import { auth } from '@/lib/auth';
@@ -29,17 +30,10 @@ import {
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace, canWrite } from '@/lib/services/context';
 import {
-  AutopilotError,
-  clearProductAutopilotSettings,
   getAutopilotSettings,
   getProductAutopilotSettings,
   listAutopilotLog,
   listProductAutopilotSettings,
-  pauseProductAutomation,
-  resumeProductAutomation,
-  runOnce,
-  updateAutopilotSettings,
-  upsertProductAutopilotSettings,
 } from '@/lib/services/autopilot';
 import {
   autopilotFlow,
@@ -58,7 +52,14 @@ import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { AutomationPauseControl } from '@/components/AutomationPauseControl';
 import { clearAutopilotOverridesConfirm, resumeProductConfirm } from '@/lib/confirm-copy';
 import { getAutomationPauseOverview } from '@/lib/services/automation-pause';
-import { PlanLimitError } from '@/lib/services/plan-limits';
+import {
+  clearProductAutopilotAction,
+  pauseProductAction,
+  resumeProductAction,
+  runAutopilotNowAction,
+  saveAutopilotDefaultsAction,
+  saveProductAutopilotAction,
+} from './actions';
 
 export default async function AutopilotPage({
   searchParams,
@@ -116,137 +117,14 @@ export default async function AutopilotPage({
     ? await getProductAutopilotSettings(ctx, product.id)
     : null;
 
-  async function saveDefault(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const num = (k: string) => {
-      const v = String(formData.get(k) ?? '');
-      return /^\d+$/.test(v) ? Number(v) : undefined;
-    };
-    const big = (k: string) => {
-      const v = String(formData.get(k) ?? '');
-      return /^\d+$/.test(v) ? BigInt(v) : null;
-    };
-    try {
-      await updateAutopilotSettings(c, {
-        autopilotEnabled: formData.get('autopilotEnabled') === 'on',
-        enableAutoApproveProjects: formData.get('enableAutoApproveProjects') === 'on',
-        autoApproveThreshold: num('autoApproveThreshold'),
-        enableAutoEnqueueOutreach: formData.get('enableAutoEnqueueOutreach') === 'on',
-        enableAutoCrmContactSync: formData.get('enableAutoCrmContactSync') === 'on',
-        enableAutoCrmDealOnQualified: formData.get('enableAutoCrmDealOnQualified') === 'on',
-        maxApprovalsPerRun: num('maxApprovalsPerRun'),
-        maxEnqueuesPerRun: num('maxEnqueuesPerRun'),
-        defaultMailboxId: big('defaultMailboxId'),
-        defaultCrmConnectionId: big('defaultCrmConnectionId'),
-      });
-      redirect('/autopilot?message=Workspace+defaults+saved');
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      // I063: a lapsed plan's refusal says why instead of "failed"; only
-      // switching something ON is refused (PC-13).
-      const m =
-        err instanceof AutopilotError || err instanceof PlanLimitError ? err.message : 'failed';
-      redirect(`/autopilot?error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function saveProductOverlay(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const pid = BigInt(String(formData.get('productProfileId')));
-    // PC-13: two states per switch — "inherit" or "off" (narrow-only).
-    const narrow = (k: string): false | null | undefined => {
-      const v = String(formData.get(k) ?? '');
-      if (v === 'inherit') return null;
-      if (v === 'off') return false;
-      return undefined;
-    };
-    const num = (k: string): number | null | undefined => {
-      const v = String(formData.get(k) ?? '');
-      if (v === '' || v === 'inherit') return null;
-      return /^\d+$/.test(v) ? Number(v) : undefined;
-    };
-    const big = (k: string): bigint | null | undefined => {
-      const v = String(formData.get(k) ?? '');
-      if (v === '' || v === 'inherit') return null;
-      return /^\d+$/.test(v) ? BigInt(v) : undefined;
-    };
-    try {
-      await upsertProductAutopilotSettings(c, {
-        productProfileId: pid,
-        autopilotEnabled: narrow('autopilotEnabled'),
-        enableAutoApproveProjects: narrow('enableAutoApproveProjects'),
-        autoApproveThreshold: num('autoApproveThreshold'),
-        enableAutoEnqueueOutreach: narrow('enableAutoEnqueueOutreach'),
-        enableAutoCrmContactSync: narrow('enableAutoCrmContactSync'),
-        enableAutoCrmDealOnQualified: narrow('enableAutoCrmDealOnQualified'),
-        defaultMailboxId: big('defaultMailboxId'),
-      });
-      redirect(`/autopilot?scope=${pid}&message=Product+overrides+saved`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof AutopilotError ? err.message : 'failed';
-      redirect(`/autopilot?scope=${pid}&error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function clearOverlay(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const pid = BigInt(String(formData.get('productProfileId')));
-    await clearProductAutopilotSettings(c, pid);
-    redirect(`/autopilot?scope=${pid}&message=Overrides+cleared`);
-  }
-
-  async function pauseProduct(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const pid = BigInt(String(formData.get('productProfileId')));
-    try {
-      const r = await pauseProductAutomation(c, pid);
-      redirect(
-        `/autopilot?scope=${pid}&message=${encodeURIComponent(
-          r.alreadyPaused ? 'This product was already paused.' : 'Product paused: its automation and outbound mail wait.',
-        )}`,
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof AutopilotError ? err.message : 'failed';
-      redirect(`/autopilot?scope=${pid}&error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function resumeProduct(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const pid = BigInt(String(formData.get('productProfileId')));
-    try {
-      await resumeProductAutomation(c, pid);
-      redirect(`/autopilot?scope=${pid}&message=Product+resumed`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof AutopilotError ? err.message : 'failed';
-      redirect(`/autopilot?scope=${pid}&error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function runNow() {
-    'use server';
-    const c = await getWorkspaceContext();
-    const r = await runOnce(c);
-    // PC-06: a held run stops at the guard step — say why. PC-35: the guard
-    // is logged only when its state changes, so a run it stopped may add
-    // no activity row; the message says why instead.
-    const first = r.steps[0];
-    const guard = first?.step === 'guard' && first.outcome === 'skipped' ? first : null;
-    const message = guard?.detail?.startsWith('held: ')
-      ? `Nothing ran. ${guard.detail.slice('held: '.length)}`
-      : guard
-        ? `Autopilot did not run: ${guard.detail ?? 'guard'}`
-        : `runOnce — ${r.steps.length} steps`;
-    redirect(`/autopilot?message=${encodeURIComponent(message)}`);
-  }
+  // Server actions (./actions.ts). MOB-06: every one is guarded; each form
+  // below carries the page's workspace (<ExpectedWorkspaceField/>).
+  const saveDefault = saveAutopilotDefaultsAction;
+  const saveProductOverlay = saveProductAutopilotAction;
+  const clearOverlay = clearProductAutopilotAction;
+  const pauseProduct = pauseProductAction;
+  const resumeProduct = resumeProductAction;
+  const runNow = runAutopilotNowAction;
 
   return (
     <AppShell>
@@ -342,7 +220,7 @@ function MasterStrip({
   settings: AutopilotSettings;
   /** PC-05: the workspace pause (it stops autopilot with everything else). */
   paused: boolean;
-  runNow: () => Promise<void>;
+  runNow: (formData: FormData) => Promise<void>;
 }>) {
   return (
     <section>
@@ -360,6 +238,7 @@ function MasterStrip({
               : '⚫ disabled'}
         </span>
         <form action={runNow}>
+          <ExpectedWorkspaceField />
           <button type="submit">Run now</button>
         </form>
       </div>
@@ -486,6 +365,7 @@ function WorkspaceDefaultsForm({
     <section>
       <h2>Workspace defaults</h2>
       <form action={saveDefault} className="edit-draft-form">
+        <ExpectedWorkspaceField />
         <fieldset className="ks-kind-fields">
           <legend className="muted">Master switch</legend>
           <label className="checkbox-row">
@@ -643,6 +523,7 @@ function ProductPauseControl({
           {canResume ? (
             <form action={resumeProduct}>
               <input type="hidden" name="productProfileId" value={product.id.toString()} />
+              <ExpectedWorkspaceField />
               <ConfirmFormButton
                 className="primary-btn"
                 message={resumeProductConfirm(product.name)}
@@ -663,6 +544,7 @@ function ProductPauseControl({
           {canPause ? (
             <form action={pauseProduct}>
               <input type="hidden" name="productProfileId" value={product.id.toString()} />
+              <ExpectedWorkspaceField />
               <button type="submit" className="ghost-btn">
                 Pause {product.name}
               </button>
@@ -713,6 +595,7 @@ function ProductOverlayForm({
           name="productProfileId"
           value={product.id.toString()}
         />
+        <ExpectedWorkspaceField />
 
         <fieldset className="ks-kind-fields">
           <legend className="muted">Master switch</legend>
@@ -802,6 +685,7 @@ function ProductOverlayForm({
             name="productProfileId"
             value={product.id.toString()}
           />
+          <ExpectedWorkspaceField />
           <ConfirmFormButton
             className="ghost-btn"
             message={clearAutopilotOverridesConfirm(product.name, overlay, base)}

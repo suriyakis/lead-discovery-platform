@@ -39,6 +39,15 @@ PostgreSQL schema overview. Drizzle is the source of truth — `src/lib/db/schem
 
 Auth.js requires `accounts` and `sessions` tables — added by the Drizzle adapter. They reference `users.id`.
 
+`sessions` also carries (MOB-06; camelCase like the other auth columns):
+
+| col | type | notes |
+|---|---|---|
+| activeWorkspaceId | bigint | nullable; FK → workspaces ON DELETE SET NULL (custom SQL in `p1_diagnostics_session_workspace`). The workspace THIS session works in, pinned on its first request from `users.activeWorkspaceId` (the last-used workspace), else the oldest membership; changed by the switcher and `/go`. Re-checked against membership on every request. |
+| createdAt | timestamptz | default now() |
+| lastSeenAt | timestamptz | nullable; rewritten at most every 5 minutes |
+| userAgent | text | nullable; the browser's User-Agent, clipped to 300 characters |
+
 ### `workspace_members`
 Joins users to workspaces with per-workspace roles.
 

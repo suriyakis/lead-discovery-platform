@@ -3,6 +3,9 @@
 // Bulk actions for the Review queue. Operates on review_item ids posted
 // from the page-level form. State filter is round-tripped so the user
 // stays on the same tab after the action completes.
+//
+// MOB-06: both are guarded — after a switch in another tab they are
+// refused before any item changes (src/lib/workspace-guard).
 
 import { redirect } from 'next/navigation';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
@@ -13,6 +16,7 @@ import {
 } from '@/lib/services/review';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { parseDecisionKey } from '@/lib/services/learning-decisions';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
 function parseIds(formData: FormData): bigint[] {
   const ids: bigint[] = [];
@@ -45,7 +49,7 @@ function returnTo(formData: FormData, flash: { message?: string; error?: string 
   return qs ? `/review?${qs}` : '/review';
 }
 
-export async function bulkArchiveAction(formData: FormData): Promise<void> {
+async function bulkArchiveForm(formData: FormData): Promise<void> {
   const ctx = await getWorkspaceContext();
   const ids = parseIds(formData);
   if (ids.length === 0) {
@@ -74,8 +78,9 @@ export async function bulkArchiveAction(formData: FormData): Promise<void> {
     );
   }
 }
+export const bulkArchiveAction = withWorkspaceGuard('review.bulk_archive', bulkArchiveForm);
 
-export async function bulkDeleteAction(formData: FormData): Promise<void> {
+async function bulkDeleteForm(formData: FormData): Promise<void> {
   const ctx = await getWorkspaceContext();
   const ids = parseIds(formData);
   if (ids.length === 0) {
@@ -106,3 +111,4 @@ export async function bulkDeleteAction(formData: FormData): Promise<void> {
     );
   }
 }
+export const bulkDeleteAction = withWorkspaceGuard('review.bulk_delete', bulkDeleteForm);
