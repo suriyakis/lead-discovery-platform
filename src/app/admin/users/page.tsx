@@ -109,8 +109,7 @@ export default async function AdminUsersPage({
   return (
     <div className="dashboard-wrap">
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
-        <Link href="/admin">Admin</Link> / Users
+        <Link href="/admin">Platform console</Link> / Users
       </p>
       <h1>Users</h1>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}

@@ -274,7 +274,7 @@ export default async function MailboxDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/mailbox">Mailbox</Link> / {mailbox.name}
         </p>
         <div className="page-header">

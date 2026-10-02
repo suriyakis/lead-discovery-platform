@@ -43,11 +43,11 @@ vi.mock('@/lib/services/auth-context', () => {
     },
     // Console actions take a PlatformContext (PC-03); the real guard
     // redirects a signed-out user to '/' and anyone else who is not a
-    // super-admin to '/dashboard'.
+    // super-admin to Today ('/today').
     requirePlatformAdmin: async () => {
       const { redirect } = await import('next/navigation');
       if (!session.ctx) return redirect('/');
-      if (session.ctx.role !== 'super_admin') return redirect('/dashboard');
+      if (session.ctx.role !== 'super_admin') return redirect('/today');
       return platformCtx(session.ctx.userId);
     },
   };
@@ -470,7 +470,7 @@ describe('admin pre-authorisation Revoke', () => {
     const denied = await redirectOf(
       adminUserActions.revokePreauthorizationAction(form({ id: entry.id })),
     );
-    expect(denied.pathname).toBe('/dashboard');
+    expect(denied.pathname).toBe('/today');
     expect(await preauthExists(entry.id)).toBe(true);
 
     actAs(null);

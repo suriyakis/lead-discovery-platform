@@ -88,7 +88,7 @@ export default async function Home({
 }) {
   const session = await auth();
   if (session?.user) {
-    redirect('/dashboard');
+    redirect('/today');
   }
   const sp = await searchParams;
   const errorMsg =
@@ -126,7 +126,7 @@ export default async function Home({
               <form
                 action={async () => {
                   'use server';
-                  await signIn('google', { redirectTo: '/dashboard' });
+                  await signIn('google', { redirectTo: '/today' });
                 }}
               >
                 <button type="submit" className="hero-cta-primary">

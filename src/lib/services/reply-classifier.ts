@@ -33,18 +33,11 @@ import {
 import { isOutreachLinked, type OutreachLinkedRelevance } from '@/lib/mail/relevance';
 import { extractReplyText } from '@/lib/mail/reply-text';
 import type { IAIProvider } from '@/lib/ai';
+import { REPLY_CLASSES, type ReplyClass } from '@/lib/mail/reply-classes';
 
-export type ReplyClass =
-  | 'positive'
-  | 'redirect'
-  | 'question'
-  | 'interest'
-  | 'doc_request'
-  | 'negative'
-  | 'out_of_office'
-  | 'bounce'
-  | 'unsubscribe'
-  | 'irrelevant';
+// The class list lives in one const array (AP-03): the type, the AI
+// prompt, the validity check and the assistant handbook all read it.
+export { REPLY_CLASSES, type ReplyClass };
 
 export interface ReplyClassification {
   type: ReplyClass;
@@ -293,17 +286,13 @@ export async function analyseReply(
       const aiResult = await options.ai.generateText(
         {
           system:
-            'Classify the inbound email into one of: positive, redirect, question, interest, doc_request, negative, out_of_office, bounce, unsubscribe, irrelevant. Reply with the single word.',
+            `Classify the inbound email into one of: ${REPLY_CLASSES.join(', ')}. Reply with the single word.`,
           prompt: replyText || '(no body)',
         },
         { temperature: 0 },
       );
       const candidate = aiResult.text.trim().toLowerCase().replace(/[^a-z_]/g, '') as ReplyClass;
-      const valid = PATTERNS.some((p) => p.type === candidate) ||
-        candidate === 'irrelevant' ||
-        candidate === 'positive' ||
-        candidate === 'question' ||
-        candidate === 'interest';
+      const valid = (REPLY_CLASSES as ReadonlyArray<string>).includes(candidate);
       if (valid) {
         const matchedPattern = PATTERNS.find((p) => p.type === candidate);
         final = {

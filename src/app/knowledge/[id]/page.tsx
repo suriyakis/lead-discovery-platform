@@ -131,7 +131,7 @@ export default async function KnowledgeSourceDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/knowledge">Knowledge</Link> / {source.title}
         </p>
         <h1>{source.title}</h1>

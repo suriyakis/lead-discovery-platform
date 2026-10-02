@@ -3,7 +3,6 @@ import { redirect } from 'next/navigation';
 import { Coins, CreditCard } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
 import { BuyTokensButtons } from '@/components/BuyTokensButtons';
-import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import { getAvailablePlans, getPlanById } from '@/lib/billing/plans';
 import { tokenPacks } from '@/lib/billing/tokens';
@@ -42,7 +41,7 @@ export default async function BillingPage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -152,7 +151,6 @@ export default async function BillingPage({
             hosted billing portal.
           </p>
         </header>
-        <SettingsNav />
 
         {sp.msg ? <p className="form-info">{sp.msg}</p> : null}
         {sp.err ? <p className="form-error">{sp.err}</p> : null}

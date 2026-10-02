@@ -219,7 +219,7 @@ export default async function SuppressionPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/mailbox">Mailbox</Link> / Suppression
         </p>
         <h1>Suppression list</h1>

@@ -64,7 +64,7 @@ export default async function KnowledgePage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Knowledge
+          <Link href="/today">Today</Link> / Knowledge
         </p>
         <div className="page-header">
           <h1>Knowledge sources</h1>

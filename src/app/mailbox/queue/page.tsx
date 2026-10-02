@@ -68,14 +68,15 @@ export default async function QueuePage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/mailbox">Mailbox</Link> / Queue
       </p>
       <h1>Send queue</h1>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <section>
+      {/* The sidebar's interim Emergency stop links here (ia:F-10). */}
+      <section id="send-settings">
         <h2>Send settings</h2>
         {settings.emergencyPause ? (
           <p className="form-error">

@@ -1,15 +1,24 @@
 'use client';
 
-// Step D: keyboard-driven global jump. Cmd-K (Mac) / Ctrl-K (Win/Linux)
-// opens a modal that searches routes + a small entity index (products,
-// leads, mailboxes, recent threads — fetched once per open).
+// Keyboard-driven global jump. Cmd-K (Mac) / Ctrl-K (Win/Linux), or the
+// visible "Search" button (CommandPaletteTrigger), opens a modal that
+// searches the navigation registry — every area, tab, account-menu page
+// and action this viewer may use (paletteRoutes) — plus a small entity
+// index (products, leads, mailboxes, recent threads — fetched once per
+// open). The same component runs in the workspace AppShell and in the
+// Platform console (AdminShell), so both list the same pages under the
+// same names as the sidebar.
 //
 // Hand-rolled (no cmdk dep) so the bundle stays lean. Focus-trap +
 // arrow-key + Enter/Escape handling done inline.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { NAV_ROUTES } from './nav-routes';
+import { paletteRoutes, paletteScore, type NavViewer } from '@/lib/nav/resolve';
+import type { WorkspaceRole } from '@/lib/services/context';
+
+/** Window event the visible trigger dispatches to open the palette. */
+export const OPEN_COMMAND_PALETTE_EVENT = 'leadsonar:open-command-palette';
 
 interface EntityEntry {
   kind: 'product' | 'lead' | 'mailbox' | 'thread';
@@ -18,25 +27,57 @@ interface EntityEntry {
   sub?: string;
 }
 
-interface PaletteResult {
+export interface PaletteResult {
   id: string;
   label: string;
   group: string;
   sub?: string;
+  /** Shown under the label (routes: what the page is for). */
+  description?: string;
+  keywords?: ReadonlyArray<string>;
   href: string;
 }
 
 export interface CommandPaletteProps {
   fetchEntities: () => Promise<EntityEntry[]>;
   isSuperAdmin?: boolean;
+  /** The viewer's role in the active workspace; gates admin-only entries. */
+  role?: WorkspaceRole | null;
+  /** Render open on first paint (tests and the docs gallery). */
+  defaultOpen?: boolean;
+}
+
+/**
+ * Rank everything against the query. Empty query: the registry routes in
+ * nav order, then entities. Exported for tests.
+ */
+export function rankPaletteResults(
+  all: ReadonlyArray<PaletteResult>,
+  query: string,
+  limit = 80,
+): PaletteResult[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return all.slice(0, limit);
+  const scored: Array<{ r: PaletteResult; score: number }> = [];
+  for (const r of all) {
+    const score = paletteScore(
+      { label: r.label, group: r.group, sub: r.description ?? r.sub, keywords: r.keywords },
+      needle,
+    );
+    if (score > 0) scored.push({ r, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((s) => s.r);
 }
 
 export function CommandPalette({
   fetchEntities,
   isSuperAdmin = false,
+  role = null,
+  defaultOpen = false,
 }: Readonly<CommandPaletteProps>) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [query, setQuery] = useState('');
   const [entities, setEntities] = useState<EntityEntry[] | null>(null);
   const [entitiesLoading, setEntitiesLoading] = useState(false);
@@ -44,7 +85,7 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
-  // Global Cmd-K / Ctrl-K + Esc when open.
+  // Global Cmd-K / Ctrl-K + Esc when open, and the visible trigger.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const isJumpKey =
@@ -59,8 +100,15 @@ export function CommandPalette({
         setOpen(false);
       }
     }
+    function onOpenRequest() {
+      setOpen(true);
+    }
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, onOpenRequest);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, onOpenRequest);
+    };
   }, [open]);
 
   // Lazy-load entity index on first open. Cached on the component after
@@ -86,21 +134,21 @@ export function CommandPalette({
     }
   }, [open]);
 
-  const visibleRoutes = useMemo(
-    () => NAV_ROUTES.filter((r) => !r.superAdminOnly || isSuperAdmin),
-    [isSuperAdmin],
+  const routes: PaletteResult[] = useMemo(
+    () =>
+      paletteRoutes({ role, isSuperAdmin } satisfies NavViewer).map((r) => ({
+        id: r.id,
+        label: r.label,
+        group: r.group,
+        description: r.sub,
+        keywords: r.keywords,
+        href: r.href,
+      })),
+    [role, isSuperAdmin],
   );
 
   const results: PaletteResult[] = useMemo(() => {
-    const all: PaletteResult[] = [];
-    for (const r of visibleRoutes) {
-      all.push({
-        id: `route:${r.href}`,
-        label: r.label,
-        group: r.group,
-        href: r.href,
-      });
-    }
+    const all: PaletteResult[] = [...routes];
     if (entities) {
       for (const e of entities) {
         all.push({
@@ -112,16 +160,8 @@ export function CommandPalette({
         });
       }
     }
-    const needle = query.trim().toLowerCase();
-    if (!needle) return all.slice(0, 80);
-    const scored: Array<{ r: PaletteResult; score: number }> = [];
-    for (const r of all) {
-      const score = matchScore(r, needle);
-      if (score > 0) scored.push({ r, score });
-    }
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, 80).map((s) => s.r);
-  }, [visibleRoutes, entities, query]);
+    return rankPaletteResults(all, query);
+  }, [routes, entities, query]);
 
   // Keep the selected index in bounds whenever results change.
   useEffect(() => {
@@ -187,7 +227,7 @@ export function CommandPalette({
           ref={inputRef}
           className="cmdk-input"
           type="text"
-          placeholder="Jump to anywhere — routes, products, leads, mailboxes, threads…"
+          placeholder="Jump to a page, an action, a product, lead, mailbox or thread…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onInputKey}
@@ -217,6 +257,7 @@ export function CommandPalette({
                   <li
                     key={r.id}
                     data-idx={idx}
+                    data-href={r.href}
                     className={active ? 'cmdk-item active' : 'cmdk-item'}
                     role="option"
                     aria-selected={active}
@@ -226,7 +267,12 @@ export function CommandPalette({
                       navigate(r.href);
                     }}
                   >
-                    <span className="cmdk-item-label">{r.label}</span>
+                    <span className="cmdk-item-text">
+                      <span className="cmdk-item-label">{r.label}</span>
+                      {r.description ? (
+                        <span className="cmdk-item-desc">{r.description}</span>
+                      ) : null}
+                    </span>
                     {r.sub ? (
                       <span className="cmdk-item-sub">{r.sub}</span>
                     ) : null}
@@ -247,7 +293,7 @@ export function CommandPalette({
           <span>
             <kbd>Esc</kbd> close
           </span>
-          <span style={{ marginLeft: 'auto' }}>
+          <span className="cmdk-footer-end">
             <kbd>⌘K</kbd> / <kbd>Ctrl-K</kbd> toggle
           </span>
         </div>
@@ -258,8 +304,9 @@ export function CommandPalette({
 
 function kindGroup(kind: EntityEntry['kind']): string {
   switch (kind) {
+    // Not 'Products': that heading already groups the Products area.
     case 'product':
-      return 'Products';
+      return 'Product profiles';
     case 'lead':
       return 'Leads';
     case 'mailbox':
@@ -268,21 +315,3 @@ function kindGroup(kind: EntityEntry['kind']): string {
       return 'Threads';
   }
 }
-
-function matchScore(r: PaletteResult, needle: string): number {
-  const label = r.label.toLowerCase();
-  if (label === needle) return 100;
-  if (label.startsWith(needle)) return 80;
-  if (label.includes(needle)) return 60;
-  if (r.sub && r.sub.toLowerCase().includes(needle)) return 40;
-  if (r.group.toLowerCase().includes(needle)) return 20;
-  // Fuzzy: every char of needle appears in order somewhere in label.
-  let li = 0;
-  for (const ch of needle) {
-    const found = label.indexOf(ch, li);
-    if (found < 0) return 0;
-    li = found + 1;
-  }
-  return 10;
-}
-

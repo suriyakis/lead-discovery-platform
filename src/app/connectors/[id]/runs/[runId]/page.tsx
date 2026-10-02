@@ -50,7 +50,7 @@ export default async function RunDetailPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/connectors">Connectors</Link> /{' '}
           <Link href={`/connectors/${connectorId}`}>{connector.name}</Link> / Run #{run.id.toString()}
         </p>

@@ -114,7 +114,7 @@ export default async function DocumentDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/documents">Documents</Link> / {document.name}
         </p>
         <h1>{document.name}</h1>

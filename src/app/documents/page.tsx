@@ -142,7 +142,7 @@ export default async function DocumentsPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Documents
+          <Link href="/today">Today</Link> / Documents
         </p>
         <h1>Documents</h1>
         <p className="muted">

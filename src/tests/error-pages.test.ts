@@ -40,7 +40,7 @@ describe('app/error.tsx', () => {
     expect(html).toContain('status-card');
     expect(html).toContain('Something went wrong');
     expect(html).toContain('Try again');
-    expect(html).toContain('href="/dashboard"');
+    expect(html).toContain('href="/today"');
     expect(html).toContain('href="/support"');
     expect(html).toContain('<code>4180871043</code>');
     expect(html).not.toContain('Application error');
@@ -74,7 +74,7 @@ describe('app/not-found.tsx', () => {
     expect(html).toContain('brand-header');
     expect(html).toContain('404');
     expect(html).toContain('find that page');
-    expect(html).toMatch(/href="\/dashboard"[^>]*class="primary-btn"|class="primary-btn"[^>]*href="\/dashboard"/);
+    expect(html).toMatch(/href="\/today"[^>]*class="primary-btn"|class="primary-btn"[^>]*href="\/today"/);
     expect(notFoundMetadata.title).toBe('Page not found · Leadsonar');
   });
 });

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
+import { HOME_PATH } from './nav/registry';
 import { auth } from './auth';
 import { isNextRedirectError } from './server-redirect';
 import { WorkspaceServiceError, setActiveWorkspace } from './services/workspace';
@@ -31,7 +32,7 @@ export async function setActiveWorkspaceAction(workspaceIdRaw: string): Promise<
 }
 
 /**
- * "Create your workspace" on the no-workspace screen (/dashboard,
+ * "Create your workspace" on the no-workspace screen (/today,
  * ia:F-07). The service allows it once, for an active user who belongs
  * to no workspace, and validates the name. On success the new owner goes
  * straight into the setup wizard; a refusal comes back to the screen as
@@ -51,7 +52,7 @@ export async function createFirstWorkspaceAction(formData: FormData): Promise<vo
   } catch (err) {
     if (isNextRedirectError(err)) throw err;
     if (err instanceof WorkspaceServiceError) {
-      redirect(`/dashboard?error=${encodeURIComponent(err.message)}`);
+      redirect(`${HOME_PATH}?error=${encodeURIComponent(err.message)}`);
     }
     throw err;
   }

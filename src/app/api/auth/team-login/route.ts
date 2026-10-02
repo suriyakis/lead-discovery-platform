@@ -32,7 +32,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const minted = await createSessionForUser(user.id);
-  const res = NextResponse.json({ ok: true, redirectTo: '/dashboard' });
+  const res = NextResponse.json({ ok: true, redirectTo: '/today' });
   res.cookies.set({
     name: minted.cookieName,
     value: minted.sessionToken,

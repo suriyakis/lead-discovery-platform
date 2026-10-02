@@ -132,7 +132,7 @@ describe('PlatformContext entry points', () => {
     expect('workspaceId' in pctx).toBe(false);
   });
 
-  it('requirePlatformAdmin redirects signed-out users to / and members to /dashboard', async () => {
+  it('requirePlatformAdmin redirects signed-out users to / and members to /today', async () => {
     const s = await setup();
     const redirectTarget = async () => {
       try {
@@ -146,7 +146,7 @@ describe('PlatformContext entry points', () => {
     mockedAuth.mockResolvedValue(null);
     expect(await redirectTarget()).toBe('/');
     mockedAuth.mockResolvedValue(sessionFor(s.ownerA, 'member'));
-    expect(await redirectTarget()).toBe('/dashboard');
+    expect(await redirectTarget()).toBe('/today');
   });
 
   it('requirePlatformAdmin works for a super-admin with no workspace at all', async () => {

@@ -20,7 +20,8 @@ import { cascade, type CascadeOptions, loadGlobalsCss, parseCss } from './helper
 const navigation = vi.hoisted(() => ({ pathname: '/review' }));
 vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname }));
 
-const { Sidebar, sectionStartsOpen, COMPACT_SIDEBAR_QUERY } = await import('@/components/Sidebar');
+const { Sidebar, COMPACT_SIDEBAR_QUERY } = await import('@/components/Sidebar');
+const { AreaFrameView } = await import('@/components/AreaNav');
 
 const css = loadGlobalsCss();
 const rules = parseCss(css);
@@ -247,60 +248,95 @@ describe('wide tables scroll in their own box (DS-03 item 2, I145)', () => {
   });
 });
 
-describe('settings tabs are a scroll-snap strip (DS-03 item 3)', () => {
-  const html = `<nav class="settings-nav" id="nav"><a id="a" class="active" href="/settings/usage">Usage</a></nav>`;
+// DS-05 replaced the per-page SettingsNav strip with AreaNav: area tabs
+// and the grouped Settings sub-nav, rendered from the navigation registry.
+describe('area navigation never widens a phone (DS-03 item 3, DS-05)', () => {
+  const area = (pathname: string) => {
+    navigation.pathname = pathname;
+    return renderToStaticMarkup(
+      createElement(
+        AreaFrameView,
+        { viewer: { role: 'owner', isSuperAdmin: false }, search: '' },
+        createElement('h1', { id: 'h1' }, 'Page'),
+      ),
+    );
+  };
 
-  it('scrolls sideways inside itself, tabs keep their width', () => {
-    expect(valueAt(html, '#nav', 'overflow-x', PHONE)).toBe('auto');
-    expect(valueAt(html, '#nav', 'scroll-snap-type', PHONE)).toBe('x proximity');
-    expect(valueAt(html, '#a', 'flex', PHONE)).toBe('0 0 auto');
-    expect(valueAt(html, '#a', 'white-space', PHONE)).toBe('nowrap');
-    expect(valueAt(html, '#a', 'scroll-snap-align', PHONE)).toBe('start');
-  });
-
-  it('keeps the baseline without a negative margin the scroller would clip', () => {
+  it('area tabs scroll sideways inside their strip; tabs keep their width', () => {
+    const $ = load(area('/mailbox/queue'));
+    $('nav.area-tabs').attr('id', 'nav');
+    $('nav.area-tabs a').first().attr('id', 'a');
+    const html = $.html();
+    for (const at of [PHONE, DESKTOP]) {
+      expect(valueAt(html, '#nav', 'overflow-x', at)).toBe('auto');
+      expect(valueAt(html, '#a', 'flex', at)).toBe('0 0 auto');
+      expect(valueAt(html, '#a', 'white-space', at)).toBe('nowrap');
+    }
+    // The baseline is an inset shadow, so the scroller cannot clip it.
     expect(valueAt(html, '#nav', 'box-shadow', DESKTOP)).toBe('inset 0 -1px 0 var(--brand-border)');
-    expect(valueAt(html, '#nav', 'border-bottom', DESKTOP)).toBeUndefined();
-    expect(valueAt(html, '#a', 'margin-bottom', DESKTOP)).toBeUndefined();
-    expect(valueAt(html, '#a', 'border-bottom', DESKTOP)).toBe('2px solid transparent');
   });
 
-  it('draws the focus ring inside the strip', () => {
-    const focus = rules.find((r) => r.selectorText === '.settings-nav a:focus-visible');
+  it('the Settings sub-nav is a column beside the page on desktop, a strip above it on a phone', () => {
+    const $ = load(area('/settings/usage'));
+    $('.area-frame').attr('id', 'frame');
+    $('nav.area-subnav').attr('id', 'sub');
+    $('.area-subnav-heading').first().attr('id', 'head');
+    $('.area-subnav-link').first().attr('id', 'link');
+    const html = $.html();
+    expect(valueAt(html, '#frame', 'display', DESKTOP)).toBe('grid');
+    expect(valueAt(html, '#frame', 'grid-template-columns', DESKTOP)).toBe('13rem minmax(0, 1fr)');
+    expect(valueAt(html, '#sub', 'flex-direction', DESKTOP)).toBe('column');
+    expect(valueAt(html, '#frame', 'display', PHONE)).toBe('block');
+    expect(valueAt(html, '#sub', 'flex-direction', PHONE)).toBe('row');
+    expect(valueAt(html, '#sub', 'overflow-x', PHONE)).toBe('auto');
+    expect(valueAt(html, '#head', 'display', PHONE)).toBe('none');
+    expect(valueAt(html, '#link', 'white-space', PHONE)).toBe('nowrap');
+  });
+
+  it("a badge's screen-reader text stays inside its scrolling strip", () => {
+    // .sr-only is position: absolute; without a positioned badge its box
+    // escapes the strip's clipping and widened every console page to 470px.
+    const html = `<nav class="admin-topbar"><a class="admin-nav-link"><span class="nav-count" id="c"><span class="sr-only" id="sr">2 unread</span></span></a></nav>`;
+    expect(valueAt(html, '#c', 'position', PHONE)).toBe('relative');
+    expect(valueAt(html, '#sr', 'position', PHONE)).toBe('absolute');
+  });
+
+  it('draws the focus ring inside the strips', () => {
+    const focus = rules.find((r) => r.selectorText.includes('.area-tab:focus-visible'));
     expect(focus?.decls.find((d) => d.prop === 'outline-offset')?.value).toBe('-2px');
+    expect(focus?.selectorText).toContain('.area-subnav-link:focus-visible');
   });
 });
 
 describe('header fits a phone (DS-03 item 4, I144)', () => {
   const header = `<header class="brand-header" id="h"><a class="brand-link" id="brand" href="/">lead/sonar</a>
     <div class="brand-header-right" id="right">
+      <button class="ghost-btn cmdk-trigger" id="search"><span class="cmdk-trigger-label" id="slabel">Search</span><kbd class="cmdk-trigger-kbd" id="skbd">⌘K</kbd></button>
       <label class="workspace-switcher" id="ws"><span class="workspace-switcher-icon">🏢</span><select id="sel"><option>Northwind Insulation Ltd • default — owner</option></select></label>
-      <span class="who header-account-inline" id="email">demo-admin@example.com</span>
-      <form class="header-account-inline" id="signout"><button class="ghost-btn">Sign out</button></form>
       <details class="header-account-menu" id="menu"><summary class="ghost-btn" id="sum">Account</summary>
         <div class="header-account-menu-panel" id="panel"><span class="who" id="pemail">demo-admin@example.com</span></div></details>
     </div></header>`;
 
-  it('desktop: e-mail and Sign out inline, compact menu hidden, select uncapped', () => {
-    expect(valueAt(header, '#email', 'display', DESKTOP)).toBeUndefined();
-    expect(valueAt(header, '#signout', 'display', DESKTOP)).toBeUndefined();
-    expect(valueAt(header, '#menu', 'display', DESKTOP)).toBe('none');
+  it('one account menu at every width (ia §4); the select is uncapped on desktop', () => {
+    for (const at of [DESKTOP, PHONE]) {
+      expect(valueAt(header, '#menu', 'display', at)).toBe('block');
+      expect(valueAt(header, '#panel', 'position', at)).toBe('absolute');
+      expect(valueAt(header, '#panel', 'max-width', at)).toBe('calc(100vw - 2rem)');
+      expect(valueAt(header, '#pemail', 'overflow-wrap', at)).toBe('anywhere');
+    }
     expect(valueAt(header, '#sel', 'max-width', DESKTOP)).toBe('100%');
     expect(valueAt(header, '#h', 'padding', DESKTOP)).toBe('0 1.5rem');
   });
 
-  it('phone: e-mail + Sign out fold into the menu; the select shrinks with an ellipsis', () => {
-    expect(valueAt(header, '#email', 'display', PHONE)).toBe('none');
-    expect(valueAt(header, '#signout', 'display', PHONE)).toBe('none');
-    expect(valueAt(header, '#menu', 'display', PHONE)).toBe('block');
-    expect(valueAt(header, '#panel', 'position', PHONE)).toBe('absolute');
-    expect(valueAt(header, '#panel', 'max-width', PHONE)).toBe('calc(100vw - 2rem)');
-    expect(valueAt(header, '#pemail', 'overflow-wrap', PHONE)).toBe('anywhere');
+  it('phone: the select shrinks with an ellipsis and Search keeps only its icon', () => {
     expect(valueAt(header, '#sel', 'min-width', PHONE)).toBe('0');
     expect(valueAt(header, '#sel', 'max-width', PHONE)).toBe('10rem');
     expect(valueAt(header, '#sel', 'text-overflow', PHONE)).toBe('ellipsis');
     expect(valueAt(header, '#ws', 'min-width', PHONE)).toBe('0');
     expect(valueAt(header, '#h', 'padding', PHONE)).toBe('0 1rem');
+    expect(valueAt(header, '#slabel', 'display', PHONE)).toBe('none');
+    expect(valueAt(header, '#skbd', 'display', PHONE)).toBe('none');
+    expect(valueAt(header, '#slabel', 'display', DESKTOP)).toBeUndefined();
   });
 
   it('the right slot may shrink, the brand may not', () => {
@@ -308,11 +344,11 @@ describe('header fits a phone (DS-03 item 4, I144)', () => {
     expect(valueAt(header, '#brand', 'flex-shrink', DESKTOP)).toBe('0');
   });
 
-  it('AppShell renders both account variants with the classes the CSS keys on', () => {
+  it('AppShell renders the account menu (with sign-out) and no inline copy of it', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/components/AppShell.tsx'), 'utf8');
-    expect(src).toContain('<span className="who header-account-inline">{email}</span>');
-    expect(src).toContain('<form action={signOutAction} className="header-account-inline">');
-    expect(src).toMatch(/<details className="header-account-menu">[\s\S]*signOutAction[\s\S]*<\/details>/);
+    expect(src).not.toContain('header-account-inline');
+    expect(src).toMatch(/<details className="header-account-menu">[\s\S]*ACCOUNT_MENU[\s\S]*signOutAction[\s\S]*<\/details>/);
+    expect(src).toContain('<CommandPaletteTrigger />');
   });
 });
 
@@ -388,7 +424,7 @@ describe('platform console on a phone (DS-03 item 7, I146)', () => {
   it('phone: the section tabs become their own scrolling row', () => {
     const bar = `<div class="admin-topbar"><span class="admin-topbar-brand">Platform console</span>
       <nav id="nav"><a class="admin-nav-link" id="l" href="/admin">Overview</a></nav>
-      <a class="admin-topbar-exit" href="/dashboard">Back to app</a></div>`;
+      <a class="admin-topbar-exit" href="/today">Back to app</a></div>`;
     expect(valueAt(bar, '#nav', 'flex-wrap', DESKTOP)).toBe('wrap');
     expect(valueAt(bar, '#nav', 'overflow-x', DESKTOP)).toBeUndefined();
     expect(valueAt(bar, '#nav', 'flex-wrap', PHONE)).toBe('nowrap');
@@ -399,64 +435,41 @@ describe('platform console on a phone (DS-03 item 7, I146)', () => {
   });
 });
 
-describe('sidebar collapses inactive groups on a phone', () => {
-  it('sectionStartsOpen: desktop keeps the defaults, compact keeps only active + Emergency', () => {
-    const plain = { defaultOpen: true, emphasize: false };
-    const closedByDefault = { defaultOpen: false, emphasize: false };
-    const emergency = { defaultOpen: true, emphasize: true };
-    expect(sectionStartsOpen(plain, false, false)).toBe(true);
-    expect(sectionStartsOpen(closedByDefault, false, false)).toBe(false);
-    expect(sectionStartsOpen(closedByDefault, true, false)).toBe(true);
-    expect(sectionStartsOpen(plain, false, true)).toBe(false);
-    expect(sectionStartsOpen(plain, true, true)).toBe(true);
-    expect(sectionStartsOpen(closedByDefault, true, true)).toBe(true);
-    expect(sectionStartsOpen(emergency, false, true)).toBe(true);
-  });
+// DS-05: 8 or 9 items under static headings. On a phone the sidebar is
+// one scrolling strip of those items above the page (I058) instead of
+// accordions; the drawer comes with the visual Phase 2 shell.
+describe('the sidebar is one strip on a phone (DS-05, I058)', () => {
+  const sidebar = () => {
+    navigation.pathname = '/settings/usage';
+    const $ = load(
+      renderToStaticMarkup(createElement(Sidebar, { isSuperAdmin: true, role: 'super_admin' })),
+    );
+    $('nav.sidebar-nav').attr('id', 'nav');
+    $('.sidebar-heading').first().attr('id', 'head');
+    $('.sidebar-list').first().attr('id', 'list');
+    $('.sidebar-link.active').attr('id', 'active');
+    return $.html();
+  };
 
   it('the media query matches the CSS breakpoint that stacks the sidebar', () => {
     expect(COMPACT_SIDEBAR_QUERY).toBe('(max-width: 800px)');
     expect(css).toMatch(/@media \(max-width: 800px\) \{\s*\.sidebar \{\s*position: static;/);
   });
 
-  it('server render: desktop open state, active group marked, not yet compact-ready', () => {
-    navigation.pathname = '/review';
-    const $ = load(renderToStaticMarkup(createElement(Sidebar, { isSuperAdmin: true })));
-    expect($('aside.sidebar').attr('data-compact-ready')).toBeUndefined();
-    const groups = $('details.sidebar-group')
-      .toArray()
-      .map((el) => ({
-        title: $(el).children('summary').text(),
-        open: $(el).attr('open') !== undefined,
-        active: $(el).hasClass('sidebar-group-active'),
-      }));
-    expect(groups.filter((g) => g.active).map((g) => g.title)).toEqual(['Discovery']);
-    expect(groups.filter((g) => g.open).map((g) => g.title)).toEqual([
-      'Discovery',
-      'Knowledge base',
-      'Pipeline',
-      'Outreach',
-      'Emergency',
-    ]);
+  it('desktop: a column of items under static group headings', () => {
+    const html = sidebar();
+    expect(valueAt(html, '#nav', 'flex-direction', DESKTOP)).toBe('column');
+    expect(valueAt(html, '#head', 'display', DESKTOP)).toBeUndefined();
+    expect(load(html)('details, summary')).toHaveLength(0);
   });
 
-  it('before hydration a phone already shows only the active group and Emergency', () => {
-    navigation.pathname = '/settings/usage';
-    const html = renderToStaticMarkup(createElement(Sidebar, { isSuperAdmin: true }));
-    const $ = load(html);
-    const visible = (at: CascadeOptions) =>
-      $('details.sidebar-group')
-        .toArray()
-        .filter((el) => $(el).attr('open') !== undefined)
-        .map((el) => $(el).children('summary').text())
-        .filter((title) => {
-          const id = `list-${title.replace(/\W+/g, '-')}`;
-          $(`details.sidebar-group:has(> summary:contains("${title}")) > ul.sidebar-list`).attr('id', id);
-          return cascade($, `#${id}`, rules, at).get('display')?.value !== 'none';
-        });
-    expect(visible(DESKTOP)).toEqual(['Discovery', 'Knowledge base', 'Pipeline', 'Outreach', 'Workspace', 'Emergency']);
-    expect(visible(PHONE)).toEqual(['Workspace', 'Emergency']);
-    // Once Sidebar's effect has run, the CSS stands down and <details> rules.
-    $('aside.sidebar').attr('data-compact-ready', '');
-    expect(visible(PHONE)).toEqual(['Discovery', 'Knowledge base', 'Pipeline', 'Outreach', 'Workspace', 'Emergency']);
+  it('phone: one row that scrolls inside itself; headings give way; the current item is underlined', () => {
+    const html = sidebar();
+    expect(valueAt(html, '#nav', 'flex-direction', PHONE)).toBe('row');
+    expect(valueAt(html, '#nav', 'overflow-x', PHONE)).toBe('auto');
+    expect(valueAt(html, '#list', 'flex-direction', PHONE)).toBe('row');
+    expect(valueAt(html, '#head', 'display', PHONE)).toBe('none');
+    expect(valueAt(html, '#active', 'white-space', PHONE)).toBe('nowrap');
+    expect(load(html)('#active').attr('data-area')).toBe('settings');
   });
 });

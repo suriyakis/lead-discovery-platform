@@ -2,7 +2,6 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
-import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -72,10 +71,9 @@ export default async function CrmConnectionDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/settings/crm">CRM</Link> / {conn.name}
         </p>
-        <SettingsNav />
         <h1>{conn.name}</h1>
         <p>
           <span className="badge">{conn.system}</span>{' '}

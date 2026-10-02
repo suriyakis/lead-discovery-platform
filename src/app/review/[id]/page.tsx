@@ -94,7 +94,7 @@ export default async function ReviewDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/review">Review</Link> / Item {item.id.toString()}
         </p>
         <h1>{title}</h1>

@@ -48,7 +48,9 @@ export const SEEDED_PATHS: Readonly<Record<string, string>> = {
 export const EXTRA_PATHS: ReadonlyArray<string> = [
   '/drafts/1', // approved draft: the enqueue panel instead of the decisions
   '/pipeline?view=kanban',
-  '/inbox?tab=drafts',
+  '/inbox?tab=drafts', // the retired URL: a 308 to /today?tab=drafts
+  '/today?tab=drafts',
+  '/today?view=overview',
   '/communication?folder=sent',
 ];
 
@@ -67,9 +69,14 @@ export const SKIPPED_PATTERNS: Readonly<Record<string, string>> = {
  * worked (a signed-out visit would land on "/").
  */
 export const EXPECTED_LANDING: Readonly<Record<string, RegExp>> = {
-  '/': /^\/dashboard$/,
-  '/pending': /^\/dashboard$/,
-  '/settings': /^\/settings\/integrations$/,
+  '/': /^\/today$/,
+  '/pending': /^\/today$/,
+  // DS-05: the retired home pages redirect (308) to Today.
+  '/dashboard': /^\/today$/,
+  '/inbox': /^\/today$/,
+  '/inbox?tab=drafts': /^\/today$/,
+  // The first Settings page in the navigation registry.
+  '/settings': /^\/settings\/members$/,
   '/mailbox/threads/1': /^\/communication\/1$/, // legacy URL, 308 to the thread viewer
 };
 

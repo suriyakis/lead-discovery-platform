@@ -67,7 +67,7 @@ export default async function OnboardingPage({
     if (err instanceof AccountInactiveError) redirect('/pending');
     // No workspace yet: the dashboard is the screen that lets them create
     // one or explains how to be added (ia:F-07).
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -84,7 +84,7 @@ export default async function OnboardingPage({
     'use server';
     const c = await getWorkspaceContext();
     await markOnboardingComplete(c);
-    redirect('/dashboard');
+    redirect('/today');
   }
 
   async function chooseSetupMode(formData: FormData) {
@@ -255,7 +255,7 @@ export default async function OnboardingPage({
           <section style={{ marginTop: '2rem' }}>
             <p className="muted small">
               Only workspace admins can finish the wizard.{' '}
-              <Link href="/dashboard">Skip to dashboard.</Link>
+              <Link href="/today">Skip to Today.</Link>
             </p>
           </section>
         )}

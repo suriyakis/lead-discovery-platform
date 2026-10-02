@@ -193,7 +193,7 @@ export default async function DraftDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/drafts">Drafts</Link> / Draft {draft.id.toString()}
         </p>
         <h1>{draft.subject ?? `Draft ${draft.id}`}</h1>

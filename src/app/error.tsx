@@ -64,7 +64,7 @@ export default function AppError({
             >
               {retrying ? 'Retrying…' : 'Try again'}
             </button>
-            <Link href="/dashboard">Go to your dashboard</Link>
+            <Link href="/today">Go to Today</Link>
             <Link href="/support">Contact support</Link>
           </div>
         </div>

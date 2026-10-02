@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
-import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -52,7 +51,7 @@ export default async function UsagePage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -81,10 +80,9 @@ export default async function UsagePage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> / Settings
+          <Link href="/today">Today</Link> / Settings
         </p>
         <h1>Settings</h1>
-        <SettingsNav />
 
         <div className="state-tabs">
           {RANGES.map((r) => (

@@ -2,33 +2,44 @@
 // AppShell is a server component that pulls the current session itself
 // so pages can render <AppShell>{...}</AppShell> without boilerplate.
 //
-// Sidebar auto-detects the active route via usePathname() — no `active`
-// prop needed. Public pages (signed-out landing, /pending) bypass the
+// Navigation comes from one registry (src/lib/nav/registry.ts): the
+// Sidebar (areas), AreaFrame (the current area's tabs or the Settings
+// sub-nav, around the page), the Cmd-K palette and its visible Search
+// button, and the account menu (My account, Help & support). Each reads
+// the viewer's role in the active workspace, so admin-only entries only
+// show to admins. Public pages (signed-out landing, /pending) bypass the
 // shell and render BrandHeader on their own.
 
-import { UserCircle } from 'lucide-react';
+import { Bell, UserCircle } from 'lucide-react';
+import Link from 'next/link';
+import { AreaFrame } from './AreaNav';
 import { AssistantPanel } from './AssistantPanel';
 import { BrandHeader } from './BrandHeader';
 import { CommandPalette } from './CommandPalette';
+import { CommandPaletteTrigger } from './CommandPaletteTrigger';
 import { fetchCommandPaletteEntities } from './command-palette-action';
+import { NavCountBadge } from './NavCountBadge';
 import { Sidebar } from './Sidebar';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { auth } from '@/lib/auth';
 import { signOutAction } from '@/lib/auth-actions';
+import { ACCOUNT_MENU, type NavCountValues } from '@/lib/nav/registry';
+import { resolveNavCount, tabById, type NavViewer } from '@/lib/nav/resolve';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 import { listMyWorkspaces } from '@/lib/services/workspace';
-import { getNavCounts, type NavCounts } from '@/lib/services/nav-counts';
+import { getNavCounts, ZERO_NAV_COUNTS } from '@/lib/services/nav-counts';
+import type { WorkspaceRole } from '@/lib/services/context';
 
 export interface AppShellProps {
   children: React.ReactNode;
   /**
    * Override `isSuperAdmin`. By default the shell reads `session.user.role`
-   * and shows the Platform section only when role is `super_admin`.
+   * and shows the Platform console only when role is `super_admin`.
    */
   isSuperAdmin?: boolean;
   /**
-   * Override the header's right slot. Defaults to: workspace switcher
-   * (if user has 2+ workspaces) + email + sign-out button.
+   * Override the header's right slot. Defaults to: Search, notifications,
+   * workspace switcher (if user has 2+ workspaces) + the account menu.
    */
   rightSlot?: React.ReactNode;
 }
@@ -51,18 +62,13 @@ export async function AppShell({
       })
     : [];
 
-  // Sidebar count badges: pending drafts / review items / open leads
-  // for the user's active workspace. Best-effort — degrades to all
-  // zeros when the user has no active workspace yet.
-  // Resolve the workspace THE SAME WAY pages do (incl. the god-mode
-  // branch and the ignore-foreign-pointer rule for normal users) so the
-  // shell's badges never show a different tenant than the page content.
-  let navCounts: NavCounts = {
-    draftsPending: 0,
-    reviewPending: 0,
-    leadsOpen: 0,
-    supportUnread: 0,
-  };
+  // Badges and the viewer's role for the active workspace. Resolve the
+  // workspace THE SAME WAY pages do (incl. the god-mode branch and the
+  // ignore-foreign-pointer rule for normal users) so the shell's badges
+  // never show a different tenant than the page content. Best-effort —
+  // degrades to zero badges and no role when there is no workspace yet.
+  let navCounts: NavCountValues = ZERO_NAV_COUNTS;
+  let role: WorkspaceRole | null = null;
   let unreadNotifications = 0;
   if (session?.user?.id) {
     try {
@@ -73,6 +79,7 @@ export async function AppShell({
         session.user.id,
         session.user.role === 'super_admin',
       );
+      role = shellCtx.role;
       navCounts = await getNavCounts({ workspaceId: shellCtx.workspaceId });
       const { unreadNotificationCount } = await import(
         '@/lib/services/notifications'
@@ -82,6 +89,15 @@ export async function AppShell({
       // No resolvable workspace yet — badges stay at zero.
     }
   }
+  if (showAdmin) {
+    try {
+      const { adminSupportUnreadCount } = await import('@/lib/services/support');
+      navCounts = { ...navCounts, adminSupportUnread: await adminSupportUnreadCount() };
+    } catch {
+      // Table not migrated yet — the console badge stays hidden.
+    }
+  }
+  const viewer: NavViewer = { role, isSuperAdmin: showAdmin };
 
   const slot =
     rightSlot ??
@@ -89,6 +105,7 @@ export async function AppShell({
       <DefaultRightSlot
         email={session.user.email}
         unreadNotifications={unreadNotifications}
+        navCounts={navCounts}
         myWorkspaces={myWorkspaces.map((m) => ({
           id: m.workspace.id.toString(),
           name: m.workspace.name,
@@ -146,14 +163,19 @@ export async function AppShell({
         </div>
       ) : null}
       <div className="app-body">
-        <Sidebar isSuperAdmin={showAdmin} navCounts={navCounts} />
-        <main className="app-main">{children}</main>
+        <Sidebar isSuperAdmin={showAdmin} role={role} navCounts={navCounts} />
+        <main className="app-main">
+          <AreaFrame viewer={viewer} navCounts={navCounts}>
+            {children}
+          </AreaFrame>
+        </main>
       </div>
       {session?.user?.id ? (
         <>
           <CommandPalette
             fetchEntities={fetchCommandPaletteEntities}
             isSuperAdmin={showAdmin}
+            role={role}
           />
           <AssistantPanel />
         </>
@@ -165,67 +187,65 @@ export async function AppShell({
 function DefaultRightSlot({
   email,
   unreadNotifications,
+  navCounts,
   myWorkspaces,
 }: Readonly<{
   email: string;
   unreadNotifications: number;
+  navCounts: NavCountValues;
   myWorkspaces: React.ComponentProps<typeof WorkspaceSwitcher>['workspaces'];
 }>) {
+  // Unread support replies also show on the closed menu, so they are not
+  // hidden behind it.
+  const menuCounts = ACCOUNT_MENU.map((id) => resolveNavCount(tabById(id).tab.count, navCounts));
+  const menuCount = menuCounts.find((c) => c !== null) ?? null;
   return (
     <>
-      <a
+      <CommandPaletteTrigger />
+      {/* The bell counts events; the count is neutral (DS-00 count policy). */}
+      <Link
         href="/notifications"
-        title="Notifications"
-        style={{
-          position: 'relative',
-          display: 'inline-flex',
-          alignItems: 'center',
-          textDecoration: 'none',
-          fontSize: '1.1rem',
-          lineHeight: 1,
-          padding: '0.3rem',
-        }}
+        className="header-bell"
+        aria-label={
+          unreadNotifications > 0
+            ? `Notifications, ${unreadNotifications} unread`
+            : 'Notifications'
+        }
       >
-        🔔
+        <Bell className="lucide" aria-hidden="true" />
         {unreadNotifications > 0 ? (
-          <span
-            style={{
-              position: 'absolute',
-              top: '-0.25rem',
-              right: '-0.45rem',
-              background: 'oklch(0.62 0.22 25)',
-              color: 'white',
-              borderRadius: '999px',
-              fontSize: '0.68rem',
-              fontWeight: 700,
-              minWidth: '1.1rem',
-              textAlign: 'center',
-              padding: '0.05rem 0.25rem',
-            }}
-          >
+          <span className="header-bell-count" aria-hidden="true">
             {unreadNotifications > 99 ? '99+' : unreadNotifications}
           </span>
         ) : null}
-      </a>
+      </Link>
       {myWorkspaces.length > 1 ? (
         <WorkspaceSwitcher workspaces={myWorkspaces} />
       ) : null}
-      {/* Desktop: e-mail + Sign out inline. Below 800px CSS hides these
-          and shows the compact menu instead — the full e-mail and a
-          button would not fit a phone-width header (I144). Plain
-          <details>, so it works before hydration and without JS. */}
-      <span className="who header-account-inline">{email}</span>
-      <form action={signOutAction} className="header-account-inline">
-        <button type="submit" className="ghost-btn">
-          Sign out
-        </button>
-      </form>
+      {/* The account menu (ia §4): who you are, My account, Help &
+          support, Sign out — at every width. Plain <details>, so it
+          works before hydration and without JS (I144). */}
       <details className="header-account-menu">
         <summary className="ghost-btn" aria-label="Account menu" title={email}>
           <UserCircle className="lucide" aria-hidden="true" />
+          {menuCount ? <NavCountBadge count={menuCount} /> : null}
         </summary>
         <div className="header-account-menu-panel">
           <span className="who">{email}</span>
+          <ul className="header-account-links">
+            {ACCOUNT_MENU.map((id) => {
+              const { tab } = tabById(id);
+              const count = resolveNavCount(tab.count, navCounts);
+              return (
+                <li key={id}>
+                  <Link href={tab.href} data-tab={tab.id}>
+                    {tab.label}
+                    {count ? <NavCountBadge count={count} /> : null}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
           <form action={signOutAction}>
             <button type="submit" className="ghost-btn">
               Sign out

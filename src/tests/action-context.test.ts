@@ -6,7 +6,7 @@
 // getWorkspaceContext() bare, so those users landed on Next's generic
 // error page. requireActionContext() (src/lib/action-context.ts) sends
 // them where the pages would: signed out to '/', inactive to '/pending',
-// no workspace to the no-workspace screen on '/dashboard'.
+// no workspace to the no-workspace screen on Today ('/today').
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db/client';
@@ -120,15 +120,15 @@ describe('requireActionContext', () => {
   it('sends a user without a workspace to the no-workspace screen', async () => {
     const user = await seedUser({ email: 'alone@test.local' });
     signInAs(user);
-    expect(await expectRedirect(() => requireActionContext())).toBe('/dashboard');
+    expect(await expectRedirect(() => requireActionContext())).toBe('/today');
   });
 });
 
 describe('lane actions redirect a stale session instead of erroring', () => {
-  it.each(ACTIONS)('%s: no workspace -> /dashboard', async (_name, run) => {
+  it.each(ACTIONS)('%s: no workspace -> /today', async (_name, run) => {
     const user = await seedUser({ email: 'alone@test.local' });
     signInAs(user);
-    expect(await expectRedirect(run)).toBe('/dashboard');
+    expect(await expectRedirect(run)).toBe('/today');
   });
 
   it.each(ACTIONS)('%s: account suspended -> /pending', async (_name, run) => {

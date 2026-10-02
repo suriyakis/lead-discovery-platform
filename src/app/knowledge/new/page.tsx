@@ -140,7 +140,7 @@ export default async function NewKnowledgeSourcePage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/knowledge">Knowledge</Link> / New
         </p>
         <h1>New knowledge source</h1>

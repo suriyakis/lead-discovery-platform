@@ -112,8 +112,7 @@ export default async function PlatformAuditPage({
   return (
     <div className="dashboard-wrap">
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
-        <Link href="/admin">Admin</Link> / Audit log
+        <Link href="/admin">Platform console</Link> / Audit log
       </p>
       <h1>Platform audit log</h1>
       <p className="muted">

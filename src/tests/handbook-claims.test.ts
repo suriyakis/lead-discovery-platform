@@ -1410,15 +1410,15 @@ describe('Phase 0 claims from the other lanes', { timeout: DB_TEST_TIMEOUT_MS },
     }
   });
 
-  it('[handbook H-29] a failing page shows Try again, the dashboard and support with a reference code; an unknown address shows a not-found page', () => {
+  it('[handbook H-29] a failing page shows Try again, Today and support with a reference code; an unknown address shows a not-found page', () => {
     const error = readSrc('app/error.tsx');
     expect(error).toContain("'Try again'");
-    expect(error).toContain('href="/dashboard"');
+    expect(error).toContain('href="/today"');
     expect(error).toContain('href="/support"');
     expect(error).toContain('Reference <code>{error.digest}</code>');
     const notFound = readSrc('app/not-found.tsx');
     expect(notFound).toContain('404');
-    expect(notFound).toContain('href="/dashboard"');
+    expect(notFound).toContain('href="/today"');
     expect(notFound).toContain('href="/support"');
   });
 

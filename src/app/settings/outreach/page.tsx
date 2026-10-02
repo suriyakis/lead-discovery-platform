@@ -88,7 +88,7 @@ export default async function OutreachSettingsPage({
     if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
   // ia:F-03: everyone in the workspace can see what runs automatically on
@@ -100,7 +100,7 @@ export default async function OutreachSettingsPage({
     return (
       <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/settings/integrations">Settings</Link> / Outreach
         </p>
         <h1 className="page-title">Outreach configuration</h1>
@@ -247,7 +247,7 @@ export default async function OutreachSettingsPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/settings/integrations">Settings</Link> / Outreach
       </p>
       <h1 className="page-title">Outreach configuration</h1>

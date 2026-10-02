@@ -345,7 +345,7 @@ export default async function PipelineLeadDetail({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/pipeline">Pipeline</Link> / {lead.contactName ?? `Lead ${lead.id}`}
         </p>
         <h1>{lead.contactName ?? `Lead ${lead.id}`}</h1>

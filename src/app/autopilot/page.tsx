@@ -207,7 +207,7 @@ export default async function AutopilotPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> / Autopilot
+        <Link href="/today">Today</Link> / Autopilot
       </p>
       <h1>Autopilot</h1>
       <p className="muted">

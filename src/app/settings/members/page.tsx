@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
-import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -36,7 +35,7 @@ export default async function MembersPage({
     if (isNextRedirectError(err)) throw err;
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
 
@@ -46,7 +45,6 @@ export default async function MembersPage({
 
         isSuperAdmin={session.user.role === 'super_admin'}
       >
-        <SettingsNav />
         <h1>Members</h1>
         <p className="form-error">Workspace admin access required.</p>
       </AppShell>
@@ -64,15 +62,15 @@ export default async function MembersPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/settings/integrations">Settings</Link> / Members
       </p>
-      <SettingsNav />
       <h1>Workspace members</h1>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <section>
+      {/* Cmd-K's "Add a teammate" action lands here. */}
+      <section id="add-member">
         <h2>Add existing user by id</h2>
         <p className="muted">
           For most cases use{' '}

@@ -55,7 +55,7 @@ export default async function WorkspaceAuditPage({
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/dashboard');
+    if (err instanceof NoWorkspaceError) redirect('/today');
     throw err;
   }
   if (!canAdminWorkspace(ctx)) {
@@ -111,7 +111,7 @@ export default async function WorkspaceAuditPage({
   return (
     <AppShell>
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
+        <Link href="/today">Today</Link> /{' '}
         <Link href="/settings/integrations">Settings</Link> / Audit log
       </p>
       <h1>Audit log</h1>

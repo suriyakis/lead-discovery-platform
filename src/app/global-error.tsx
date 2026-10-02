@@ -56,7 +56,7 @@ export default function GlobalError({
               >
                 Reload page
               </button>
-              <a href="/dashboard">Go to your dashboard</a>
+              <a href="/today">Go to Today</a>
             </div>
           </div>
         </main>

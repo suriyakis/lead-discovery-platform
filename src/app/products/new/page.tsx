@@ -79,7 +79,7 @@ export default async function NewProductPage({
   return (
     <AppShell>
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
+          <Link href="/today">Today</Link> /{' '}
           <Link href="/products">Products</Link> / New
         </p>
         <h1>New product profile</h1>
