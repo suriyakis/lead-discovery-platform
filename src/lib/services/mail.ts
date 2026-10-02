@@ -815,12 +815,19 @@ export async function syncInbound(
       ),
     );
 
-  await recordAuditEvent(ctx, {
-    kind: 'mail.sync_inbound',
-    entityType: 'mailbox',
-    entityId: mailbox.id,
-    payload: { fetched: messages.length, inserted, duplicates, relevance },
-  });
+  // PC-35 (I066): audited only when the sync stored something. An empty
+  // (or all-duplicate) sync changed nothing, and the 2-minute IMAP tick
+  // used to fill the audit log with them. The mailbox's last_synced_at
+  // above still says when it last synced. These rows are kept
+  // SYNC_AUDIT_RETENTION_DAYS (services/retention.ts).
+  if (inserted > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.sync_inbound',
+      entityType: 'mailbox',
+      entityId: mailbox.id,
+      payload: { fetched: messages.length, inserted, duplicates, relevance },
+    });
+  }
 
   return { fetched: messages.length, inserted, duplicates };
 }

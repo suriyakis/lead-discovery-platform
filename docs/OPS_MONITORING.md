@@ -97,6 +97,7 @@ so a dead worker that writes nothing still turns stale.
 | `health.check.tick` | 6 h | 1 h |
 | `ops.reaper.tick` | 5 min | 10 min |
 | `mail.trash.purge.tick` | 24 h | 1 h |
+| `ops.retention.tick` | 24 h | 1 h |
 | `knowledge.compact.tick` | 7 days | 1 h |
 
 Until PC-36 splits the queues, ticks share the BullMQ worker (concurrency 4)
@@ -116,7 +117,7 @@ incidents:
 | Kind | Scope | Raised when | Resolved when |
 |---|---|---|---|
 | `tick.workspace_failed` | workspace | one workspace's step inside a tick throws (every tick, incl. the reaper; compaction and synthesis separately; a failed knowledge-cluster merge counts) | that workspace's step next succeeds |
-| `tick.failed` | platform | a whole tick throws | the tick next finishes |
+| `tick.failed` | platform | a whole tick throws (incl. a retention policy failing, PC-35) | the tick next finishes |
 | `job.failed` | platform | `connector.run` throws, or a BullMQ job without an instrumented handler fails | the next success of that job name |
 | `worker.error` | platform (critical) | the BullMQ worker emits `error` (usually Redis) | the next completed job |
 | `jobs.schedule_registration_failed` | platform (critical) | startup could not schedule the ticks | the next successful registration |
@@ -135,8 +136,57 @@ incidents:
   e-mail local parts, URL credentials, `password=` / `token=` / API-key
   values, bearer tokens and long opaque tokens.
 - **Retention.** Resolved incidents are kept for
-  `OPS_EVENTS_RETENTION_DAYS` = 90 days. The deletion runs in the retention
-  tick (PC-35). Open incidents are never deleted.
+  `OPS_EVENTS_RETENTION_DAYS` = 90 days after they resolved. The deletion
+  runs in the retention tick (below). Open incidents are never deleted.
+
+### Log retention (PC-35)
+
+`ops.retention.tick` (daily, 00:00 UTC under BullMQ,
+`src/lib/services/retention.ts`) deletes log rows past their window, across
+every workspace, active or archived:
+
+| Policy | Deletes | Kept for | Measured on |
+|---|---|---|---|
+| `autopilot_log` | every autopilot activity row | 30 days | `created_at` |
+| `audit_log.mail_sync_inbound` | audit rows of kind `mail.sync_inbound` only | 30 days | `created_at` |
+| `notifications.read` | notifications that were read (unread ones stay, whatever their age) | 90 days | `created_at` |
+| `ops_events.resolved` | resolved incidents (open ones stay) | 90 days | `resolved_at` |
+| `ops_alert_deliveries` | the owner-alert delivery log | 90 days | `created_at` |
+| `ops_alert_state` | owner-alert keys not alerted since | 90 days | `last_alerted_at` |
+| `job_heartbeats.retired` | heartbeat rows of jobs that are no longer catalogued ticks (a catalogued tick's row is never deleted) | 90 days | `updated_at` |
+
+Nothing else is deleted: every other audit kind, `usage_log` (it backs
+token debits), mail and every tenant record stay. Each policy deletes at
+most 5,000 rows per statement and 200 statements per run; a table with
+more due rows finishes on the following days (the run summary says
+`capped`).
+
+- **Not gated.** It is platform housekeeping: it sends, spends and starts
+  nothing, so neither a workspace pause, a hold nor the platform outbound
+  stop holds it.
+- **Recorded.** Its heartbeat (`job_heartbeats`, name `ops.retention.tick`)
+  carries the last run's per-policy counts and cutoffs. A run that deleted
+  anything writes one platform audit row, `ops.retention.run`, with the
+  counts.
+- **Failures.** Each policy runs on its own. If one fails, the others still
+  run, then the tick fails: its heartbeat shows `failed` with the policy
+  name and the masked error, and a `tick.failed` incident opens (and
+  alerts). The next clean run resolves it.
+
+The noise itself was cut at the source: the autopilot tick only visits
+workspaces whose autopilot is on and unpaused, and logs its guard
+(`guard · skipped — autopilot_disabled`, `emergency_pause`,
+`plan_no_autopilot`, `guard · success — resumed`) only when the guard's
+state changes (`autopilot_settings.guard_state`). An inbox sync writes its
+`mail.sync_inbound` audit row only when it stored new messages.
+
+```sql
+SELECT last_status, last_ok_at, last_summary
+FROM job_heartbeats WHERE name = 'ops.retention.tick';
+
+SELECT created_at, payload FROM audit_log
+WHERE kind = 'ops.retention.run' ORDER BY created_at DESC LIMIT 7;
+```
 
 ### Stuck work (PC-10)
 

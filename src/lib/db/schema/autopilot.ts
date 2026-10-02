@@ -27,10 +27,20 @@ export const autopilotSettings = pgTable('autopilot_settings', {
     .primaryKey()
     .references(() => workspaces.id, { onDelete: 'cascade' }),
 
-  /** Master switch — when false, runOnce() is a no-op. */
+  /** Master switch — when false, runOnce() does nothing and the autopilot
+   *  tick skips the workspace (PC-35). */
   autopilotEnabled: boolean('autopilot_enabled').notNull().default(false),
-  /** Kill switch — when true, runOnce() is a no-op even if autopilotEnabled. */
+  /** Kill switch — when true, runOnce() does nothing even if
+   *  autopilotEnabled, and the autopilot tick skips the workspace. */
   emergencyPause: boolean('emergency_pause').notNull().default(false),
+
+  /** PC-35 (I066): the guard state runOnce() last recorded — 'open' (it got
+   *  past the guard) or the reason it stopped ('autopilot_disabled',
+   *  'emergency_pause', 'plan_no_autopilot'). A `guard` row is written to
+   *  autopilot_log only when this changes, not on every run. NULL = never
+   *  evaluated. */
+  guardState: text('guard_state'),
+  guardStateAt: timestamp('guard_state_at', { mode: 'date', withTimezone: true }),
 
   /** Step toggles. */
   enableAutoApproveProjects: boolean('enable_auto_approve_projects').notNull().default(false),
@@ -107,8 +117,10 @@ export type AutopilotProductSettings = typeof autopilotProductSettings.$inferSel
 export type NewAutopilotProductSettings = typeof autopilotProductSettings.$inferInsert;
 
 /**
- * Phase 21: per-step audit log. Append-only; never trimmed automatically
- * (operator can purge from /admin if it grows unbounded).
+ * Phase 21: per-step audit log. Append-only. The `guard` step is written
+ * only when the guard state changes (autopilot_settings.guard_state), not
+ * on every run. Rows older than AUTOPILOT_LOG_RETENTION_DAYS (30) are
+ * deleted by the daily retention tick (PC-35, src/lib/services/retention.ts).
  */
 export const autopilotLog = pgTable(
   'autopilot_log',
@@ -141,6 +153,8 @@ export const autopilotLog = pgTable(
       table.workspaceId,
       table.runId,
     ),
+    /** PC-35: the retention tick deletes by age across every workspace. */
+    createdIdx: index('autopilot_log_created_idx').on(table.createdAt),
   }),
 );
 

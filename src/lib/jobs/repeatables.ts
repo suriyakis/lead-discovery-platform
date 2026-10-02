@@ -1,22 +1,34 @@
-// Phase 34: scheduled background work. Four tick handlers fan out across
-// every active workspace / mailbox so the platform actually does its job
-// without anyone clicking buttons.
+// Phase 34: scheduled background work. The tick handlers fan out across
+// the active workspaces / mailboxes so the platform actually does its job
+// without anyone clicking buttons. Names, cadences and labels are in
+// tick-catalog.ts.
 //
-//   autopilot.tick         every 5 min  → for each ws with autopilot
-//                                          enabled, call autopilot.runOnce(ctx)
-//   outreach.drain.tick    every 30 sec → for each active workspace, drain
-//                                          the send queue
-//   mail.imap.tick         every 2 min  → for each active mailbox with IMAP,
-//                                          mail.safeSyncOne(ctx, mb); failing
-//                                          mailboxes get a slow re-check
-//                                          instead (flow:F-04, runImapTick)
+//   autopilot.tick          every 5 min  → for each active workspace with
+//                                           autopilot ON and its emergency
+//                                           pause OFF (PC-35,
+//                                           listAutopilotTickWorkspaces),
+//                                           autopilot.runOnce(ctx)
+//   outreach.drain.tick     every 30 s   → for each active workspace, drain
+//                                           the send queue
+//   mail.imap.tick          every 2 min  → for each active mailbox with IMAP,
+//                                           mail.safeSyncOne(ctx, mb); failing
+//                                           mailboxes get a slow re-check
+//                                           instead (flow:F-04, runImapTick)
 //   outreach.follow_up.tick every 1 h    → Phase 58: for each active
-//                                          workspace with followUpEnabled,
-//                                          process pending follow-ups whose
-//                                          scheduled_for has passed.
-//   ops.reaper.tick        every 5 min  → PC-10: settle stuck sends and
-//                                          stuck discovery runs
-//                                          (services/stuck-work.ts)
+//                                           workspace (processDueFollowUps
+//                                           no-ops where follow-ups are off),
+//                                           send follow-ups that are due
+//   knowledge.compact.tick  every 7 d    → compaction + learning synthesis
+//   mail.trash.purge.tick   every 24 h   → per-workspace trash retention
+//   crawl.engine.tick       every 5 min  → due crawl plans
+//   health.check.tick       every 6 h    → due AI workspace health checks
+//   ops.reaper.tick         every 5 min  → PC-10: settle stuck sends and
+//                                           stuck discovery runs
+//                                           (services/stuck-work.ts)
+//   ops.retention.tick      every 24 h   → PC-35: platform housekeeping —
+//                                           delete log rows past their
+//                                           retention window
+//                                           (services/retention.ts)
 //
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
@@ -38,7 +50,7 @@ import {
   type WorkspaceContext,
   makeWorkspaceContext,
 } from '@/lib/services/context';
-import { runOnce } from '@/lib/services/autopilot';
+import { listAutopilotTickWorkspaces, runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import { purgeOldTrashUnattended, safeSyncOne } from '@/lib/services/mail';
 import { processDueCrawlPlans } from '@/lib/services/crawl-engine';
@@ -47,6 +59,7 @@ import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-co
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
 import { processDueHealthChecks } from '@/lib/services/health-check';
 import { reapStuckWork } from '@/lib/services/stuck-work';
+import { runRetentionTick } from '@/lib/services/retention';
 import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
 import { recordTickRegistration } from '@/lib/services/job-heartbeats';
 import {
@@ -69,6 +82,7 @@ export {
   IMAP_TICK_MS,
   KNOWLEDGE_COMPACT_TICK_MS,
   MAIL_TRASH_PURGE_TICK_MS,
+  RETENTION_TICK_MS,
   STUCK_WORK_TICK_MS,
 } from './tick-catalog';
 
@@ -84,8 +98,16 @@ function activeWorkspaces() {
   return db.select().from(workspaces).where(eq(workspaces.status, 'active'));
 }
 
-const handleAutopilotTick: InstrumentedHandler = async (_payload, { incidents }) => {
-  const wss = await activeWorkspaces();
+/**
+ * autopilot.tick body. PC-35 (I066): only workspaces whose autopilot is on
+ * and unpaused are run, so a workspace with autopilot off writes nothing
+ * (it used to log a 'guard skipped' row every 5 minutes). Exported for
+ * tests (deterministic, unlike enqueue-and-wait).
+ */
+export async function runAutopilotTick(
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{ workspaces: number; stepsRun: number; failed: number }> {
+  const wss = await listAutopilotTickWorkspaces();
   let ran = 0;
   let failed = 0;
   for (const ws of wss) {
@@ -105,7 +127,10 @@ const handleAutopilotTick: InstrumentedHandler = async (_payload, { incidents })
     await incidents.succeeded({ workspaceId: ws.id });
   }
   return { workspaces: wss.length, stepsRun: ran, failed };
-};
+}
+
+const handleAutopilotTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runAutopilotTick(incidents);
 
 const handleDrainTick: InstrumentedHandler = async (_payload, { incidents }) => {
   const wss = await activeWorkspaces();
@@ -471,6 +496,17 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
   };
 };
 
+/**
+ * PC-35 (I066): delete log rows past their retention window
+ * (services/retention.ts). Platform housekeeping, not automation: it
+ * sends, spends and starts nothing, so no workspace pause, hold or the
+ * platform outbound stop gates it. Not per workspace: one pass per table
+ * across every workspace (suspended ones too). A failed policy fails the
+ * tick (after the other policies ran), which opens its tick.failed
+ * incident.
+ */
+const handleRetentionTick: InstrumentedHandler = () => runRetentionTick();
+
 const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
   'autopilot.tick': handleAutopilotTick,
   'outreach.drain.tick': handleDrainTick,
@@ -481,6 +517,7 @@ const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
   'crawl.engine.tick': handleCrawlEngineTick,
   'health.check.tick': handleHealthCheckTick,
   'ops.reaper.tick': handleStuckWorkTick,
+  'ops.retention.tick': handleRetentionTick,
 };
 
 /** Platform incident raised when startup could not schedule the ticks. */

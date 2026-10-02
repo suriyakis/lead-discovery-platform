@@ -199,9 +199,14 @@ export default async function AutopilotPage({
     'use server';
     const c = await getWorkspaceContext();
     const r = await runOnce(c);
-    redirect(
-      `/autopilot?message=${encodeURIComponent(`runOnce — ${r.steps.length} steps`)}`,
-    );
+    // PC-35: the guard is logged only when its state changes, so a run it
+    // stopped may add no activity row; say why here instead.
+    const first = r.steps[0];
+    const message =
+      first?.step === 'guard' && first.outcome === 'skipped'
+        ? `Autopilot did not run: ${first.detail ?? 'guard'}`
+        : `runOnce — ${r.steps.length} steps`;
+    redirect(`/autopilot?message=${encodeURIComponent(message)}`);
   }
 
   return (

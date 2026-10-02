@@ -6,8 +6,14 @@
 // All steps lean on existing services so the autopilot stays a thin
 // orchestrator: it never reaches into the DB to do work that already has
 // a service entry point.
+//
+// PC-35 (I066): the guard (master switch, emergency pause, plan) is logged
+// only when its state changes — autopilot_settings.guard_state — instead of
+// a 'guard skipped' row on every run (288 a day per workspace from the
+// 5-minute tick alone). The tick itself only runs workspaces whose
+// autopilot is on and unpaused (listAutopilotTickWorkspaces).
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
 import {
@@ -20,6 +26,7 @@ import {
   type NewAutopilotProductSettings,
   type NewAutopilotSettings,
 } from '@/lib/db/schema/autopilot';
+import { workspaces } from '@/lib/db/schema/workspaces';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
@@ -404,13 +411,12 @@ export async function runOnce(
   const ranAt = new Date();
   const steps: AutopilotRunResult['steps'] = [];
 
+  // The guard's verdict is always in the returned steps; it reaches
+  // autopilot_log only when it differs from the last recorded state.
   if (!settings.autopilotEnabled || settings.emergencyPause) {
-    await recordStep(ctx, runId, 'guard', 'skipped', settings.emergencyPause ? 'emergency_pause' : 'autopilot_disabled');
-    steps.push({
-      step: 'guard',
-      outcome: 'skipped',
-      detail: settings.emergencyPause ? 'emergency_pause' : 'autopilot_disabled',
-    });
+    const state = settings.emergencyPause ? 'emergency_pause' : 'autopilot_disabled';
+    await recordGuardState(ctx, runId, settings.guardState, state);
+    steps.push({ step: 'guard', outcome: 'skipped', detail: state });
     return { runId, ranAt, steps };
   }
 
@@ -422,11 +428,12 @@ export async function runOnce(
     const { getEffectivePlan } = await import('./plan-limits');
     const plan = await getEffectivePlan(ctx);
     if (!plan.limits.autopilot) {
-      await recordStep(ctx, runId, 'guard', 'skipped', 'plan_no_autopilot');
+      await recordGuardState(ctx, runId, settings.guardState, 'plan_no_autopilot');
       steps.push({ step: 'guard', outcome: 'skipped', detail: 'plan_no_autopilot' });
       return { runId, ranAt, steps };
     }
   }
+  await recordGuardState(ctx, runId, settings.guardState, AUTOPILOT_GUARD_OPEN);
 
   if (settings.enableAutoSyncInbound) {
     const r = await stepAutoSyncInbound(ctx, runId, options.mailProviderOverride);
@@ -857,6 +864,86 @@ async function recordStep(
     entityType: entityType ?? null,
     entityId: entityId ?? null,
   });
+}
+
+/** PC-35: the guard state of a run the guard let through. */
+export const AUTOPILOT_GUARD_OPEN = 'open';
+
+/**
+ * PC-35 (I066): record the guard's state for this run — AUTOPILOT_GUARD_OPEN
+ * or the reason it stopped the run — and write a `guard` row to
+ * autopilot_log only when the state changed since the last recorded one:
+ *
+ *   - into a stopping reason:      guard · skipped — <reason>
+ *   - from a stopping reason back to open: guard · success — resumed
+ *   - never recorded → open (a workspace's first run, or its first since
+ *     PC-35): stored silently, nothing changed for the operator.
+ *
+ * `previous` is the guard_state the run read with its settings. The flip
+ * is an UPDATE conditional on it, in the same transaction as the log row,
+ * so when the tick and Run now race on one change it is logged once.
+ * Returns whether a log row was written.
+ */
+export async function recordGuardState(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  runId: string,
+  previous: string | null,
+  state: string,
+  options: { detail?: string; now?: Date } = {},
+): Promise<boolean> {
+  if (previous === state) return false;
+  const now = options.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const flipped = await tx
+      .update(autopilotSettings)
+      .set({ guardState: state, guardStateAt: now })
+      .where(
+        and(
+          eq(autopilotSettings.workspaceId, ctx.workspaceId),
+          previous === null
+            ? isNull(autopilotSettings.guardState)
+            : eq(autopilotSettings.guardState, previous),
+        ),
+      )
+      .returning({ workspaceId: autopilotSettings.workspaceId });
+    // Another run recorded this change first (or the row is gone).
+    if (flipped.length === 0) return false;
+    const opened = state === AUTOPILOT_GUARD_OPEN;
+    if (opened && previous === null) return false;
+    await tx.insert(autopilotLog).values({
+      workspaceId: ctx.workspaceId,
+      runId,
+      step: 'guard',
+      outcome: opened ? 'success' : 'skipped',
+      detail: opened ? 'resumed' : (options.detail ?? state),
+      payload: { state, previous },
+    });
+    return true;
+  });
+}
+
+/**
+ * PC-35 (I066): the workspaces the 5-minute autopilot tick runs — active,
+ * autopilot switched on, emergency pause off. A workspace with autopilot
+ * off (or never configured) is not visited at all, so the tick writes
+ * nothing for it. The plan guard stays in runOnce, where it is logged once
+ * when it starts holding. A system read for the tick (no user acts).
+ */
+export async function listAutopilotTickWorkspaces(): Promise<
+  Array<{ id: bigint; ownerUserId: string }>
+> {
+  return db
+    .select({ id: workspaces.id, ownerUserId: workspaces.ownerUserId })
+    .from(workspaces)
+    .innerJoin(autopilotSettings, eq(autopilotSettings.workspaceId, workspaces.id))
+    .where(
+      and(
+        eq(workspaces.status, 'active'),
+        eq(autopilotSettings.autopilotEnabled, true),
+        eq(autopilotSettings.emergencyPause, false),
+      ),
+    )
+    .orderBy(workspaces.id);
 }
 
 export async function listAutopilotLog(

@@ -197,6 +197,8 @@ See `IJobQueue` in `docs/ARCHITECTURE.md`. Job types defined as the system grows
 
 **Stuck work and send failures (PC-10).** `src/lib/services/stuck-work.ts` (the `ops.reaper.tick`: queue rows stuck in `sending`, runs without progress or never started), `src/lib/mail/send-failure.ts` (failure kinds, retry policy and backoff, the error tags `sendMessage` sets), `src/lib/services/outreach-queue-sent.ts` (settling queue rows as sent inside the mail insert transaction), `src/lib/ops/work-incidents.ts` (`send.interrupted`, `run.failed`, `run.stuck`). Queue recovery: `requeueQueueEntry` / `retryQueueEntry` in `services/outreach-queue.ts`; run Cancel: `requestRunCancel` in `services/connector-run.ts`, polled by `connectors/runner.ts`.
 
+**Log noise and retention (PC-35).** `src/lib/services/retention.ts` (`RETENTION_POLICIES`, `runRetention`, `runRetentionTick`: the daily `ops.retention.tick` deleting autopilot_log > 30 d, `mail.sync_inbound` audit rows > 30 d, read notifications > 90 d, resolved ops_events, the alert log and unused alert keys > 90 d, retired heartbeat rows > 90 d; batched, per policy, not gated by any pause). In `services/autopilot.ts`: `listAutopilotTickWorkspaces` (the tick visits only workspaces with autopilot on and unpaused) and `recordGuardState` (a `guard` row only when `autopilot_settings.guard_state` changes). `syncInbound` (`services/mail.ts`) audits only syncs that stored new messages.
+
 ### File Storage
 
 **Phase.** 1 (interface + local-FS impl), 9+ (S3-compatible for production).

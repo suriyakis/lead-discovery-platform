@@ -14,11 +14,11 @@ import { users } from './auth';
 import { workspaces } from './workspaces';
 
 /**
- * PC-07 (I022): one row per background job name — the eight repeatable
- * ticks plus the on-demand `connector.run`. Written by the `instrumented()`
- * wrapper around every job handler (start + finish) and, for ticks, by the
- * schedule registration at boot (`registered_at`, `boot_id`,
- * `interval_ms`, `queue_provider`).
+ * PC-07 (I022): one row per background job name — every repeatable tick
+ * in src/lib/jobs/tick-catalog.ts plus the on-demand `connector.run`.
+ * Written by the `instrumented()` wrapper around every job handler (start
+ * + finish) and, for ticks, by the schedule registration at boot
+ * (`registered_at`, `boot_id`, `interval_ms`, `queue_provider`).
  *
  * Staleness is NOT stored: it is computed from these columns on read
  * (src/lib/jobs/tick-schedule.ts — the expected-slot rule), so a stopped
@@ -26,6 +26,11 @@ import { workspaces } from './workspaces';
  *
  * Not tenant-owned: a tick fans out over every workspace. Per-workspace
  * outcomes live in `ops_events`.
+ *
+ * Retention (PC-35): a row whose name is no longer a catalogued tick (a
+ * retired or renamed tick, an on-demand job that stopped running) and
+ * that was not written for 90 days is deleted by the retention tick.
+ * Catalogued ticks keep their row whatever its age.
  */
 export const jobHeartbeats = pgTable('job_heartbeats', {
   /** Job name, e.g. `outreach.drain.tick`, `connector.run`. */
@@ -76,7 +81,9 @@ export const jobHeartbeats = pgTable('job_heartbeats', {
  *
  * Messages and payload strings are masked before they are stored
  * (src/lib/ops/mask.ts). Resolved rows are kept for
- * OPS_EVENTS_RETENTION_DAYS (90) — the retention tick is PC-35.
+ * OPS_EVENTS_RETENTION_DAYS (90) after `resolved_at`; the daily retention
+ * tick (PC-35, src/lib/services/retention.ts) deletes older ones. Open
+ * rows are never deleted.
  */
 export const opsEvents = pgTable(
   'ops_events',
@@ -145,6 +152,11 @@ export const opsEvents = pgTable(
  * UPDATE … WHERE last_alerted_at <= cutoff, which is what stops two
  * processes (or two overlapping passes) from sending the same alert.
  * See src/lib/services/ops-alerts.ts.
+ *
+ * Retention (PC-35): a key not alerted for 90 days is deleted by the
+ * retention tick. Every window that reads a key (6 h re-alert, 1 min
+ * control dedupe, the daily digest) is far shorter, so a deleted key
+ * behaves exactly like one whose window has passed.
  */
 export const opsAlertState = pgTable(
   'ops_alert_state',
@@ -168,7 +180,8 @@ export const opsAlertState = pgTable(
  * hourly message budget is counted from here, the console's "recent
  * alerts" list reads it, and it is the record of what left the platform.
  * Titles and errors are masked; the topic and the access token are never
- * stored. Same 90-day retention as ops_events (the deletion is PC-35).
+ * stored. Same 90-day retention as ops_events, by created_at (the daily
+ * retention tick, PC-35, src/lib/services/retention.ts).
  */
 export const opsAlertDeliveries = pgTable(
   'ops_alert_deliveries',

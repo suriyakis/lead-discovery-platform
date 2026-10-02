@@ -30,6 +30,10 @@ export const HEALTH_CHECK_TICK_MS = 6 * 60 * 60 * 1000;
 /** PC-10: the stuck-work reaper (sends stuck in 'sending' > 10 min, runs
  *  without progress > 15 min) — src/lib/services/stuck-work.ts. */
 export const STUCK_WORK_TICK_MS = 5 * 60 * 1000;
+/** PC-35: daily log retention (autopilot_log, routine sync audit rows, read
+ *  notifications, resolved incidents, …) — src/lib/services/retention.ts.
+ *  Under BullMQ it fires at 00:00 UTC (epoch-aligned slots). */
+export const RETENTION_TICK_MS = 24 * 60 * 60 * 1000;
 
 export type TickName =
   | 'autopilot.tick'
@@ -40,7 +44,8 @@ export type TickName =
   | 'mail.trash.purge.tick'
   | 'crawl.engine.tick'
   | 'health.check.tick'
-  | 'ops.reaper.tick';
+  | 'ops.reaper.tick'
+  | 'ops.retention.tick';
 
 export interface TickDefinition {
   readonly name: TickName;
@@ -100,6 +105,12 @@ export const TICK_CATALOG: readonly TickDefinition[] = [
     everyMs: STUCK_WORK_TICK_MS,
     jobId: 'ops-reaper-tick',
     label: 'Stuck-work reaper',
+  },
+  {
+    name: 'ops.retention.tick',
+    everyMs: RETENTION_TICK_MS,
+    jobId: 'ops-retention-tick',
+    label: 'Data retention',
   },
 ];
 

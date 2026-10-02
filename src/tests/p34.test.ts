@@ -8,6 +8,7 @@ import {
   _resetRepeatablesForTests,
   registerRepeatableJobs,
 } from '@/lib/jobs/repeatables';
+import { autopilotSettings } from '@/lib/db/schema/autopilot';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 beforeEach(async () => {
@@ -100,15 +101,22 @@ describe('registerRepeatableJobs', () => {
     }
   });
 
-  it('autopilot.tick fans out: returns workspaces count', async () => {
+  it('autopilot.tick fans out over workspaces with autopilot on: returns workspaces count', async () => {
     const q = new InMemoryJobQueue();
     _setJobQueueForTests(q);
     await registerRepeatableJobs({ skipSchedule: true });
 
     const owner1 = await seedUser({ email: 'o1@test.local' });
     const owner2 = await seedUser({ email: 'o2@test.local' });
-    await seedWorkspace({ name: 'W1', ownerUserId: owner1 });
-    await seedWorkspace({ name: 'W2', ownerUserId: owner2 });
+    const owner3 = await seedUser({ email: 'o3@test.local' });
+    const w1 = await seedWorkspace({ name: 'W1', ownerUserId: owner1 });
+    const w2 = await seedWorkspace({ name: 'W2', ownerUserId: owner2 });
+    // PC-35: autopilot off — the tick does not visit it.
+    await seedWorkspace({ name: 'W3', ownerUserId: owner3 });
+    await db.insert(autopilotSettings).values([
+      { workspaceId: w1, autopilotEnabled: true },
+      { workspaceId: w2, autopilotEnabled: true },
+    ]);
 
     const id = await q.enqueue('autopilot.tick', {});
     await q.drain();

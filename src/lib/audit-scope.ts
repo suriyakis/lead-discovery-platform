@@ -53,6 +53,8 @@ export const PLATFORM_AUDIT_KINDS = [
   'remediation.revert',
   // PC-08: 'Send test alert' in the platform console (services/ops-alerts.ts)
   'ops.alert.test',
+  // PC-35: a daily retention run that deleted log rows (services/retention.ts)
+  'ops.retention.run',
 ] as const;
 
 export type PlatformAuditKind = (typeof PLATFORM_AUDIT_KINDS)[number];

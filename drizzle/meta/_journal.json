@@ -484,6 +484,13 @@
       "when": 1790906676772,
       "tag": "0068_p1_ops_visibility_stuck_work",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1790909338359,
+      "tag": "0069_p1_ops_visibility_log_retention",
+      "breakpoints": true
     }
   ]
 }

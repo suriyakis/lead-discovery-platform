@@ -1,7 +1,9 @@
-// PC-07 acceptance (2): for each repeatable tick (8, plus PC-10's stuck-work
-// reaper), a per-workspace
+// PC-07 acceptance (2): for each per-workspace repeatable tick (8, plus
+// PC-10's stuck-work reaper), a per-workspace
 // error creates exactly one open ops_event per fingerprint with its
 // occurrences counted, and the workspace's next success resolves it.
+// (PC-35's ops.retention.tick is platform-wide, not per workspace: its
+// tick.failed incident is covered in log-retention-pc35.test.ts.)
 //
 // The per-workspace service each tick calls is replaced by a stub that
 // throws for the workspaces a test flags (health.check fails through its
@@ -12,6 +14,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import { autopilotSettings } from '@/lib/db/schema/autopilot';
 import { jobHeartbeats, opsEvents } from '@/lib/db/schema/ops';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { InMemoryJobQueue, _setJobQueueForTests } from '@/lib/jobs';
@@ -210,8 +213,26 @@ const resetHealthClaims = async () => {
   await db.update(workspaces).set({ healthCheckLastAt: null });
 };
 
+/** PC-35: the autopilot tick only visits workspaces with autopilot on. */
+const enableAutopilotEverywhere = async () => {
+  for (const ws of await db.select({ id: workspaces.id }).from(workspaces)) {
+    await db
+      .insert(autopilotSettings)
+      .values({ workspaceId: ws.id, autopilotEnabled: true })
+      .onConflictDoUpdate({
+        target: autopilotSettings.workspaceId,
+        set: { autopilotEnabled: true },
+      });
+  }
+};
+
 const CASES: TickCase[] = [
-  { tick: 'autopilot.tick', step: 'autopilot', title: 'Autopilot' },
+  {
+    tick: 'autopilot.tick',
+    step: 'autopilot',
+    title: 'Autopilot',
+    beforeRun: enableAutopilotEverywhere,
+  },
   { tick: 'outreach.drain.tick', step: 'drain', title: 'Send queue' },
   { tick: 'mail.imap.tick', step: 'adopt', part: 'adopt', title: 'Inbox sync' },
   { tick: 'outreach.follow_up.tick', step: 'follow_up', title: 'Follow-ups' },
