@@ -4,8 +4,9 @@
 // good: an outreach_queue row 'sending' forever (counted as queued, no
 // action on the queue page, the draft blocked from re-enqueue by the
 // unique index) and a connector run 'running' or 'pending' forever. The
-// reaper — the ops.reaper.tick, every 5 minutes, per active workspace —
-// settles both:
+// reaper — the ops.reaper.tick, every 5 minutes, per active workspace and
+// per any other workspace with stuck work (an archived one's stuck rows
+// are settled too) — settles both:
 //
 //   sends  'sending' for more than 10 minutes since the claim →
 //          'sent'   when a sent / delivered mail_messages row of the same
@@ -19,11 +20,14 @@
 //          'failed' + run.stuck incident + the run.failed notification;
 //          'running' with a cancel request unanswered for 2 minutes →
 //          'cancelled' (the operator wanted it stopped anyway);
-//          'pending' for 60 minutes → 'failed' (never started: the job was
-//          lost). Pending gets longer because under BullMQ a run can wait
-//          its turn behind others (worker concurrency 4); the runner only
-//          starts a run that is still 'pending', so a reaped run never
-//          starts late.
+//          'pending' for 60 minutes and its job no longer in the job queue
+//          → 'failed' (never started: the job was lost). Under BullMQ a
+//          run can wait its turn behind long runs (the worker's
+//          concurrency 4 is shared with every tick until PC-36 splits the
+//          queues), so a run whose job is still waiting or active is left
+//          alone however long it waits; when the queue cannot tell (Redis
+//          down) the run waits for the next pass. The runner only starts a
+//          run that is still 'pending', so a reaped run never starts late.
 //
 // Every write is conditional on the state the reaper read, so a runner or
 // drain that wakes up meanwhile is never overwritten (and a runner that
@@ -54,6 +58,7 @@ import {
   reportRunStuck,
   reportSendInterrupted,
 } from '@/lib/ops/work-incidents';
+import { getJobQueue } from '@/lib/jobs';
 import { recordSystemAuditEvent } from './audit';
 import type { WorkspaceContext } from './context';
 import { resolveOpsEvent } from './ops-events';
@@ -237,19 +242,12 @@ function noProgressSince(cutoff: Date): SQL {
   ) as SQL;
 }
 
-type RunVerdict =
-  | { kind: 'no_progress'; status: 'failed'; message: string; guard: SQL }
-  | { kind: 'cancel_unanswered'; status: 'cancelled'; message: string; guard: SQL }
-  | { kind: 'never_started'; status: 'failed'; message: string; guard: SQL };
-
-export async function reapStuckRuns(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  now: Date = new Date(),
-): Promise<ReapRunsResult> {
+/** The three ways a run is stuck at `now` (shared by the reaper and the
+ *  workspace lister). */
+function stuckRunPredicates(now: Date) {
   const runningCutoff = new Date(now.getTime() - RUN_STUCK_AFTER_MS);
   const cancelCutoff = new Date(now.getTime() - RUN_CANCEL_GRACE_MS);
   const pendingCutoff = new Date(now.getTime() - RUN_PENDING_STUCK_AFTER_MS);
-
   const noProgress = and(
     eq(connectorRuns.status, 'running'),
     noProgressSince(runningCutoff),
@@ -264,16 +262,32 @@ export async function reapStuckRuns(
     eq(connectorRuns.status, 'pending'),
     lt(connectorRuns.createdAt, pendingCutoff),
   ) as SQL;
+  return {
+    runningCutoff,
+    cancelCutoff,
+    noProgress,
+    cancelUnanswered,
+    neverStarted,
+    any: or(noProgress, cancelUnanswered, neverStarted) as SQL,
+  };
+}
+
+type RunVerdict =
+  | { kind: 'no_progress'; status: 'failed'; message: string; guard: SQL }
+  | { kind: 'cancel_unanswered'; status: 'cancelled'; message: string; guard: SQL }
+  | { kind: 'never_started'; status: 'failed'; message: string; guard: SQL };
+
+export async function reapStuckRuns(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  now: Date = new Date(),
+): Promise<ReapRunsResult> {
+  const stuck = stuckRunPredicates(now);
+  const { runningCutoff, cancelCutoff, noProgress, cancelUnanswered, neverStarted } = stuck;
 
   const candidates = await db
     .select()
     .from(connectorRuns)
-    .where(
-      and(
-        eq(connectorRuns.workspaceId, ctx.workspaceId),
-        or(noProgress, cancelUnanswered, neverStarted),
-      ),
-    )
+    .where(and(eq(connectorRuns.workspaceId, ctx.workspaceId), stuck.any))
     .orderBy(asc(connectorRuns.id));
 
   const result: ReapRunsResult = { failed: [], cancelled: [] };
@@ -286,6 +300,8 @@ export async function reapStuckRuns(
       neverStarted,
     });
     if (!verdict) continue;
+    // A run still waiting its turn in the job queue is not lost.
+    if (verdict.kind === 'never_started' && (await runJobStillQueued(run.id))) continue;
     const [done] = await db
       .update(connectorRuns)
       .set({
@@ -360,7 +376,7 @@ function judgeRun(
       kind: 'never_started',
       status: 'failed',
       message:
-        'Never started: the run waited more than 60 minutes for a worker (the job was probably lost in a restart). Start it again.',
+        'Never started: after more than 60 minutes its job is no longer in the job queue (lost in a restart, or never queued). Start it again.',
       guard: c.neverStarted,
     };
   }
@@ -388,6 +404,46 @@ function judgeRun(
     };
   }
   return null;
+}
+
+/**
+ * Is the run's connector.run job still waiting or running in the job
+ * queue? A queue that cannot tell (no hasLiveJob) answers no; one that
+ * fails to answer (Redis down) counts as yes, so the run is looked at
+ * again on the next pass instead of being failed blind.
+ */
+async function runJobStillQueued(runId: bigint): Promise<boolean> {
+  try {
+    const queue = getJobQueue();
+    if (!queue.hasLiveJob) return false;
+    return await queue.hasLiveJob('connector.run', { field: 'runId', value: runId.toString() });
+  } catch (err) {
+    console.error(
+      `[stuck-work] could not ask the job queue about run ${runId}; leaving it for the next pass:`,
+      err instanceof Error ? err.message : err,
+    );
+    return true;
+  }
+}
+
+// ---- which workspaces --------------------------------------------------
+
+/**
+ * Workspaces with a stuck send or run at `now`, whatever the workspace's
+ * status: the tick visits these as well as every active workspace, so an
+ * archived workspace's stuck rows are settled too.
+ */
+export async function listWorkspacesWithStuckWork(now: Date = new Date()): Promise<bigint[]> {
+  const sendCutoff = new Date(now.getTime() - SEND_STUCK_AFTER_MS);
+  const sends = await db
+    .selectDistinct({ workspaceId: outreachQueue.workspaceId })
+    .from(outreachQueue)
+    .where(sendingSince(sendCutoff));
+  const runs = await db
+    .selectDistinct({ workspaceId: connectorRuns.workspaceId })
+    .from(connectorRuns)
+    .where(stuckRunPredicates(now).any);
+  return uniqueIds([...sends, ...runs].map((r) => r.workspaceId));
 }
 
 // ---- run incidents nothing can resolve any more ------------------------

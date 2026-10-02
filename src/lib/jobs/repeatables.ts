@@ -58,7 +58,11 @@ import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
 import { processDueHealthChecks } from '@/lib/services/health-check';
-import { reapStuckWork, resolveOrphanedRunIncidents } from '@/lib/services/stuck-work';
+import {
+  listWorkspacesWithStuckWork,
+  reapStuckWork,
+  resolveOrphanedRunIncidents,
+} from '@/lib/services/stuck-work';
 import { runRetentionTick } from '@/lib/services/retention';
 import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
 import { recordTickRegistration } from '@/lib/services/job-heartbeats';
@@ -455,22 +459,25 @@ const handleHealthCheckTick: InstrumentedHandler = async (_payload, { incidents 
 };
 
 /**
- * PC-10: settle stuck work in every active workspace — sends stuck in
- * 'sending' for more than 10 minutes, runs without progress for 15 (or
- * pending for 60). Platform maintenance, not automation: it sends nothing
- * and starts nothing, so it runs whatever the workspace's pause says.
+ * PC-10: settle stuck work — sends stuck in 'sending' for more than 10
+ * minutes, runs without progress for 15 (or pending for 60 with their job
+ * gone from the queue). Every active workspace, plus any other workspace
+ * with stuck work (an archived one's stuck rows are settled too).
+ * Platform maintenance, not automation: it sends nothing and starts
+ * nothing, so it runs whatever the workspace's pause says.
  */
 const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents }) => {
-  const wss = await activeWorkspaces();
   const now = new Date();
+  const wss = new Map((await activeWorkspaces()).map((ws) => [ws.id.toString(), ws.id]));
+  for (const id of await listWorkspacesWithStuckWork(now)) wss.set(id.toString(), id);
   let sendsSettledSent = 0;
   let sendsFailed = 0;
   let runsFailed = 0;
   let runsCancelled = 0;
   let workspacesFailed = 0;
-  for (const ws of wss) {
+  for (const workspaceId of wss.values()) {
     try {
-      const r = await reapStuckWork({ workspaceId: ws.id }, now);
+      const r = await reapStuckWork({ workspaceId }, now);
       sendsSettledSent += r.sendsSettledSent;
       sendsFailed += r.sendsFailed;
       runsFailed += r.runsFailed;
@@ -478,13 +485,13 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
     } catch (err) {
       workspacesFailed++;
       console.error(
-        `[ops.reaper.tick] workspace=${ws.id} failed:`,
+        `[ops.reaper.tick] workspace=${workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
-      await incidents.failed({ workspaceId: ws.id }, err);
+      await incidents.failed({ workspaceId }, err);
       continue;
     }
-    await incidents.succeeded({ workspaceId: ws.id });
+    await incidents.succeeded({ workspaceId });
   }
   // Run incidents whose recipe / connector is gone or switched off: no
   // next run can resolve them. Best-effort, platform-wide.
@@ -498,7 +505,7 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
     );
   }
   return {
-    workspaces: wss.length,
+    workspaces: wss.size,
     sendsSettledSent,
     sendsFailed,
     runsFailed,

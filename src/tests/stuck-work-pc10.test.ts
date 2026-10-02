@@ -22,11 +22,12 @@ import {
   sourceRecords,
   type ConnectorRun,
 } from '@/lib/db/schema/connectors';
-import { reportRunFailed, reportRunStuck } from '@/lib/ops/work-incidents';
 import { mailMessages } from '@/lib/db/schema/mailing';
 import { jobHeartbeats, opsEvents } from '@/lib/db/schema/ops';
 import { notifications } from '@/lib/db/schema/notifications';
 import { outreachQueue } from '@/lib/db/schema/outreach';
+import { workspaces } from '@/lib/db/schema/workspaces';
+import { reportRunFailed, reportRunStuck } from '@/lib/ops/work-incidents';
 import { registerConnector } from '@/lib/connectors/registry';
 import { runConnectorRun } from '@/lib/connectors/runner';
 import type { ConnectorRunRequest, HarvesterEvent, ISourceConnector } from '@/lib/connectors/types';
@@ -54,6 +55,7 @@ import {
   RUN_PENDING_STUCK_AFTER_MS,
   RUN_STUCK_AFTER_MS,
   SEND_STUCK_AFTER_MS,
+  listWorkspacesWithStuckWork,
   reapStuckRuns,
   reapStuckSends,
   resolveOrphanedRunIncidents,
@@ -673,5 +675,83 @@ describe('ops.reaper.tick', () => {
       _setJobQueueForTests(null);
       _resetRepeatablesForTests();
     }
+  });
+});
+
+// ---- reaper edge cases (review: PC-10) ---------------------------------------
+
+async function runReaperTick(): Promise<Record<string, unknown>> {
+  const q = new InMemoryJobQueue();
+  _setJobQueueForTests(q);
+  _resetRepeatablesForTests();
+  try {
+    await registerRepeatableJobs({ skipSchedule: true });
+    const id = await q.enqueue('ops.reaper.tick', {});
+    await q.drain();
+    const status = await q.status(id);
+    expect(status.state).toBe('succeeded');
+    return (status as { result: Record<string, unknown> }).result;
+  } finally {
+    _setJobQueueForTests(null);
+    _resetRepeatablesForTests();
+  }
+}
+
+describe('reaper edge cases (PC-10 review)', () => {
+  it('a pending run whose job is still waiting in the job queue is left alone; only a lost one is failed', async () => {
+    const s = await setup();
+    const c = await slowConnector(s);
+    const longAgo = minutesAgo(RUN_PENDING_STUCK_AFTER_MS / 60_000 + 30);
+    const waiting = await strandedRun(s, c.id, { status: 'pending', createdAt: longAgo });
+    const lost = await strandedRun(s, c.id, { status: 'pending', createdAt: longAgo });
+
+    // A queue that cannot answer (Redis down): nothing is failed blind.
+    const broken = Object.assign(new InMemoryJobQueue(), {
+      hasLiveJob: async () => {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:6379');
+      },
+    });
+    _setJobQueueForTests(broken);
+    try {
+      expect(await reapStuckRuns(ctx(s))).toEqual({ failed: [], cancelled: [] });
+    } finally {
+      _setJobQueueForTests(null);
+    }
+
+    // No worker takes connector.run here: the job just waits its turn, as
+    // behind long runs on the shared BullMQ worker.
+    const q = new InMemoryJobQueue();
+    _setJobQueueForTests(q);
+    try {
+      await q.enqueue('connector.run', {
+        runId: waiting.id.toString(),
+        workspaceId: s.workspaceId.toString(),
+      });
+      const r = await reapStuckRuns(ctx(s));
+      expect(r).toEqual({ failed: [lost.id], cancelled: [] });
+      expect((await runRow(waiting.id)).status).toBe('pending');
+      expect((await runRow(lost.id)).errorPayload).toMatchObject({ reason: 'never_started' });
+    } finally {
+      _setJobQueueForTests(null);
+    }
+  });
+
+  it('the tick also reaps a workspace that is not active (an archived one with a stuck send and run)', async () => {
+    const s = await setup();
+    const { entry } = await queuedDraft(s, 'anna@target.com');
+    await db
+      .update(outreachQueue)
+      .set({ status: 'sending', claimedAt: minutesAgo(11) })
+      .where(eq(outreachQueue.id, entry.id));
+    const c = await slowConnector(s);
+    const run = await strandedRun(s, c.id, { lastProgressAt: minutesAgo(20) });
+    await db.update(workspaces).set({ status: 'archived' }).where(eq(workspaces.id, s.workspaceId));
+
+    expect(await listWorkspacesWithStuckWork()).toEqual([s.workspaceId]);
+    const result = await runReaperTick();
+    expect(result).toMatchObject({ workspaces: 1, sendsFailed: 1, runsFailed: 1 });
+    expect((await queueRow(entry.id)).status).toBe('failed');
+    expect((await runRow(run.id)).status).toBe('failed');
+    expect(await listWorkspacesWithStuckWork()).toEqual([]);
   });
 });

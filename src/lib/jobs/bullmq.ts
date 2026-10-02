@@ -19,6 +19,8 @@ import { isInstrumentedHandler } from './instrumented';
 import { attachWorkerEventReporting } from './worker-events';
 
 const QUEUE_NAME = 'lead-platform';
+/** Jobs scanned per state by hasLiveJob (the reaper's lost-run check). */
+const LIVE_JOB_SCAN_LIMIT = 1000;
 
 export class BullMQJobQueue implements IJobQueue {
   public readonly id = 'bullmq';
@@ -55,6 +57,21 @@ export class BullMQJobQueue implements IJobQueue {
     });
     void options;
     return String(job.id);
+  }
+
+  /** PC-10: see IJobQueue.hasLiveJob. Scans up to LIVE_JOB_SCAN_LIMIT jobs
+   *  per state; a job beyond that reads as not live. */
+  async hasLiveJob(type: string, match: { field: string; value: string }): Promise<boolean> {
+    const jobs = await this.queue.getJobs(
+      ['waiting', 'active', 'delayed', 'prioritized', 'paused', 'waiting-children'],
+      0,
+      LIVE_JOB_SCAN_LIMIT - 1,
+    );
+    return jobs.some(
+      (job) =>
+        job?.name === type &&
+        (job.data as Record<string, unknown> | undefined)?.[match.field] === match.value,
+    );
   }
 
   async status(id: JobId): Promise<JobStatus> {
