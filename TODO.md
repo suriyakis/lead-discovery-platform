@@ -1146,8 +1146,8 @@ sections of docs/DEPLOYMENT.md are part of the deploy, not optional
 - [x] **PC-38 (workers).** Shared Postgres rate limits, single-flight AI buttons, Re-classify all as a background run; an nginx `limit_req` snippet for the owner to apply.
 - [x] **AP-06, MOB-02 (diagnostics).** One diagnostics engine behind `/health`, Today's "Needs fixing", `/api/attention` and the assistant, with a free 6-hourly notify sweep and a calibrated score; one attention summary behind every count (`useAttention`).
 - [x] **MOB-06, DS-07 (diagnostics).** Tenant-safe sessions (the workspace is per session), `/go` workspace links and the expected-workspace guard on every action that sends, spends or decides; the workspace frame mounted once in the `(app)` route group.
-- [x] **P1-INT (integration).** Wave A: controls alert the owner and incidents reach the ops stream (PC-05/PC-06 × PC-07/PC-08). Wave B: the diagnostics migrations regenerated after the workers'; the `mailbox.failing` finding keyed and worded for PC-09 (incident fingerprint, recovery plan, `unprobed`); one finding per failing mailbox (no `ops.mailbox.failing` twin); Compact now, Synthesize now and product autofill behind the workspace guard; the worker's boot log names every tick (I155); handbook claim H-62.
-- [x] **P1-DRILL.** `scripts/drill/phase1-drill.ts` with `smtp-sink.ts` and `ntfy-stub.ts`: pause mid-drain, resume, a Sending hold against a manual compose, refused logins → failing + ntfy alert + held rows, recovery, the learning outbox, a stopped tick → `/api/ready` 503, and the same findings on `/health`, Today, `/api/attention` and the assistant. Runbook and the last result: docs/drills/phase1-drill.md.
+- [x] **P1-INT (integration).** Wave A: controls alert the owner and incidents reach the ops stream (PC-05/PC-06 × PC-07/PC-08). Wave B: the diagnostics migrations regenerated after the workers'; the `mailbox.failing` finding keyed and worded for PC-09 (incident fingerprint, recovery plan, `unprobed`); one finding per failing mailbox (no `ops.mailbox.failing` twin); Compact now, Synthesize now and product autofill behind the workspace guard; the worker's boot log names every tick (I155); handbook claim H-62. Final pass: wave A's five review fixes (PC-05/PC-11, DS-05, DS-10) and the workers' deploy APP_URL check merged on top; owner alerts and the pixel and unsubscribe links in sent mail take their origin from `app-origin` like Stripe does, so a loopback `APP_URL` never reaches an alert or an email (I155 × PC-08 × PC-36).
+- [x] **P1-DRILL (tooling only).** Built before the owner asked to wrap Phase 1 up; running it on the release commit is still the required pre-go-live step P1-F06. `scripts/drill/phase1-drill.ts` with `smtp-sink.ts` and `ntfy-stub.ts`: pause mid-drain, resume, a Sending hold against a manual compose, refused logins → failing + ntfy alert + held rows, recovery, the learning outbox, a stopped tick → `/api/ready` 503, and the same findings on `/health`, Today, `/api/attention` and the assistant. Runbook and the last result: docs/drills/phase1-drill.md.
 
 **Handbook claims that changed** (the guide answers from these; pins in
 `src/tests/handbook-claims.test.ts`): the pause, H-09 and H-10 (one pause
@@ -1166,10 +1166,10 @@ documented in docs/OPS_MONITORING.md, not in the tenant handbook.
 Owner actions (platform owner, around the deploy; the steps are in docs/DEPLOYMENT.md):
 - [ ] **P1-F01 (PC-36, step 0, required).** Before deploying, replace `~/deploy-discover.sh` with the one-line wrapper around `scripts/deploy/deploy-agregat.sh` and check that its `--dry-run` prints OK. The old script recreates `app` only, which now runs `ROLE=web`: no worker would run anything in the background.
 - [ ] **P1-F02 (PC-36, PC-07, PC-08).** Before the deploy: Redis runs; `.env` has `APP_URL=https://discover.nulife.pl`, `NTFY_TOPIC` (plus `NTFY_URL` / `NTFY_TOKEN` when not on ntfy.sh) and `OPS_READY_TOKEN`. After it: the `/api/ready` detail lists every tick ok or pending, no `worker.absent` incident is open, "Send test alert" on `/admin/providers` arrives, and the external uptime monitor points at `/api/ready`.
-- [ ] **P1-F03 (PC-05, PC-06, flow:F-07).** Before the deploy, run `scripts/remediation/check-accountable-owners.ts` and fix or accept what it lists. After it, release the workspaces that should keep sending (go-live), run `import-legacy-feature-flags.ts --apply`, then confirm or discard each `pending_review` hold on `/admin/workspaces/[id]`.
+- [ ] **P1-F03 (PC-05, PC-06, flow:F-07).** Before the deploy, run `scripts/remediation/check-accountable-owners.ts` and fix or accept what it lists. After it, run `import-legacy-feature-flags.ts --apply` and apply the owner's decisions (2026-10-02) on `/admin/workspaces/[id]`: workspace 2 (Ecobeton UK) — its legacy flags are CONFIRMED as enforced holds (outbound sending and inbound sync); workspace 4 — no holds; every other imported flag stays `pending_review` (not enforced) until the owner reviews it. Do NOT release any workspace's go-live hold at this deploy (see P1-F06).
 - [ ] **P1-F04 (PC-09).** After the deploy, give the owner the mailbox health backfill dry run, then apply it with `--apply --expect <fingerprint>` after sign-off. Until then the two prod mailboxes failing since before stay silent and unprobed.
 - [ ] **P1-F05 (PC-38).** Apply the nginx `limit_req` snippet on agregat (`scripts/deploy/nginx/`) and check it with the curl loop in docs/DEPLOYMENT.md.
-- [ ] **P1-F06.** Run the Phase 1 drill on the release commit before go-live (`pnpm build && pnpm build:worker && pnpm exec tsx scripts/drill/phase1-drill.ts`) and record the result in docs/drills/phase1-drill.md.
+- [ ] **P1-F06 (REQUIRED before go-live).** The Phase 1 drill on the release commit (`pnpm build && pnpm build:worker && pnpm exec tsx scripts/drill/phase1-drill.ts`), result recorded in docs/drills/phase1-drill.md: pause mid-drain and resume (each email once), a Sending hold against a manual compose, refused SMTP logins → failing mailbox + ntfy alert + held rows → recovery, the learning outbox drained, a stopped tick → `/api/ready` 503, and the same problems on `/health`, Today, `/api/attention` and the assistant. Until it passes, no workspace sends outreach: every workspace stays on its go-live hold (cold, follow-up and AI-reply mail), whatever P1-F03 decided about the legacy holds.
 - [ ] **P1-F07 (DS-08).** Upstream PR to suriyakis/market-navigator for the shared brand mark (the `Nav.tsx` patch the design lane prepared; lanes never open PRs).
 
 Engineering:
@@ -1178,6 +1178,15 @@ Engineering:
 - [ ] **P1-F10 (CI).** `bullmq-redis-pc36` runs only with `TEST_REDIS_URL`: give CI a Redis service and run it there; run the Phase 1 drill in CI too (it needs Docker for Redis and about 15 minutes for the boot grace).
 - [ ] **P1-F11 (MOB-06).** `/api/signatures/redesign` (AI, rate-limited by PC-38) and a crawl plan's Run now are not behind the expected-workspace guard: decide whether they count as spending and register them.
 - [ ] **P1-F12 (PC-05, PC-09).** Rows a failing mailbox held go out 15 minutes after it recovers (the gate's deferral, seen in the drill); a "send held mail now" control after a recovery would shorten that.
+
+### Remaining roadmap (audit 2026-10-01) — not started
+
+- [ ] **Phase 2 — Discovery inputs: real companies and honest verdicts.**
+- [ ] **Phase 3 — One Lead and decisions that teach.**
+- [ ] **Phase 4 — Contacts and safe sending.**
+- [ ] **Phase 5 — Inbound, follow-ups and go-live.** The go-live hold is released per workspace here, after P1-F06 and Phase 4.
+- [ ] **Phase 6 — Platform management and visibility surfaces** (parallel lane).
+- [ ] **Phase 7 — Design system, mobile control surface and Ask the platform v2** (parallel lane).
 
 ## Discovered along the way
 

@@ -191,7 +191,7 @@ The release that brings the workspace pause, holds, the accountable-owner rule a
 
    Exit 0 means every active workspace passes. Exit 1 lists the workspaces that would stop: reactivate the owner or transfer ownership in the super-admin console before deploying, or accept that they stop.
 2. **Deploy and migrate** as above. The migrations carry over the old Emergency pause switches (a workspace with either one on starts paused) and clear the dead autopilot toggles.
-3. **After the deploy: go-live.** Every workspace starts not live, existing ones included. Cold, follow-up and AI-reply mail is held `not_live` (manual mail still sends) until a super-admin releases the workspace on `/admin/workspaces/[id]` with a reason. Release the workspaces that should keep sending.
+3. **After the deploy: go-live.** Every workspace starts not live, existing ones included. Cold, follow-up and AI-reply mail is held `not_live` (manual mail still sends) until a super-admin releases the workspace on `/admin/workspaces/[id]` with a reason. Do not release any workspace at the Phase 1 deploy: the Phase 1 drill (docs/drills/phase1-drill.md) must pass on the release commit first, and until then every workspace stays on its go-live hold (TODO.md P1-F06).
 4. **After the deploy: legacy feature flags.** The old `feature_flags` were never enforced. Import the disabled ones as `pending_review` holds, which are not enforced until the platform owner confirms them on `/admin/workspaces/[id]` ("Legacy flags to review"):
 
    ```bash
