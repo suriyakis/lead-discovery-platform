@@ -42,7 +42,10 @@ async function runHealthCheckNowForm(_formData?: FormData): Promise<void> {
   }
 }
 
-export const runHealthCheckNowAction = withWorkspaceGuard('health.run_check', runHealthCheckNowForm);
+export const runHealthCheckNowAction = withWorkspaceGuard(
+  'health.run_check',
+  runHealthCheckNowForm,
+);
 
 /** The form posts `enabled` (a Switch: "on" or absent) and `intervalDays`. */
 async function saveHealthCheckSettingsForm(formData: FormData): Promise<void> {

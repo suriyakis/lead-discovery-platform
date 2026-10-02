@@ -732,10 +732,18 @@ describe('keeping the persistent frame fresh (ia:F-09, DS-07)', () => {
 
   it('idleRefreshAllowed: drift says no; the same workspace, no frame or a failed fetch says yes', async () => {
     const ok = (s: ReturnType<typeof summary> | null) => async () => s;
-    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(summary('8')) })).toBe(false);
-    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(summary('7')) })).toBe(true);
-    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(null) })).toBe(true);
-    expect(await freshness.idleRefreshAllowed({ frameWorkspaceId: null, fetchLatest: ok(summary('8')) })).toBe(true);
+    expect(
+      await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(summary('8')) }),
+    ).toBe(false);
+    expect(
+      await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(summary('7')) }),
+    ).toBe(true);
+    expect(
+      await freshness.idleRefreshAllowed({ frameWorkspaceId: '7', fetchLatest: ok(null) }),
+    ).toBe(true);
+    expect(
+      await freshness.idleRefreshAllowed({ frameWorkspaceId: null, fetchLatest: ok(summary('8')) }),
+    ).toBe(true);
     expect(
       await freshness.idleRefreshAllowed({
         frameWorkspaceId: '7',
