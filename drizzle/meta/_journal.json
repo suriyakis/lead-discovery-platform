@@ -505,6 +505,13 @@
       "when": 1790912117284,
       "tag": "0071_p1_knowledge_foundation_knowledge_scope_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1790916858579,
+      "tag": "0072_p1_knowledge_foundation_index_pipeline",
+      "breakpoints": true
     }
   ]
 }

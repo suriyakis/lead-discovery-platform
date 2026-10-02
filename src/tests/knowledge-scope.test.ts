@@ -60,6 +60,7 @@ import DocumentDetail from '@/app/documents/[id]/page';
 import KnowledgeSourceDetail from '@/app/knowledge/[id]/page';
 import NewKnowledgeSourcePage from '@/app/knowledge/new/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { runQueuedIndexJobs } from './helpers/knowledge';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 
 const session = vi.hoisted(() => ({
@@ -241,11 +242,13 @@ describe('acceptance 1 — re-indexing a product-A document from the document pa
     expect(html).toContain('Aerogel blanket'); // the source's scope chip
     expect((html.match(/<strong>succeeded<\/strong>/g) ?? []).length).toBe(2);
 
-    // Clicking it re-indexes in place, scope untouched.
+    // Clicking it re-indexes in place, scope untouched. KL-06: the click
+    // queues the run; the knowledge.index job does it.
     // Forms in order: edit, re-index, archive (admin).
     const [, reindex] = formActions(tree);
     const target = await expectRedirect(() => reindex!(new FormData()));
-    expect(decodeURIComponent(target)).toContain('Re-indexed');
+    expect(decodeURIComponent(target)).toContain('Re-indexing queued');
+    await runQueuedIndexJobs(s.a);
     expect(await sourceIdsFor(s.a, s.pB)).toEqual([]);
     expect(
       await db.select().from(documentChunks).where(eq(documentChunks.workspaceId, s.a.workspaceId)),
@@ -288,7 +291,10 @@ describe('acceptance 2 — an unscoped upload later attached to product A', () =
     const fd = new FormData();
     fd.append('file', new File([longText('acoustic')], 'acoustic.txt', { type: 'text/plain' }));
     const target = await expectRedirect(() => uploadAction!(fd));
-    expect(decodeURIComponent(target)).toContain('available to every product and indexed');
+    expect(decodeURIComponent(target)).toContain(
+      'available to every product. Indexing in the background',
+    );
+    await runQueuedIndexJobs(s.a); // KL-06: the knowledge.index job
     const docId = BigInt(/\/documents\/(\d+)/.exec(target)![1]!);
 
     const [src] = await listDocumentSources(s.a, docId);
@@ -330,7 +336,10 @@ describe('acceptance 2 — an unscoped upload later attached to product A', () =
     fd.append('file', new File([longText('sealant')], 'sealant.txt', { type: 'text/plain' }));
     fd.append('productProfileIds', s.pB.toString());
     const target = await expectRedirect(() => uploadAction!(fd));
-    expect(decodeURIComponent(target)).toContain('attached to 1 product and indexed');
+    expect(decodeURIComponent(target)).toContain(
+      'attached to 1 product. Indexing in the background',
+    );
+    await runQueuedIndexJobs(s.a); // KL-06: the knowledge.index job
     const docId = BigInt(/\/documents\/(\d+)/.exec(target)![1]!);
     const rows = await listDocumentSources(s.a, docId);
     expect(rows).toHaveLength(1);

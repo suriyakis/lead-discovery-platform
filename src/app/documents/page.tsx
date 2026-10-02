@@ -18,7 +18,7 @@ import {
 } from '@/lib/services/knowledge-sources';
 import { listProductProfiles } from '@/lib/services/product-profile';
 import { isNextRedirectError } from '@/lib/server-redirect';
-import type { Document } from '@/lib/db/schema/documents';
+import type { DocumentMeta } from '@/lib/db/schema/documents';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
 export default async function DocumentsPage({
@@ -32,7 +32,7 @@ export default async function DocumentsPage({
   const sp = await searchParams;
   const includeArchived = sp.archived === '1';
 
-  let docs: Document[] = [];
+  let docs: DocumentMeta[] = [];
   let products: ProductProfile[] = [];
   try {
     const ctx = await getWorkspaceContext();
@@ -57,11 +57,12 @@ export default async function DocumentsPage({
   //   2. create the document's ONE knowledge source with an explicit
   //      scope (KL-05): the ticked products, or — no product ticked —
   //      every product (scope_kind 'workspace')
-  //   3. index that source when the type is indexable
+  //   3. KL-06: that create queues the source's one indexing run when the
+  //      type is indexable; the knowledge.index job extracts (OCR once per
+  //      file), embeds once and attaches per product. This request returns
+  //      before any of it (I108) and the document page polls the status.
   // There are no document-level chunks any more: they were workspace-wide
   // even after the document was scoped to a product (I039).
-  // Indexing failures never lose the upload — the doc lands in the
-  // library and the redirect carries the warning.
   async function upload(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
@@ -96,11 +97,6 @@ export default async function DocumentsPage({
       );
     }
 
-    const { indexKnowledgeSource, isIndexableDocument } = await import('@/lib/services/rag');
-    const indexable = isIndexableDocument({
-      mimeType: result.document.mimeType,
-      filename: result.document.filename,
-    });
     const scope = knowledgeScopeFromTicks(productIds);
     const where =
       scope.kind === 'products'
@@ -129,23 +125,10 @@ export default async function DocumentsPage({
       );
     }
 
-    let outcome: string;
-    try {
-      if (indexable) {
-        const idx = await indexKnowledgeSource(c, ks.id);
-        outcome = `Uploaded, ${where} and indexed (${idx.chunkCount} chunks).`;
-      } else {
-        outcome = `Uploaded and ${where}. Not auto-indexed — the file type has no extractable text; use "Index now" on the document page to force an attempt.`;
-      }
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof Error ? err.message : 'indexing failed';
-      redirect(
-        `/documents/${result.document.id}?error=${encodeURIComponent(
-          `Uploaded, but indexing failed: ${m.slice(0, 300)}`,
-        )}`,
-      );
-    }
+    const outcome =
+      ks.indexStatus === 'failed'
+        ? `Uploaded and ${where}. Not indexed automatically: the file type has no extractable text; use "Index now" below to force an attempt.`
+        : `Uploaded and ${where}. Indexing in the background; this page updates on its own.`;
     redirect(
       `/documents/${result.document.id}?message=${encodeURIComponent(outcome)}`,
     );
@@ -169,8 +152,9 @@ export default async function DocumentsPage({
           <h2>Upload</h2>
           <p className="muted small">
             Text, PDF and DOCX files are chunked and indexed for retrieval
-            automatically on upload — no extra steps. Identical re-uploads
-            are detected and skipped.
+            automatically after upload, in the background — no extra steps.
+            Scanned PDFs are read with OCR once, when an OCR key is
+            configured. Identical re-uploads are detected and skipped.
           </p>
           <form action={upload} className="upload-form" encType="multipart/form-data">
             <label>

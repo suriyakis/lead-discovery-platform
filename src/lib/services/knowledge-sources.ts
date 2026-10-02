@@ -10,6 +10,14 @@
 // none "Needs a scope". A document is wrapped by at most one source: a
 // second source for the same document would either duplicate its passages
 // or keep it workspace-wide after the operator scoped it (I039).
+//
+// KL-06: indexing is a job. Creating a source, and editing its content,
+// URL, summary or products, write a queued knowledge.index run (and the
+// source's index_status: 'queued', or 'stale' after an edit) in the same
+// transaction, then enqueue it; nothing is extracted or embedded inside
+// the request (knowledge-index-queue.ts, knowledge-indexing.ts). Deleting
+// needs the source's title typed as confirmation and detaches it from the
+// vector-storage provider that holds it first.
 
 import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -18,12 +26,18 @@ import {
   knowledgeSourceProducts,
   knowledgeSources,
   type Document,
+  type DocumentMeta,
   type KnowledgeSource,
   type KnowledgeSourceKind,
   type NewKnowledgeSource,
 } from '@/lib/db/schema/documents';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
+import type { IndexingJob } from '@/lib/db/schema/rag';
 import { recordAuditEvent } from './audit';
+import { isIndexableDocument } from './document-extraction';
+import { documentMetaColumns } from './documents';
+import { enqueueKnowledgeIndexJobs, queueKnowledgeIndexTx } from './knowledge-index-queue';
+import { resolveNotifications } from './notifications';
 import {
   canAdminWorkspace,
   canWrite,
@@ -48,7 +62,8 @@ export type KnowledgeSourceErrorCode =
   | 'product_not_found'
   | 'scope_required'
   | 'needs_scope'
-  | 'document_has_source';
+  | 'document_has_source'
+  | 'confirmation_required';
 
 export class KnowledgeSourceServiceError extends Error {
   public readonly code: KnowledgeSourceErrorCode;
@@ -98,8 +113,13 @@ export function knowledgeSourceErrorMessage(err: unknown): string | null {
   if (err.code === 'document_has_source') {
     return `${err.message} Change its products on that knowledge source instead of adding it again.`;
   }
-  if (err.code === 'invalid_input') return err.message;
+  if (err.code === 'invalid_input' || err.code === 'confirmation_required') return err.message;
   return KNOWLEDGE_SOURCE_ERROR_MESSAGES[err.code] ?? null;
+}
+
+/** A 'products' source with no product left cannot be indexed or used. */
+export function needsScopeError(): KnowledgeSourceServiceError {
+  return new KnowledgeSourceServiceError(KNOWLEDGE_SOURCE_ERROR_MESSAGES.needs_scope!, 'needs_scope');
 }
 
 // ---- scope -----------------------------------------------------------------
@@ -257,16 +277,36 @@ export async function createKnowledgeSource(
   };
 
   let created: KnowledgeSource;
+  let job: IndexingJob | null = null;
   try {
-    created = await db.transaction(async (tx) => {
+    ({ created, job } = await db.transaction(async (tx) => {
+      // KL-06: auto-indexing is queued for every source except a document
+      // whose type has no text to extract (an image, a spreadsheet):
+      // that one is marked failed with the reason and "Index now" tries
+      // anyway.
+      let notIndexable: string | null = null;
       if (input.kind === 'document' && documentId) {
-        await lockDocumentWithoutSource(tx, ctx.workspaceId, documentId);
+        const doc = await lockDocumentWithoutSource(tx, ctx.workspaceId, documentId);
+        if (!isIndexableDocument(doc)) {
+          notIndexable = `Not indexed automatically: ${doc.filename} (${doc.mimeType}) has no text to extract. Use Index now to try anyway.`;
+        }
       }
-      const [inserted] = await tx.insert(knowledgeSources).values(row).returning();
+      const [inserted] = await tx
+        .insert(knowledgeSources)
+        .values(
+          notIndexable === null
+            ? { ...row, indexStatus: 'queued' }
+            : { ...row, indexStatus: 'failed', lastIndexError: notIndexable },
+        )
+        .returning();
       if (!inserted) throw invariant('knowledge_source insert returned no row');
       await writeScopeRows(tx, ctx.workspaceId, inserted.id, scope);
-      return inserted;
-    });
+      const queued =
+        notIndexable === null
+          ? await queueKnowledgeIndexTx(tx, ctx, inserted.id, { reason: 'create' })
+          : null;
+      return { created: inserted, job: queued };
+    }));
   } catch (err) {
     throw mapScopeError(err);
   }
@@ -280,24 +320,16 @@ export async function createKnowledgeSource(
       documentId: documentId?.toString() ?? null,
       scopeKind: scope.kind,
       productProfileIds: scope.productProfileIds.map((id) => id.toString()),
+      indexJobId: job?.id.toString() ?? null,
     },
   });
 
-  // Phase 50: auto-attach to the workspace's active Vector Storage
-  // provider as soon as the row exists. Best-effort — failure does NOT
-  // undo the create (the operator can re-trigger from /knowledge/[id]).
-  // A workspace-wide source has no per-product store to push into: the
-  // callers index it (rag.indexKnowledgeSource) and retrieval reads its
-  // chunks for every product.
-  if (scope.kind === 'products') {
-    try {
-      await attachKnowledgeSourceViaProvider(ctx, created.id);
-    } catch (err) {
-      console.error('[knowledge-sources] auto-attach failed:', err);
-    }
-  }
+  // The queued run is durable; the job only makes it start now. No
+  // extraction, OCR or embedding happens inside this request (I108), and
+  // the run indexes the source ONCE however many products it has (I040).
+  if (job) await enqueueKnowledgeIndexJobs(ctx, [job.id]);
 
-  // Re-read so the caller sees external_status from the auto-attach.
+  // Re-read so the caller sees the queued status.
   const [refreshed] = await db
     .select()
     .from(knowledgeSources)
@@ -312,9 +344,9 @@ async function lockDocumentWithoutSource(
   tx: Tx,
   workspaceId: bigint,
   documentId: bigint,
-): Promise<void> {
+): Promise<Pick<Document, 'id' | 'filename' | 'mimeType'>> {
   const [doc] = await tx
-    .select({ id: documents.id })
+    .select({ id: documents.id, filename: documents.filename, mimeType: documents.mimeType })
     .from(documents)
     .where(and(eq(documents.workspaceId, workspaceId), eq(documents.id, documentId)))
     .for('update')
@@ -338,29 +370,23 @@ async function lockDocumentWithoutSource(
       existing.id,
     );
   }
+  return doc;
 }
 
 // ---- attach (Phase 50) ---------------------------------------------
 
 /**
- * Push the source through the workspace's active Vector Storage
- * provider — one attach per product the source is scoped to.
- * Idempotent: re-running detaches first when the source is already
- * indexed, so callers can use this as both "first attach" and
- * "re-index".
+ * Index the source NOW, in this process, through the knowledge.index job
+ * (knowledge-indexing.ts): its text is extracted (cached) and embedded
+ * ONCE, then attached per product through the workspace's active Vector
+ * Storage provider — bookkeeping only on pgvector (indexesPerSource).
+ * Pages queue the run instead (requestKnowledgeIndex); this inline form
+ * is for scripts and tests that need the result at once.
  *
  * KL-05: a workspace-wide source is tied to no product store, so it is
  * indexed locally (its chunks are what retrieval reads for every product)
  * instead of being refused (I104); a 'products' source with no product
  * left is refused as 'needs_scope'.
- *
- * Writes the aggregate state back to the row:
- *   - external_provider_id = the provider id that performed the attach
- *   - external_file_id     = the first provider-returned file id
- *   - external_status      = 'indexed' on any success, 'failed' on
- *                            total failure
- *   - external_indexed_at  = now() on success
- *   - external_error       = joined error messages on failure
  */
 export async function attachKnowledgeSourceViaProvider(
   ctx: WorkspaceContext,
@@ -368,164 +394,32 @@ export async function attachKnowledgeSourceViaProvider(
 ): Promise<KnowledgeSource> {
   if (!canWrite(ctx)) throw permissionDenied('knowledge_source.attach');
   const source = await loadKs(ctx, knowledgeSourceId);
-  if (source.scopeKind === 'workspace') {
-    return indexWorkspaceSourceLocally(ctx, source);
+  if (source.scopeKind === 'products') {
+    const productIds =
+      (await loadSourceProductIds(ctx.workspaceId, [source.id])).get(source.id.toString()) ?? [];
+    if (productIds.length === 0) throw needsScopeError();
   }
-  const productIds =
-    (await loadSourceProductIds(ctx.workspaceId, [source.id])).get(source.id.toString()) ?? [];
-  if (productIds.length === 0) {
-    throw new KnowledgeSourceServiceError(
-      KNOWLEDGE_SOURCE_ERROR_MESSAGES.needs_scope!,
-      'needs_scope',
-    );
-  }
-
-  const { getVectorStorageProviderForCtx } = await import('@/lib/vector-storage');
-  const provider = await getVectorStorageProviderForCtx(ctx);
-
-  // Detach prior attachment when re-indexing under the same provider.
-  if (
-    source.externalProviderId === provider.id &&
-    source.externalStatus === 'indexed'
-  ) {
-    try {
-      await provider.detachKnowledgeSource(ctx, source.id);
-    } catch (err) {
-      console.error('[knowledge-sources] pre-attach detach failed:', err);
-    }
-  }
-
-  // Materialize input shape — bytes for documents, plain text for the
-  // other two kinds. The provider may or may not need the bytes; we
-  // load them once and share across product attaches.
-  let fileBytes: Buffer | undefined;
-  let filename: string | undefined;
-  let mimeType: string | undefined;
-  let text: string | undefined;
-  let url: string | undefined;
-  if (source.kind === 'document' && source.documentId) {
-    const [doc] = await db
-      .select()
-      .from(documents)
-      .where(
-        and(eq(documents.workspaceId, ctx.workspaceId), eq(documents.id, source.documentId)),
-      )
-      .limit(1);
-    if (doc) {
-      const { getStorage } = await import('@/lib/storage');
-      const storage = getStorage();
-      const stream = await storage.get(doc.storageKey);
-      const chunks: Buffer[] = [];
-      for await (const chunk of stream as AsyncIterable<Buffer | string>) {
-        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-      }
-      fileBytes = Buffer.concat(chunks);
-      filename = doc.filename;
-      mimeType = doc.mimeType;
-    }
-  } else if (source.kind === 'text') {
-    text = source.textExcerpt ?? '';
-  } else if (source.kind === 'url') {
-    url = source.url ?? '';
-  }
-
-  const errors: string[] = [];
-  let firstFileId: string | null = null;
-  for (const productId of productIds) {
-    try {
-      const r = await provider.attachKnowledgeSource(ctx, productId, {
-        knowledgeSource: source,
-        fileBytes,
-        filename,
-        mimeType,
-        text,
-        url,
-      });
-      if (firstFileId === null) firstFileId = r.externalFileId;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`product ${productId}: ${msg}`);
-    }
-  }
-
-  const allFailed = errors.length === productIds.length;
-  const updated = await writeExternalStatus(ctx, source.id, {
-    providerId: provider.id,
-    fileId: firstFileId,
-    failed: allFailed,
-    error: errors.length > 0 ? errors.join('; ') : null,
-  });
-
-  await recordAuditEvent(ctx, {
-    kind: 'knowledge_source.attach',
-    entityType: 'knowledge_source',
-    entityId: source.id,
-    payload: {
-      providerId: provider.id,
-      status: updated.externalStatus,
-      errorCount: errors.length,
-      productCount: productIds.length,
-    },
-  });
-
-  if (allFailed) {
-    throw new KnowledgeSourceServiceError(
-      `attach failed for all ${productIds.length} product(s): ${errors.join('; ')}`,
-      'attach_failed',
-    );
-  }
-  return updated;
-}
-
-async function indexWorkspaceSourceLocally(
-  ctx: WorkspaceContext,
-  source: KnowledgeSource,
-): Promise<KnowledgeSource> {
-  // indexKnowledgeSource records the outcome on the row (external_status
-  // 'indexed' / 'failed', provider 'pgvector') for a workspace-wide source.
-  const { indexKnowledgeSource } = await import('./rag');
+  const { indexKnowledgeSourceNow } = await import('./knowledge-indexing');
   let error: string | null = null;
   try {
-    await indexKnowledgeSource(ctx, source.id);
+    await indexKnowledgeSourceNow(ctx, source.id);
   } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
+    error = knowledgeSourceErrorMessage(err) ?? (err instanceof Error ? err.message : String(err));
   }
   const updated = await loadKs(ctx, source.id);
   await recordAuditEvent(ctx, {
     kind: 'knowledge_source.attach',
     entityType: 'knowledge_source',
     entityId: source.id,
-    payload: { providerId: 'pgvector', status: updated.externalStatus, scopeKind: 'workspace' },
+    payload: {
+      providerId: updated.externalProviderId,
+      status: updated.indexStatus,
+      scopeKind: source.scopeKind,
+    },
   });
   if (error !== null) {
     throw new KnowledgeSourceServiceError(`indexing failed: ${error}`, 'attach_failed');
   }
-  return updated;
-}
-
-async function writeExternalStatus(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  sourceId: bigint,
-  input: { providerId: string; fileId: string | null; failed: boolean; error: string | null },
-): Promise<KnowledgeSource> {
-  const [updated] = await db
-    .update(knowledgeSources)
-    .set({
-      externalProviderId: input.providerId,
-      externalFileId: input.fileId,
-      externalStatus: input.failed ? 'failed' : 'indexed',
-      externalError: input.error,
-      externalIndexedAt: input.failed ? null : new Date(),
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(knowledgeSources.workspaceId, ctx.workspaceId),
-        eq(knowledgeSources.id, sourceId),
-      ),
-    )
-    .returning();
-  if (!updated) throw invariant('knowledge_source update lost row');
   return updated;
 }
 
@@ -544,7 +438,8 @@ export interface ListKnowledgeSourcesFilter {
 
 export interface KnowledgeSourceRow {
   source: KnowledgeSource;
-  document: Document | null;
+  /** Without its extraction cache (KL-06). */
+  document: DocumentMeta | null;
   scope: KnowledgeSourceScope;
 }
 
@@ -564,7 +459,7 @@ export async function listKnowledgeSources(
   }
   const limit = Math.min(filter.limit ?? 200, 1000);
   const rows = await db
-    .select({ source: knowledgeSources, document: documents })
+    .select({ source: knowledgeSources, document: documentMetaColumns })
     .from(knowledgeSources)
     .leftJoin(
       documents,
@@ -601,7 +496,7 @@ export async function getKnowledgeSource(
   id: bigint,
 ): Promise<KnowledgeSourceRow & { products: ProductProfile[] }> {
   const rows = await db
-    .select({ source: knowledgeSources, document: documents })
+    .select({ source: knowledgeSources, document: documentMetaColumns })
     .from(knowledgeSources)
     .leftJoin(
       documents,
@@ -651,9 +546,20 @@ export interface UpdateKnowledgeSourceInput {
     | 'objection_handling'
     | 'general';
   tags?: ReadonlyArray<string>;
-  /** KL-05: replaces the scope. Chunks are untouched — scope lives on the
-   *  source, so re-scoping needs no re-index. */
+  /** KL-05: replaces the scope. Retrieval reads scope from the source, so
+   *  re-scoping takes effect at once; KL-06 still queues a run so the
+   *  per-product attachments follow (no re-embed: the text is unchanged). */
   scope?: KnowledgeScopeInput;
+}
+
+/** What an edit changed that the index depends on (KL-06, I103). */
+export type IndexAffectingChange = 'content' | 'url' | 'summary' | 'title' | 'products';
+
+function sameIds(a: readonly bigint[], b: readonly bigint[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = a.map(String).sort();
+  const sb = b.map(String).sort();
+  return sa.every((v, i) => v === sb[i]);
 }
 
 export async function updateKnowledgeSource(
@@ -696,9 +602,34 @@ export async function updateKnowledgeSource(
   const scope = input.scope !== undefined ? normalizeScope(input.scope) : null;
   if (scope) updates.scopeKind = scope.kind;
 
+  // KL-06 (I103): an edit the index depends on marks the source stale and
+  // queues a run in the same transaction. The text a run embeds is the
+  // excerpt (text), or title + summary + URL (url); a summary or product
+  // change is queued too, so attachments and the stamp follow — the run
+  // re-embeds nothing when the text it hashes did not change.
+  const changes: IndexAffectingChange[] = [];
+  if (updates.textExcerpt !== undefined && updates.textExcerpt !== existing.textExcerpt) {
+    changes.push('content');
+  }
+  if (updates.url !== undefined && updates.url !== existing.url) changes.push('url');
+  if (updates.summary !== undefined && (updates.summary ?? null) !== (existing.summary ?? null)) {
+    changes.push('summary');
+  }
+  if (existing.kind === 'url' && updates.title !== undefined && updates.title !== existing.title) {
+    changes.push('title');
+  }
+  if (scope) {
+    const current =
+      (await loadSourceProductIds(ctx.workspaceId, [id])).get(id.toString()) ?? [];
+    if (scope.kind !== existing.scopeKind || !sameIds(scope.productProfileIds, current)) {
+      changes.push('products');
+    }
+  }
+
   let updated: KnowledgeSource;
+  let job: IndexingJob | null = null;
   try {
-    updated = await db.transaction(async (tx) => {
+    ({ updated, job } = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(knowledgeSources)
         .set(updates)
@@ -711,8 +642,10 @@ export async function updateKnowledgeSource(
         .returning();
       if (!row) throw invariant('knowledge_source update returned no row');
       if (scope) await writeScopeRows(tx, ctx.workspaceId, id, scope);
-      return row;
-    });
+      if (changes.length === 0) return { updated: row, job: null };
+      const queued = await queueKnowledgeIndexTx(tx, ctx, id, { reason: 'edit', markStale: true });
+      return { updated: { ...row, indexStatus: 'stale' as const }, job: queued };
+    }));
   } catch (err) {
     throw mapScopeError(err);
   }
@@ -721,23 +654,66 @@ export async function updateKnowledgeSource(
     kind: 'knowledge_source.update',
     entityType: 'knowledge_source',
     entityId: id,
-    payload: scope
-      ? {
-          scopeKind: scope.kind,
-          productProfileIds: scope.productProfileIds.map((p) => p.toString()),
-        }
-      : {},
+    payload: {
+      ...(scope
+        ? {
+            scopeKind: scope.kind,
+            productProfileIds: scope.productProfileIds.map((p) => p.toString()),
+          }
+        : {}),
+      ...(job ? { stale: true, changed: changes, indexJobId: job.id.toString() } : {}),
+    },
   });
+  if (job) await enqueueKnowledgeIndexJobs(ctx, [job.id]);
 
   return updated;
 }
 
+export interface DeleteKnowledgeSourceOptions {
+  /** The source's title, typed by the operator. Deleting is permanent, so
+   *  it never happens without it (KL-06, I103). */
+  confirm: string;
+}
+
+/**
+ * Admin only, and only with the source's title typed as confirmation.
+ * Detaches the source from the vector-storage provider that holds it
+ * (its external_provider_id; the active one otherwise) before the row
+ * goes: on pgvector that drops the chunks and brings the product counters
+ * down; on OpenAI it deletes the uploaded files. A detach failure is
+ * recorded in the audit event and does not block the delete.
+ */
 export async function deleteKnowledgeSource(
   ctx: WorkspaceContext,
   id: bigint,
+  options: DeleteKnowledgeSourceOptions,
 ): Promise<void> {
   if (!canAdminWorkspace(ctx)) throw permissionDenied('knowledge_source.delete');
-  await loadKs(ctx, id);
+  const existing = await loadKs(ctx, id);
+  if ((options?.confirm ?? '').trim() !== existing.title.trim()) {
+    throw new KnowledgeSourceServiceError(
+      `Type the source title “${existing.title}” to confirm the permanent delete.`,
+      'confirmation_required',
+    );
+  }
+
+  const {
+    getVectorStorageProviderByIdForCtx,
+    getVectorStorageProviderForCtx,
+    recomputePgvectorProductUsage,
+  } = await import('@/lib/vector-storage');
+  let detach: string;
+  try {
+    const provider = existing.externalProviderId
+      ? await getVectorStorageProviderByIdForCtx(ctx, existing.externalProviderId)
+      : await getVectorStorageProviderForCtx(ctx);
+    await provider.detachKnowledgeSource(ctx, id);
+    detach = provider.id;
+  } catch (err) {
+    detach = `failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500);
+    console.error('[knowledge-sources] detach before delete failed:', err);
+  }
+
   await db
     .delete(knowledgeSources)
     .where(
@@ -746,10 +722,20 @@ export async function deleteKnowledgeSource(
         eq(knowledgeSources.id, id),
       ),
     );
+  try {
+    // Its chunks are gone (detach, or the FK cascade): derive the pgvector
+    // product counters again so they go down.
+    await recomputePgvectorProductUsage(ctx);
+  } catch (err) {
+    console.error('[knowledge-sources] usage recompute after delete failed:', err);
+  }
+  const { knowledgeIndexFailedKey } = await import('./knowledge-indexing');
+  await resolveNotifications(ctx.workspaceId, knowledgeIndexFailedKey(id));
   await recordAuditEvent(ctx, {
     kind: 'knowledge_source.delete',
     entityType: 'knowledge_source',
     entityId: id,
+    payload: { title: existing.title, kind: existing.kind, detach },
   });
 }
 

@@ -19,6 +19,11 @@
 //                                          backoff retries, events waiting
 //                                          for tokens, missed compensations)
 //                                          — runLearningSweep.
+//   knowledge.index.sweep  every 2 min  → KL-06: the indexing outbox's
+//                                          sweeper (runs older than 15 min
+//                                          → failed + notified, due retries
+//                                          and lost jobs re-enqueued) —
+//                                          runKnowledgeIndexSweep.
 //
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
@@ -43,6 +48,11 @@ import {
   LEARNING_SWEEP_TICK_MS,
   runLearningSweep,
 } from '@/lib/services/learning-processor';
+import {
+  KNOWLEDGE_INDEX_SWEEP_JOB,
+  KNOWLEDGE_INDEX_SWEEP_TICK_MS,
+  runKnowledgeIndexSweep,
+} from '@/lib/services/knowledge-indexing';
 import { processDueHealthChecks } from '@/lib/services/health-check';
 import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
 import { getJobQueue, type JobHandler } from './index';
@@ -368,6 +378,9 @@ const handleHealthCheckTick: JobHandler = async () => {
 /** KL-03: per-workspace errors are caught inside runLearningSweep. */
 const handleLearningSweepTick: JobHandler = () => runLearningSweep();
 
+/** KL-06: per-workspace errors are caught inside runKnowledgeIndexSweep. */
+const handleKnowledgeIndexSweepTick: JobHandler = () => runKnowledgeIndexSweep();
+
 let registered = false;
 
 /**
@@ -389,6 +402,7 @@ export async function registerRepeatableJobs(
   q.on('crawl.engine.tick', handleCrawlEngineTick);
   q.on('health.check.tick', handleHealthCheckTick);
   q.on(LEARNING_SWEEP_JOB, handleLearningSweepTick);
+  q.on(KNOWLEDGE_INDEX_SWEEP_JOB, handleKnowledgeIndexSweepTick);
   if (!options.skipSchedule) {
     await q.enqueueRepeatable('autopilot.tick', {}, {
       everyMs: AUTOPILOT_TICK_MS,
@@ -425,6 +439,10 @@ export async function registerRepeatableJobs(
     await q.enqueueRepeatable(LEARNING_SWEEP_JOB, {}, {
       everyMs: LEARNING_SWEEP_TICK_MS,
       jobId: 'learning-sweep',
+    });
+    await q.enqueueRepeatable(KNOWLEDGE_INDEX_SWEEP_JOB, {}, {
+      everyMs: KNOWLEDGE_INDEX_SWEEP_TICK_MS,
+      jobId: 'knowledge-index-sweep',
     });
   }
   registered = true;

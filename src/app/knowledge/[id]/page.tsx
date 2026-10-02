@@ -11,17 +11,20 @@ import { canAdminWorkspace } from '@/lib/services/context';
 import { listProductProfiles } from '@/lib/services/product-profile';
 import {
   KnowledgeSourceServiceError,
-  attachKnowledgeSourceViaProvider,
   deleteKnowledgeSource,
   getKnowledgeSource,
   knowledgeSourceErrorMessage,
   updateKnowledgeSource,
 } from '@/lib/services/knowledge-sources';
 import { NO_PRODUCT_TICKED_COPY, knowledgeScopeFromTicks } from '@/lib/services/knowledge-scope';
+import { KnowledgeIndexError, requestKnowledgeIndex } from '@/lib/services/knowledge-indexing';
 import { listIndexingJobs } from '@/lib/services/rag';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { AutoRefresh } from '@/components/AutoRefresh';
 import { ScopeChip } from '../scope-chip';
+import { IndexStatusBadge, indexStatusExplanation, indexStatusMoving } from '../index-status';
+import { IndexRunList } from '../index-run-list';
 
 export default async function KnowledgeSourceDetail({
   params,
@@ -67,6 +70,9 @@ export default async function KnowledgeSourceDetail({
   ).filter((p) => p.active || attachedSet.has(p.id.toString()));
   const productNames = new Map(allProducts.map((p) => [p.id.toString(), p.name]));
   const indexJobs = await listIndexingJobs(ctx, { knowledgeSourceId: source.id, limit: 5 });
+  // KL-06: a queued or running run means the status is about to change.
+  const runActive = indexJobs.some((j) => j.status === 'queued' || j.status === 'running');
+  const moving = indexStatusMoving(source.indexStatus, runActive);
 
   async function saveEdits(formData: FormData) {
     'use server';
@@ -112,38 +118,60 @@ export default async function KnowledgeSourceDetail({
     if (source.kind === 'url' && url) patch.url = url;
     if (source.kind === 'text') patch.textExcerpt = textExcerpt;
 
+    let stale = false;
     try {
-      await updateKnowledgeSource(c, id, patch);
+      // KL-06: a change to the text, URL, summary or products marks the
+      // source stale and queues a re-index; the old chunks serve until it
+      // finishes.
+      stale = (await updateKnowledgeSource(c, id, patch)).indexStatus === 'stale';
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = knowledgeSourceErrorMessage(err);
       if (m === null) throw err;
       redirect(`/knowledge/${id}?error=${encodeURIComponent(m)}`);
     }
-    redirect(`/knowledge/${id}`);
+    redirect(
+      stale
+        ? `/knowledge/${id}?message=${encodeURIComponent(
+            'Saved. The change is being re-indexed; drafts use the previous version until it finishes.',
+          )}`
+        : `/knowledge/${id}`,
+    );
   }
 
-  async function destroy() {
+  // KL-06 (I103): never without the title typed; the service refuses too.
+  async function destroy(formData: FormData) {
     'use server';
     const c = await getWorkspaceContext();
-    await deleteKnowledgeSource(c, id);
-    redirect('/knowledge');
+    try {
+      await deleteKnowledgeSource(c, id, { confirm: String(formData.get('confirm') ?? '') });
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = knowledgeSourceErrorMessage(err);
+      if (m === null) throw err;
+      redirect(`/knowledge/${id}?error=${encodeURIComponent(m)}`);
+    }
+    redirect(`/knowledge?message=${encodeURIComponent('Knowledge source deleted.')}`);
   }
 
+  // KL-06 (I108): queue the run and return at once; the knowledge.index
+  // job does the work and this page polls until it settles.
   async function reindex() {
     'use server';
     const c = await getWorkspaceContext();
     try {
-      const updated = await attachKnowledgeSourceViaProvider(c, id);
-      redirect(
-        `/knowledge/${id}?message=Indexed+via+${updated.externalProviderId ?? 'provider'}`,
-      );
+      await requestKnowledgeIndex(c, id, { reason: 'reindex' });
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m =
-        knowledgeSourceErrorMessage(err) ?? (err instanceof Error ? err.message : 'index failed');
+        err instanceof KnowledgeIndexError
+          ? err.message
+          : knowledgeSourceErrorMessage(err) ?? (err instanceof Error ? err.message : 'index failed');
       redirect(`/knowledge/${id}?error=${encodeURIComponent(m)}`);
     }
+    redirect(
+      `/knowledge/${id}?message=${encodeURIComponent('Indexing queued. This page updates on its own.')}`,
+    );
   }
 
   return (
@@ -243,39 +271,33 @@ export default async function KnowledgeSourceDetail({
           </p>
           <dl>
             <dt>Status</dt>
-            <dd>
-              {source.externalStatus === 'indexed' ? (
-                <>
-                  <span className="badge badge-good">indexed</span>
-                  <span className="muted">
-                    {' '}
-                    via <code>{source.externalProviderId ?? 'unknown'}</code>
-                    {source.externalIndexedAt
-                      ? ` · ${source.externalIndexedAt.toLocaleString()}`
-                      : ''}
-                  </span>
-                </>
-              ) : source.externalStatus === 'failed' ? (
-                <>
-                  <span className="badge badge-bad">failed</span>
-                  {source.externalError ? (
-                    <span className="muted"> · {source.externalError.slice(0, 200)}</span>
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <span className="badge">pending</span>
-                  <span className="muted">
-                    {' '}
-                    — click <strong>Index now</strong> to push to the active
-                    provider.
-                    {scope.kind === 'workspace'
-                      ? ' Sources available to every product are indexed locally.'
-                      : ''}
-                  </span>
-                </>
-              )}
+            <dd data-testid="index-status">
+              <IndexStatusBadge status={source.indexStatus} />{' '}
+              <span className="muted">{indexStatusExplanation(source, runActive)}</span>
             </dd>
+            {source.indexedAt ? (
+              <>
+                <dt>Last indexed</dt>
+                <dd>
+                  {source.indexedAt.toLocaleString()}
+                  {source.indexedEmbeddingModel ? (
+                    <span className="muted"> · {source.indexedEmbeddingModel}</span>
+                  ) : null}
+                  {source.externalProviderId ? (
+                    <span className="muted">
+                      {' '}
+                      · via <code>{source.externalProviderId}</code>
+                    </span>
+                  ) : null}
+                </dd>
+              </>
+            ) : null}
+            {source.externalError ? (
+              <>
+                <dt>Attach warnings</dt>
+                <dd className="muted">{source.externalError.slice(0, 300)}</dd>
+              </>
+            ) : null}
             {source.externalFileId ? (
               <>
                 <dt>External file id</dt>
@@ -287,22 +309,11 @@ export default async function KnowledgeSourceDetail({
           </dl>
           <form action={reindex}>
             <button type="submit">
-              {source.externalStatus === 'indexed' ? 'Re-index' : 'Index now'}
+              {source.indexedAt || source.indexStatus === 'indexed' ? 'Re-index' : 'Index now'}
             </button>
           </form>
-          {indexJobs.length > 0 ? (
-            <ul className="timeline" style={{ marginTop: '0.75rem' }}>
-              {indexJobs.map((j) => (
-                <li key={j.id.toString()}>
-                  <span className="muted">{j.createdAt.toLocaleString()}</span>{' '}
-                  <strong>{j.status}</strong>
-                  {j.chunkCount > 0 ? ` · ${j.chunkCount} chunks` : ''}
-                  {j.embeddingModel ? ` · ${j.embeddingModel}` : ''}
-                  {j.error ? ` · ${j.error.slice(0, 200)}` : ''}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <IndexRunList jobs={indexJobs} />
+          {moving ? <AutoRefresh reason="knowledge-index" /> : null}
         </section>
 
         <section>
@@ -376,9 +387,25 @@ export default async function KnowledgeSourceDetail({
         {canAdminWorkspace(ctx) ? (
           <section>
             <h2>Admin</h2>
-            <form action={destroy}>
+            <p className="muted">
+              Deleting removes this source, its indexed passages and its copies in
+              the vector store. Drafts stop using it at once. It cannot be undone.
+            </p>
+            <form action={destroy} className="inline-form" data-testid="delete-source">
+              <label>
+                <span>
+                  Confirm by typing the title: <code>{source.title}</code>
+                </span>
+                <input
+                  type="text"
+                  name="confirm"
+                  placeholder={source.title}
+                  autoComplete="off"
+                  required
+                />
+              </label>
               <button type="submit" className="ghost-btn">
-                Delete (cannot be undone)
+                Delete permanently
               </button>
             </form>
           </section>

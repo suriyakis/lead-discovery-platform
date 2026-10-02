@@ -61,6 +61,28 @@ export const documents = pgTable(
       .notNull()
       .default(sql`'{}'::text[]`),
 
+    /**
+     * KL-06 extraction cache (I040). The text the indexer extracted from
+     * these bytes, written once, right after extraction and before any
+     * embedding, so a retry, a re-index or a second source never pays for
+     * parsing or OCR again. Valid only while extracted_sha256 equals
+     * sha256; a document with the same sha256 in the workspace (e.g. a
+     * re-upload of an archived file) reuses it. Only the explicit admin
+     * action "Re-extract with OCR" replaces it.
+     */
+    extractedText: text('extracted_text'),
+    /** How the cache was produced: 'text' | 'html' | 'pdf' | 'docx' |
+     *  'ocr:<provider>/<model>'. */
+    extractor: text('extractor'),
+    extractedAt: timestamp('extracted_at', { mode: 'date', withTimezone: true }),
+    /** sha256 of the bytes extracted_text came from. */
+    extractedSha256: text('extracted_sha256'),
+    /** ISO 639-1 guess from the extracted text (lib/i18n/language); NULL
+     *  when too short or unclear. */
+    detectedLanguage: text('detected_language'),
+    /** PDF pages (pdf-parse or OCR). Drives the OCR cost estimate. */
+    pageCount: integer('page_count'),
+
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
     }),
@@ -86,6 +108,10 @@ export const documents = pgTable(
 
 export type Document = typeof documents.$inferSelect;
 export type NewDocument = typeof documents.$inferInsert;
+/** KL-06: a document without its cached extracted text (which can be
+ *  megabytes) — what lists and joins read (services/documents.ts
+ *  documentMetaColumns). */
+export type DocumentMeta = Omit<Document, 'extractedText'>;
 export type DocumentStatus = (typeof documentStatus.enumValues)[number];
 
 /**
@@ -127,6 +153,26 @@ export const knowledgePurposeCategory = pgEnum('knowledge_purpose_category', [
  *  'products' = exactly the knowledge_source_products rows. */
 export const knowledgeScopeKind = pgEnum('knowledge_scope_kind', ['workspace', 'products']);
 export type KnowledgeScopeKind = (typeof knowledgeScopeKind.enumValues)[number];
+
+/**
+ * KL-06: where a source's index stands (the honest status, I104/I108).
+ *   queued   — an indexing_jobs row waits for the knowledge.index job
+ *   indexing — a run holds it
+ *   indexed  — its chunks reflect indexed_content_hash (current content)
+ *   stale    — its content, URL, summary or products changed since the
+ *              last run (or it was never indexed); chunks from an earlier
+ *              run still serve until the next run finishes
+ *   failed   — the last run gave up (last_index_error says why); chunks
+ *              from an earlier run, if any, still serve
+ */
+export const knowledgeIndexStatus = pgEnum('knowledge_index_status', [
+  'queued',
+  'indexing',
+  'indexed',
+  'stale',
+  'failed',
+]);
+export type KnowledgeIndexStatus = (typeof knowledgeIndexStatus.enumValues)[number];
 
 export const knowledgeSources = pgTable(
   'knowledge_sources',
@@ -175,6 +221,20 @@ export const knowledgeSources = pgTable(
       withTimezone: true,
     }),
 
+    /** KL-06: THE index status (see knowledgeIndexStatus). Writers that
+     *  queue a run set 'queued'; the default covers rows written without
+     *  one (seeds, imports): not indexed yet. */
+    indexStatus: knowledgeIndexStatus('index_status').notNull().default('stale'),
+    /** When the last successful run finished. */
+    indexedAt: timestamp('indexed_at', { mode: 'date', withTimezone: true }),
+    /** sha256 of the exact text the current chunks were embedded from,
+     *  stamped in the chunk-swap transaction. Same hash + same model = no
+     *  re-embed. */
+    indexedContentHash: text('indexed_content_hash'),
+    indexedEmbeddingModel: text('indexed_embedding_model'),
+    /** Why the last run failed (kept while a retry is queued). */
+    lastIndexError: text('last_index_error'),
+
     createdBy: text('created_by').references(() => users.id, {
       onDelete: 'set null',
     }),
@@ -199,6 +259,10 @@ export const knowledgeSources = pgTable(
       table.id,
     ),
     documentIdx: index('knowledge_sources_document_idx').on(table.documentId),
+    workspaceIndexStatusIdx: index('knowledge_sources_ws_index_status_idx').on(
+      table.workspaceId,
+      table.indexStatus,
+    ),
   }),
 );
 

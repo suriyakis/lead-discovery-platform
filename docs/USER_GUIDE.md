@@ -147,14 +147,20 @@ MinIO, R2 all need path style). For native AWS, leave it false.
 
 ### Knowledge curation
 
-1. Upload sources into `/documents` (text, PDF and DOCX index on upload).
-   Tick the products the file is about; **no product ticked = available to
-   every product**. The upload creates the document's knowledge source with
-   that scope and indexes it.
+1. Upload sources into `/documents` (text, PDF and DOCX are indexed in
+   the background right after the upload; the page shows the status and
+   updates on its own). Tick the products the file is about; **no product
+   ticked = available to every product**. The upload creates the
+   document's knowledge source with that scope and indexes it once.
+   Scanned PDFs are OCR'd once (with a Mistral key); owners and admins can
+   force a fresh read with **Re-extract with OCR**, which shows the cost.
 2. Or paste a URL or text excerpt at `/knowledge/new`, with the same rule
    for products.
 3. To change who may use a source later, edit its products on
-   `/knowledge/<id>` — no re-index needed. A source whose products were all
+   `/knowledge/<id>` — retrieval follows at once. Editing a source's text,
+   URL, summary or products marks it **stale** and re-indexes it
+   automatically; a failed run is retried, then you get one notification.
+   Deleting a source needs its title typed to confirm. A source whose products were all
    deleted shows **Needs a scope** and is used nowhere until you re-scope
    it. Archiving a document stops its use at once; restoring brings it
    back.

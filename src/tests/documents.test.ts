@@ -502,9 +502,13 @@ describe('knowledge_sources', () => {
       url: 'https://x.com',
     });
     await expect(
-      deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA, 'member'), ks.id),
+      deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA, 'member'), ks.id, { confirm: 'X' }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
-    await deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id);
+    // KL-06: never without the title typed as confirmation.
+    await expect(
+      deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id, { confirm: '' }),
+    ).rejects.toMatchObject({ code: 'confirmation_required' });
+    await deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id, { confirm: 'X' });
     await expect(
       getKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id),
     ).rejects.toMatchObject({ code: 'not_found' });

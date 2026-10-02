@@ -27,6 +27,7 @@ import { listKnowledgeSources } from '@/lib/services/knowledge-sources';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { ProductFields, readArrayField, readNullableString } from '../_form';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { IndexStatusBadge } from '@/app/knowledge/index-status';
 
 export default async function EditProductPage({
   params,
@@ -418,25 +419,17 @@ async function KnowledgeSection({
       </div>
       {sources.length > 0 ? (
         <ul className="profile-list" style={{ marginTop: '0.75rem' }}>
-          {sources.map(({ source }) => {
-            const status = source.externalStatus;
-            const statusBadgeClass =
-              status === 'indexed'
-                ? 'badge badge-good'
-                : status === 'failed'
-                  ? 'badge badge-bad'
-                  : 'badge';
-            return (
-              <li key={source.id.toString()}>
-                <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
-                <span className="meta">
-                  <span className="badge">{source.kind}</span>{' '}
-                  <span className={statusBadgeClass}>{status}</span>{' '}
-                  <span className="muted small">{source.purposeCategory}</span>
-                </span>
-              </li>
-            );
-          })}
+          {sources.map(({ source }) => (
+            <li key={source.id.toString()}>
+              <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
+              <span className="meta">
+                <span className="badge">{source.kind}</span>{' '}
+                {/* KL-06: the index status, not the provider attach state. */}
+                <IndexStatusBadge status={source.indexStatus} />{' '}
+                <span className="muted small">{source.purposeCategory}</span>
+              </span>
+            </li>
+          ))}
         </ul>
       ) : null}
     </section>

@@ -259,19 +259,28 @@ every send) on [/mailbox/suppression].
 
 ## Knowledge base (/documents, /knowledge)
 Upload product docs (text, PDF, DOCX) on [/documents] — they are chunked
-and indexed for retrieval AUTOMATICALLY on upload; the reply assistant
-and pitch composer ground their answers in these. Ticking products on
-the upload form scopes the knowledge to those products (a knowledge
-source is created and indexed for you); uploads without products are
-available workspace-wide. Byte-identical re-uploads are detected and
-skipped; when a file changes, upload the new version. Knowledge sources
-created on [/knowledge/new] are also indexed automatically, but editing
-a knowledge source's text later does not re-index it: click Re-index on
-its page after an edit.
+and indexed for retrieval AUTOMATICALLY, in the background right after
+the upload; the reply assistant and pitch composer ground their answers
+in these. Ticking products on the upload form scopes the knowledge to
+those products (a knowledge source is created and indexed for you, once
+however many products you tick); uploads without products are available
+workspace-wide. Byte-identical re-uploads are detected and skipped; when
+a file changes, upload the new version. Knowledge sources created on
+[/knowledge/new] are indexed the same way. Every source shows its index
+status — queued, indexing, indexed, stale (changed since it was indexed)
+or failed — and its page updates on its own while it is queued or
+indexing. Editing a source's text, URL, summary or products marks it
+stale and re-indexes it automatically; drafts use the previous version
+until that finishes. A failed run is retried a few times, then the
+workspace gets one notification for that source. {H-35}
 Scanned / image-based PDFs (no text layer) are OCR'd automatically via
 Mistral when a Mistral API key is configured (platform-wide by the
-admin, or the workspace's own under BYOK) — without a key they fail
-with a clear message instead of indexing empty.
+admin, or the workspace's own under BYOK) — once per file: the text is
+kept, so re-indexing never pays for OCR again. Without a key they fail
+with a clear message instead of indexing empty. On a PDF's page, owners
+and admins can force a fresh read with "Re-extract with OCR", which
+shows the estimated cost first. Deleting a knowledge source needs its
+title typed to confirm.
 Download on a document's page (opened from [/documents]) sends the
 original file through the app to any member of the workspace, viewers
 included; an archived document sends you back to its page with a

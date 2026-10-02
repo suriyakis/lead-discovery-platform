@@ -16,7 +16,7 @@ import {
 } from '@/lib/services/knowledge-sources';
 import { NO_PRODUCT_TICKED_COPY, knowledgeScopeFromTicks } from '@/lib/services/knowledge-scope';
 import type { ProductProfile } from '@/lib/db/schema/products';
-import type { Document, KnowledgeSourceKind } from '@/lib/db/schema/documents';
+import type { DocumentMeta, KnowledgeSourceKind } from '@/lib/db/schema/documents';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function NewKnowledgeSourcePage({
@@ -36,7 +36,7 @@ export default async function NewKnowledgeSourcePage({
     sp.product && /^\d+$/.test(sp.product) ? sp.product : '';
 
   let products: ProductProfile[] = [];
-  let docs: Document[] = [];
+  let docs: DocumentMeta[] = [];
   try {
     const ctx = await getWorkspaceContext();
     products = await listProductProfiles(ctx, { includeArchived: false });
@@ -109,23 +109,17 @@ export default async function NewKnowledgeSourcePage({
         // KL-05: stated explicitly; no product ticked = every product.
         scope: knowledgeScopeFromTicks(productIds),
       });
-      // Auto-index so the source is retrievable immediately — creating
-      // and then having to find the separate "Index" button was how
-      // sources ended up invisible to RAG. Best-effort: an indexing
-      // failure never loses the created source.
-      try {
-        const { indexKnowledgeSource } = await import('@/lib/services/rag');
-        await indexKnowledgeSource(c, created.id);
-      } catch (indexErr) {
-        if (isNextRedirectError(indexErr)) throw indexErr;
-        const m = indexErr instanceof Error ? indexErr.message : 'indexing failed';
-        redirect(
-          `/knowledge/${created.id}?error=${encodeURIComponent(
-            `Created, but indexing failed: ${m.slice(0, 300)}`,
-          )}`,
-        );
-      }
-      redirect(`/knowledge/${created.id}`);
+      // KL-06: createKnowledgeSource queued the source's one indexing run
+      // (I040: once, not once per product) and the knowledge.index job
+      // does it; the source page shows the status and polls until it
+      // settles. Nothing is indexed inside this request (I108).
+      redirect(
+        `/knowledge/${created.id}?message=${encodeURIComponent(
+          created.indexStatus === 'failed'
+            ? 'Created, but not indexed automatically: see the status below.'
+            : 'Created. Indexing in the background; this page updates on its own.',
+        )}`,
+      );
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       if (err instanceof KnowledgeSourceServiceError) {

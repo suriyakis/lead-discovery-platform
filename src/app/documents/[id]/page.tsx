@@ -16,10 +16,22 @@ import {
   updateDocument,
 } from '@/lib/services/documents';
 import { listDocumentSources } from '@/lib/services/knowledge-sources';
+import { isPdfDocument } from '@/lib/services/document-extraction';
+import {
+  KnowledgeIndexError,
+  describeOcrCost,
+  estimateDocumentOcr,
+  requestDocumentIndex,
+  requestDocumentOcrReextract,
+} from '@/lib/services/knowledge-indexing';
 import { listProductProfiles } from '@/lib/services/product-profile';
-import { indexDocument, listIndexingJobs } from '@/lib/services/rag';
+import { listIndexingJobs } from '@/lib/services/rag';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { AutoRefresh } from '@/components/AutoRefresh';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { ScopeChip } from '@/app/knowledge/scope-chip';
+import { IndexStatusBadge, indexStatusMoving } from '@/app/knowledge/index-status';
+import { IndexRunList } from '@/app/knowledge/index-run-list';
 
 export default async function DocumentDetail({
   params,
@@ -73,6 +85,20 @@ export default async function DocumentDetail({
   ]);
   const productNames = new Map(products.map((p) => [p.id.toString(), p.name]));
   const hasSource = referencingKs.length > 0;
+  // KL-06: poll while one of its sources is queued or indexing.
+  const runActive = indexJobs.some((j) => j.status === 'queued' || j.status === 'running');
+  const moving = referencingKs.some(({ source }) =>
+    indexStatusMoving(source.indexStatus, runActive),
+  );
+  const everIndexed = referencingKs.some(
+    ({ source }) => source.indexedAt !== null || source.indexStatus === 'indexed',
+  );
+  // Re-extract with OCR: an admin action on a PDF already in the
+  // knowledge base, shown with what it costs.
+  const ocrEstimate =
+    isAdmin && !isArchived && hasSource && isPdfDocument(document)
+      ? await estimateDocumentOcr(ctx, document)
+      : null;
 
   async function saveEdits(formData: FormData) {
     'use server';
@@ -104,22 +130,48 @@ export default async function DocumentDetail({
     redirect(`/documents/${id}`);
   }
 
+  // KL-06 (I108): queue a run per source and return at once; the
+  // knowledge.index job does the work and this page polls the status.
   async function reindex() {
     'use server';
     const c = await getWorkspaceContext();
+    let created = false;
     try {
-      const result = await indexDocument(c, id);
-      const what = result.createdSourceId
-        ? 'Added to the knowledge base for every product and indexed'
-        : 'Re-indexed';
-      redirect(
-        `/documents/${id}?message=${encodeURIComponent(`${what} (${result.chunkCount} chunks).`)}`,
-      );
+      created = (await requestDocumentIndex(c, id)).createdSourceId !== null;
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'index failed';
       redirect(`/documents/${id}?error=${encodeURIComponent(m)}`);
     }
+    const what = created
+      ? 'Added to the knowledge base for every product; indexing queued.'
+      : 'Re-indexing queued.';
+    redirect(
+      `/documents/${id}?message=${encodeURIComponent(`${what} This page updates on its own.`)}`,
+    );
+  }
+
+  // KL-06: admin only, explicit, with the cost on the button's confirm.
+  async function reextractOcr() {
+    'use server';
+    const c = await getWorkspaceContext();
+    try {
+      await requestDocumentOcrReextract(c, id);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        err instanceof KnowledgeIndexError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 're-extract failed';
+      redirect(`/documents/${id}?error=${encodeURIComponent(m)}`);
+    }
+    redirect(
+      `/documents/${id}?message=${encodeURIComponent(
+        'OCR re-extraction queued. The document is read again and re-indexed; this page updates on its own.',
+      )}`,
+    );
   }
 
   return (
@@ -161,6 +213,20 @@ export default async function DocumentDetail({
             ) : null}
             <dt>Uploaded</dt>
             <dd>{document.createdAt.toLocaleString()}</dd>
+            {document.extractedAt ? (
+              <>
+                <dt>Text extracted</dt>
+                <dd data-testid="extraction">
+                  <code>{document.extractor ?? 'text'}</code>
+                  <span className="muted">
+                    {' '}
+                    · {document.extractedAt.toLocaleString()}
+                    {document.pageCount ? ` · ${document.pageCount} pages` : ''}
+                    {document.detectedLanguage ? ` · language ${document.detectedLanguage}` : ''}
+                  </span>
+                </dd>
+              </>
+            ) : null}
             {document.tags.length > 0 ? (
               <>
                 <dt>Tags</dt>
@@ -245,26 +311,31 @@ export default async function DocumentDetail({
             )}
             <form action={reindex}>
               <button type="submit">
-                {!hasSource
-                  ? 'Index for every product'
-                  : indexJobs.some((j) => j.status === 'succeeded')
-                    ? 'Re-index'
-                    : 'Index now'}
+                {!hasSource ? 'Index for every product' : everIndexed ? 'Re-index' : 'Index now'}
               </button>
             </form>
-            {indexJobs.length > 0 ? (
-              <ul className="timeline" style={{ marginTop: '0.75rem' }}>
-                {indexJobs.map((j) => (
-                  <li key={j.id.toString()}>
-                    <span className="muted">{j.createdAt.toLocaleString()}</span>{' '}
-                    <strong>{j.status}</strong>
-                    {j.chunkCount > 0 ? ` · ${j.chunkCount} chunks` : ''}
-                    {j.embeddingModel ? ` · ${j.embeddingModel}` : ''}
-                    {j.error ? ` · ${j.error.slice(0, 200)}` : ''}
-                  </li>
-                ))}
-              </ul>
+            {ocrEstimate ? (
+              ocrEstimate.available ? (
+                <form action={reextractOcr} data-testid="reextract-ocr">
+                  <p className="muted small">
+                    Re-extract with OCR reads the PDF again with Mistral OCR — for a
+                    scan, or a PDF whose text layer is garbled. {describeOcrCost(ocrEstimate)}
+                  </p>
+                  <ConfirmFormButton
+                    className="ghost-btn"
+                    message={`Re-extract ${document.filename} with OCR? ${describeOcrCost(ocrEstimate)} The document is then re-indexed.`}
+                  >
+                    Re-extract with OCR
+                  </ConfirmFormButton>
+                </form>
+              ) : (
+                <p className="muted small" data-testid="reextract-ocr-unavailable">
+                  Re-extract with OCR is not available: {ocrEstimate.reason}
+                </p>
+              )
             ) : null}
+            <IndexRunList jobs={indexJobs} />
+            {moving ? <AutoRefresh reason="knowledge-index" /> : null}
           </section>
         ) : null}
 
@@ -280,7 +351,8 @@ export default async function DocumentDetail({
               {referencingKs.map(({ source, scope }) => (
                 <li key={source.id.toString()}>
                   <Link href={`/knowledge/${source.id}`}>{source.title}</Link>{' '}
-                  <ScopeChip scope={scope} productNames={productNames} />
+                  <ScopeChip scope={scope} productNames={productNames} />{' '}
+                  <IndexStatusBadge status={source.indexStatus} />
                   {source.summary ? <p className="muted">{source.summary}</p> : null}
                 </li>
               ))}

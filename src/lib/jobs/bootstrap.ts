@@ -20,6 +20,11 @@ import {
   LearningProcessPayloadSchema,
 } from '@/lib/services/learning-decisions';
 import { processDecision } from '@/lib/services/learning-processor';
+import {
+  KNOWLEDGE_INDEX_JOB,
+  KnowledgeIndexPayloadSchema,
+} from '@/lib/services/knowledge-index-queue';
+import { runKnowledgeIndexJob, summarizeIndexOutcome } from '@/lib/services/knowledge-indexing';
 
 export interface ConnectorRunJobPayload {
   runId: string;
@@ -72,6 +77,24 @@ const handleLearningProcess: JobHandler = async (payload) => {
   return processDecision(ctx, p.decisionId);
 };
 
+/**
+ * KL-06: one knowledge.index run (knowledge-indexing.ts). The payload is
+ * untrusted queue data — validated before use; the run's row already sits
+ * in indexing_jobs as 'queued', so a malformed or lost job only delays it
+ * until knowledge.index.sweep re-enqueues it. Failures are recorded on the
+ * row (backoff retry, then 'failed' + a notification), never thrown to the
+ * queue; the return value is JSON-safe for BullMQ.
+ */
+const handleKnowledgeIndex: JobHandler = async (payload) => {
+  const p = KnowledgeIndexPayloadSchema.parse(payload);
+  const ctx = makeWorkspaceContext({
+    workspaceId: BigInt(p.workspaceId),
+    userId: p.userId,
+    role: p.role,
+  });
+  return summarizeIndexOutcome(await runKnowledgeIndexJob(ctx, BigInt(p.jobId)));
+};
+
 let registered = false;
 
 export function registerJobHandlers(): void {
@@ -79,6 +102,7 @@ export function registerJobHandlers(): void {
   const q = getJobQueue();
   q.on<ConnectorRunJobPayload>('connector.run', handleConnectorRun);
   q.on(LEARNING_PROCESS_JOB, handleLearningProcess);
+  q.on(KNOWLEDGE_INDEX_JOB, handleKnowledgeIndex);
   registered = true;
 }
 
