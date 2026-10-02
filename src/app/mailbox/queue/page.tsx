@@ -8,23 +8,24 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { canAdminWorkspace } from '@/lib/services/context';
+import { canAdminWorkspace, canWrite } from '@/lib/services/context';
+import { getSendSettings, listQueueEntries } from '@/lib/services/outreach-queue';
 import {
-  cancelQueueEntry,
-  drainQueue,
-  getSendSettings,
-  listQueueEntries,
-  rescheduleQueueEntry,
-  updateSendSettings,
-} from '@/lib/services/outreach-queue';
-import type {
-  OutreachQueueEntry,
-  OutreachQueueStatus,
-  OutreachSendSettings,
-  SendDelayMode,
-} from '@/lib/db/schema/outreach';
+  cancelQueuedEmailAction,
+  drainSendQueueAction,
+  rescheduleQueuedEmailAction,
+  saveSendSettingsAction,
+} from './actions';
+import {
+  SEND_SETTINGS_LIMITS,
+  describeSendSettings,
+  formatUtc,
+  parseQueueView,
+  toUtcInputValue,
+  type QueueView,
+} from './forms';
 
-const STATUS_TABS: ReadonlyArray<{ key: OutreachQueueStatus | 'all'; label: string }> = [
+const STATUS_TABS: ReadonlyArray<{ key: QueueView; label: string }> = [
   { key: 'queued', label: 'Queued' },
   { key: 'sending', label: 'Sending' },
   { key: 'sent', label: 'Sent' },
@@ -42,73 +43,27 @@ export default async function QueuePage({
   const session = await auth();
   if (!session?.user?.id) redirect('/');
   const sp = await searchParams;
-  const requested = sp.status ?? 'queued';
-  const isValid = STATUS_TABS.some((t) => t.key === requested);
-  const statusKey = isValid ? (requested as OutreachQueueStatus | 'all') : 'queued';
+  const statusKey = parseQueueView(sp.status);
 
-  let entries: OutreachQueueEntry[] = [];
-  let settings: OutreachSendSettings | null = null;
+  let ctx;
   try {
-    const ctx = await getWorkspaceContext();
-    settings = await getSendSettings(ctx);
-    entries = await listQueueEntries(ctx, {
-      status: statusKey === 'all' ? undefined : (statusKey as OutreachQueueStatus),
-      limit: 200,
-    });
+    ctx = await getWorkspaceContext();
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
     if (err instanceof NoWorkspaceError) redirect('/');
     throw err;
   }
-
-  async function drain() {
-    'use server';
-    const c = await getWorkspaceContext();
-    const r = await drainQueue(c);
-    redirect(
-      `/mailbox/queue?message=${encodeURIComponent(
-        `Drained — picked ${r.picked}, sent ${r.sent}, skipped ${r.skipped}, failed ${r.failed}`,
-      )}`,
-    );
-  }
-
-  async function cancel(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const id = BigInt(String(formData.get('id') ?? '0'));
-    await cancelQueueEntry(c, id);
-    redirect('/mailbox/queue?message=Cancelled');
-  }
-
-  async function reschedule(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const id = BigInt(String(formData.get('id') ?? '0'));
-    const when = String(formData.get('scheduledSendAt') ?? '');
-    if (!when) return;
-    await rescheduleQueueEntry(c, id, new Date(when));
-    redirect('/mailbox/queue?message=Rescheduled');
-  }
-
-  async function saveSettings(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const num = (k: string) => {
-      const v = String(formData.get(k) ?? '');
-      return /^\d+$/.test(v) ? Number(v) : undefined;
-    };
-    await updateSendSettings(c, {
-      dailyEmailLimit: num('dailyEmailLimit'),
-      domainCooldownHours: num('domainCooldownHours'),
-      defaultDelayMode: String(formData.get('defaultDelayMode') ?? 'random') as SendDelayMode,
-      fixedDelayMinutes: num('fixedDelayMinutes'),
-      randomDelayMinMinutes: num('randomDelayMinMinutes'),
-      randomDelayMaxMinutes: num('randomDelayMaxMinutes'),
-      emergencyPause: formData.get('emergencyPause') === 'on',
-    });
-    redirect('/mailbox/queue?message=Settings+saved');
-  }
+  const settings = await getSendSettings(ctx);
+  const entries = await listQueueEntries(ctx, {
+    status: statusKey === 'all' ? undefined : statusKey,
+    limit: 200,
+  });
+  // The real role decides what is editable: admins change the settings
+  // (updateSendSettings enforces the same rule), writers act on entries,
+  // viewers only read.
+  const isAdmin = canAdminWorkspace(ctx);
+  const canAct = canWrite(ctx);
 
   return (
     <AppShell>
@@ -120,105 +75,120 @@ export default async function QueuePage({
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      {settings ? (
+      <section>
+        <h2>Send settings</h2>
+        {settings.emergencyPause ? (
+          <p className="form-error">
+            Emergency pause is on. Queued emails are held while sending is paused.
+          </p>
+        ) : null}
+        {isAdmin ? (
+          <form action={saveSendSettingsAction} className="edit-draft-form">
+            <input type="hidden" name="status" value={statusKey} />
+            <fieldset className="ks-kind-fields">
+              <legend className="muted">Limits</legend>
+              <label>
+                <span>Daily email limit</span>
+                <input
+                  type="number"
+                  name="dailyEmailLimit"
+                  defaultValue={settings.dailyEmailLimit}
+                  min={0}
+                  max={SEND_SETTINGS_LIMITS.dailyEmailLimit}
+                  required
+                />
+              </label>
+              <label>
+                <span>Domain cooldown hours</span>
+                <input
+                  type="number"
+                  name="domainCooldownHours"
+                  defaultValue={settings.domainCooldownHours}
+                  min={0}
+                  max={SEND_SETTINGS_LIMITS.domainCooldownHours}
+                  required
+                />
+              </label>
+            </fieldset>
+            <fieldset className="ks-kind-fields">
+              <legend className="muted">Delay mode</legend>
+              <label>
+                <span>Default mode</span>
+                <select name="defaultDelayMode" defaultValue={settings.defaultDelayMode}>
+                  <option value="immediate">immediate</option>
+                  <option value="fixed">fixed</option>
+                  <option value="random">random</option>
+                </select>
+              </label>
+              <label>
+                <span>Fixed delay (minutes)</span>
+                <input
+                  type="number"
+                  name="fixedDelayMinutes"
+                  defaultValue={settings.fixedDelayMinutes}
+                  min={0}
+                  max={SEND_SETTINGS_LIMITS.delayMinutes}
+                  required
+                />
+              </label>
+              <label>
+                <span>Random min (minutes)</span>
+                <input
+                  type="number"
+                  name="randomDelayMinMinutes"
+                  defaultValue={settings.randomDelayMinMinutes}
+                  min={0}
+                  max={SEND_SETTINGS_LIMITS.delayMinutes}
+                  required
+                />
+              </label>
+              <label>
+                <span>Random max (minutes)</span>
+                <input
+                  type="number"
+                  name="randomDelayMaxMinutes"
+                  defaultValue={settings.randomDelayMaxMinutes}
+                  min={0}
+                  max={SEND_SETTINGS_LIMITS.delayMinutes}
+                  required
+                />
+              </label>
+            </fieldset>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                name="emergencyPause"
+                defaultChecked={settings.emergencyPause}
+              />
+              <span>Emergency pause (kill switch)</span>
+            </label>
+            <div className="action-row">
+              <button type="submit" className="primary-btn">
+                Save settings
+              </button>
+            </div>
+          </form>
+        ) : (
+          <p className="muted">
+            {describeSendSettings(settings)} Only workspace admins can change these
+            settings.
+          </p>
+        )}
+      </section>
+
+      {canAct ? (
         <section>
-          <h2>Send settings</h2>
-          {settings.emergencyPause ? (
-            <p className="form-error">
-              Emergency pause is ON — drainQueue is a no-op until lifted.
-            </p>
-          ) : null}
-          {canAdminWorkspace({ workspaceId: settings.workspaceId, userId: session.user.id, role: 'admin' as never })
-            ? (
-              <form action={saveSettings} className="edit-draft-form">
-                <fieldset className="ks-kind-fields">
-                  <legend className="muted">Limits</legend>
-                  <label>
-                    <span>Daily email limit</span>
-                    <input
-                      type="number"
-                      name="dailyEmailLimit"
-                      defaultValue={settings.dailyEmailLimit}
-                      min={0}
-                    />
-                  </label>
-                  <label>
-                    <span>Domain cooldown hours</span>
-                    <input
-                      type="number"
-                      name="domainCooldownHours"
-                      defaultValue={settings.domainCooldownHours}
-                      min={0}
-                    />
-                  </label>
-                </fieldset>
-                <fieldset className="ks-kind-fields">
-                  <legend className="muted">Delay mode</legend>
-                  <label>
-                    <span>Default mode</span>
-                    <select name="defaultDelayMode" defaultValue={settings.defaultDelayMode}>
-                      <option value="immediate">immediate</option>
-                      <option value="fixed">fixed</option>
-                      <option value="random">random</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Fixed delay (minutes)</span>
-                    <input
-                      type="number"
-                      name="fixedDelayMinutes"
-                      defaultValue={settings.fixedDelayMinutes}
-                      min={0}
-                    />
-                  </label>
-                  <label>
-                    <span>Random min (minutes)</span>
-                    <input
-                      type="number"
-                      name="randomDelayMinMinutes"
-                      defaultValue={settings.randomDelayMinMinutes}
-                      min={0}
-                    />
-                  </label>
-                  <label>
-                    <span>Random max (minutes)</span>
-                    <input
-                      type="number"
-                      name="randomDelayMaxMinutes"
-                      defaultValue={settings.randomDelayMaxMinutes}
-                      min={0}
-                    />
-                  </label>
-                </fieldset>
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    name="emergencyPause"
-                    defaultChecked={settings.emergencyPause}
-                  />
-                  <span>Emergency pause (kill switch)</span>
-                </label>
-                <div className="action-row">
-                  <button type="submit" className="primary-btn">
-                    Save settings
-                  </button>
-                </div>
-              </form>
-            )
-            : null}
+          <h2>Send now</h2>
+          <p className="muted">
+            Due emails are sent automatically in the background. Use this to send
+            the ones that are already due right away.
+          </p>
+          <form action={drainSendQueueAction}>
+            <input type="hidden" name="status" value={statusKey} />
+            <button type="submit">Send due emails now</button>
+          </form>
         </section>
       ) : null}
-
-      <section>
-        <h2>Drain</h2>
-        <p className="muted">
-          Manually drain the queue right now. A scheduled worker would run
-          this on a recurring tick in production.
-        </p>
-        <form action={drain}>
-          <button type="submit">Drain now</button>
-        </form>
-      </section>
 
       <section>
         <div className="state-tabs">
@@ -233,6 +203,7 @@ export default async function QueuePage({
           ))}
         </div>
         <h2>{statusKey === 'all' ? 'All entries' : `${statusKey} entries`} ({entries.length})</h2>
+        <p className="muted small">All times are in UTC.</p>
         {entries.length === 0 ? (
           <p className="muted">Nothing in this view.</p>
         ) : (
@@ -245,7 +216,7 @@ export default async function QueuePage({
                   <span className="muted">{e.toAddresses.join(', ')}</span>
                 </div>
                 <div className="lead-meta">
-                  <span>scheduled {e.scheduledSendAt.toLocaleString()}</span>
+                  <span>scheduled {formatUtc(e.scheduledSendAt)}</span>
                   <span>delay: {e.delayMode}</span>
                   <span>attempts: {e.attemptCount}</span>
                 </div>
@@ -266,22 +237,24 @@ export default async function QueuePage({
                     )}
                   </p>
                 ) : null}
-                {e.status === 'queued' ? (
+                {canAct && e.status === 'queued' ? (
                   <div className="action-row" style={{ marginTop: '0.5rem' }}>
-                    <form action={cancel}>
+                    <form action={cancelQueuedEmailAction}>
+                      <input type="hidden" name="status" value={statusKey} />
                       <input type="hidden" name="id" value={e.id.toString()} />
                       <button type="submit" className="ghost-btn">
                         Cancel
                       </button>
                     </form>
-                    <form action={reschedule} className="inline-form">
+                    <form action={rescheduleQueuedEmailAction} className="inline-form">
+                      <input type="hidden" name="status" value={statusKey} />
                       <input type="hidden" name="id" value={e.id.toString()} />
                       <label>
-                        <span>Reschedule</span>
+                        <span>Reschedule (UTC)</span>
                         <input
                           type="datetime-local"
                           name="scheduledSendAt"
-                          defaultValue={toLocalInput(e.scheduledSendAt)}
+                          defaultValue={toUtcInputValue(e.scheduledSendAt)}
                           required
                         />
                       </label>
@@ -296,9 +269,4 @@ export default async function QueuePage({
       </section>
     </AppShell>
   );
-}
-
-function toLocalInput(d: Date): string {
-  const tzOffset = d.getTimezoneOffset() * 60_000;
-  return new Date(d.getTime() - tzOffset).toISOString().slice(0, 16);
 }

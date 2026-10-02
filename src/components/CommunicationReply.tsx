@@ -198,13 +198,8 @@ export function CommunicationReply({
     >
       <h3 style={{ margin: 0, fontSize: '0.95rem' }}>Reply</h3>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '0.5rem',
-        }}
-      >
+      {/* To + Signature side by side; one column on a phone (DS-03). */}
+      <div className="reply-fields">
         <label style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
           <span style={{ fontSize: '0.78rem' }} className="muted">
             To

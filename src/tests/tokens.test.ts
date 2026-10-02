@@ -28,6 +28,7 @@ import {
 } from '@/lib/services/token-ledger';
 import { recordUsage } from '@/lib/services/usage';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -147,14 +148,10 @@ describe('token ledger', () => {
   it('adjustTokens is super-admin only', async () => {
     const s = await setup();
     await expect(
-      adjustTokens(ctx(s.workspaceA, s.ownerA, 'admin'), s.workspaceA, 100, 'promo'),
+      adjustTokens(smuggled(ctx(s.workspaceA, s.ownerA, 'admin')), s.workspaceA, 100, 'promo'),
     ).rejects.toMatchObject({ code: 'permission_denied' });
 
-    const superCtx = makeWorkspaceContext({
-      workspaceId: s.workspaceA,
-      userId: s.ownerA,
-      role: 'super_admin',
-    });
+    const superCtx = platformCtx(s.ownerA);
     await adjustTokens(superCtx, s.workspaceA, -100, 'correction');
     const wallet = await getTokenWallet(ctx(s.workspaceA, s.ownerA));
     expect(wallet.balance).toBe(400n);
@@ -273,14 +270,10 @@ describe('admin billing management', () => {
     });
 
     await expect(
-      platformWorkspaceStats(ctx(s.workspaceA, s.ownerA, 'admin')),
+      platformWorkspaceStats(smuggled(ctx(s.workspaceA, s.ownerA, 'admin'))),
     ).rejects.toMatchObject({ code: 'permission_denied' });
 
-    const superCtx = makeWorkspaceContext({
-      workspaceId: s.workspaceA,
-      userId: s.ownerA,
-      role: 'super_admin',
-    });
+    const superCtx = platformCtx(s.ownerA);
     const stats = await platformWorkspaceStats(superCtx);
     const a = stats.find((r) => r.workspaceId === s.workspaceA)!;
     expect(a.tokensPurchased).toBe(1000n);
@@ -298,14 +291,10 @@ describe('admin billing management', () => {
     const { setBillingExempt } = await import('@/lib/services/admin');
 
     await expect(
-      setBillingExempt(ctx(s.workspaceA, s.ownerA, 'owner'), s.workspaceA, true),
+      setBillingExempt(smuggled(ctx(s.workspaceA, s.ownerA, 'owner')), s.workspaceA, true),
     ).rejects.toMatchObject({ code: 'permission_denied' });
 
-    const superCtx = makeWorkspaceContext({
-      workspaceId: s.workspaceA,
-      userId: s.ownerA,
-      role: 'super_admin',
-    });
+    const superCtx = platformCtx(s.ownerA);
     const updated = await setBillingExempt(superCtx, s.workspaceB, true);
     expect(updated.billingExempt).toBe(true);
     expect(await hasTokens(ctx(s.workspaceB, s.ownerB))).toBe(true);

@@ -54,8 +54,9 @@ export default async function ComposeMessagePage({
 
   const sigs = await listSignatures(ctx, { mailboxId: id });
   const def = await defaultSignature(ctx, id);
-  const initialBody =
-    sp.body ?? (def ? `\n\n${def.bodyText}` : '');
+  // flow:F-05 (I090): the body starts empty — the chosen signature is
+  // appended once, on send. Pre-filling it here sent it twice.
+  const initialBody = sp.body ?? '';
   const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
 
   return (
@@ -71,17 +72,18 @@ export default async function ComposeMessagePage({
           {mailbox.fromName ? <> · {mailbox.fromName}</> : null}
         </p>
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
-        {sigs.length > 1 ? (
-          <p className="muted">
-            {sigs.length} signatures available — paste manually if you want a different one. Default is auto-appended.
-          </p>
-        ) : null}
 
         <ComposeForm
           mailboxId={id.toString()}
           initialTo={sp.to ?? ''}
           initialSubject={sp.subject ?? ''}
           initialBody={initialBody}
+          signatures={sigs.map((s) => ({
+            id: s.id.toString(),
+            name: s.name,
+            isDefault: def?.id === s.id,
+          }))}
+          defaultSignatureName={def?.name ?? null}
           languageOptions={ENABLED_LANGUAGE_OPTIONS}
           nativeLanguage={nativeLanguage}
           cancelHref={`/mailbox/${id}`}

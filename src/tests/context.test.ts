@@ -5,6 +5,7 @@ import {
   type WorkspaceRole,
   canAdminWorkspace,
   canOwnWorkspace,
+  canRead,
   canWrite,
   makeWorkspaceContext,
 } from '@/lib/services/context';
@@ -81,6 +82,23 @@ describe('makeWorkspaceContext', () => {
 
 describe('role helpers', () => {
   const base = { workspaceId: 1n, userId: 'u' } as const;
+
+  it('canRead is true for every workspace role, viewer included', () => {
+    const readers: WorkspaceRole[] = [
+      'owner',
+      'admin',
+      'manager',
+      'member',
+      'viewer',
+      'super_admin',
+    ];
+    for (const role of readers) {
+      expect(canRead({ ...base, role })).toBe(true);
+    }
+    // A role the matrix does not know (e.g. a context built without
+    // makeWorkspaceContext) reads nothing.
+    expect(canRead({ ...base, role: 'guest' as WorkspaceRole })).toBe(false);
+  });
 
   it('canWrite is true for everything except viewer', () => {
     const writers: WorkspaceRole[] = ['owner', 'admin', 'manager', 'member', 'super_admin'];

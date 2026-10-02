@@ -1,5 +1,7 @@
+import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { type WorkspaceContext } from './context';
+import { makePlatformContext, type PlatformContext } from './platform-context';
 import {
   NoWorkspaceError,
   resolveWorkspaceContextForUser,
@@ -19,6 +21,15 @@ export class AuthRequiredError extends Error {
   constructor() {
     super('Authentication required');
     this.name = 'AuthRequiredError';
+  }
+}
+
+/** Thrown when a signed-in user who is not a platform super-admin asks for
+ *  a PlatformContext. */
+export class PlatformAdminRequiredError extends Error {
+  constructor() {
+    super('Platform super-admin required');
+    this.name = 'PlatformAdminRequiredError';
   }
 }
 
@@ -53,4 +64,43 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext> {
     session.user.id,
     session.user.role === 'super_admin',
   );
+}
+
+/**
+ * Resolve the PlatformContext for the signed-in super-admin.
+ *
+ * Deliberately independent of workspaces: it never reads
+ * users.activeWorkspaceId, so the god-mode switcher cannot leak into
+ * platform actions, and a super-admin without any membership can still
+ * use the console. Sessions are database sessions, so the role checked
+ * here is the current users.role, not a cached token claim.
+ *
+ * Throws:
+ *   - AuthRequiredError when no session
+ *   - PlatformAdminRequiredError when the user is not a super_admin
+ */
+export async function getPlatformContext(): Promise<PlatformContext> {
+  const session = await auth();
+  if (!session?.user?.id) throw new AuthRequiredError();
+  if (session.user.role !== 'super_admin') throw new PlatformAdminRequiredError();
+  return makePlatformContext(session.user.id);
+}
+
+/**
+ * Guard for every /admin page and every server action they define: returns
+ * the PlatformContext, or redirects — signed-out users to `/`, signed-in
+ * users who are not super-admins to `/dashboard`.
+ *
+ * Call it at the top of the page AND inside each server action (actions
+ * are separately reachable POST endpoints, so the page guard alone does
+ * not protect them).
+ */
+export async function requirePlatformAdmin(): Promise<PlatformContext> {
+  try {
+    return await getPlatformContext();
+  } catch (err) {
+    if (err instanceof AuthRequiredError) redirect('/');
+    if (err instanceof PlatformAdminRequiredError) redirect('/dashboard');
+    throw err;
+  }
 }

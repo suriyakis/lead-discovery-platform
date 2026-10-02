@@ -38,10 +38,17 @@ import {
   type ThreadMessage,
 } from './outreach-engine';
 import { decideOutreachAction, type OutreachAction } from './outreach-decision';
-import { getReplyAutoActions, type ReplyClassification } from './reply-classifier';
+import type { ReplyClassification } from './reply-classifier';
+import { autoClosePayload, getReplyAutoActions } from './reply-auto-actions';
 import { transition as pipelineTransition } from './pipeline';
 import { addSuppression } from './suppression';
+import {
+  autoSuppressionRefusal,
+  recordAutoSuppressionRefused,
+} from './inbound-relevance';
 import { resolveProfileLanguage } from '@/lib/i18n/language';
+import { isOutreachLinked } from '@/lib/mail/relevance';
+import { runDetached } from '@/lib/detached';
 
 export class OutreachReplyHandlerError extends Error {
   public readonly code: string;
@@ -86,6 +93,19 @@ export async function handleClassifiedReply(
   }
   if (!msg.threadId) {
     return { action: { kind: 'none', reason: 'message has no thread' }, draftIds: [], forkedThreadStateId: null };
+  }
+  // flow:F-01: only mail proven to be about our outreach drives the staged
+  // conversation (analyseReply already stops earlier; this guards direct
+  // callers).
+  if (!isOutreachLinked(msg.outreachRelevance)) {
+    return {
+      action: {
+        kind: 'none',
+        reason: `not a reply to our outreach (relevance: ${msg.outreachRelevance ?? 'unassessed'})`,
+      },
+      draftIds: [],
+      forkedThreadStateId: null,
+    };
   }
 
   const ws = await loadWorkspace(ctx);
@@ -141,30 +161,57 @@ export async function handleClassifiedReply(
   // would race into reinforcing the wrong one. The learning itself is
   // fire-and-forget: it must never delay or break reply handling.
   const precedingDraftId = await latestOutboundDraftId(ctx, lead);
-  void import('./learning-loop')
-    .then(({ learnFromReplyOutcome }) =>
-      learnFromReplyOutcome(ctx, {
-        messageId,
-        replyClass: classification.type,
-        classifierConfidence: classification.confidence,
-        productProfileId: lead.productProfileId,
-        precedingDraftId,
-      }),
-    )
-    .catch((err) =>
-      console.error('[outreach-reply-handler] learning hook failed:', err),
-    );
+  // Tracked (runDetached) so the test harness can let it settle before the
+  // next test truncates — an untracked hook deadlocked truncateAll.
+  runDetached('outreach-reply-handler learning hook', async () => {
+    const { learnFromReplyOutcome } = await import('./learning-loop');
+    await learnFromReplyOutcome(ctx, {
+      messageId,
+      replyClass: classification.type,
+      classifierConfidence: classification.confidence,
+      productProfileId: lead.productProfileId,
+      precedingDraftId,
+    });
+  });
 
-  // close_and_suppress: terminal. Unsubscribe/bounce always close +
-  // suppress (deliverability + legal). Decline (negative reply) honors
-  // the workspace's autoCloseNegative flag so an operator who wants to
-  // hand-write a follow-up can keep the lead open.
+  // close_and_suppress: terminal — never drafts. Whether it suppresses
+  // and closes is the workspace's call (ia:F-03): unsubscribe honors
+  // autoSuppressUnsubscribe, bounce autoSuppressBounce, decline (negative
+  // reply) autoCloseNegative. With the switch off the reply is left for
+  // the operator: no suppression, the lead and thread stay open. Explicit
+  // opt-outs (unsubscribe link) and SMTP rejections are recorded by their
+  // own paths regardless of these switches.
+  //
+  // flow:F-01: with the switch on, the message must still be a proven
+  // prospect reply, and bounce stays off until F-32
+  // (autoSuppressionRefusal); a refusal is audited and the lead and thread
+  // stay open, exactly as with the switch off.
   if (action.kind === 'close_and_suppress') {
-    if (action.reason === 'decline') {
-      const settings = await getReplyAutoActions(ctx);
-      if (!settings.autoCloseNegative) {
-        return { action, draftIds: [], forkedThreadStateId: null };
+    const settings = await getReplyAutoActions(ctx);
+    const enabled =
+      action.reason === 'unsubscribe'
+        ? settings.autoSuppressUnsubscribe
+        : action.reason === 'bounce'
+          ? settings.autoSuppressBounce
+          : settings.autoCloseNegative;
+    if (!enabled) {
+      return { action, draftIds: [], forkedThreadStateId: null };
+    }
+    const refusal =
+      action.reason === 'decline'
+        ? msg.outreachRelevance === 'prospect_reply'
+          ? null
+          : `message is not a reply to our outreach (relevance: ${msg.outreachRelevance ?? 'unassessed'})`
+        : autoSuppressionRefusal(msg, action.reason);
+    if (refusal) {
+      if (action.reason !== 'decline') {
+        await recordAutoSuppressionRefused(ctx, msg, {
+          trigger: action.reason,
+          reason: refusal,
+          path: 'outreach_reply_handler',
+        });
       }
+      return { action, draftIds: [], forkedThreadStateId: null };
     }
     if (action.reason === 'unsubscribe' || action.reason === 'bounce') {
       try {
@@ -172,6 +219,8 @@ export async function handleClassifiedReply(
           kind: 'email',
           value: msg.fromAddress,
           reason: action.reason === 'unsubscribe' ? 'unsubscribe' : 'bounce_hard',
+          source: 'reply',
+          sourceRef: `mail_message:${msg.id}`,
           note: `auto-suppressed by outreach handler from message ${msg.id}`,
         });
       } catch (err) {
@@ -185,6 +234,10 @@ export async function handleClassifiedReply(
           closeReason: action.reason === 'unsubscribe' ? 'no_response' : 'lost',
           closeNote: `auto-close on ${classification.type}`,
           force: true,
+          payload: autoClosePayload(
+            action.reason === 'decline' ? 'negative' : action.reason,
+            msg.id,
+          ),
         });
       } catch (err) {
         console.error('[outreach-reply-handler] close failed:', err);

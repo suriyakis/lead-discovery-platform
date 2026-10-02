@@ -1,0 +1,40 @@
+Return-Path: <bounces+421337@mail.weekly-industry.example>
+Received: from o1.mail.weekly-industry.example (o1.mail.weekly-industry.example [198.51.100.21])
+	by mx.nulife.pl (Postfix) with ESMTPS id 9A8B7C6D5E
+	for <sales@nulife.pl>; Mon, 28 Sep 2026 06:00:03 +0200 (CEST)
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=weekly-industry.example;
+	h=from:subject:list-unsubscribe:list-unsubscribe-post; s=s1; bh=AAAA; b=BBBB
+From: Building Materials Weekly <news@weekly-industry.example>
+To: sales@nulife.pl
+Subject: =?UTF-8?Q?This_week:_concrete_prices,_new_EU_rules?=
+Date: Mon, 28 Sep 2026 04:00:01 +0000
+Message-ID: <nl-20260928-421337@weekly-industry.example>
+List-Unsubscribe: <https://weekly-industry.example/u/421337?t=abc>, <mailto:unsubscribe-421337@weekly-industry.example?subject=unsubscribe>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+X-SG-EID: u001.Zm9vYmFyYmF6
+Feedback-ID: 421337:weekly:newsletter:sendgrid
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="nl-boundary-1"
+
+--nl-boundary-1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+This week in building materials
+
+Concrete prices rose 3% across the region. New EU rules on recycled
+aggregates take effect in January.
+
+Read the full issue online.
+
+You are receiving this because you subscribed at weekly-industry.example.
+Unsubscribe: https://weekly-industry.example/u/421337?t=abc
+Stop sending me these emails: https://weekly-industry.example/prefs
+
+--nl-boundary-1
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<html><body><h1>This week in building materials</h1><p>Concrete prices rose 3% across the region.</p><p><a href="https://weekly-industry.example/u/421337?t=abc">Unsubscribe</a></p></body></html>
+
+--nl-boundary-1--

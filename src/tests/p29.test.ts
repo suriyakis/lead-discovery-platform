@@ -3,15 +3,12 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import {
-  type WorkspaceContext,
-  makeWorkspaceContext,
-} from '@/lib/services/context';
-import {
   listMyWorkspaces,
   setActiveWorkspace,
 } from '@/lib/services/workspace';
 import { adminAddUserToWorkspace } from '@/lib/services/admin';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -34,20 +31,12 @@ async function setup(): Promise<Setup> {
   const workspaceC = await seedWorkspace({ name: 'C', ownerUserId: ownerBC });
   // Super-admin is a member of just workspaceA (e.g., their bootstrap one).
   await adminAddUserToWorkspace(
-    ctx(workspaceA, superAdmin, 'super_admin'),
+    platformCtx(superAdmin),
     superAdmin,
     workspaceA,
     'admin',
   );
   return { workspaceA, workspaceB, workspaceC, ownerA, ownerBC, superAdmin };
-}
-
-function ctx(
-  workspaceId: bigint,
-  userId: string,
-  role: WorkspaceContext['role'] = 'owner',
-): WorkspaceContext {
-  return makeWorkspaceContext({ workspaceId, userId, role });
 }
 
 beforeEach(async () => {
@@ -88,16 +77,14 @@ describe('listMyWorkspaces (super-admin god mode)', () => {
 
   it('non-super-admin opting in still sees only memberships', async () => {
     const s = await setup();
-    // ownerA is a member of just workspaceA. Even with the flag they
-    // shouldn't see B/C — but the function trusts the caller; the gate
-    // lives at the AppShell layer, not here. Confirm the function does
-    // include all when asked.
+    // ownerA is a member of just workspaceA. listMyWorkspaces reads
+    // users.role itself (ia:F-05), so the god-mode listing cannot leak
+    // to a normal user even if a caller passes the flag by mistake.
     const rows = await listMyWorkspaces(s.ownerA, {
       includeAllForSuperAdmin: true,
     });
-    // Note: this is the documented contract — function does not check
-    // role. Caller is responsible.
-    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.map((r) => r.workspace.id)).toEqual([s.workspaceA]);
+    expect(rows[0]?.isGodMode).toBe(false);
   });
 });
 

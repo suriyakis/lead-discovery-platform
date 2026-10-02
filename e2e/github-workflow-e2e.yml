@@ -1,0 +1,128 @@
+# GitHub Actions workflow: the Playwright smoke test (e2e/smoke.spec.ts).
+#
+# A complete workflow — copy this file unchanged to .github/workflows/e2e.yml.
+# It lives under e2e/ because the automation token cannot push files under
+# .github/workflows (it lacks the `workflow` scope), so the owner adds it by
+# hand.
+#
+# NOT YET EXECUTED IN GITHUB ACTIONS. The same steps were run locally
+# (pgvector container, this env block, migrate + seed, `pnpm build`,
+# `pnpm start`, `pnpm test:e2e` with CI=true) — see the PR description for
+# the result. The first Actions run is still the real test of this file.
+#
+# What it does: Postgres with pgvector as a service, migrate + seed the
+# throwaway lead_e2e database with scripts/seed-demo.ts, production build,
+# `next start` on :3200, then every route at 1440px and 390px plus the
+# branded 404 / error-page checks. Background jobs are off and every
+# provider is the mock, so no secrets are needed — the values below are
+# CI-only placeholders, not credentials.
+#
+# `next start` logs a warning because next.config.ts sets
+# output: 'standalone' (the production Dockerfile runs
+# .next/standalone/server.js instead); it still serves the whole app.
+
+name: e2e smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e smoke (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: lead
+          POSTGRES_PASSWORD: lead
+          POSTGRES_DB: lead_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lead -d lead_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # No NODE_ENV here: with NODE_ENV=production `pnpm install` would skip
+      # the devDependencies (Playwright, tsx); build/start set it themselves.
+      CI: 'true'
+      DATABASE_URL: postgres://lead:lead@localhost:5432/lead_e2e
+      SEED_DEMO_PASSWORD: e2e-ci-only-password
+      BASE_URL: http://localhost:3200
+      APP_URL: http://localhost:3200
+      AUTH_URL: http://localhost:3200
+      AUTH_TRUST_HOST: 'true'
+      AUTH_SECRET: ci-e2e-placeholder-auth-secret-not-used-anywhere-else
+      MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      JOB_QUEUE_PROVIDER: memory
+      SCHEDULE_BACKGROUND_JOBS: '0'
+      AI_PROVIDER: mock
+      EMBEDDING_PROVIDER: mock
+      RESEARCH_PROVIDER: mock
+      SEARCH_PROVIDER: mock
+      STORAGE_PROVIDER: local
+      STORAGE_LOCAL_ROOT: ./storage
+      NEXT_TELEMETRY_DISABLED: '1'
+      # Turns on /test-only/error-boundary (app) and the smoke test that
+      # expects it to render app/error.tsx (runner). 404 everywhere else.
+      ENABLE_TEST_ROUTES: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Migrate and seed lead_e2e
+        run: |
+          pnpm db:migrate
+          pnpm db:seed-demo
+
+      - name: Build
+        run: pnpm build
+
+      - name: Start the app on :3200
+        run: |
+          nohup pnpm start -p 3200 > next.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3200/api/health > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          echo "app did not come up"; cat next.log; exit 1
+
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Playwright smoke (every route, 1440px + 390px)
+        run: pnpm test:e2e
+
+      - name: Upload report and server log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            e2e/.report/
+            e2e/.results/
+            !e2e/.results/.auth/
+            next.log
+          retention-days: 7

@@ -17,7 +17,15 @@ import {
 import { mailMessages, mailThreads, type MailThread } from '@/lib/db/schema/mailing';
 import type { WorkspaceContext } from './context';
 
-export type HintSeverity = 'info' | 'warning' | 'action' | 'success';
+/**
+ * info     — passive context (awaiting reply, scheduled, AI-written)
+ * action   — the operator should do something next
+ * warning  — worth a look, nothing is broken (forbidden phrases stripped)
+ * critical — something failed (send failed, bounced)
+ * success  — done / good outcome
+ * HintBadge maps these to badge tones; keep that map exhaustive.
+ */
+export type HintSeverity = 'info' | 'warning' | 'critical' | 'action' | 'success';
 
 export interface Hint {
   type: string;
@@ -297,8 +305,10 @@ function replyClassificationHint(type: string, conf: number | null): Hint {
       case 'positive':
       case 'interest':
         return 'success';
-      case 'unsubscribe':
       case 'bounce':
+        // Delivery failed — the address is dead, not just unhappy.
+        return 'critical';
+      case 'unsubscribe':
       case 'negative':
         return 'warning';
       case 'redirect':
@@ -383,7 +393,7 @@ export async function hintsForDraft(
     } else if (queued[0].status === 'failed') {
       out.push({
         type: 'send_failed',
-        severity: 'warning',
+        severity: 'critical',
         text: 'send failed',
         detail: queued[0].lastError ?? undefined,
         icon: 'alert-octagon',
@@ -481,7 +491,7 @@ export async function hintsForDrafts(
       } else if (q.status === 'failed') {
         hints.push({
           type: 'send_failed',
-          severity: 'warning',
+          severity: 'critical',
           text: 'send failed',
           detail: q.lastError ?? undefined,
           icon: 'alert-octagon',

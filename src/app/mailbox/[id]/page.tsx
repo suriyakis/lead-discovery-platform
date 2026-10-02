@@ -1,10 +1,12 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { eq } from 'drizzle-orm';
+import { Alert } from '@/components/Alert';
 import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { mailboxSendingLimits } from '@/lib/db/schema/mailing';
+import { workspaces } from '@/lib/db/schema/workspaces';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -16,19 +18,14 @@ import {
   archiveMailbox,
   getMailbox,
   reactivateMailbox,
+  summarizeMailboxFailure,
   testMailboxConnection,
 } from '@/lib/services/mailbox';
 import {
   countMessagesByFolder,
   isHardBounce,
   listMessages,
-  markAsSpam,
-  moveToTrash,
-  permanentlyDelete,
-  restoreFromTrash,
-  retrySend,
-  syncInbound,
-  unmarkSpam,
+  safeSyncOne,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
@@ -38,6 +35,15 @@ import {
   type HolidayCountry,
 } from '@/lib/i18n/holidays';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { formatUtc } from '@/lib/format-utc';
+import {
+  deleteMailboxMessages,
+  restoreMailboxMessages,
+  retryMailboxMessages,
+  spamMailboxMessages,
+  trashMailboxMessages,
+  unspamMailboxMessages,
+} from './actions';
 
 export default async function MailboxDetail({
   params,
@@ -105,9 +111,21 @@ export default async function MailboxDetail({
     'use server';
     const c = await getWorkspaceContext();
     try {
-      const result = await syncInbound(c, id);
-      const msg = `Synced — fetched ${result.fetched}, new ${result.inserted}, deduped ${result.duplicates}.`;
-      redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
+      // flow:F-04: through safeSyncOne, so a failed manual sync records
+      // its error and backoff like the tick does (and a failing mailbox
+      // is re-checked, not just synced).
+      const outcome = await safeSyncOne(c, await getMailbox(c, id));
+      if (outcome.kind === 'synced') {
+        const msg =
+          (outcome.recovered ? 'The connection works again — the mailbox is active. ' : '') +
+          `Synced — fetched ${outcome.fetched}, new ${outcome.inserted}, deduped ${outcome.duplicates}.`;
+        redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
+      }
+      const m =
+        outcome.kind === 'failing'
+          ? `Sync failed — the mailbox is failing: ${outcome.message}`
+          : `Sync failed (${outcome.consecutiveFailures} in a row; automatic syncs wait until ${formatUtc(outcome.nextSyncAfter)}): ${outcome.message}`;
+      redirect(`/mailbox/${id}?error=${encodeURIComponent(m)}`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       if (err instanceof MailboxServiceError || err instanceof Error) {
@@ -124,10 +142,17 @@ export default async function MailboxDetail({
     try {
       const result = await testMailboxConnection(c, id);
       const allOk = result.smtp.ok && (result.imap === null || result.imap.ok);
-      const msg = allOk
-        ? 'Connection OK — SMTP and IMAP reachable.'
-        : `SMTP ${result.smtp.ok ? 'ok' : `failed: ${result.smtp.detail}`}; IMAP ${result.imap?.ok ? 'ok' : `failed: ${result.imap?.detail}`}`;
-      redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
+      if (allOk) {
+        const msg = result.imap
+          ? 'Connection OK — SMTP and IMAP reachable.'
+          : 'Connection OK — SMTP reachable (no IMAP configured).';
+        redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
+      }
+      const imapPart = result.imap
+        ? `IMAP ${result.imap.ok ? 'ok' : `failed: ${result.imap.detail}`}`
+        : 'IMAP not configured';
+      const msg = `Connection test failed — SMTP ${result.smtp.ok ? 'ok' : `failed: ${result.smtp.detail}`}; ${imapPart}.`;
+      redirect(`/mailbox/${id}?error=${encodeURIComponent(msg)}`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'test failed';
@@ -148,7 +173,7 @@ export default async function MailboxDetail({
     try {
       await reactivateMailbox(c, id);
       redirect(
-        `/mailbox/${id}?message=${encodeURIComponent('Mailbox reactivated — next IMAP tick will retry.')}`,
+        `/mailbox/${id}?message=${encodeURIComponent('Mailbox reactivated — the next IMAP tick syncs it.')}`,
       );
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -180,128 +205,17 @@ export default async function MailboxDetail({
   }
 
   // ---- P61-06 bulk actions on the folder view ----
-  function backToFolder(formData: FormData, message: string) {
-    const folder = String(formData.get('folder') ?? 'inbox');
-    const q = String(formData.get('q') ?? '');
-    const params = new URLSearchParams({ folder });
-    if (q) params.set('q', q);
-    params.set('message', message);
-    redirect(`/mailbox/${id}?${params.toString()}`);
-  }
-  function backToFolderError(formData: FormData, message: string) {
-    const folder = String(formData.get('folder') ?? 'inbox');
-    const q = String(formData.get('q') ?? '');
-    const params = new URLSearchParams({ folder });
-    if (q) params.set('q', q);
-    params.set('error', message);
-    redirect(`/mailbox/${id}?${params.toString()}`);
-  }
-  function parseIds(formData: FormData): bigint[] {
-    const out: bigint[] = [];
-    for (const raw of formData.getAll('ids')) {
-      const s = String(raw);
-      if (!/^\d+$/.test(s)) continue;
-      try {
-        out.push(BigInt(s));
-      } catch {
-        // skip
-      }
-    }
-    return out;
-  }
-  function affectedNote(verb: string, n: number): string {
-    if (n === 0) return `No messages ${verb} (nothing was selected or eligible).`;
-    if (n === 1) return `1 message ${verb}.`;
-    return `${n} messages ${verb}.`;
-  }
-
-  async function trashSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await moveToTrash(c, ids);
-      backToFolder(formData, affectedNote('moved to trash', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'trash failed');
-    }
-  }
-  async function restoreSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await restoreFromTrash(c, ids);
-      backToFolder(formData, affectedNote('restored', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'restore failed');
-    }
-  }
-  async function spamSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await markAsSpam(c, ids, 'manual');
-      backToFolder(formData, affectedNote('flagged as spam', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'mark-spam failed');
-    }
-  }
-  async function unspamSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await unmarkSpam(c, ids);
-      backToFolder(formData, affectedNote('un-flagged', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'unmark failed');
-    }
-  }
-  async function deleteSelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await permanentlyDelete(c, ids);
-      backToFolder(formData, affectedNote('permanently deleted', r.affected));
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'delete failed');
-    }
-  }
-  async function retrySelected(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const ids = parseIds(formData);
-    try {
-      const r = await retrySend(c, ids);
-      const parts: string[] = [];
-      if (r.retried.length > 0)
-        parts.push(
-          r.retried.length === 1
-            ? '1 message resent'
-            : `${r.retried.length} messages resent`,
-        );
-      if (r.skippedHardBounce.length > 0)
-        parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
-      if (r.skippedIneligible.length > 0)
-        parts.push(`${r.skippedIneligible.length} ineligible`);
-      if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);
-      backToFolder(
-        formData,
-        parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.',
-      );
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      backToFolderError(formData, err instanceof Error ? err.message : 'retry failed');
-    }
-  }
+  // The actions live in ./actions.ts ("use server"), bound to this
+  // mailbox. Inline actions here must not call local helper functions:
+  // Next serialises an inline action's closure and functions can't be
+  // serialised (audit X4 — the bulk buttons failed in production).
+  const mailboxIdArg = id.toString();
+  const trashSelected = trashMailboxMessages.bind(null, mailboxIdArg);
+  const restoreSelected = restoreMailboxMessages.bind(null, mailboxIdArg);
+  const spamSelected = spamMailboxMessages.bind(null, mailboxIdArg);
+  const unspamSelected = unspamMailboxMessages.bind(null, mailboxIdArg);
+  const deleteSelected = deleteMailboxMessages.bind(null, mailboxIdArg);
+  const retrySelected = retryMailboxMessages.bind(null, mailboxIdArg);
 
   async function saveSendingPolicy(formData: FormData) {
     'use server';
@@ -344,6 +258,19 @@ export default async function MailboxDetail({
     ? await getOrCreateMailboxSendingLimits(ctx.workspaceId, id)
     : null;
 
+  // flow:F-04: what a failing mailbox stops doing and how to fix it, and
+  // whether the IMAP tick will re-check it on its own.
+  const failure = mailbox.status === 'failing' ? summarizeMailboxFailure(mailbox) : null;
+  const autoSync = failure
+    ? ((
+        await db
+          .select({ on: workspaces.imapAutoSyncEnabled })
+          .from(workspaces)
+          .where(eq(workspaces.id, ctx.workspaceId))
+          .limit(1)
+      )[0]?.on ?? true)
+    : true;
+
   return (
     <AppShell>
         <p className="muted">
@@ -369,6 +296,67 @@ export default async function MailboxDetail({
         {sp.message ? <p className="form-message">{sp.message}</p> : null}
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
+        {failure ? (
+          <Alert
+            tone="danger"
+            title={
+              mailbox.failingSince ? (
+                <>
+                  This mailbox has been failing since{' '}
+                  <time dateTime={mailbox.failingSince.toISOString()}>
+                    {formatUtc(mailbox.failingSince)}
+                  </time>
+                </>
+              ) : (
+                'This mailbox is failing'
+              )
+            }
+            action={
+              <>
+                <form action={runTest}>
+                  <button type="submit" className="primary-btn">
+                    Test again
+                  </button>
+                </form>
+                {canAdminWorkspace(ctx) ? (
+                  <form action={reactivate}>
+                    <button type="submit" className="ghost-btn">
+                      Reactivate
+                    </button>
+                  </form>
+                ) : null}
+              </>
+            }
+          >
+            <p>{failure.impact}</p>
+            <p>
+              <strong>Last error</strong>
+              {mailbox.lastErrorAt ? (
+                <>
+                  {' '}
+                  at{' '}
+                  <time dateTime={mailbox.lastErrorAt.toISOString()}>
+                    {formatUtc(mailbox.lastErrorAt)}
+                  </time>
+                </>
+              ) : null}
+              : <code>{mailbox.lastError ?? 'not recorded'}</code>
+            </p>
+            <p>
+              {failure.advice} <Link href={`/mailbox/${id}/edit`}>Edit settings</Link>
+            </p>
+            <p className="muted small">
+              {autoSync
+                ? mailbox.imapNextSyncAfter
+                  ? `The next automatic check is after ${formatUtc(mailbox.imapNextSyncAfter)}. `
+                  : 'It is checked again on the next IMAP tick. '
+                : 'IMAP auto-sync is off for this workspace, so nothing re-checks it automatically. '}
+              Test again checks SMTP and IMAP now and makes the mailbox active when both pass;
+              Reactivate makes it active without checking.
+            </p>
+          </Alert>
+        ) : null}
+
         <section>
           <h2>Connection</h2>
           <dl>
@@ -389,7 +377,7 @@ export default async function MailboxDetail({
                 {mailbox.lastSyncedAt ? (
                   <>
                     <dt>Last sync</dt>
-                    <dd>{mailbox.lastSyncedAt.toLocaleString()}</dd>
+                    <dd>{formatUtc(mailbox.lastSyncedAt)}</dd>
                   </>
                 ) : null}
               </>
@@ -397,7 +385,15 @@ export default async function MailboxDetail({
             {mailbox.lastError ? (
               <>
                 <dt>Last error</dt>
-                <dd className="warn">{mailbox.lastError}</dd>
+                <dd className="warn">
+                  {mailbox.lastError}
+                  {mailbox.lastErrorAt ? (
+                    <span className="muted">
+                      {' '}
+                      · <time dateTime={mailbox.lastErrorAt.toISOString()}>{formatUtc(mailbox.lastErrorAt)}</time>
+                    </span>
+                  ) : null}
+                </dd>
               </>
             ) : null}
             {mailbox.imapHost && mailbox.imapConsecutiveFailures > 0 ? (
@@ -408,7 +404,7 @@ export default async function MailboxDetail({
                   {mailbox.imapNextSyncAfter ? (
                     <span className="muted">
                       {' '}
-                      · next retry {mailbox.imapNextSyncAfter.toLocaleString()}
+                      · next retry {formatUtc(mailbox.imapNextSyncAfter)}
                     </span>
                   ) : null}
                 </dd>
@@ -428,29 +424,16 @@ export default async function MailboxDetail({
               </>
             ) : null}
           </dl>
-          {mailbox.status === 'failing' ? (
-            <p className="form-error">
-              IMAP authentication is failing — the scheduled tick has been
-              suspended to prevent the upstream server&apos;s fail2ban /
-              rate-limit from banning agregat&apos;s IP. Fix the credentials
-              or IMAP config (under <Link href={`/mailbox/${id}/edit`}>Edit settings</Link>),
-              then click <strong>Reactivate</strong> to resume polling.
-            </p>
-          ) : null}
           <div className="action-row">
-            <form action={runTest}>
-              <button type="submit">Test connection</button>
-            </form>
+            {/* A failing mailbox's Test again / Reactivate live in the alert above. */}
+            {failure ? null : (
+              <form action={runTest}>
+                <button type="submit">Test connection</button>
+              </form>
+            )}
             {mailbox.imapHost ? (
               <form action={runSync}>
                 <button type="submit">Sync inbound</button>
-              </form>
-            ) : null}
-            {mailbox.status === 'failing' && canAdminWorkspace(ctx) ? (
-              <form action={reactivate}>
-                <button type="submit" className="primary-btn">
-                  Reactivate
-                </button>
               </form>
             ) : null}
           </div>
@@ -771,7 +754,7 @@ export default async function MailboxDetail({
                 placeholder={mailbox.fromAddress}
                 autoComplete="off"
                 required
-                style={{ minWidth: '18rem' }}
+                style={{ width: '18rem', maxWidth: '100%' }}
               />
               <button type="submit" className="ghost-btn">
                 Delete permanently

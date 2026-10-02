@@ -3,14 +3,7 @@
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { auth } from '@/lib/auth';
-import {
-  AccountInactiveError,
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   AdminServiceError,
   archiveWorkspace,
@@ -18,42 +11,24 @@ import {
   restoreWorkspace,
 } from '@/lib/services/admin';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { archiveWorkspaceConfirm, restoreWorkspaceConfirm } from '@/lib/confirm-copy';
 
 export default async function AdminWorkspacesPage({
   searchParams,
 }: {
   searchParams: Promise<{ message?: string; error?: string; archived?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const sp = await searchParams;
   const showArchived = sp.archived === '1';
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (isNextRedirectError(err)) throw err;
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) {
-    return (
-      <div className="dashboard-wrap">
-        <h1>Workspaces</h1>
-        <p className="form-error">Super-admin only.</p>
-      </div>
-    );
-  }
-
-  const all = await listAllWorkspaces(ctx, { includeArchived: true });
+  const all = await listAllWorkspaces(pctx, { includeArchived: true });
   const filtered = showArchived ? all : all.filter((w) => w.status === 'active');
 
   async function archive(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const id = BigInt(String(formData.get('workspaceId')));
     const reason = String(formData.get('reason') ?? '').trim() || null;
     try {
@@ -68,7 +43,7 @@ export default async function AdminWorkspacesPage({
 
   async function restore(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const id = BigInt(String(formData.get('workspaceId')));
     try {
       await restoreWorkspace(c, id);
@@ -160,9 +135,16 @@ export default async function AdminWorkspacesPage({
                         placeholder="Reason (optional)"
                         maxLength={200}
                       />
-                      <button type="submit" className="ghost-btn">
+                      <ConfirmFormButton
+                        className="ghost-btn"
+                        message={archiveWorkspaceConfirm({
+                          name: w.name,
+                          slug: w.slug,
+                          memberCount: w.memberCount,
+                        })}
+                      >
                         Archive
-                      </button>
+                      </ConfirmFormButton>
                     </form>
                   ) : (
                     <form action={restore}>
@@ -171,9 +153,16 @@ export default async function AdminWorkspacesPage({
                         name="workspaceId"
                         value={w.workspaceId.toString()}
                       />
-                      <button type="submit" className="primary-btn">
+                      <ConfirmFormButton
+                        className="primary-btn"
+                        message={restoreWorkspaceConfirm({
+                          name: w.name,
+                          slug: w.slug,
+                          memberCount: w.memberCount,
+                        })}
+                      >
                         Restore
-                      </button>
+                      </ConfirmFormButton>
                     </form>
                   )}
                 </div>

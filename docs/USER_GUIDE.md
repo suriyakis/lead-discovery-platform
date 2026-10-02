@@ -33,7 +33,7 @@ If anything is wrong, ping Sancho — VPS-side ops are his job.
 | Settings → CRM  | `/settings/crm`                | CRM connections + bulk CSV export. |
 | Settings → Usage| `/settings/usage`              | Per-provider cost view, BYOK vs platform key breakdown. |
 | Learning        | `/learning`                    | Workspace lessons distilled from review feedback. Embedding-aware. |
-| Admin (god mode)| `/admin`                       | Super-admin only. Workspace overview, impersonation, feature flags. |
+| Admin (god mode)| `/admin`                       | Super-admin only. Workspaces, users, billing, support inbox, providers, platform audit log, feature flags. |
 
 ## 3. First-day setup (one product, one mailbox, one connector)
 
@@ -158,15 +158,56 @@ MinIO, R2 all need path style). For native AWS, leave it false.
 
 ## 6. Admin operations (super-admin only)
 
-- `/admin` — workspace metrics + active impersonation sessions + recent
-  audit feed across the platform.
-- `/admin/workspaces/<id>` — member list with per-user **Impersonate** button
-  (requires a reason; auto-closes any prior session by you), feature flag
-  matrix.
+- `/admin` — platform totals, workspace metrics, billing and token grants
+  per workspace, recent audit feed across the platform.
+- `/admin/workspaces/<id>` — profile, billing and tokens, lifecycle
+  (archive / restore / delete), members and roles, feature flag matrix.
+- `/admin/users`, `/admin/users/<id>` — account status, pre-authorisation,
+  password users, platform role, memberships.
+- `/admin/support` — the support inbox across every workspace.
+- `/admin/providers` — platform API keys and default providers/models.
+- `/admin/audit` — the audit log across every workspace. Pick
+  **Platform events** to see platform-level events (filed in no
+  workspace on purpose), or **Deleted workspaces** to see rows whose
+  workspace was deleted later (audit rows outlive their workspace and
+  lose the pointer; the `admin.workspace.delete` row names the
+  workspace). Rows are labelled `platform` and `no workspace`
+  accordingly.
 
-Impersonation does NOT change the audit trail. Every action you take while
-impersonating still records YOUR `user_id` on `audit_log` + `pipeline_events`.
-There is no escape hatch from blame.
+**Where console actions are logged.** Every action in the console records
+YOUR `user_id`. Where the row is filed depends on what you changed, never
+on which workspace your switcher points at:
+
+- **Platform level** (`workspace_id` empty, visible only in `/admin/audit`):
+  account status, pre-authorisations, password users and resets, platform
+  roles, user profile edits, user deletion, workspace deletion, provider
+  keys and platform settings. These rows name people, so no tenant sees
+  them.
+- **The affected workspace** (also visible to its admins in Settings →
+  Audit): billing exemption, token grants, workspace profile and lifecycle,
+  members and roles, feature flags, support replies and status changes.
+
+**There is no impersonation.** The old "Impersonate" button recorded a
+session but never changed who you were acting as, so it was removed. To see
+a workspace the way its members do, leave the console and pick it under
+**god mode** in the workspace switcher. Whatever you do there is logged in
+that workspace under your own `user_id`.
+
+**High-impact buttons ask first.** Archive/restore, token grants, billing
+exemption, platform role, account status, removing a member, revoking a
+pre-authorisation, closing a support thread, removing a console key and
+saving platform defaults all show a confirmation that names the workspace
+or user; Cancel sends nothing. A workspace is named with its slug, e.g.
+`"Personal" (personal-1a2b3c4d)`, because names repeat (every self-signup
+workspace is called Personal). A token grant reads `+1,000 tokens to
+<workspace> (<slug>)` (or `-1,000 tokens from ...`) with the balance
+before and after, so a wrong row, a stray minus or an extra zero shows up
+before it is applied.
+**Promote to super-admin** asks you to type the user's email and **Make
+billing exempt** the workspace slug. Workspace admins get the same
+confirmations for removing a member, switching to Simple setup, clearing a
+workspace API key, clearing a product's autopilot overrides and archiving a
+CRM connection.
 
 ## 7. Operational quirks (saved as memories)
 

@@ -182,7 +182,8 @@ function statusBadgeClass(status: OutreachDraftStatus): string {
     case 'rejected':
       return 'badge badge-bad';
     case 'needs_edit':
-      return 'badge';
+      // Waiting on the operator. A bare .badge is neutral now (I151).
+      return 'badge badge-warn';
     case 'superseded':
       return 'badge';
     case 'draft':

@@ -7,11 +7,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
+import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { authErrorToResponse } from '@/lib/services/http';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { translateText } from '@/lib/services/translation';
 import { TokenError, assertTokens } from '@/lib/services/token-ledger';
@@ -32,12 +29,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
-    if (err instanceof AuthRequiredError) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-    if (err instanceof NoWorkspaceError) {
-      return NextResponse.json({ error: 'no_workspace' }, { status: 400 });
-    }
+    const res = authErrorToResponse(err);
+    if (res) return res;
     throw err;
   }
 

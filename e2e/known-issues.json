@@ -1,0 +1,17 @@
+[
+  {
+    "id": "X5",
+    "check": "pageerror",
+    "match": "Hydration failed",
+    "paths": [
+      "/drafts",
+      "/leads",
+      "/pipeline",
+      "/pipeline?view=kanban",
+      "/review",
+      "/communication/follow-ups"
+    ],
+    "devServerOnly": true,
+    "note": "Intermittent server/client mismatch under `next dev` only (the client expects .app-shell where it finds .brand-header), seen on exactly these routes and on the base commit too; a later review run with 2 repeats did not reproduce it. A production build reports it to the console, not as a page error, so it is not tolerated against `next start` (CI). Pre-existing; DS-04. Phase 0 integration check: 120 loads of these routes against `next build` + `next start` (1440 and 390 px) gave 0 page errors and 0 console errors, so it is dev-only. Delete the entry once it stops reproducing under `next dev`."
+  }
+]

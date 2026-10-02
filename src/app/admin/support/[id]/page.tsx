@@ -1,13 +1,10 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { SupportStatusBadge } from '@/components/SupportStatusBadge';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { closeSupportThreadConfirm } from '@/lib/confirm-copy';
 import {
   SupportServiceError,
   adminGetSupportThread,
@@ -22,37 +19,26 @@ export default async function AdminSupportThreadPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ err?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  const pctx = await requirePlatformAdmin();
   const { id: idStr } = await params;
   if (!/^\d+$/.test(idStr)) redirect('/admin/support');
   const id = BigInt(idStr);
   const sp = await searchParams;
 
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) redirect('/dashboard');
-
   let data;
   try {
-    data = await adminGetSupportThread(ctx, id);
+    data = await adminGetSupportThread(pctx, id);
   } catch (err) {
     if (err instanceof SupportServiceError && err.code === 'not_found') {
       redirect('/admin/support');
     }
     throw err;
   }
-  const { thread, messages, workspaceName, senderNames } = data;
+  const { thread, messages, workspaceName, workspaceSlug, senderNames } = data;
 
   async function reply(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const body = String(formData.get('body') ?? '');
     try {
       await adminReplySupportThread(c, id, body);
@@ -66,7 +52,7 @@ export default async function AdminSupportThreadPage({
 
   async function setStatus(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const status = String(formData.get('status')) === 'closed' ? 'closed' : 'open';
     await adminSetSupportThreadStatus(c, id, status);
     redirect(`/admin/support/${id}`);
@@ -82,9 +68,7 @@ export default async function AdminSupportThreadPage({
         Workspace{' '}
         <Link href={`/admin/workspaces/${thread.workspaceId}`}>{workspaceName}</Link>{' '}
         · started {thread.createdAt.toLocaleString()} ·{' '}
-        <span className={thread.status === 'open' ? 'badge' : 'badge muted'}>
-          {thread.status}
-        </span>
+        <SupportStatusBadge status={thread.status} audience="admin" />
       </p>
 
       {sp.err ? <p className="form-error">{sp.err}</p> : null}
@@ -132,9 +116,22 @@ export default async function AdminSupportThreadPage({
             name="status"
             value={thread.status === 'open' ? 'closed' : 'open'}
           />
-          <button type="submit" className="ghost-btn">
+          {/* Closing asks first; reopening is harmless and does not. */}
+          <ConfirmFormButton
+            className="ghost-btn"
+            messageByValue={{
+              field: 'status',
+              messages: {
+                closed: closeSupportThreadConfirm({
+                  subject: thread.subject,
+                  workspaceName,
+                  workspaceSlug,
+                }),
+              },
+            }}
+          >
             {thread.status === 'open' ? 'Close thread' : 'Reopen thread'}
-          </button>
+          </ConfirmFormButton>
         </form>
       </section>
     </div>

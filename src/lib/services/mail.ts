@@ -24,6 +24,7 @@ import {
   mailMessages,
   mailThreads,
   mailboxes,
+  type Mailbox,
   type MailMessage,
   type MailThread,
   type NewMailMessage,
@@ -38,9 +39,20 @@ import {
 } from './imap-backoff';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
-import { buildProviderFor } from './mailbox';
+import {
+  buildProviderFor,
+  markMailboxFailing,
+  recordMailboxConnectionCheck,
+  runConnectionTest,
+  type MailboxCheckOutcome,
+} from './mailbox';
 import { attachContact, upsertContact } from './contacts';
 import { isSuppressed, recordBounce } from './suppression';
+import {
+  classifySmtpError,
+  hardRejectedFromPartial,
+  isRecipientHardBounceText,
+} from '@/lib/mail/smtp-errors';
 import {
   defaultSignature,
   renderSignatureHtml,
@@ -48,8 +60,15 @@ import {
 } from './signatures';
 import { analyseReply } from './reply-classifier';
 import { maybeAutoTranslateInbound } from './translation';
+import { assessInboundRelevance } from './inbound-relevance';
+import {
+  extractRelevanceSignals,
+  isOutreachLinked,
+  type OutreachRelevance,
+} from '@/lib/mail/relevance';
 import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
+import { describeConnectionError } from '@/lib/mail/connection-errors';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -76,7 +95,32 @@ const suppressed = (addr: string) =>
 
 // ---- send ----------------------------------------------------------
 
+/**
+ * flow:F-05 (I089) — what kind of mail this is.
+ *   one_to_one → a person writing to a person: compose, thread replies,
+ *                drafts answering a prospect's reply. No bulk unsubscribe
+ *                footer and no List-Unsubscribe headers.
+ *   sequence   → outreach the platform sends on the operator's behalf:
+ *                cold first touches and follow-ups. Carries the visible
+ *                unsubscribe footer plus RFC 8058 List-Unsubscribe(-Post).
+ * Required on every send so no caller gets either behaviour by accident.
+ */
+export type SendMode = 'one_to_one' | 'sequence';
+
+/** Mode of an already-sent / failed message, read back from the headers
+ *  it was built with (only sequence mail carries List-Unsubscribe). */
+export function sendModeFromHeaders(headers: unknown): SendMode {
+  if (headers && typeof headers === 'object') {
+    for (const key of Object.keys(headers as Record<string, unknown>)) {
+      if (key.toLowerCase() === 'list-unsubscribe') return 'sequence';
+    }
+  }
+  return 'one_to_one';
+}
+
 export interface SendMailInput {
+  /** flow:F-05 — see SendMode. */
+  mode: SendMode;
   mailboxId: bigint;
   to: ReadonlyArray<MailAddress>;
   cc?: ReadonlyArray<MailAddress>;
@@ -185,27 +229,32 @@ export async function sendMessage(
 
   // Phase 35: RFC 8058 one-click unsubscribe. Same trackingToken doubles
   // as the unsubscribe token (workspace-scoped, single-use, opaque). The
-  // public route lives at /api/unsubscribe/<token> and adds the
-  // recipient address(es) to the suppression list.
-  const unsubUrl = `${appUrl}/api/unsubscribe/${trackingToken}`;
-  const unsubMailto = `mailto:${mailbox.fromAddress}?subject=unsubscribe`;
-  // Two-value List-Unsubscribe: HTTPS first (preferred by Gmail/Yahoo),
-  // mailto: as a fallback for old clients. Plus List-Unsubscribe-Post
-  // for the one-click POST handshake (RFC 8058).
-  headers['List-Unsubscribe'] = `<${unsubUrl}>, <${unsubMailto}>`;
-  headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+  // public route lives at /api/unsubscribe/<token>: GET shows a
+  // confirmation page, only POST records the opt-out (flow:F-05).
+  // flow:F-05: sequence mail only — a one-to-one message (compose, a
+  // thread reply) is personal correspondence and carries neither the
+  // headers nor the bulk footer.
+  if (input.mode === 'sequence') {
+    const unsubUrl = `${appUrl}/api/unsubscribe/${trackingToken}`;
+    const unsubMailto = `mailto:${mailbox.fromAddress}?subject=unsubscribe`;
+    // Two-value List-Unsubscribe: HTTPS first (preferred by Gmail/Yahoo),
+    // mailto: as a fallback for old clients. Plus List-Unsubscribe-Post
+    // for the one-click POST handshake (RFC 8058).
+    headers['List-Unsubscribe'] = `<${unsubUrl}>, <${unsubMailto}>`;
+    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
 
-  // Render a visible unsubscribe footer in the body. CAN-SPAM requires
-  // the link be conspicuous; modern bulk senders also do this for
-  // engagement reasons.
-  // Phase 63: localize the unsubscribe footer to the email's target
-  // language so a foreign-language body doesn't carry an English footer.
-  const footer = getUnsubscribeFooter(input.targetLanguage);
-  const footerText = `\n\n---\n${footer.prompt} ${unsubUrl}`;
-  const footerHtml = `<div dir="${footer.dir}" style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#888;font-family:Arial,sans-serif"><a href="${unsubUrl}" style="color:#888;text-decoration:underline">${footer.unsubscribe}</a></div>`;
-  outboundText = (outboundText ?? '') + footerText;
-  if (outboundHtml) {
-    outboundHtml = outboundHtml + footerHtml;
+    // Render a visible unsubscribe footer in the body. CAN-SPAM requires
+    // the link be conspicuous; modern bulk senders also do this for
+    // engagement reasons.
+    // Phase 63: localize the unsubscribe footer to the email's target
+    // language so a foreign-language body doesn't carry an English footer.
+    const footer = getUnsubscribeFooter(input.targetLanguage);
+    const footerText = `\n\n---\n${footer.prompt} ${unsubUrl}`;
+    const footerHtml = `<div dir="${footer.dir}" style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#888;font-family:Arial,sans-serif"><a href="${unsubUrl}" style="color:#888;text-decoration:underline">${footer.unsubscribe}</a></div>`;
+    outboundText = (outboundText ?? '') + footerText;
+    if (outboundHtml) {
+      outboundHtml = outboundHtml + footerHtml;
+    }
   }
 
   const out: OutboundMessage = {
@@ -220,43 +269,33 @@ export async function sendMessage(
     headers,
   };
 
+  const attempted = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])].map(
+    (a) => a.address,
+  );
+
   let sendResult;
   try {
     sendResult = await provider.send(out);
   } catch (err) {
-    // Phase 17: SMTP-layer rejection that includes a 5xx response triggers
-    // an auto-bounce-suppress. nodemailer surfaces an `responseCode` on
-    // the error object; we match conservatively to avoid suppressing on
-    // transient network errors.
+    // flow:F-05 (I007): classify before suppressing. Only a recipient the
+    // server refused at RCPT TO as non-existent / disabled is suppressed
+    // (source smtp). Our own failures — a refused login, a dead
+    // connection, a 4xx, a policy or relay refusal — never touch the
+    // recipient; a refused login marks the mailbox failing instead.
     const e = err as { responseCode?: number; message?: string };
     const responseCode = e?.responseCode ?? null;
-    if (responseCode && responseCode >= 500 && responseCode < 600) {
-      for (const recipient of input.to) {
-        try {
-          await recordBounce(ctx, recipient.address, 'hard', e.message ?? null);
-        } catch {
-          // best-effort
-        }
-      }
-    } else if (responseCode && responseCode >= 400 && responseCode < 500) {
-      for (const recipient of input.to) {
-        try {
-          await recordBounce(ctx, recipient.address, 'soft', e.message ?? null);
-        } catch {
-          // best-effort
-        }
-      }
-    }
+    const failure = classifySmtpError(err, attempted);
+    let failedRowId: bigint | null = null;
     // P61-08: persist the failure as a mail_messages row so it lands in
     // the Errors folder AND so future bounce-loop detection has the
     // history to count against. We never let the persistence fail bubble
     // up — the send already threw and that contract is preserved.
     try {
       const failureReason = e?.message ?? (err instanceof Error ? err.message : String(err));
+      // 'bounced' is reserved for a recipient hard rejection; isHardBounce
+      // (and so Retry) relies on that.
       const failedStatus: MailMessage['status'] =
-        responseCode && responseCode >= 500 && responseCode < 600
-          ? 'bounced'
-          : 'failed';
+        failure.kind === 'recipient_hard' ? 'bounced' : 'failed';
       const primaryAddress = input.to[0]?.address ?? null;
       const isLoop =
         primaryAddress !== null &&
@@ -298,7 +337,11 @@ export async function sendMessage(
         spamReason: isLoop ? 'bounce_loop' : null,
         createdBy: ctx.userId,
       };
-      await db.insert(mailMessages).values(failedRow);
+      const [failedInserted] = await db
+        .insert(mailMessages)
+        .values(failedRow)
+        .returning({ id: mailMessages.id });
+      failedRowId = failedInserted?.id ?? null;
       await touchThread(failedThread.id);
       if (isLoop) {
         await recordAuditEvent(ctx, {
@@ -313,8 +356,38 @@ export async function sendMessage(
     } catch (persistErr) {
       console.error('[mail.send] failed to persist failure row:', persistErr);
     }
+
+    for (const address of failure.hardRejectedRecipients) {
+      try {
+        await recordBounce(
+          ctx,
+          address,
+          'hard',
+          (e?.message ?? null)?.slice(0, 1000) ?? null,
+          failedRowId ? `mail_message:${failedRowId}` : null,
+        );
+      } catch (bounceErr) {
+        console.error('[mail.send] bounce suppression failed:', bounceErr);
+      }
+    }
+    if (failure.kind === 'auth') {
+      try {
+        await markMailboxFailing(ctx, mailbox.id, {
+          protocol: 'smtp',
+          message: e?.message ?? String(err),
+          auth: true,
+        });
+      } catch (markErr) {
+        console.error('[mail.send] could not mark the mailbox failing:', markErr);
+      }
+    }
     throw err;
   }
+
+  // flow:F-05: the server accepted the message but refused some
+  // recipients. A refusal that says the address does not exist suppresses
+  // that address only; anything else is left alone.
+  const partialHard = hardRejectedFromPartial(sendResult.rejected, attempted);
 
   // Resolve / create thread.
   const thread = await ensureThread(ctx, mailbox.id, {
@@ -389,15 +462,42 @@ export async function sendMessage(
     }
   }
 
+  for (const address of partialHard) {
+    try {
+      const rejection = sendResult.rejected?.find(
+        (r) => r.address.trim().toLowerCase() === address,
+      );
+      await recordBounce(
+        ctx,
+        address,
+        'hard',
+        rejection?.response?.slice(0, 1000) ?? null,
+        `mail_message:${created.id}`,
+      );
+    } catch (bounceErr) {
+      console.error('[mail.send] bounce suppression failed:', bounceErr);
+    }
+  }
+
   await recordAuditEvent(ctx, {
     kind: 'mail.send',
     entityType: 'mail_message',
     entityId: created.id,
     payload: {
       mailboxId: mailbox.id.toString(),
+      mode: input.mode,
       to: input.to.map((a) => a.address),
       threadId: thread.id.toString(),
       sourceDraftId: input.sourceDraftId?.toString() ?? null,
+      ...(sendResult.rejected && sendResult.rejected.length > 0
+        ? {
+            rejected: sendResult.rejected.map((r) => ({
+              address: r.address,
+              response: r.response,
+              suppressed: partialHard.includes(r.address.trim().toLowerCase()),
+            })),
+          }
+        : {}),
     },
   });
 
@@ -600,10 +700,15 @@ export async function syncInbound(
 
   let inserted = 0;
   let duplicates = 0;
+  const relevance: Partial<Record<OutreachRelevance, number>> = {};
   for (const inbound of messages) {
-    const existed = await persistInbound(ctx, mailbox.id, inbound);
-    if (existed) duplicates++;
-    else inserted++;
+    const outcome = await persistInbound(ctx, mailbox.id, inbound);
+    if (outcome.existed) {
+      duplicates++;
+    } else {
+      inserted++;
+      relevance[outcome.relevance] = (relevance[outcome.relevance] ?? 0) + 1;
+    }
   }
 
   await db
@@ -620,17 +725,36 @@ export async function syncInbound(
     kind: 'mail.sync_inbound',
     entityType: 'mailbox',
     entityId: mailbox.id,
-    payload: { fetched: messages.length, inserted, duplicates },
+    payload: { fetched: messages.length, inserted, duplicates, relevance },
   });
 
   return { fetched: messages.length, inserted, duplicates };
 }
 
+type PersistInboundOutcome =
+  | { existed: true }
+  | { existed: false; relevance: OutreachRelevance };
+
+/**
+ * Store one fetched message, then run the reply pipeline only when it is
+ * about our outreach (flow:F-01, X1). Every message is stored and threaded
+ * so it still shows in Conversations; what differs is the side effects:
+ *
+ *   relevance        contact  classify+auto-actions  translate  notify
+ *   prospect_reply     yes            yes               yes       yes
+ *   auto_reply         yes            yes               yes        —
+ *   bounce              —             yes                —         —
+ *   bulk / unrelated    —              —                 —         —
+ *
+ * "classify" (analyseReply) also covers the outreach reply handler and
+ * follow-up cancellation. A bounce's sender is the mailer daemon, so it is
+ * never made a contact; lead.replied is for people answering us (I161).
+ */
 async function persistInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   inbound: InboundMessage,
-): Promise<boolean> {
+): Promise<PersistInboundOutcome> {
   // Dedup by (workspace, message_id).
   const existing = await db
     .select()
@@ -642,7 +766,23 @@ async function persistInbound(
       ),
     )
     .limit(1);
-  if (existing[0]) return true;
+  if (existing[0]) return { existed: true };
+
+  const assessment = await assessInboundRelevance(ctx, {
+    fromAddress: inbound.from.address,
+    inReplyTo: inbound.inReplyTo,
+    references: inbound.references,
+    receivedAt: inbound.receivedAt,
+    signals:
+      inbound.relevanceSignals ??
+      extractRelevanceSignals({
+        headers: inbound.headers,
+        fromAddress: inbound.from.address,
+        source: 'stored_headers',
+      }),
+  });
+  const relevance = assessment.relevance;
+  const fromCounterpart = relevance === 'prospect_reply' || relevance === 'auto_reply';
 
   const thread = await ensureThread(ctx, mailboxId, {
     subject: inbound.subject || '(no subject)',
@@ -655,24 +795,28 @@ async function persistInbound(
     ],
   });
 
-  // Phase 16: resolve / upsert the inbound sender as a contact + attach.
+  // Phase 16: resolve / upsert the sender as a contact + attach — only for
+  // people answering our outreach (I165: newsletters, no-reply and daemon
+  // senders no longer fill the contact book).
   let contactId: bigint | null = null;
-  try {
-    const contact = await upsertContact(ctx, {
-      email: inbound.from.address,
-      name: inbound.from.name ?? null,
-    });
-    contactId = contact.id;
-    await attachContact(ctx, contact.id, {
-      type: 'mail_thread',
-      id: thread.id.toString(),
-      relation: 'inbound_sender',
-    });
-  } catch (err) {
-    console.error('[mail.persistInbound] contact resolve failed:', err);
+  if (fromCounterpart) {
+    try {
+      const contact = await upsertContact(ctx, {
+        email: inbound.from.address,
+        name: inbound.from.name ?? null,
+      });
+      contactId = contact.id;
+      await attachContact(ctx, contact.id, {
+        type: 'mail_thread',
+        id: thread.id.toString(),
+        relation: 'inbound_sender',
+      });
+    } catch (err) {
+      console.error('[mail.persistInbound] contact resolve failed:', err);
+    }
   }
 
-  await db.insert(mailMessages).values({
+  const [insertedRow] = await db.insert(mailMessages).values({
     workspaceId: ctx.workspaceId,
     mailboxId,
     threadId: thread.id,
@@ -699,46 +843,46 @@ async function persistInbound(
       // Phase 11+ can offload to IStorage when the bodies grow.
     })),
     receivedAt: inbound.receivedAt,
-  } satisfies NewMailMessage);
+    outreachRelevance: relevance,
+    relevanceSignals: assessment.signals,
+  } satisfies NewMailMessage).returning({ id: mailMessages.id });
 
   await touchThread(thread.id);
+
+  // Bulk and unrelated mail stops here: stored, threaded, no side effects.
+  if (!insertedRow || !isOutreachLinked(relevance)) {
+    return { existed: false, relevance };
+  }
 
   // Phase 20: classify the inbound + run auto-actions inline. Best-effort.
   // Phase 42: auto-translate non-English bodies inline so the operator
   // sees the English version on first thread open. Heuristic-gated so
   // English mail never bills the AI.
   try {
-    const insertedRows = await db
-      .select({ id: mailMessages.id })
-      .from(mailMessages)
-      .where(
-        and(
-          eq(mailMessages.workspaceId, ctx.workspaceId),
-          eq(mailMessages.messageId, inbound.messageId),
-        ),
-      )
-      .limit(1);
-    if (insertedRows[0]) {
-      await analyseReply(ctx, insertedRows[0].id);
-      await maybeAutoTranslateInbound(ctx, insertedRows[0].id);
+    await analyseReply(ctx, insertedRow.id);
+    if (fromCounterpart) {
+      await maybeAutoTranslateInbound(ctx, insertedRow.id);
     }
   } catch (err) {
     console.error('[mail.persistInbound] post-receive hooks failed:', err);
   }
 
   // Pull the team back to the app — a reply is the highest-value event
-  // in the whole pipeline. Best-effort by construction (notify never
-  // throws) and deduped per thread while unread.
-  const { notify } = await import('./notifications');
-  await notify(ctx.workspaceId, {
-    kind: 'lead.replied',
-    title: `Reply from ${inbound.from.name ?? inbound.from.address}`,
-    body: inbound.subject?.slice(0, 200) ?? null,
-    href: `/communication/${thread.id}`,
-    dedupeKey: `lead.replied:${thread.id}`,
-  });
+  // in the whole pipeline. Only a person answering our outreach counts
+  // (I161): not auto-replies, not bounces. Best-effort by construction
+  // (notify never throws) and deduped per thread while unread.
+  if (relevance === 'prospect_reply') {
+    const { notify } = await import('./notifications');
+    await notify(ctx.workspaceId, {
+      kind: 'lead.replied',
+      title: `Reply from ${inbound.from.name ?? inbound.from.address}`,
+      body: inbound.subject?.slice(0, 200) ?? null,
+      href: `/communication/${thread.id}`,
+      dedupeKey: `lead.replied:${thread.id}`,
+    });
+  }
 
-  return false;
+  return { existed: false, relevance };
 }
 
 // ---- read ----------------------------------------------------------
@@ -1261,31 +1405,88 @@ export async function permanentlyDelete(
   return { affected: deletedIds.length, ids: deletedIds };
 }
 
-// ---- safe-sync (P61-25) --------------------------------------------
+// ---- safe-sync (P61-25, flow:F-04) ---------------------------------
 
 export type SafeSyncOutcome =
-  | { kind: 'synced'; fetched: number; inserted: number; duplicates: number }
-  | { kind: 'auth_failed'; message: string }
-  | { kind: 'transient_failed'; message: string; consecutiveFailures: number; pausedAt: boolean };
+  | {
+      kind: 'synced';
+      fetched: number;
+      inserted: number;
+      duplicates: number;
+      /** A failing mailbox passed its re-check and is active again. */
+      recovered: boolean;
+    }
+  /** The mailbox is failing and nothing was synced: it was just paused
+   *  (a refused login, or TRANSIENT_FAILURE_PAUSE_THRESHOLD failures in a
+   *  row), or it was already failing and its re-check failed again. */
+  | {
+      kind: 'failing';
+      message: string;
+      /** A new mailbox.failing notification was raised (deduped while unread). */
+      notified: boolean;
+      /** When the tick may re-check it (null when it was not marked). */
+      nextSyncAfter: Date | null;
+    }
+  | {
+      kind: 'transient_failed';
+      message: string;
+      consecutiveFailures: number;
+      nextSyncAfter: Date;
+    };
 
 /** Wraps syncInbound + the cron's post-result mailbox bookkeeping into
  *  one helper so both the IMAP tick (mail.imap.tick) AND the manual
- *  Sync button apply the same auth/backoff/auto-pause logic. Without
+ *  Sync buttons apply the same auth/backoff/auto-pause logic. Without
  *  this, manual clicks bypass the fail2ban defense and a broken
  *  mailbox can rack up failed LOGINs from operator impatience.
+ *
+ *  flow:F-04 — every failure leaves a non-null imap_next_sync_after:
+ *    - transient (below the threshold): 2 min doubling to 60 min, status
+ *      stays active;
+ *    - a refused login or the threshold: markMailboxFailing (status
+ *      'failing', a 1 h / 6 h re-check gate growing to 24 h, one deduped
+ *      mailbox.failing notification);
+ *    - a mailbox that is already failing is NOT synced: it gets a full
+ *      SMTP + IMAP re-check first (recordMailboxConnectionCheck). A pass
+ *      makes it active and the sync runs; a failure refreshes the error,
+ *      the gate and the (deduped) notification.
  *
  *  Caller passes the resolved mailbox row — this helper does NOT
  *  enforce the imap_next_sync_after cooldown gate; that's the cron's
  *  job. Manual sync is explicitly "do it now". */
 export async function safeSyncOne(
   ctx: WorkspaceContext,
-  mailbox: { id: bigint; imapConsecutiveFailures: number; imapEmptySyncs: number },
+  mailbox: Pick<Mailbox, 'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'>,
 ): Promise<SafeSyncOutcome> {
+  // Outside the try: a permission error is the caller's, not the server's,
+  // and must not count as a mailbox failure.
+  if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
+
+  let recovered = false;
+  if (mailbox.status === 'failing') {
+    const check = await recheckFailingMailbox(ctx, mailbox);
+    if (!check.ok) {
+      return {
+        kind: 'failing',
+        message: check.lastError ?? 'failed',
+        notified: check.notified,
+        nextSyncAfter: check.nextSyncAfter,
+      };
+    }
+    recovered = check.recovered;
+    // Outbound-only mailbox: the re-check was the whole job.
+    if (!mailbox.imapHost) {
+      return { kind: 'synced', fetched: 0, inserted: 0, duplicates: 0, recovered };
+    }
+  }
+  const priorFailures = recovered ? 0 : mailbox.imapConsecutiveFailures;
+  const priorEmpty = recovered ? 0 : mailbox.imapEmptySyncs;
+  const scope = and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id));
+
   try {
     const result = await syncInbound(ctx, mailbox.id);
     // Success — reset failure counters, apply adaptive empty-sync delay.
-    const nextEmpty =
-      result.fetched === 0 ? mailbox.imapEmptySyncs + 1 : 0;
+    const nextEmpty = result.fetched === 0 ? priorEmpty + 1 : 0;
     const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);
     await db
       .update(mailboxes)
@@ -1294,58 +1495,99 @@ export async function safeSyncOne(
         imapNextSyncAfter: adaptiveNext,
         imapEmptySyncs: nextEmpty,
         lastError: null,
+        lastErrorAt: null,
         updatedAt: new Date(),
       })
-      .where(eq(mailboxes.id, mailbox.id));
+      .where(scope);
     return {
       kind: 'synced',
       fetched: result.fetched,
       inserted: result.inserted,
       duplicates: result.duplicates,
+      recovered,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    // describeConnectionError keeps imapflow's response code and text —
+    // its refused LOGIN is otherwise a bare "Command failed".
+    const msg = describeConnectionError(err);
     const cls = classifyImapError(err);
-    const nextCount = mailbox.imapConsecutiveFailures + 1;
+    const nextCount = priorFailures + 1;
 
     // Auto-pause when:
     //   - error signature matches an auth failure, OR
     //   - we've crossed the transient-failure threshold without ever
     //     getting a clean sync (slow-burn fail2ban defense).
-    const shouldPause =
-      cls === 'auth' || nextCount >= TRANSIENT_FAILURE_PAUSE_THRESHOLD;
-
-    if (shouldPause) {
-      await db
-        .update(mailboxes)
-        .set({
-          status: 'failing',
-          lastError: msg.slice(0, 2000),
-          imapConsecutiveFailures: nextCount,
-          imapNextSyncAfter: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(mailboxes.id, mailbox.id));
-      return { kind: 'auth_failed', message: msg };
+    if (cls === 'auth' || nextCount >= TRANSIENT_FAILURE_PAUSE_THRESHOLD) {
+      const marked = await markMailboxFailing(ctx, mailbox.id, {
+        protocol: 'imap',
+        message: msg,
+        auth: cls === 'auth',
+        consecutiveFailures: nextCount,
+      });
+      if (marked.marked) {
+        return {
+          kind: 'failing',
+          message: msg,
+          notified: marked.notified,
+          nextSyncAfter: marked.nextSyncAfter,
+        };
+      }
+      // Paused / archived (a manual Sync): keep the operator's status and
+      // record the failure like a transient one below.
     }
 
-    const cooldown = computeBackoffMs(nextCount);
+    const now = new Date();
+    const nextSyncAfter = new Date(now.getTime() + computeBackoffMs(nextCount));
     await db
       .update(mailboxes)
       .set({
         imapConsecutiveFailures: nextCount,
-        imapNextSyncAfter: new Date(Date.now() + cooldown),
-        lastError: msg.slice(0, 2000),
-        updatedAt: new Date(),
+        imapNextSyncAfter: nextSyncAfter,
+        lastError: `IMAP: ${msg}`.slice(0, 2000),
+        lastErrorAt: now,
+        updatedAt: now,
       })
-      .where(eq(mailboxes.id, mailbox.id));
+      .where(scope);
     return {
       kind: 'transient_failed',
       message: msg,
       consecutiveFailures: nextCount,
-      pausedAt: false,
+      nextSyncAfter,
     };
   }
+}
+
+/** A failing mailbox is re-checked (SMTP + IMAP), never just synced: an
+ *  IMAP sync passing says nothing about the SMTP login that may be what
+ *  failed. Counts as one more consecutive failed check when it fails. */
+async function recheckFailingMailbox(
+  ctx: WorkspaceContext,
+  mailbox: Pick<Mailbox, 'id' | 'imapConsecutiveFailures'>,
+): Promise<MailboxCheckOutcome> {
+  const consecutiveFailures = mailbox.imapConsecutiveFailures + 1;
+  let built: Awaited<ReturnType<typeof buildProviderFor>>;
+  try {
+    built = await buildProviderFor(ctx, mailbox.id);
+  } catch (err) {
+    // E.g. a password secret went missing — as much a failure as a
+    // refused login, and the operator fixes it the same way.
+    const message = describeConnectionError(err);
+    const protocol = /\bSMTP\b/.test(message) ? 'smtp' : 'imap';
+    const marked = await markMailboxFailing(ctx, mailbox.id, {
+      protocol,
+      message,
+      consecutiveFailures,
+    });
+    return {
+      ok: false,
+      recovered: false,
+      lastError: `${protocol === 'smtp' ? 'SMTP' : 'IMAP'}: ${message}`.slice(0, 2000),
+      notified: marked.notified,
+      nextSyncAfter: marked.nextSyncAfter,
+    };
+  }
+  const result = await runConnectionTest(built.provider);
+  return recordMailboxConnectionCheck(ctx, built.mailbox, result, { consecutiveFailures });
 }
 
 // ---- trash purge (P61-09) ------------------------------------------
@@ -1504,20 +1746,21 @@ export async function detectBounceLoop(
 
 // ---- retry (P61-07) ------------------------------------------------
 
-const HARD_BOUNCE_RE = /\b5\d{2}\b/;
-
 /** A message is "hard bounced" if either:
- *    - its status is 'bounced' (which is only set by the DSN parser on
- *      a permanent receiver-side rejection), or
- *    - its failureReason carries an SMTP 5xx response code.
- *  Hard bounces are not retryable — the receiving server has actively
- *  refused delivery and re-sending will just bounce again. */
+ *    - its status is 'bounced' (since flow:F-05 only set when the
+ *      receiving server refused a recipient as non-existent / disabled), or
+ *    - it failed and its failureReason reads as such a refusal (enhanced
+ *      status 5.1.x / 5.2.1, or 550-class "user unknown" wording).
+ *  Hard bounces are not retryable — re-sending will just bounce again.
+ *  Any other 5xx (a refused SMTP login, a relay or policy refusal) is the
+ *  sender's problem and stays retryable once it is fixed. */
 export function isHardBounce(msg: {
   status: MailMessage['status'];
   failureReason: string | null;
 }): boolean {
   if (msg.status === 'bounced') return true;
-  return msg.failureReason ? HARD_BOUNCE_RE.test(msg.failureReason) : false;
+  if (msg.status !== 'failed') return false;
+  return isRecipientHardBounceText(msg.failureReason);
 }
 
 export interface RetryResult {
@@ -1571,6 +1814,8 @@ export async function retrySend(
     }
     try {
       await sendMessage(ctx, {
+        // flow:F-05: a retry keeps the original's kind of mail.
+        mode: sendModeFromHeaders(original.headers),
         mailboxId: original.mailboxId,
         to: original.toAddresses.map((address) => ({ address })),
         cc: original.ccAddresses.map((address) => ({ address })),

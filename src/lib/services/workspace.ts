@@ -13,7 +13,8 @@ import {
 } from '@/lib/db/schema/workspaces';
 import { isEnabledLanguage } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
-import { canAdminWorkspace, canOwnWorkspace, type WorkspaceContext } from './context';
+import { canAdminWorkspace, isSuperAdmin, type WorkspaceContext } from './context';
+import { NoWorkspaceError, resolveWorkspaceContextForUser } from './workspace-resolution';
 
 export class WorkspaceServiceError extends Error {
   public readonly code: string;
@@ -90,6 +91,55 @@ export async function getWorkspace(ctx: WorkspaceContext): Promise<Workspace> {
   const ws = rows[0];
   if (!ws) throw notFound('workspace');
   return ws;
+}
+
+export interface ActiveWorkspaceSummary {
+  workspace: Workspace;
+  /** The caller's own membership role, or null when a super-admin is
+   *  inside a workspace they are not a member of (god mode). */
+  memberRole: WorkspaceMemberRole | null;
+  /** True when the caller is in this workspace through god mode. */
+  isGodMode: boolean;
+  /** How many workspaces the caller belongs to, counted the way the
+   *  switcher lists them (archived ones only for super-admins). */
+  membershipCount: number;
+}
+
+/**
+ * What the dashboard's "Active workspace" card shows: the workspace the
+ * context resolved to, the caller's role in it, and their membership
+ * count. Reading it from the resolved context (not a separate membership
+ * lookup) keeps the card on the same tenant as the rest of the app.
+ */
+export async function getActiveWorkspaceSummary(
+  ctx: WorkspaceContext,
+): Promise<ActiveWorkspaceSummary> {
+  const workspace = await getWorkspace(ctx);
+  const [member] = await db
+    .select({ role: workspaceMembers.role })
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, ctx.workspaceId),
+        eq(workspaceMembers.userId, ctx.userId),
+      ),
+    )
+    .limit(1);
+  const memberships = await db
+    .select({ id: workspaceMembers.id })
+    .from(workspaceMembers)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+    .where(
+      isSuperAdmin(ctx)
+        ? eq(workspaceMembers.userId, ctx.userId)
+        : and(eq(workspaceMembers.userId, ctx.userId), eq(workspaces.status, 'active')),
+    );
+  return {
+    workspace,
+    memberRole: member?.role ?? null,
+    isGodMode: !member && isSuperAdmin(ctx),
+    membershipCount: memberships.length,
+  };
 }
 
 // ---- Phase A: outreach defaults --------------------------------------
@@ -348,160 +398,10 @@ export async function listMembers(ctx: WorkspaceContext): Promise<MemberWithUser
   return rows.map((r) => ({ member: r.member, user: r.user }));
 }
 
-// ---- mutations ---------------------------------------------------------
-
-export interface AddMemberInput {
-  userId: string;
-  role: WorkspaceMemberRole;
-}
-
-export async function addMember(
-  ctx: WorkspaceContext,
-  input: AddMemberInput,
-): Promise<WorkspaceMember> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('add member');
-  if (input.role === 'owner') {
-    throw conflict('cannot add a member as owner directly; transfer ownership instead');
-  }
-
-  return db.transaction(async (tx) => {
-    const userRows = await tx.select().from(users).where(eq(users.id, input.userId));
-    if (!userRows[0]) throw notFound('user');
-
-    const existing = await tx
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, input.userId),
-        ),
-      );
-    if (existing[0]) throw conflict('user is already a member of this workspace');
-
-    const inserted = await tx
-      .insert(workspaceMembers)
-      .values({
-        workspaceId: ctx.workspaceId,
-        userId: input.userId,
-        role: input.role,
-      })
-      .returning();
-    const member = inserted[0];
-    if (!member) throw invariant('workspace_members insert returned no row');
-
-    await recordAuditEvent(ctx, {
-      kind: 'workspace.member.add',
-      entityType: 'workspace_member',
-      entityId: member.id,
-      payload: { addedUserId: input.userId, role: input.role },
-    });
-
-    return member;
-  });
-}
-
-export async function removeMember(ctx: WorkspaceContext, userId: string): Promise<void> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('remove member');
-
-  return db.transaction(async (tx) => {
-    const targetRows = await tx
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      );
-    const target = targetRows[0];
-    if (!target) throw notFound('workspace member');
-    if (target.role === 'owner') {
-      throw conflict('cannot remove the workspace owner; transfer ownership first');
-    }
-
-    await tx
-      .delete(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      );
-
-    await recordAuditEvent(ctx, {
-      kind: 'workspace.member.remove',
-      entityType: 'workspace_member',
-      entityId: target.id,
-      payload: { removedUserId: userId, formerRole: target.role },
-    });
-  });
-}
-
-export async function setMemberRole(
-  ctx: WorkspaceContext,
-  userId: string,
-  role: WorkspaceMemberRole,
-): Promise<WorkspaceMember> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('set member role');
-  // Promoting someone to owner is a separate, ownership-transferring operation
-  // (not implemented in Phase 1). Demoting the owner needs canOwnWorkspace.
-  if (role === 'owner' && !canOwnWorkspace(ctx)) {
-    throw permissionDenied('promote to owner (only owner/super_admin can transfer)');
-  }
-
-  return db.transaction(async (tx) => {
-    const targetRows = await tx
-      .select()
-      .from(workspaceMembers)
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      );
-    const target = targetRows[0];
-    if (!target) throw notFound('workspace member');
-
-    // Don't let the last owner be demoted.
-    if (target.role === 'owner' && role !== 'owner') {
-      const owners = await tx
-        .select()
-        .from(workspaceMembers)
-        .where(
-          and(
-            eq(workspaceMembers.workspaceId, ctx.workspaceId),
-            eq(workspaceMembers.role, 'owner'),
-          ),
-        );
-      if (owners.length <= 1) {
-        throw conflict('cannot demote the only owner; assign another owner first');
-      }
-    }
-
-    const updated = await tx
-      .update(workspaceMembers)
-      .set({ role, updatedAt: new Date() })
-      .where(
-        and(
-          eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.userId, userId),
-        ),
-      )
-      .returning();
-    const member = updated[0];
-    if (!member) throw invariant('workspace_members update returned no row');
-
-    await recordAuditEvent(ctx, {
-      kind: 'workspace.member.role_change',
-      entityType: 'workspace_member',
-      entityId: member.id,
-      payload: { userId, previousRole: target.role, newRole: role },
-    });
-
-    return member;
-  });
-}
+// Member mutations (add, remove, change role) live only in users.ts,
+// the single guarded implementation behind /settings/members. The
+// weaker copies that used to sit here were removed (audit I043,
+// deliverable ia:F-04).
 
 // ---- Phase 28: active workspace + multi-workspace switching --------
 
@@ -526,24 +426,42 @@ export interface MyWorkspaceRow {
 }
 
 /**
- * List every workspace the user belongs to, marking which one is currently
- * active. Used by the header switcher dropdown.
+ * List every workspace the user can switch to, marking the one their
+ * requests actually operate in. Used by the header switcher dropdown and
+ * the account page.
  *
- * When `includeAllForSuperAdmin: true`, the result also contains every
- * other workspace on the platform with `role='super_admin'` and
- * `isGodMode=true`. The caller must actually be a super-admin — this
- * function does not check; it just opts in to the wider listing.
+ * - Archived workspaces are left out for normal users: the resolver
+ *   ignores them, so listing one only let the switcher show a workspace
+ *   as current while every page read another (audit I174). Super-admins
+ *   still see them, so the restore action stays reachable.
+ * - `isActive` marks the workspace resolveWorkspaceContextForUser picks
+ *   (including its oldest-membership fallback and the god-mode branch),
+ *   not the raw users.activeWorkspaceId pointer, so the switcher always
+ *   names the workspace the dashboard and every other page show.
+ *
+ * When `includeAllForSuperAdmin: true` and the user really is a
+ * super-admin (checked against users.role), the result also contains
+ * every other workspace on the platform with `role='super_admin'` and
+ * `isGodMode=true`. The flag is ignored for everyone else.
  */
 export async function listMyWorkspaces(
   userId: string,
   options: { includeAllForSuperAdmin?: boolean } = {},
 ): Promise<MyWorkspaceRow[]> {
   const userRows = await db
-    .select({ activeWorkspaceId: users.activeWorkspaceId })
+    .select({ role: users.role })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
-  const activeId = userRows[0]?.activeWorkspaceId ?? null;
+  const isSuperAdminUser = userRows[0]?.role === 'super_admin';
+
+  let activeId: bigint | null = null;
+  try {
+    const resolved = await resolveWorkspaceContextForUser(userId, isSuperAdminUser);
+    activeId = resolved.workspaceId;
+  } catch (err) {
+    if (!(err instanceof NoWorkspaceError)) throw err;
+  }
 
   const memberRows = await db
     .select({
@@ -558,7 +476,11 @@ export async function listMyWorkspaces(
     })
     .from(workspaceMembers)
     .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
-    .where(eq(workspaceMembers.userId, userId))
+    .where(
+      isSuperAdminUser
+        ? eq(workspaceMembers.userId, userId)
+        : and(eq(workspaceMembers.userId, userId), eq(workspaces.status, 'active')),
+    )
     .orderBy(asc(workspaces.name));
 
   const memberships: MyWorkspaceRow[] = memberRows.map((r) => ({
@@ -568,7 +490,7 @@ export async function listMyWorkspaces(
     isGodMode: false,
   }));
 
-  if (!options.includeAllForSuperAdmin) return memberships;
+  if (!options.includeAllForSuperAdmin || !isSuperAdminUser) return memberships;
 
   const memberIds = new Set(memberships.map((m) => m.workspace.id.toString()));
   const allOthers = await db
@@ -598,6 +520,11 @@ export async function listMyWorkspaces(
  * Switch the user's active workspace. Verifies the user is actually a
  * member; super_admin can pass `allowAnyAsSuperAdmin` to bypass the check
  * (god-mode can land anywhere). Returns the resolved workspace.
+ *
+ * An archived workspace is refused unless `allowAnyAsSuperAdmin` is set:
+ * the resolver ignores archived workspaces for normal users, so accepting
+ * the pointer made the switcher claim a workspace the pages never showed
+ * (audit I174). Super-admins may still enter one to inspect or restore it.
  *
  * Every god-mode switch into a non-member workspace is audit-logged into
  * the target workspace so the trail is visible from /admin/audit and
@@ -635,6 +562,12 @@ export async function setActiveWorkspace(
         'permission_denied',
       );
     }
+  }
+  if (wsRows[0].status !== 'active' && !options.allowAnyAsSuperAdmin) {
+    throw new WorkspaceServiceError(
+      'that workspace is archived',
+      'workspace_archived',
+    );
   }
 
   await db

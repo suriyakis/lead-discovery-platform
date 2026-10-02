@@ -66,7 +66,7 @@ See `.env.example` for the full list. Notable ones:
 - **`OWNER_EMAIL`** — bootstrap super-admin. First login from this email auto-promotes.
 - **`AI_PROVIDER`** — `mock` in dev/test, real provider id in production when wired.
 - **`SEARCH_PROVIDER`** — same pattern.
-- **`STORAGE_PROVIDER`** — `local` in dev, `s3` in production.
+- **`STORAGE_PROVIDER`** — `local` (the default) in dev **and in production today**. The Phase 9 deploy note (TODO.md P9-06) kept prod on `local`, and `docker-compose.prod.yml` mounts the `app-storage` volume at `/app/storage` for it (`STORAGE_LOCAL_ROOT` defaults to `./storage`). Check `.env` on the server before relying on this. `s3` (any S3-compatible bucket, `S3_*` vars in `.env.example`) is supported. Switching is an env change, but copy the existing objects into the bucket under the same keys first, or every stored document and export goes missing. Either way, browsers download through the authenticated routes `/api/documents/[id]/download` and `/api/crm/exports/[file]`, which check the workspace and stream from storage. No storage URL (file:// or presigned) ever reaches a page.
 - **`JOB_QUEUE_PROVIDER`** — `memory` in dev, `bullmq` once Redis is up.
 
 ## Production: Hetzner deployment
@@ -118,7 +118,7 @@ That's the whole deploy. **No manual editing on the server.** If you need to deb
 ### Backups
 
 - **Postgres:** `pg_dump` once a day, written to a local backups directory and uploaded to off-host storage. Retention: 30 days. Script lives at `scripts/backup-postgres.sh`.
-- **Storage volume (when using local storage):** rsync to the same off-host bucket. Once we're on S3-compatible, the storage backend handles its own durability.
+- **Storage volume (local storage, the current setup):** rsync the `app-storage` volume (`/var/lib/docker/volumes/lead-discovery-platform_app-storage/_data`) to the same off-host bucket. Once we're on S3-compatible, the storage backend handles its own durability.
 - **Database master key (`MASTER_KEY`):** kept in the user's password manager AND in a printed sealed envelope. Losing it means workspace secrets become unrecoverable.
 
 ### Rollback
@@ -143,7 +143,7 @@ If a migration is the problem, **reverting code is not enough**. Revert the sche
 ### What goes where on the server
 
 - App code: `/opt/lead-discovery-platform`
-- Local file storage (until S3): `/opt/lead-discovery-platform/storage` mounted into the app container.
+- Local file storage (until S3): the docker volume `lead-discovery-platform_app-storage` (`/var/lib/docker/volumes/lead-discovery-platform_app-storage/_data`), mounted into the app container at `/app/storage`.
 - Postgres data (until managed): `/var/lib/docker/volumes/lead-discovery-platform_postgres-data`.
 - Backups: `/var/backups/lead-discovery-platform/`.
 
@@ -157,6 +157,10 @@ If you must edit something on the server:
 4. **Push the fix** and redeploy from clean state.
 
 The point is not to forbid emergency edits; the point is to never let them silently diverge.
+
+### Data remediation
+
+Bad production data is never fixed with ad-hoc SQL. It is fixed with a versioned script under `scripts/remediation/` (dry run → owner review → `--apply` → optional `--revert`), run from the host checkout with a pg_dump taken first. The first one, `scripts/remediation/2026-10-funnel/` (flow:F-06), has its runbook in its README. Reports carry personal data: they stay in the git-ignored `remediation-reports/` and are never committed.
 
 ### Emergency log
 

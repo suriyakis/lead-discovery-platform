@@ -20,6 +20,7 @@ import {
   setWorkspaceDefault,
 } from '@/lib/services/admin';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -65,7 +66,7 @@ describe('setActiveWorkspace', () => {
   it('updates users.activeWorkspaceId for a member', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
     );
@@ -114,12 +115,12 @@ describe('listMyWorkspaces', () => {
   it('returns one row per membership with isActive flag', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
     );
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceB,
     );
@@ -137,13 +138,13 @@ describe('adminRemoveUserFromWorkspace clears stale active', () => {
   it('clears users.activeWorkspaceId when removed from active workspace', async () => {
     const s = await setup();
     await adminAddUserToWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
     );
     await setActiveWorkspace(s.member, s.workspaceA);
     await adminRemoveUserFromWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.member,
       s.workspaceA,
     );
@@ -162,13 +163,13 @@ describe('isDefault flag', () => {
   it('refuses to archive a default workspace', async () => {
     const s = await setup();
     await setWorkspaceDefault(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
       true,
     );
     await expect(
       archiveWorkspace(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
@@ -179,13 +180,13 @@ describe('isDefault flag', () => {
     // Archive first, then mark default — that's the only legal sequence
     // since archiving when already default is blocked.
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     // Marking an archived workspace as default is forbidden.
     await expect(
       setWorkspaceDefault(
-        ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+        platformCtx(s.superAdmin),
         s.workspaceA,
         true,
       ),
@@ -195,11 +196,11 @@ describe('isDefault flag', () => {
   it('lets non-default archived workspace be deleted', async () => {
     const s = await setup();
     await archiveWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     await deleteWorkspace(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
     );
     const left = await db
@@ -216,13 +217,13 @@ describe('setWorkspaceDefault', () => {
   it('flips the flag', async () => {
     const s = await setup();
     const ws = await setWorkspaceDefault(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
       true,
     );
     expect(ws.isDefault).toBe(true);
     const cleared = await setWorkspaceDefault(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       s.workspaceA,
       false,
     );
@@ -232,7 +233,7 @@ describe('setWorkspaceDefault', () => {
   it('refuses non-super-admin', async () => {
     const s = await setup();
     await expect(
-      setWorkspaceDefault(ctx(s.workspaceA, s.ownerA), s.workspaceA, true),
+      setWorkspaceDefault(smuggled(ctx(s.workspaceA, s.ownerA)), s.workspaceA, true),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });

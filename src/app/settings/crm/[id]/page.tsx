@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { SettingsNav } from '@/components/SettingsNav';
 import { auth } from '@/lib/auth';
 import {
@@ -8,16 +9,20 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { canAdminWorkspace } from '@/lib/services/context';
+import { canAdminWorkspace, canWrite } from '@/lib/services/context';
 import {
   CrmServiceError,
-  archiveCrmConnection,
   getCrmConnection,
   listSyncEntries,
-  testCrmConnection,
-  updateCrmConnection,
 } from '@/lib/services/crm';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import {
+  archiveCrmConnectionAction,
+  restoreCrmConnectionAction,
+  saveCrmConnectionAction,
+  testCrmConnectionAction,
+} from './actions';
+import { archiveCrmConnectionConfirm } from '@/lib/confirm-copy';
 
 export default async function CrmConnectionDetail({
   params,
@@ -56,51 +61,13 @@ export default async function CrmConnectionDetail({
 
   const recentSyncs = await listSyncEntries(ctx, { connectionId: id, limit: 20 });
 
-  async function save(formData: FormData) {
-    'use server';
-    const c = await getWorkspaceContext();
-    const credential = String(formData.get('credential') ?? '');
-    const baseUrl = String(formData.get('baseUrl') ?? '').trim();
-    try {
-      await updateCrmConnection(c, id, {
-        name: String(formData.get('name') ?? '').trim() || undefined,
-        credential: credential || undefined,
-        config: baseUrl
-          ? { ...(conn!.config as Record<string, unknown>), baseUrl }
-          : (conn!.config as Record<string, unknown>),
-      });
-      redirect(`/settings/crm/${id}?message=Saved`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      if (err instanceof CrmServiceError) {
-        redirect(`/settings/crm/${id}?error=${encodeURIComponent(err.message)}`);
-      }
-      throw err;
-    }
-  }
-
-  async function testNow() {
-    'use server';
-    const c = await getWorkspaceContext();
-    try {
-      const result = await testCrmConnection(c, id);
-      const m = result.ok
-        ? 'Connection OK'
-        : `Failed: ${result.detail ?? 'unknown'}`;
-      redirect(`/settings/crm/${id}?message=${encodeURIComponent(m)}`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof Error ? err.message : 'test failed';
-      redirect(`/settings/crm/${id}?error=${encodeURIComponent(m)}`);
-    }
-  }
-
-  async function archive() {
-    'use server';
-    const c = await getWorkspaceContext();
-    await archiveCrmConnection(c, id);
-    redirect('/settings/crm');
-  }
+  // Module-scope actions bound to this connection (see ./actions.ts).
+  const connectionId = conn.id.toString();
+  const save = saveCrmConnectionAction.bind(null, connectionId);
+  const test = testCrmConnectionAction.bind(null, connectionId);
+  const archive = archiveCrmConnectionAction.bind(null, connectionId);
+  const restore = restoreCrmConnectionAction.bind(null, connectionId);
+  const isArchived = conn.status === 'archived';
 
   return (
     <AppShell>
@@ -117,9 +84,21 @@ export default async function CrmConnectionDetail({
 
         {sp.message ? <p className="form-message">{sp.message}</p> : null}
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
+        {isArchived ? (
+          <p className="form-info">
+            This connection is archived: leads are not pushed to it and it
+            cannot be tested.
+            {canAdminWorkspace(ctx) ? ' Restore it below to use it again.' : null}
+          </p>
+        ) : null}
 
         <section>
           <h2>Settings</h2>
+          {/* One form. Save submits it; Test connection posts the same
+              form to the test action (formAction) and skips validation,
+              because it tests the saved settings, not the typed ones. A
+              nested <form> here broke hydration and the Test button
+              (I115). */}
           <form action={save} className="edit-draft-form">
             <label>
               <span>Display name</span>
@@ -130,10 +109,11 @@ export default async function CrmConnectionDetail({
               <input type="password" name="credential" autoComplete="new-password" />
             </label>
             <label>
-              <span>Base URL override</span>
+              <span>Base URL override (leave blank for the default)</span>
               <input
                 type="text"
                 name="baseUrl"
+                maxLength={500}
                 defaultValue={
                   ((conn.config as Record<string, unknown>).baseUrl as string | undefined) ?? ''
                 }
@@ -143,10 +123,17 @@ export default async function CrmConnectionDetail({
               <button type="submit" className="primary-btn">
                 Save
               </button>
-              <form action={testNow}>
-                <button type="submit">Test connection</button>
-              </form>
+              {!isArchived && canWrite(ctx) ? (
+                <button type="submit" formAction={test} formNoValidate className="ghost-btn">
+                  Test connection
+                </button>
+              ) : null}
             </div>
+            {!isArchived && canWrite(ctx) ? (
+              <p className="muted small">
+                Test connection checks the saved settings. Save your changes first.
+              </p>
+            ) : null}
           </form>
         </section>
 
@@ -169,14 +156,25 @@ export default async function CrmConnectionDetail({
           )}
         </section>
 
-        {canAdminWorkspace(ctx) && conn.status !== 'archived' ? (
+        {canAdminWorkspace(ctx) ? (
           <section>
             <h2>Admin</h2>
-            <form action={archive}>
-              <button type="submit" className="ghost-btn">
-                Archive connection
-              </button>
-            </form>
+            {isArchived ? (
+              <form action={restore}>
+                <button type="submit" className="primary-btn">
+                  Restore connection
+                </button>
+              </form>
+            ) : (
+              <form action={archive}>
+                <ConfirmFormButton
+                  className="ghost-btn"
+                  message={archiveCrmConnectionConfirm({ name: conn.name, system: conn.system })}
+                >
+                  Archive connection
+                </ConfirmFormButton>
+              </form>
+            )}
           </section>
         ) : null}
       </AppShell>

@@ -1,8 +1,29 @@
-// Platform-admin (god-mode) service. All operations check
-// canSuperAdmin(ctx) before doing anything; failure to do so is the same
-// security mistake as forgetting workspace_id in a query.
+// Platform-admin (super-admin console) service. Every operation takes a
+// PlatformContext and calls assertPlatform() before doing anything;
+// failure to do so is the same security mistake as forgetting
+// workspace_id in a query.
+//
+// Audit attribution (I051): a tenant-level effect is logged against the
+// EXPLICIT target workspace id the operation was given; a platform-level
+// effect (user profile, workspace hard-delete) is logged at platform
+// scope (workspace_id NULL). Nothing here ever logs into the workspace the
+// admin's switcher happens to point at — PlatformContext has none.
 
-import { and, count, desc, eq, isNull, sql, sum, type SQL } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  notInArray,
+  sql,
+  sum,
+  type SQL,
+} from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { users, type User } from '@/lib/db/schema/auth';
 import {
@@ -17,14 +38,12 @@ import { auditLog, usageLog } from '@/lib/db/schema/audit';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import {
   featureFlags,
-  impersonationSessions,
   type FeatureFlag,
-  type ImpersonationSession,
   type NewFeatureFlag,
-  type NewImpersonationSession,
 } from '@/lib/db/schema/admin';
 import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
-import { isSuperAdmin, type WorkspaceContext } from './context';
+import { isPlatformContext, type PlatformContext } from './platform-context';
+import { PLATFORM_AUDIT_KINDS, type NoWorkspaceOrigin } from '@/lib/audit-scope';
 
 export class AdminServiceError extends Error {
   public readonly code: string;
@@ -44,8 +63,10 @@ const conflict = (msg: string) =>
 const invalid = (msg: string) =>
   new AdminServiceError(msg, 'invalid_input');
 
-function assertSuperAdmin(ctx: WorkspaceContext, op: string): void {
-  if (!isSuperAdmin(ctx)) throw denied(op);
+/** Rejects anything that is not a PlatformContext — including a
+ *  WorkspaceContext whose role is super_admin. */
+function assertPlatform(pctx: PlatformContext, op: string): void {
+  if (!isPlatformContext(pctx)) throw denied(op);
 }
 
 // ---- workspace overview ---------------------------------------------
@@ -65,10 +86,10 @@ export interface WorkspaceOverviewRow {
 }
 
 export async function listAllWorkspaces(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   filter: { includeArchived?: boolean } = {},
 ): Promise<WorkspaceOverviewRow[]> {
-  assertSuperAdmin(ctx, 'admin.list_workspaces');
+  assertPlatform(pctx, 'admin.list_workspaces');
   const wsRows = filter.includeArchived
     ? await db
         .select()
@@ -127,8 +148,8 @@ export interface PlatformTotals {
   supportUnread: number;
 }
 
-export async function platformTotals(ctx: WorkspaceContext): Promise<PlatformTotals> {
-  assertSuperAdmin(ctx, 'admin.platform_totals');
+export async function platformTotals(pctx: PlatformContext): Promise<PlatformTotals> {
+  assertPlatform(pctx, 'admin.platform_totals');
   const { supportThreads } = await import('@/lib/db/schema/support');
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
@@ -194,9 +215,9 @@ export interface WorkspaceBillingStatsRow {
  * 30-day usage window; token totals are all-time from the ledger.
  */
 export async function platformWorkspaceStats(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
 ): Promise<WorkspaceBillingStatsRow[]> {
-  assertSuperAdmin(ctx, 'admin.platform_stats');
+  assertPlatform(pctx, 'admin.platform_stats');
   const { tokenTransactions } = await import('@/lib/db/schema/tokens');
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
@@ -247,25 +268,29 @@ export async function platformWorkspaceStats(
 }
 
 /** Toggle a workspace's billing exemption (platform-internal tenants).
- *  Super-admin only, audit-logged. */
+ *  Super-admin only, audit-logged against the TARGET workspace — its own
+ *  admins should see who changed their billing status. */
 export async function setBillingExempt(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
   exempt: boolean,
 ): Promise<Workspace> {
-  assertSuperAdmin(ctx, 'admin.set_billing_exempt');
+  assertPlatform(pctx, 'admin.set_billing_exempt');
   const [updated] = await db
     .update(workspaces)
     .set({ billingExempt: exempt, updatedAt: new Date() })
     .where(eq(workspaces.id, workspaceId))
     .returning();
   if (!updated) throw notFound('workspace');
-  await recordAuditEvent(ctx, {
-    kind: 'admin.set_billing_exempt',
-    entityType: 'workspace',
-    entityId: workspaceId,
-    payload: { exempt },
-  });
+  await recordAuditEvent(
+    { workspaceId, userId: pctx.actorUserId },
+    {
+      kind: 'admin.set_billing_exempt',
+      entityType: 'workspace',
+      entityId: workspaceId,
+      payload: { exempt },
+    },
+  );
   return updated;
 }
 
@@ -279,11 +304,11 @@ export interface UpdateWorkspaceProfileInput {
 }
 
 export async function updateWorkspaceProfile(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
   input: UpdateWorkspaceProfileInput,
 ): Promise<Workspace> {
-  assertSuperAdmin(ctx, 'admin.workspace.update');
+  assertPlatform(pctx, 'admin.workspace.update');
   const updates: Partial<Workspace> & { updatedAt: Date } = { updatedAt: new Date() };
   if (input.name !== undefined) {
     const n = input.name.trim();
@@ -309,7 +334,7 @@ export async function updateWorkspaceProfile(
     .returning();
   if (!updated) throw notFound('workspace');
   await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.workspace.update',
       entityType: 'workspace',
@@ -321,11 +346,11 @@ export async function updateWorkspaceProfile(
 }
 
 export async function archiveWorkspace(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
   reason: string | null = null,
 ): Promise<Workspace> {
-  assertSuperAdmin(ctx, 'admin.workspace.archive');
+  assertPlatform(pctx, 'admin.workspace.archive');
   const rows = await db
     .select()
     .from(workspaces)
@@ -341,7 +366,7 @@ export async function archiveWorkspace(
     .set({
       status: 'archived',
       archivedAt: new Date(),
-      archivedBy: ctx.userId,
+      archivedBy: pctx.actorUserId,
       archivedReason: reason?.trim() || null,
       updatedAt: new Date(),
     })
@@ -349,7 +374,7 @@ export async function archiveWorkspace(
     .returning();
   if (!updated) throw notFound('workspace');
   await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.workspace.archive',
       entityType: 'workspace',
@@ -372,10 +397,10 @@ export interface AdminCreateWorkspaceInput {
 }
 
 export async function adminCreateWorkspace(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   input: AdminCreateWorkspaceInput,
 ): Promise<Workspace> {
-  assertSuperAdmin(ctx, 'admin.workspace.create');
+  assertPlatform(pctx, 'admin.workspace.create');
   const name = input.name.trim();
   if (!name) throw invalid('name is required');
   const slug = input.slug.trim().toLowerCase();
@@ -422,7 +447,7 @@ export async function adminCreateWorkspace(
   });
 
   await recordAuditEvent(
-    { workspaceId: created.id, userId: ctx.userId },
+    { workspaceId: created.id, userId: pctx.actorUserId },
     {
       kind: 'admin.workspace.create',
       entityType: 'workspace',
@@ -439,11 +464,11 @@ export async function adminCreateWorkspace(
  * workspace-scoped row.
  */
 export async function setWorkspaceDefault(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
   isDefault: boolean,
 ): Promise<Workspace> {
-  assertSuperAdmin(ctx, 'admin.workspace.set_default');
+  assertPlatform(pctx, 'admin.workspace.set_default');
   const rows = await db
     .select()
     .from(workspaces)
@@ -460,7 +485,7 @@ export async function setWorkspaceDefault(
     .returning();
   if (!updated) throw notFound('workspace');
   await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.workspace.set_default',
       entityType: 'workspace',
@@ -472,10 +497,10 @@ export async function setWorkspaceDefault(
 }
 
 export async function deleteWorkspace(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
 ): Promise<void> {
-  assertSuperAdmin(ctx, 'admin.workspace.delete');
+  assertPlatform(pctx, 'admin.workspace.delete');
   const rows = await db
     .select()
     .from(workspaces)
@@ -527,7 +552,7 @@ export async function deleteWorkspace(
   // Platform-level audit BEFORE delete — the workspace-scoped audit rows
   // (onDelete 'set null') survive but lose their workspace pointer, so
   // the platform trail carries the identifying details.
-  await recordPlatformAuditEvent(ctx.userId, {
+  await recordPlatformAuditEvent(pctx.actorUserId, {
     kind: 'admin.workspace.delete',
     entityType: 'workspace',
     entityId: workspaceId,
@@ -542,10 +567,10 @@ export async function deleteWorkspace(
 
 
 export async function restoreWorkspace(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
 ): Promise<Workspace> {
-  assertSuperAdmin(ctx, 'admin.workspace.restore');
+  assertPlatform(pctx, 'admin.workspace.restore');
   const rows = await db
     .select()
     .from(workspaces)
@@ -566,7 +591,7 @@ export async function restoreWorkspace(
     .returning();
   if (!updated) throw notFound('workspace');
   await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.workspace.restore',
       entityType: 'workspace',
@@ -584,11 +609,11 @@ export interface UpdateUserProfileInput {
 }
 
 export async function updateUserProfile(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   input: UpdateUserProfileInput,
 ): Promise<User> {
-  assertSuperAdmin(ctx, 'admin.user.update_profile');
+  assertPlatform(pctx, 'admin.user.update_profile');
   const updates: Partial<User> = {};
   if (input.name !== undefined) {
     updates.name = input.name === null ? null : input.name.trim() || null;
@@ -617,33 +642,33 @@ export async function updateUserProfile(
     .where(eq(users.id, targetUserId))
     .returning();
   if (!updated) throw notFound('user');
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'admin.user.update_profile',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: {
-        name: updates.name === undefined ? null : (updates.name ?? ''),
-        email: updates.email ?? null,
-      },
+  // A user is a platform entity (they can belong to many workspaces), and
+  // the payload carries their name/email — platform scope only.
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'admin.user.update_profile',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: {
+      name: updates.name === undefined ? null : (updates.name ?? ''),
+      email: updates.email ?? null,
     },
-  );
+  });
   return updated;
 }
 
 /**
- * Super-admin add: drop a user into any workspace at any role. Bypasses
- * the workspace-admin gate that the regular `users.addMember` enforces,
- * and accepts `owner` as a role (the regular path doesn't).
+ * Super-admin add: drop a user into any workspace at any role. Unlike
+ * the regular `users.addMember`, it needs no membership in the target
+ * workspace (the regular path acts on ctx.workspaceId and lets only
+ * owners grant `owner`).
  */
 export async function adminAddUserToWorkspace(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   workspaceId: bigint,
   role: WorkspaceMemberRole = 'member',
 ): Promise<WorkspaceMember> {
-  assertSuperAdmin(ctx, 'admin.user.add_to_workspace');
+  assertPlatform(pctx, 'admin.user.add_to_workspace');
   const userRows = await db.select().from(users).where(eq(users.id, targetUserId)).limit(1);
   if (!userRows[0]) throw notFound('user');
   const wsRows = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
@@ -670,7 +695,7 @@ export async function adminAddUserToWorkspace(
     );
   }
   await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.user.add_to_workspace',
       entityType: 'workspace_member',
@@ -682,18 +707,18 @@ export async function adminAddUserToWorkspace(
 }
 
 /**
- * Super-admin set-member-role. The regular workspace.ts setMemberRole
+ * Super-admin set-member-role. The regular role change in users.ts
  * scopes the query by ctx.workspaceId — that's wrong when a super-admin
  * is editing a workspace they don't belong to. This variant takes the
  * target workspaceId explicitly.
  */
 export async function adminSetMemberRole(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
   targetUserId: string,
   role: WorkspaceMemberRole,
 ): Promise<WorkspaceMember> {
-  assertSuperAdmin(ctx, 'admin.user.set_member_role');
+  assertPlatform(pctx, 'admin.user.set_member_role');
   const existing = await db
     .select()
     .from(workspaceMembers)
@@ -735,7 +760,7 @@ export async function adminSetMemberRole(
     );
   }
   await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.user.set_member_role',
       entityType: 'workspace_member',
@@ -752,13 +777,13 @@ export async function adminSetMemberRole(
  * /admin/users/[id] "Move to workspace" flow.
  */
 export async function moveUserBetweenWorkspaces(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   fromWorkspaceId: bigint,
   toWorkspaceId: bigint,
   role: WorkspaceMemberRole = 'member',
 ): Promise<WorkspaceMember> {
-  assertSuperAdmin(ctx, 'admin.user.move');
+  assertPlatform(pctx, 'admin.user.move');
   if (fromWorkspaceId === toWorkspaceId) {
     throw invalid('source and destination workspaces are the same');
   }
@@ -842,7 +867,7 @@ export async function moveUserBetweenWorkspaces(
       );
     }
     await recordAuditEvent(
-      { workspaceId: toWorkspaceId, userId: ctx.userId },
+      { workspaceId: toWorkspaceId, userId: pctx.actorUserId },
       {
         kind: 'admin.user.move',
         entityType: 'workspace_member',
@@ -861,11 +886,11 @@ export async function moveUserBetweenWorkspaces(
 }
 
 export async function adminRemoveUserFromWorkspace(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   workspaceId: bigint,
 ): Promise<void> {
-  assertSuperAdmin(ctx, 'admin.user.remove_from_workspace');
+  assertPlatform(pctx, 'admin.user.remove_from_workspace');
   const existing = await db
     .select()
     .from(workspaceMembers)
@@ -909,7 +934,7 @@ export async function adminRemoveUserFromWorkspace(
       ),
     );
   await recordAuditEvent(
-    { workspaceId, userId: ctx.userId },
+    { workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.user.remove_from_workspace',
       entityType: 'workspace_member',
@@ -920,10 +945,10 @@ export async function adminRemoveUserFromWorkspace(
 }
 
 export async function listMembershipsForUser(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
 ): Promise<Array<{ workspace: Workspace; role: WorkspaceMemberRole }>> {
-  assertSuperAdmin(ctx, 'admin.user.list_memberships');
+  assertPlatform(pctx, 'admin.user.list_memberships');
   const rows = await db
     .select({
       workspace: workspaces,
@@ -936,170 +961,15 @@ export async function listMembershipsForUser(
   return rows;
 }
 
-// ---- impersonation --------------------------------------------------
-
-export interface StartImpersonationInput {
-  targetUserId: string;
-  targetWorkspaceId: bigint;
-  reason: string;
-}
-
-export async function startImpersonation(
-  ctx: WorkspaceContext,
-  input: StartImpersonationInput,
-): Promise<ImpersonationSession> {
-  assertSuperAdmin(ctx, 'admin.impersonate');
-  const reason = input.reason.trim();
-  if (!reason) throw invalid('reason required');
-
-  const target = await db
-    .select()
-    .from(users)
-    .where(eq(users.id, input.targetUserId))
-    .limit(1);
-  if (!target[0]) throw notFound('target user');
-
-  const targetWs = await db
-    .select()
-    .from(workspaces)
-    .where(eq(workspaces.id, input.targetWorkspaceId))
-    .limit(1);
-  if (!targetWs[0]) throw notFound('target workspace');
-
-  // Verify the target user is a member of the target workspace.
-  const member = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.userId, input.targetUserId),
-        eq(workspaceMembers.workspaceId, input.targetWorkspaceId),
-      ),
-    )
-    .limit(1);
-  if (!member[0]) {
-    throw invalid('target user is not a member of the target workspace');
-  }
-
-  // Close any existing active session by this actor.
-  await db
-    .update(impersonationSessions)
-    .set({ endedAt: new Date(), endedByUserId: ctx.userId })
-    .where(
-      and(
-        eq(impersonationSessions.actorUserId, ctx.userId),
-        isNull(impersonationSessions.endedAt),
-      ),
-    );
-
-  const row: NewImpersonationSession = {
-    actorUserId: ctx.userId,
-    targetUserId: input.targetUserId,
-    targetWorkspaceId: input.targetWorkspaceId,
-    reason,
-  };
-  const [created] = await db.insert(impersonationSessions).values(row).returning();
-  if (!created) {
-    throw new AdminServiceError(
-      'impersonation session insert returned no row',
-      'invariant_violation',
-    );
-  }
-
-  // Audit on both sides — we log it as a workspace event in the target
-  // workspace so the audit trail is visible from there too.
-  await recordAuditEvent(
-    { workspaceId: input.targetWorkspaceId, userId: ctx.userId },
-    {
-      kind: 'admin.impersonate.start',
-      entityType: 'user',
-      entityId: input.targetUserId,
-      payload: {
-        sessionId: created.id.toString(),
-        actor: ctx.userId,
-        target: input.targetUserId,
-        reason,
-      },
-    },
-  );
-
-  return created;
-}
-
-export async function endImpersonation(
-  ctx: WorkspaceContext,
-  sessionId: bigint,
-): Promise<ImpersonationSession> {
-  // The actor or any super-admin may close the session (a super-admin
-  // override is necessary for emergency revocation).
-  if (!isSuperAdmin(ctx)) throw denied('admin.impersonate.end');
-  const rows = await db
-    .select()
-    .from(impersonationSessions)
-    .where(eq(impersonationSessions.id, sessionId))
-    .limit(1);
-  if (!rows[0]) throw notFound('impersonation_session');
-  if (rows[0].endedAt !== null) throw conflict('session already ended');
-
-  const [updated] = await db
-    .update(impersonationSessions)
-    .set({ endedAt: new Date(), endedByUserId: ctx.userId })
-    .where(eq(impersonationSessions.id, sessionId))
-    .returning();
-  if (!updated) {
-    throw new AdminServiceError(
-      'impersonation end returned no row',
-      'invariant_violation',
-    );
-  }
-
-  await recordAuditEvent(
-    { workspaceId: updated.targetWorkspaceId, userId: ctx.userId },
-    {
-      kind: 'admin.impersonate.end',
-      entityType: 'user',
-      entityId: updated.targetUserId,
-      payload: {
-        sessionId: updated.id.toString(),
-        actor: updated.actorUserId,
-        endedBy: ctx.userId,
-      },
-    },
-  );
-
-  return updated;
-}
-
-export async function listImpersonationSessions(
-  ctx: WorkspaceContext,
-  filter: { activeOnly?: boolean; limit?: number } = {},
-): Promise<ImpersonationSession[]> {
-  assertSuperAdmin(ctx, 'admin.list_impersonations');
-  const conditions: SQL[] = [];
-  if (filter.activeOnly) conditions.push(isNull(impersonationSessions.endedAt));
-  return db
-    .select()
-    .from(impersonationSessions)
-    .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(impersonationSessions.startedAt))
-    .limit(Math.min(filter.limit ?? 100, 1000));
-}
-
-export async function activeImpersonationFor(
-  ctx: Pick<WorkspaceContext, 'userId'>,
-): Promise<ImpersonationSession | null> {
-  const rows = await db
-    .select()
-    .from(impersonationSessions)
-    .where(
-      and(
-        eq(impersonationSessions.actorUserId, ctx.userId),
-        isNull(impersonationSessions.endedAt),
-      ),
-    )
-    .limit(1);
-  return rows[0] ?? null;
-}
+// ---- impersonation (removed) ----------------------------------------
+//
+// The old "Impersonate" control recorded impersonation_sessions rows and
+// audit events but nothing ever applied them: the acting identity,
+// role and workspace never changed (I047). The control, its banner, the
+// session list and these service functions were removed. The
+// impersonation_sessions table stays in the schema, untouched, as history
+// until a real, read-only "view as" feature is designed. To look inside a
+// tenant today, use the god-mode workspace switcher.
 
 // ---- feature flags ---------------------------------------------------
 
@@ -1111,10 +981,10 @@ export interface SetFeatureFlagInput {
 }
 
 export async function setFeatureFlag(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   input: SetFeatureFlagInput,
 ): Promise<FeatureFlag> {
-  assertSuperAdmin(ctx, 'admin.feature_flag.set');
+  assertPlatform(pctx, 'admin.feature_flag.set');
   const key = input.key.trim();
   if (!/^[a-z][a-z0-9_.]*$/.test(key)) {
     throw invalid('feature flag key must be lowercase a-z0-9_.');
@@ -1124,7 +994,7 @@ export async function setFeatureFlag(
     key,
     enabled: input.enabled,
     config: input.config ?? {},
-    setBy: ctx.userId,
+    setBy: pctx.actorUserId,
   };
   await db
     .insert(featureFlags)
@@ -1134,7 +1004,7 @@ export async function setFeatureFlag(
       set: {
         enabled: row.enabled,
         config: row.config,
-        setBy: ctx.userId,
+        setBy: pctx.actorUserId,
         setAt: new Date(),
       },
     });
@@ -1155,7 +1025,7 @@ export async function setFeatureFlag(
     );
   }
   await recordAuditEvent(
-    { workspaceId: input.workspaceId, userId: ctx.userId },
+    { workspaceId: input.workspaceId, userId: pctx.actorUserId },
     {
       kind: 'admin.feature_flag.set',
       entityType: 'feature_flag',
@@ -1167,10 +1037,10 @@ export async function setFeatureFlag(
 }
 
 export async function listFeatureFlags(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   workspaceId: bigint,
 ): Promise<FeatureFlag[]> {
-  assertSuperAdmin(ctx, 'admin.feature_flag.list');
+  assertPlatform(pctx, 'admin.feature_flag.list');
   return db
     .select()
     .from(featureFlags)
@@ -1181,10 +1051,10 @@ export async function listFeatureFlags(
 // ---- platform users + recent audit -----------------------------------
 
 export async function listAllUsers(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   limit = 200,
 ): Promise<User[]> {
-  assertSuperAdmin(ctx, 'admin.list_users');
+  assertPlatform(pctx, 'admin.list_users');
   return db
     .select()
     .from(users)
@@ -1193,10 +1063,10 @@ export async function listAllUsers(
 }
 
 export async function recentAuditAcrossWorkspaces(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   limit = 100,
 ) {
-  assertSuperAdmin(ctx, 'admin.recent_audit');
+  assertPlatform(pctx, 'admin.recent_audit');
   return db
     .select()
     .from(auditLog)
@@ -1205,29 +1075,46 @@ export async function recentAuditAcrossWorkspaces(
 }
 
 export interface AuditAcrossWorkspacesFilter {
-  workspaceId?: bigint;
+  /** A workspace id, or `null` for rows with no workspace (workspace_id IS
+   *  NULL). Those are platform-scope events AND tenant rows whose
+   *  workspace was deleted (ON DELETE SET NULL); see src/lib/audit-scope.ts. */
+  workspaceId?: bigint | null;
+  /** With `workspaceId: null` only: keep just the platform-scope events
+   *  (kind in PLATFORM_AUDIT_KINDS) or just the rows orphaned by a
+   *  workspace delete (every other kind). Ignored otherwise. */
+  noWorkspaceOrigin?: NoWorkspaceOrigin;
   kind?: string;
   since?: Date;
+  /** Inclusive upper bound. */
   until?: Date;
+  /** Exclusive upper bound: what a minute-precision "Until" input needs. */
+  before?: Date;
   limit?: number;
 }
 
 export async function listAuditAcrossWorkspaces(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   filter: AuditAcrossWorkspacesFilter = {},
 ) {
-  assertSuperAdmin(ctx, 'admin.list_audit_across');
+  assertPlatform(pctx, 'admin.list_audit_across');
   const conds: SQL[] = [];
-  if (filter.workspaceId !== undefined) {
+  if (filter.workspaceId === null) {
+    conds.push(isNull(auditLog.workspaceId));
+    if (filter.noWorkspaceOrigin === 'platform') {
+      conds.push(inArray(auditLog.kind, [...PLATFORM_AUDIT_KINDS]));
+    } else if (filter.noWorkspaceOrigin === 'deleted_workspace') {
+      conds.push(notInArray(auditLog.kind, [...PLATFORM_AUDIT_KINDS]));
+    }
+  } else if (filter.workspaceId !== undefined) {
     conds.push(eq(auditLog.workspaceId, filter.workspaceId));
   }
   if (filter.kind) conds.push(eq(auditLog.kind, filter.kind));
-  if (filter.since) {
-    conds.push(sql`${auditLog.createdAt} >= ${filter.since}`);
-  }
-  if (filter.until) {
-    conds.push(sql`${auditLog.createdAt} <= ${filter.until}`);
-  }
+  // gte/lte encode the Date through the column. A Date inside a raw sql``
+  // template reaches postgres.js unencoded and crashes the query
+  // (src/tests/sql-date-binding.test.ts guards against that).
+  if (filter.since) conds.push(gte(auditLog.createdAt, filter.since));
+  if (filter.until) conds.push(lte(auditLog.createdAt, filter.until));
+  if (filter.before) conds.push(lt(auditLog.createdAt, filter.before));
   const limit = Math.min(filter.limit ?? 100, 1000);
   return db
     .select()
@@ -1238,9 +1125,9 @@ export async function listAuditAcrossWorkspaces(
 }
 
 export async function distinctAuditKindsAcross(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
 ): Promise<string[]> {
-  assertSuperAdmin(ctx, 'admin.distinct_audit_kinds');
+  assertPlatform(pctx, 'admin.distinct_audit_kinds');
   const rows = await db
     .selectDistinct({ kind: auditLog.kind })
     .from(auditLog)

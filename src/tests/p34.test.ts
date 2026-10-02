@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db/client';
 import {
   InMemoryJobQueue,
@@ -28,6 +28,16 @@ afterAll(async () => {
 // ============ InMemoryJobQueue.enqueueRepeatable =====================
 
 describe('InMemoryJobQueue.enqueueRepeatable', () => {
+  // Fake interval timers: each tick fires exactly when the clock is
+  // advanced, and drain() then waits for the handlers it chained. No
+  // wall-clock sleeps, so the counts are exact however loaded the box is.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('schedules a setInterval-backed tick that calls handlers', async () => {
     const q = new InMemoryJobQueue();
     let count = 0;
@@ -35,9 +45,9 @@ describe('InMemoryJobQueue.enqueueRepeatable', () => {
       count++;
     });
     await q.enqueueRepeatable('tick.fast', {}, { everyMs: 30, jobId: 't1' });
-    // Wait two intervals plus a bit.
-    await new Promise((r) => setTimeout(r, 100));
-    expect(count).toBeGreaterThanOrEqual(2);
+    await vi.advanceTimersByTimeAsync(100); // ticks at 30, 60, 90
+    await q.drain();
+    expect(count).toBe(3);
   });
 
   it('replaces existing schedule when re-registered with same jobId', async () => {
@@ -49,16 +59,15 @@ describe('InMemoryJobQueue.enqueueRepeatable', () => {
       else countB++;
     });
     await q.enqueueRepeatable('tick.replace', { tag: 'A' }, { everyMs: 30, jobId: 't1' });
-    await new Promise((r) => setTimeout(r, 80));
+    await vi.advanceTimersByTimeAsync(80); // A at 30, 60
+    await q.drain();
+    expect(countA).toBe(2);
     // Replace.
     await q.enqueueRepeatable('tick.replace', { tag: 'B' }, { everyMs: 30, jobId: 't1' });
-    const beforeB = countB;
-    await new Promise((r) => setTimeout(r, 80));
-    // After replacement, only B should keep accumulating.
-    expect(countB).toBeGreaterThan(beforeB);
-    const afterA = countA;
-    await new Promise((r) => setTimeout(r, 80));
-    expect(countA).toBe(afterA); // A no longer firing
+    await vi.advanceTimersByTimeAsync(80); // B at 110, 140; A no longer fires
+    await q.drain();
+    expect(countB).toBe(2);
+    expect(countA).toBe(2);
   });
 });
 
@@ -80,8 +89,11 @@ describe('registerRepeatableJobs', () => {
       q.enqueue('outreach.drain.tick', {}),
       q.enqueue('mail.imap.tick', {}),
     ]);
-    // Yield twice — handlers run on microtask + DB hits.
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait for the registered handlers to finish (they hit the DB, which
+    // can take well over 100 ms on a loaded machine). A job whose handler
+    // is missing never joins the queue's chain, so drain() does not wait
+    // for it and it is still reported as pending below.
+    await q.drain();
     for (const id of ids) {
       const status = await q.status(id);
       expect(status.state === 'succeeded' || status.state === 'failed').toBe(true);
@@ -99,7 +111,7 @@ describe('registerRepeatableJobs', () => {
     await seedWorkspace({ name: 'W2', ownerUserId: owner2 });
 
     const id = await q.enqueue('autopilot.tick', {});
-    await new Promise((r) => setTimeout(r, 200));
+    await q.drain();
     const status = await q.status(id);
     expect(status.state).toBe('succeeded');
     if (status.state === 'succeeded') {
@@ -119,7 +131,7 @@ describe('registerRepeatableJobs', () => {
     await seedWorkspace({ name: 'A', ownerUserId: ownerA });
 
     const id = await q.enqueue('outreach.drain.tick', {});
-    await new Promise((r) => setTimeout(r, 200));
+    await q.drain();
     const status = await q.status(id);
     expect(status.state).toBe('succeeded');
   });
@@ -133,7 +145,7 @@ describe('registerRepeatableJobs', () => {
     await seedWorkspace({ name: 'A', ownerUserId: ownerA });
 
     const id = await q.enqueue('mail.imap.tick', {});
-    await new Promise((r) => setTimeout(r, 200));
+    await q.drain();
     const status = await q.status(id);
     expect(status.state).toBe('succeeded');
     if (status.state === 'succeeded') {

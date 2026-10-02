@@ -13,7 +13,12 @@ import {
   type AIGenResult,
   type IAIProvider,
 } from '@/lib/ai';
-import { mailMessages, mailThreads, mailboxes } from '@/lib/db/schema/mailing';
+import {
+  mailMessages,
+  mailThreads,
+  mailboxes,
+  type MailboxStatus,
+} from '@/lib/db/schema/mailing';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import {
   type WorkspaceContext,
@@ -22,11 +27,13 @@ import {
 import {
   collectRuleFindings,
   listHealthReports,
+  mailboxFindings,
   processDueHealthChecks,
   runWorkspaceHealthCheck,
   type HealthFinding,
   type ThreadReview,
 } from '@/lib/services/health-check';
+import { createConnector, createRecipe } from '@/lib/services/connector-run';
 import { listNotifications } from '@/lib/services/notifications';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
@@ -136,6 +143,138 @@ describe('collectRuleFindings', () => {
     expect(codes).toContain('tokens.empty');
     expect(codes).toContain('products.none');
     expect(codes).toContain('mailbox.none');
+    // Without a mailbox there is no sending AND no inbox sync — the old
+    // copy only mentioned approved drafts.
+    const mailbox = findings.find((f) => f.code === 'mailbox.none')!;
+    expect(mailbox.message).toBe(
+      'No mailbox is connected — nothing can be sent and no replies are read.',
+    );
+  });
+
+  describe('mailboxes by status (failing holds its queue; paused fails it)', () => {
+    async function addMailbox(s: Setup, address: string, status: MailboxStatus): Promise<bigint> {
+      const [row] = await db
+        .insert(mailboxes)
+        .values({
+          workspaceId: s.workspaceA,
+          name: address,
+          fromAddress: address,
+          smtpHost: 'smtp.x',
+          smtpUser: address,
+          smtpPasswordSecretKey: `mailbox.smtp_${address}`,
+          imapFolder: 'INBOX',
+          status,
+        })
+        .returning({ id: mailboxes.id });
+      return row!.id;
+    }
+    async function mailboxCodes(s: Setup) {
+      const findings = await collectRuleFindings(ctx(s.workspaceA, s.ownerA));
+      return findings.filter((f) => f.code.startsWith('mailbox.'));
+    }
+
+    it('a workspace whose only mailbox is failing is told its queue is held, not that it still sends', async () => {
+      const s = await setup();
+      const id = await addMailbox(s, 'sales@test.local', 'failing');
+      const found = await mailboxCodes(s);
+      expect(found.map((f) => f.code)).toEqual(['mailbox.failing', 'mailbox.none']);
+      expect(found[0]!.message).toContain('Mailbox "sales@test.local" has been failing.');
+      expect(found[0]!.message).toContain('queued outreach and follow-ups are held');
+      expect(found[0]!.message).not.toContain('still sends');
+      expect(found[0]!.href).toBe(`/mailbox/${id}`);
+      expect(found[1]!.message).toContain('(each one is failing)');
+      expect(found[1]!.message).toContain('held until it works again');
+    });
+
+    it('a failing mailbox is reported even when another one is active', async () => {
+      const s = await setup();
+      await addMailbox(s, 'sales@test.local', 'active');
+      await addMailbox(s, 'info@test.local', 'failing');
+      expect((await mailboxCodes(s)).map((f) => f.code)).toEqual(['mailbox.failing']);
+    });
+
+    it('only paused mailboxes: due sends are marked failed, not held', async () => {
+      const s = await setup();
+      await addMailbox(s, 'sales@test.local', 'paused');
+      const found = await mailboxCodes(s);
+      expect(found.map((f) => f.code)).toEqual(['mailbox.none']);
+      expect(found[0]!.message).toContain('(each one is paused)');
+      expect(found[0]!.message).toContain('marked failed, not held');
+      expect(found[0]!.href).toBe('/mailbox');
+    });
+
+    it('a paused mailbox next to an active one is not a problem', async () => {
+      const s = await setup();
+      await addMailbox(s, 'sales@test.local', 'active');
+      await addMailbox(s, 'info@test.local', 'paused');
+      expect(await mailboxCodes(s)).toEqual([]);
+    });
+
+    it('only archived mailboxes count as none', async () => {
+      const s = await setup();
+      await addMailbox(s, 'old@test.local', 'archived');
+      const found = await mailboxCodes(s);
+      expect(found.map((f) => f.code)).toEqual(['mailbox.none']);
+      expect(found[0]!.href).toBe('/mailbox/new');
+    });
+
+    it('names each failing mailbox with its own link and the mailbox page advice (pure)', () => {
+      const row = (id: bigint, name: string, status: MailboxStatus, lastError: string | null) => ({
+        id,
+        name,
+        status,
+        lastError,
+        lastErrorAt: null,
+        failingSince: new Date('2026-10-01T08:00:00Z'),
+        smtpHost: 'mail.example.test',
+        smtpPort: 587,
+        imapHost: 'mail.example.test',
+        imapPort: 993,
+      });
+      const found = mailboxFindings([
+        row(1n, 'alpha', 'failing', 'SMTP: connect ECONNREFUSED 192.0.2.1:587'),
+        row(2n, 'beta', 'failing', 'IMAP: Command failed: [AUTHENTICATIONFAILED] Authentication failed.'),
+        row(3n, 'gamma', 'active', null),
+        row(4n, 'delta', 'archived', null),
+      ]);
+      expect(found.map((f) => [f.code, f.href])).toEqual([
+        ['mailbox.failing', '/mailbox/1'],
+        ['mailbox.failing', '/mailbox/2'],
+      ]);
+      expect(found[0]!.message).toContain('Mailbox "alpha" has been failing since 2026-10-01 08:00 UTC.');
+      expect(found[0]!.message).toContain('port 465');
+      expect(found[1]!.message).toContain('refused the login');
+      expect(mailboxFindings([row(4n, 'delta', 'archived', null)])).toEqual([
+        expect.objectContaining({ code: 'mailbox.none', href: '/mailbox/new' }),
+      ]);
+    });
+  });
+
+  it('recipes without a target country: says the geography gate is off, not "held for review"', async () => {
+    const s = await setup();
+    const c = await createConnector(ctx(s.workspaceA, s.ownerA), {
+      templateType: 'mock',
+      name: 'Mock',
+      config: {},
+    });
+    await createRecipe(ctx(s.workspaceA, s.ownerA), {
+      connectorId: c.id,
+      name: 'no country',
+      selectors: { seed: 'hc', count: 1 },
+    });
+    await createRecipe(ctx(s.workspaceA, s.ownerA), {
+      connectorId: c.id,
+      name: 'poland',
+      selectors: { seed: 'hc2', count: 1, country: 'PL' },
+    });
+    const findings = await collectRuleFindings(ctx(s.workspaceA, s.ownerA));
+    const f = findings.find((x) => x.code === 'recipes.no_country');
+    expect(f).toBeDefined();
+    expect(f!.message).toBe(
+      '1 of 2 recipes have no target country — the geography gate is off for them, so leads from any country pass review and can be emailed.',
+    );
+    expect(f!.message).not.toContain('manual review');
+    expect(f!.href).toBe('/connectors');
   });
 });
 

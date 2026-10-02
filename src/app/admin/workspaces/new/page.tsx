@@ -4,14 +4,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { eq } from 'drizzle-orm';
-import { auth } from '@/lib/auth';
-import {
-  AccountInactiveError,
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
-import { isSuperAdmin } from '@/lib/services/context';
+import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   AdminServiceError,
   adminCreateWorkspace,
@@ -25,27 +18,8 @@ export default async function AdminCreateWorkspacePage({
 }: {
   searchParams: Promise<{ error?: string; name?: string; slug?: string; owner?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect('/');
+  await requirePlatformAdmin();
   const sp = await searchParams;
-
-  let ctx;
-  try {
-    ctx = await getWorkspaceContext();
-  } catch (err) {
-    if (err instanceof AuthRequiredError) redirect('/');
-    if (err instanceof AccountInactiveError) redirect('/pending');
-    if (err instanceof NoWorkspaceError) redirect('/');
-    throw err;
-  }
-  if (!isSuperAdmin(ctx)) {
-    return (
-      <div className="dashboard-wrap">
-        <h1>New workspace</h1>
-        <p className="form-error">Super-admin only.</p>
-      </div>
-    );
-  }
 
   const allUsers = await db
     .select({ id: users.id, name: users.name, email: users.email })
@@ -55,7 +29,7 @@ export default async function AdminCreateWorkspacePage({
 
   async function create(formData: FormData) {
     'use server';
-    const c = await getWorkspaceContext();
+    const c = await requirePlatformAdmin();
     const name = String(formData.get('name') ?? '').trim();
     const slug = String(formData.get('slug') ?? '').trim().toLowerCase();
     const ownerUserId = String(formData.get('ownerUserId') ?? '');

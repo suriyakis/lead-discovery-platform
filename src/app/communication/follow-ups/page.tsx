@@ -302,14 +302,7 @@ export default async function FollowUpsPage({
             const isFinal = r.stepNumber === r.totalSteps;
             return (
               <li key={r.id.toString()}>
-                <div
-                  className="lead-row"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '0.75rem',
-                  }}
-                >
+                <div className="lead-row followup-row">
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div
                       style={{
@@ -362,15 +355,9 @@ export default async function FollowUpsPage({
                       </div>
                     ) : null}
                   </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'flex-end',
-                      gap: '0.3rem',
-                      minWidth: '11rem',
-                    }}
-                  >
+                  {/* Schedule + actions: a right-hand column on desktop,
+                      a full-width row under the subject on a phone. */}
+                  <div className="followup-row-side">
                     <span
                       className="muted"
                       style={{ fontSize: '0.78em', whiteSpace: 'nowrap' }}

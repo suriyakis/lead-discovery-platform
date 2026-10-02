@@ -42,6 +42,13 @@ export default defineConfig({
       SERPAPI_KEY: '',
     },
   },
+  // tsconfig keeps `jsx: preserve` for Next's own compiler. Tests that
+  // import pages or components (.tsx) need esbuild to emit the same
+  // automatic JSX runtime Next uses; the classic default would expect a
+  // `React` binding in every component module.
+  esbuild: {
+    jsx: 'automatic',
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

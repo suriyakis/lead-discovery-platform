@@ -1,0 +1,37 @@
+Return-Path: <s-2ab3c4d5e6f7@bounce.linkedin.com>
+Received: from mailb-ab.linkedin.com (mailb-ab.linkedin.com [192.0.2.44])
+	by mx.nulife.pl (Postfix) with ESMTPS id 1C2D3E4F5A
+	for <sales@nulife.pl>; Mon, 28 Sep 2026 09:12:40 +0200 (CEST)
+From: LinkedIn <messages-noreply@linkedin.com>
+Reply-To: LinkedIn <messages-noreply@linkedin.com>
+To: Sales Team <sales@nulife.pl>
+Subject: You appeared in 9 searches this week
+Date: Mon, 28 Sep 2026 07:12:38 +0000 (UTC)
+Message-ID: <1290553782.4467.1790579558123@ltx1-app1203.prod.linkedin.com>
+List-Unsubscribe: <https://www.linkedin.com/comm/psettings/email-unsubscribe?lipi=abc&midToken=xyz>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+X-LinkedIn-Class: EMAIL-DEFAULT
+X-LinkedIn-Template: email_weekly_search_appearances_01
+X-LinkedIn-fbl: s-2ab3c4d5e6f7
+Feedback-ID: wsa:linkedin
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="----=_Part_1_li"
+
+------=_Part_1_li
+Content-Type: text/plain;charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+You appeared in 9 searches this week.
+See who's looking: https://www.linkedin.com/me/search-appearances/
+
+This email was intended for Sales Team.
+Learn why we included this: https://www.linkedin.com/help/linkedin/answer/4788
+You are receiving LinkedIn notification emails.
+Unsubscribe: https://www.linkedin.com/comm/psettings/email-unsubscribe?lipi=abc&midToken=xyz
+
+------=_Part_1_li
+Content-Type: text/html;charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+<html><body><p>You appeared in 9 searches this week.</p><a href="https://www.linkedin.com/comm/psettings/email-unsubscribe?lipi=abc&amp;midToken=xyz">Unsubscribe</a></body></html>
+------=_Part_1_li--

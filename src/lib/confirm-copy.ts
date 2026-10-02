@@ -1,0 +1,334 @@
+// Confirm-dialog copy for the one-click high-impact actions (DS-04).
+//
+// Every message names the workspace, user or product it acts on and says
+// what happens next, so a misclick on the wrong row is caught before the
+// request leaves the browser. A workspace is named by name AND slug
+// (workspaceLabel): names are not unique — every self-signup workspace is
+// called "Personal" — so the name alone would not catch the wrong row.
+// Pure and browser-safe: server pages build the static messages,
+// ConfirmTokenAdjustButton builds the token one from what the operator
+// typed.
+
+const numberFormat = new Intl.NumberFormat('en-US');
+
+/** 1234567n → "1,234,567". */
+export function formatTokens(value: bigint): string {
+  return numberFormat.format(value);
+}
+
+/**
+ * The token delta a grant form will submit, or null when the server
+ * would reject it anyway (empty, zero, fractional, not a number). Mirrors
+ * the Number()/isInteger check in the grant server actions.
+ */
+export function parseTokenDelta(raw: string): bigint | null {
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n === 0) return null;
+  return BigInt(n);
+}
+
+/** A workspace as the confirms name it. */
+export interface WorkspaceRef {
+  name: string;
+  /** Unique; shown next to the name. Omit only where it is not loaded. */
+  slug?: string | null;
+}
+
+/**
+ * `Personal (personal-1a2b3c4d)`, or `"Personal" (personal-1a2b3c4d)`
+ * with `quoted`. The slug is left out when it is missing or equals the
+ * name.
+ */
+export function workspaceLabel(ws: WorkspaceRef, opts: { quoted?: boolean } = {}): string {
+  const name = opts.quoted ? `"${ws.name}"` : ws.name;
+  const slug = ws.slug?.trim();
+  return slug && slug !== ws.name ? `${name} (${slug})` : name;
+}
+
+function parseBalance(raw: string | null | undefined): bigint | null {
+  if (raw === null || raw === undefined || !/^-?\d+$/.test(raw.trim())) return null;
+  return BigInt(raw.trim());
+}
+
+/**
+ * Confirm text for a token grant or deduction:
+ *
+ *   +1,000 tokens to Acme Ltd (acme-ltd)
+ *   Balance: 5,000 → 6,000 tokens.
+ *
+ * Returns null when the typed amount is not a valid adjustment — the
+ * form then submits without a dialog and the server flashes the error.
+ */
+export function tokenAdjustmentConfirm(input: {
+  raw: string;
+  workspaceName: string;
+  workspaceSlug?: string | null;
+  /** Current balance as a decimal string. */
+  balance?: string | null;
+  billingExempt?: boolean;
+  reason?: string;
+}): string | null {
+  const delta = parseTokenDelta(input.raw);
+  if (delta === null) return null;
+  const ws = workspaceLabel({ name: input.workspaceName, slug: input.workspaceSlug });
+  const lines = [
+    delta > 0n
+      ? `+${formatTokens(delta)} tokens to ${ws}`
+      : `-${formatTokens(-delta)} tokens from ${ws}`,
+  ];
+  const balance = parseBalance(input.balance);
+  if (balance !== null) {
+    const after = balance + delta;
+    lines.push(`Balance: ${formatTokens(balance)} → ${formatTokens(after)} tokens.`);
+    if (!input.billingExempt && after <= 0n) {
+      lines.push(
+        'At zero or below, metered work in this workspace (discovery, qualification, drafting) pauses until tokens are added.',
+      );
+    }
+  }
+  const reason = input.reason?.trim();
+  if (reason) lines.push(`Reason: ${reason}`);
+  lines.push('', 'Apply this adjustment?');
+  return lines.join('\n');
+}
+
+/** "Its 1 member loses access …" / "Its 3 members lose access …". */
+function membersAccess(n: number, oneVerb: string, manyVerb: string, rest: string): string {
+  if (n === 0) return 'It has no members yet.';
+  return n === 1 ? `Its 1 member ${oneVerb} ${rest}` : `Its ${n} members ${manyVerb} ${rest}`;
+}
+
+/** "Ada Lovelace <ada@example.com>", or just the email. */
+export function userLabel(user: { name: string | null; email: string | null }): string {
+  const email = user.email ?? 'this user';
+  return user.name ? `${user.name} <${email}>` : email;
+}
+
+// ---- workspaces (console) -------------------------------------------------
+
+export function archiveWorkspaceConfirm(ws: WorkspaceRef & { memberCount: number }): string {
+  const members = membersAccess(ws.memberCount, 'loses', 'lose', 'access on their next page load.');
+  return `Archive the workspace ${workspaceLabel(ws, { quoted: true })}?\n\n${members} Its scheduled jobs stop until a super-admin restores it. Nothing is deleted.`;
+}
+
+export function restoreWorkspaceConfirm(ws: WorkspaceRef & { memberCount: number }): string {
+  const members = membersAccess(
+    ws.memberCount,
+    'gets',
+    'get',
+    'access back on their next page load.',
+  );
+  return `Restore the workspace ${workspaceLabel(ws, { quoted: true })}?\n\n${members} Its scheduled jobs resume.`;
+}
+
+export function billingExemptOnConfirm(ws: WorkspaceRef): string {
+  return `Make ${workspaceLabel(ws, { quoted: true })} billing exempt?\n\nUsage stops debiting its token balance, it gets Pro plan limits whatever it pays for, and auto top-up stops. The platform pays its provider costs from now on.`;
+}
+
+export function billingExemptOffConfirm(
+  ws: WorkspaceRef & {
+    balance: string;
+    plan: string;
+    subscriptionStatus: string;
+  },
+): string {
+  const balance = parseBalance(ws.balance);
+  const shown = balance === null ? ws.balance : formatTokens(balance);
+  const empty =
+    balance !== null && balance <= 0n
+      ? ' Its wallet is empty, so metered work (discovery, qualification, drafting) pauses until tokens are added.'
+      : '';
+  return `End the billing exemption for ${workspaceLabel(ws, { quoted: true })}?\n\nUsage debits its token balance again (${shown} tokens now) and its own plan limits apply (${ws.plan}, ${ws.subscriptionStatus}).${empty}`;
+}
+
+export function removeMemberConfirm(
+  user: { name: string | null; email: string | null },
+  workspace?: WorkspaceRef | string,
+): string {
+  const ws = typeof workspace === 'string' ? { name: workspace } : workspace;
+  const where = ws ? workspaceLabel(ws, { quoted: true }) : 'this workspace';
+  return `Remove ${userLabel(user)} from ${where}?\n\nThey lose access to it on their next page load. What they created stays in the workspace.`;
+}
+
+// ---- users (console) ------------------------------------------------------
+
+export function promoteSuperAdminConfirm(user: { name: string | null; email: string }): string {
+  return `Promote ${userLabel(user)} to super-admin?\n\nThey get full platform access: every workspace and user, billing, provider keys, god mode and this console.`;
+}
+
+export function demoteSuperAdminConfirm(user: { name: string | null; email: string }): string {
+  return `Demote ${userLabel(user)} to a standard user?\n\nThey lose this console and god mode at once. Their workspace memberships stay as they are.`;
+}
+
+export const ACCOUNT_STATUSES = ['active', 'pending', 'suspended', 'rejected'] as const;
+export type AccountStatusValue = (typeof ACCOUNT_STATUSES)[number];
+
+/**
+ * One confirm per status the user could be moved to (their current status
+ * has none — re-applying it only updates the reason). Feed it to
+ * ConfirmFormButton's messageByValue on the status select.
+ */
+export function accountStatusConfirms(user: {
+  name: string | null;
+  email: string;
+  role: string;
+  accountStatus: string;
+}): Partial<Record<AccountStatusValue, string>> {
+  const who = userLabel(user);
+  const superNote =
+    user.role === 'super_admin'
+      ? `\n\nNote: ${user.email} is a super-admin, and account status does not lock super-admins out. Demote them first.`
+      : '';
+  const all: Record<AccountStatusValue, string> = {
+    active: `Set ${who} to active?\n\nThey get access to their workspaces on their next page load.`,
+    pending: `Set ${who} back to pending?\n\nThey lose access on their next page load and wait on the pending screen until someone approves them.${superNote}`,
+    suspended: `Suspend ${who}?\n\nThey lose access to every workspace on their next page load, until a super-admin sets them back to active.${superNote}`,
+    rejected: `Reject ${who}?\n\nThey lose access to every workspace on their next page load and see an "Account rejected" notice.${superNote}`,
+  };
+  const out: Partial<Record<AccountStatusValue, string>> = {};
+  for (const status of ACCOUNT_STATUSES) {
+    if (status !== user.accountStatus) out[status] = all[status];
+  }
+  return out;
+}
+
+export function revokePreauthConfirm(p: {
+  email: string;
+  role: string;
+  workspaceName: string | null;
+  workspaceSlug?: string | null;
+}): string {
+  const effect = p.workspaceName
+    ? `They will no longer join ${workspaceLabel({ name: p.workspaceName, slug: p.workspaceSlug }, { quoted: true })} as ${p.role} automatically: if they sign in, they wait in pending review.`
+    : 'If they sign in, they wait in pending review instead of being let straight in.';
+  return `Revoke the pre-authorisation for ${p.email}?\n\n${effect}`;
+}
+
+// ---- support (console) ----------------------------------------------------
+
+export function closeSupportThreadConfirm(t: {
+  subject: string;
+  workspaceName: string;
+  workspaceSlug?: string | null;
+}): string {
+  return `Close the support thread "${t.subject}" from ${workspaceLabel({ name: t.workspaceName, slug: t.workspaceSlug })}?\n\nThe customer sees it as closed. Their next reply reopens it.`;
+}
+
+// ---- providers (console) --------------------------------------------------
+
+export function removeConsoleKeyConfirm(p: {
+  vendorName: string;
+  envVar: string;
+  envSet: boolean;
+}): string {
+  const effect = p.envSet
+    ? `Workspaces without their own key fall back to the ${p.envVar} server env var.`
+    : `${p.envVar} is not set on the server, so every workspace without its own ${p.vendorName} key loses ${p.vendorName} at once: anything that runs on it fails until a key is added.`;
+  return `Remove the platform ${p.vendorName} key?\n\n${effect} The key cannot be shown again.`;
+}
+
+export function savePlatformDefaultsConfirm(): string {
+  return 'Save the platform default providers and models?\n\nThey apply immediately to every workspace that has not picked its own, including workspaces running jobs right now.';
+}
+
+// ---- workspace settings ---------------------------------------------------
+
+export function switchToSimpleSetupConfirm(workspace: WorkspaceRef | string): string {
+  const ws = typeof workspace === 'string' ? { name: workspace } : workspace;
+  return `Switch ${workspaceLabel(ws, { quoted: true })} to Simple setup?\n\nEvery provider and model choice on this page goes back to the platform defaults. Stored workspace API keys are kept. Switching back to Advanced later does not restore your choices.`;
+}
+
+export function clearWorkspaceKeyConfirm(p: {
+  vendorName: string;
+  workspaceName: string;
+  workspaceSlug?: string | null;
+}): string {
+  return `Delete the ${p.vendorName} key stored for ${workspaceLabel({ name: p.workspaceName, slug: p.workspaceSlug }, { quoted: true })}?\n\n${p.vendorName} calls fall back to the platform key, if one is configured, and are billed from your token balance. The key cannot be shown again, so keep a copy if you plan to re-add it.`;
+}
+
+export function archiveCrmConnectionConfirm(c: { name: string; system: string }): string {
+  return `Archive the CRM connection "${c.name}" (${c.system})?\n\nLeads and contacts stop syncing to it until an admin restores it on this page.`;
+}
+
+// ---- autopilot ------------------------------------------------------------
+
+/** The per-product override columns (NULL = inherit). */
+export interface AutopilotOverlayLike {
+  autopilotEnabled: boolean | null;
+  emergencyPause: boolean | null;
+  enableAutoApproveProjects: boolean | null;
+  autoApproveThreshold: number | null;
+  enableAutoEnqueueOutreach: boolean | null;
+  enableAutoCrmContactSync: boolean | null;
+  enableAutoCrmDealOnQualified: boolean | null;
+  defaultMailboxId: bigint | null;
+}
+
+/** The workspace defaults those columns fall back to. */
+export interface AutopilotBaseLike {
+  autopilotEnabled: boolean;
+  emergencyPause: boolean;
+  enableAutoApproveProjects: boolean;
+  autoApproveThreshold: number;
+  enableAutoEnqueueOutreach: boolean;
+  enableAutoCrmContactSync: boolean;
+  enableAutoCrmDealOnQualified: boolean;
+}
+
+/** Same labels as the toggles on /autopilot. */
+const AUTOPILOT_STEP_LABELS = {
+  autopilotEnabled: 'Autopilot (master)',
+  enableAutoApproveProjects: 'Auto-approve relevant review items',
+  enableAutoEnqueueOutreach: 'Auto-generate + enqueue outreach drafts',
+  enableAutoCrmContactSync: "Auto-sync qualified leads' contacts to CRM",
+  enableAutoCrmDealOnQualified: 'Auto-create CRM deals on qualified state',
+} as const;
+
+/**
+ * Confirm text for "Clear all overrides for <product>": spells out what
+ * the product actually starts doing once it inherits the workspace
+ * defaults — above all automation that turns ON and an emergency pause
+ * that is lifted.
+ */
+export function clearAutopilotOverridesConfirm(
+  productName: string,
+  overlay: AutopilotOverlayLike,
+  base: AutopilotBaseLike,
+): string {
+  const turnsOn: string[] = [];
+  const turnsOff: string[] = [];
+  for (const key of Object.keys(AUTOPILOT_STEP_LABELS) as Array<
+    keyof typeof AUTOPILOT_STEP_LABELS
+  >) {
+    const override = overlay[key];
+    if (override === null || override === base[key]) continue;
+    (base[key] ? turnsOn : turnsOff).push(AUTOPILOT_STEP_LABELS[key]);
+  }
+  const effects: string[] = [];
+  if (overlay.emergencyPause === true && !base.emergencyPause) {
+    effects.push(`- Lifts the emergency pause on ${productName}.`);
+  }
+  if (overlay.emergencyPause === false && base.emergencyPause) {
+    effects.push(`- Pauses ${productName} (the workspace is on emergency pause).`);
+  }
+  if (turnsOn.length > 0) effects.push(`- Turns ON: ${turnsOn.join('; ')}.`);
+  if (turnsOff.length > 0) effects.push(`- Turns off: ${turnsOff.join('; ')}.`);
+  if (
+    overlay.autoApproveThreshold !== null &&
+    overlay.autoApproveThreshold !== base.autoApproveThreshold
+  ) {
+    effects.push(
+      `- Approval threshold: ${overlay.autoApproveThreshold} → ${base.autoApproveThreshold}.`,
+    );
+  }
+  if (overlay.defaultMailboxId !== null) {
+    effects.push('- Sends from the workspace default mailbox again.');
+  }
+  const body =
+    effects.length > 0
+      ? effects.join('\n')
+      : 'Nothing changes in practice: every override matches the workspace default.';
+  return `Clear all autopilot overrides for "${productName}"?\n\nEvery step for this product goes back to the workspace default.\n${body}`;
+}

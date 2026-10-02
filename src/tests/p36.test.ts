@@ -258,6 +258,8 @@ describe('getDeliverabilityReport', () => {
       { workspaceId: s.workspaceA, kind: 'email', address: 'b@x.com', value: 'b@x.com', reason: 'unsubscribe' },
       { workspaceId: s.workspaceA, kind: 'email', address: 'c@x.com', value: 'c@x.com', reason: 'bounce_hard' },
       { workspaceId: s.workspaceA, kind: 'email', address: 'd@x.com', value: 'd@x.com', reason: 'bounce_soft' },
+      // F-03: a revoked entry was judged wrong by an admin — not counted.
+      { workspaceId: s.workspaceA, kind: 'email', address: 'e@x.com', value: 'e@x.com', reason: 'unsubscribe', revokedAt: new Date(), revokeReason: 'newsletter footer' },
       // Other workspace — must not leak.
       { workspaceId: s.workspaceB, kind: 'email', address: 'a@x.com', value: 'a@x.com', reason: 'unsubscribe' },
     ]);

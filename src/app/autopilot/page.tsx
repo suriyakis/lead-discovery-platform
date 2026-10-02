@@ -31,6 +31,8 @@ import { listProductProfiles } from '@/lib/services/product-profile';
 import type { AutopilotSettings, AutopilotProductSettings } from '@/lib/db/schema/autopilot';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { clearAutopilotOverridesConfirm } from '@/lib/confirm-copy';
 
 type FlowStepKey =
   | 'discovery'
@@ -712,9 +714,12 @@ function ProductOverlayForm({
             name="productProfileId"
             value={product.id.toString()}
           />
-          <button type="submit" className="ghost-btn">
+          <ConfirmFormButton
+            className="ghost-btn"
+            message={clearAutopilotOverridesConfirm(product.name, overlay, base)}
+          >
             Clear all overrides for {product.name}
-          </button>
+          </ConfirmFormButton>
         </form>
       ) : null}
     </section>

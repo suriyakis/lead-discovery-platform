@@ -18,6 +18,7 @@ import {
 } from '@/lib/services/health-check';
 import { canAdminWorkspace } from '@/lib/services/context';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { TableScroll } from '@/components/TableScroll';
 
 function scoreBadge(score: number): string {
   if (score >= 80) return 'badge badge-good';
@@ -170,25 +171,27 @@ export default async function HealthPage({
         {reports.length > 1 ? (
           <section>
             <h2>History</h2>
-            <table className="data-table">
-              <thead>
-                <tr><th>When</th><th>Score</th><th>Warnings</th><th>Conversation issues</th></tr>
-              </thead>
-              <tbody>
-                {reports.slice(1).map((r) => (
-                  <tr key={r.id.toString()}>
-                    <td>{r.createdAt.toLocaleString()}</td>
-                    <td><span className={scoreBadge(r.score)}>{r.score}</span></td>
-                    <td>
-                      {(r.findings as HealthFinding[]).filter((f) => f.severity === 'warning').length}
-                    </td>
-                    <td>
-                      {(r.commReview as ThreadReview[]).reduce((a, t) => a + t.issues.length, 0)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <TableScroll label="Health report history">
+              <table className="data-table">
+                <thead>
+                  <tr><th>When</th><th>Score</th><th>Warnings</th><th>Conversation issues</th></tr>
+                </thead>
+                <tbody>
+                  {reports.slice(1).map((r) => (
+                    <tr key={r.id.toString()}>
+                      <td>{r.createdAt.toLocaleString()}</td>
+                      <td><span className={scoreBadge(r.score)}>{r.score}</span></td>
+                      <td>
+                        {(r.findings as HealthFinding[]).filter((f) => f.severity === 'warning').length}
+                      </td>
+                      <td>
+                        {(r.commReview as ThreadReview[]).reduce((a, t) => a + t.issues.length, 0)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
           </section>
         ) : null}
       </div>

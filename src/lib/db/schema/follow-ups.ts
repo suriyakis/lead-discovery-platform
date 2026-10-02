@@ -52,6 +52,10 @@ export const followUpSkipReason = [
   'manual_cancel',
   'product_archived',
   'lead_closed',
+  /** flow:F-05: the recipient used the unsubscribe link. */
+  'unsubscribed',
+  /** flow:F-05: the recipient was suppressed after the schedule began. */
+  'suppressed',
 ] as const;
 export type FollowUpSkipReason = (typeof followUpSkipReason)[number];
 

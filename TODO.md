@@ -36,6 +36,7 @@ Each task ends with the app runnable + tests passing.
 - [x] **P1-06.** Auth.js v5 wired with Google provider + Drizzle adapter. Database session strategy (sessions in `sessions` table). `src/lib/auth.ts`, `src/app/api/auth/[...nextauth]/route.ts`, `src/types/next-auth.d.ts` (session.user.id + role augmentation). `/api/auth/providers` returns Google config; `/api/auth/signin` renders. Full sign-in E2E pending real `GOOGLE_CLIENT_ID/SECRET` for `localhost:3000/api/auth/callback/google`.
 - [x] **P1-07.** Bootstrap super_admin promotion baked into `events.signIn` callback — on first login by `OWNER_EMAIL` user is promoted to `role='super_admin'`, a workspace is created with random slug, the user is added as `owner`, and an `audit_log` entry of kind `workspace.bootstrap` is written. `lastSignedInAt` updated on every sign-in.
 - [x] **P1-08.** Workspace service in `src/lib/services/workspace.ts`: `createWorkspace`, `getWorkspace`, `listMembers` (joined with users), `addMember`, `removeMember`, `setMemberRole`. Transactional, uses `WorkspaceContext`, enforces canAdminWorkspace / canOwnWorkspace, prevents removing/demoting the last owner. Each mutation emits an `audit_log` entry. Typed `WorkspaceServiceError` with `code` field. DB integration tests deferred to P1-11.
+  - **Phase 0 update (ia:F-04, PR #54):** the member functions are gone from `workspace.ts`. `src/lib/services/users.ts` (`addMember`, `removeMember`, `setMemberRole`, plus `assignableMemberRoles` / `canManageMemberWithRole` for the page) is the single guarded implementation behind `/settings/members`: only an owner (or a super-admin) grants, changes or removes the owner role, nobody changes their own role, the last owner is neither demoted nor removed, each change locks the workspace row and writes its audit row on the same transaction. Tests: `src/tests/member-roles.test.ts`, handbook pin H-27.
 - [x] **P1-09.** Audit + usage services in `src/lib/services/audit.ts` and `src/lib/services/usage.ts`. `recordAuditEvent` (workspace-scoped), `recordPlatformAuditEvent` (no workspace), `listAuditEvents` with kind/since/until/limit filters. `recordUsage`, `summarizeUsage` returning `(kind, provider) -> {totalUnits, totalCostCents, eventCount}`.
 - [x] **P1-10.** Provider abstractions live in `src/lib/{ai,search,jobs,storage}/index.ts`: `IAIProvider` (+ MockAIProvider), `ISearchProvider` (+ MockSearchProvider), `IJobQueue` (+ InMemoryJobQueue), `IStorage` (+ LocalFileStorage with path-traversal guard). Each has a `getX()` factory that reads env, plus `_setXForTests` injector. 18 new tests prove deterministic output, error capture in jobs, and stream/buffer round-trip in storage. **27 / 27 tests pass.**
 - [x] **P1-11.** Workspace isolation suite at `src/tests/workspace.isolation.test.ts`. Three workspaces (A/B/C), 10 users across the role matrix + outsider + super_admin. **28 tests** covering: read isolation (getWorkspace, listMembers, listAuditEvents w/ kind filter, summarizeUsage), write isolation (createWorkspace, addMember, removeMember, setMemberRole all scoped to one workspace), role auth (viewer/member/manager/admin/owner/super_admin gates on every mutation), last-owner protection (cannot remove or demote sole owner), and WorkspaceContext invariants. Test infra: dedicated `lead_test` DB, `truncateAll`/`seedUser`/`seedWorkspace` helpers, `globalSetup` migrates fresh. **55 / 55 tests pass.**
@@ -176,6 +177,7 @@ leave IStorage; metadata never leaves Drizzle.
 - [x] **P9-04.** Tests in `src/tests/storage.test.ts` (11 cases) + `src/tests/documents.test.ts` (22 cases). Covers: local + S3 storage backends, env parsing, key-traversal rejection, upload + stream round-trips, tag sanitization, viewer-denied uploads, archive doesn't delete bytes, knowledge source kind validation (document/url/text), cross-workspace isolation, product-attachment filtering. **246/246 total tests pass.**
 - [x] **P9-05.** UI: `/documents` (upload form + library list with archived toggle), `/documents/[id]` (metadata, download link, name+tags edit, knowledge sources referencing this doc, admin archive/restore), `/knowledge` (list with kind + product filters, "New source" button), `/knowledge/new` (kind switch, kind-specific fields, multi-product attachment), `/knowledge/[id]` (detail + edit + admin delete). Dashboard linked.
 - [x] **P9-06.** Deployed 2026-05-02. SHA `e7ced89`. Migration `0008_mixed_rogue.sql` applied (documents + knowledge_sources tables live, both confirmed via `\dt`). Storage stays on `STORAGE_PROVIDER=local` for now — when user provisions a Hetzner Object Storage bucket and sets `S3_*` env, flipping `STORAGE_PROVIDER=s3` is a single env change with no code redeploy. Wandizz on :3000 untouched. Host-side `pnpm db:migrate` per the operational memory.
+  - **Phase 0 correction (KL-11, PR #54):** production still runs `STORAGE_PROVIDER=local`, on the `app-storage` docker volume mounted at `/app/storage` (see `docs/DEPLOYMENT.md`). Moving to `s3` is an env change only after the existing objects are copied into the bucket under the same keys; otherwise every stored document and export goes missing. Browsers never get a storage URL: downloads go through the authenticated routes `/api/documents/[id]/download` and `/api/crm/exports/[file]`.
 
 **Phase 9 complete.**
 
@@ -267,6 +269,7 @@ choice via a checkbox on the push form.
 - [x] **P13-04.** Tests in `src/tests/crm.test.ts` (16 cases): CSV escaping (commas/quotes/newlines), connection CRUD (admin gates, unknown-system rejection, credential never persisted as cleartext, credential rotation), testCrmConnection status sync, pushLeadToCrm (sync entry persistence, prior externalId reuse on second push, failure → connection failing + error capture, advanceState path, cross-workspace refusal), bulk CSV export (file written to storage, state filter narrows, workspace isolation), listSyncEntries scoping. **326/326 total tests pass.**
 - [x] **P13-05.** UI: `/settings/crm` (list + Quick CSV export button + connection cards), `/settings/crm/new` (system + name + credential + base-URL form), `/settings/crm/[id]` (settings edit with credential rotate, Test connection, recent syncs timeline, admin archive). `/pipeline/[id]` extended with a CRM section: connection picker + advance-state checkbox + recent-syncs timeline. SettingsNav extended with the CRM tab.
 - [x] **P13-06.** Deployed 2026-05-02. SHA `58e828c`. Migration `0012_workable_senator_kelly.sql` applied; crm_connections + crm_sync_log live. All 3 services healthy; wandizz untouched. CSV exports work out of the box (storage URL via the local provider for now); HubSpot stays unconfigured until a workspace adds a CRM connection with a real PAT.
+  - **Phase 0 correction (KL-11, PR #54):** the "storage URL via the local provider" was a `file://` server path that browsers refuse (I106), so CSV exports and document downloads did not work. The export link now points at `/api/crm/exports/[file]`, which checks the session's workspace and streams the file.
 
 **Phase 13 complete.**
 
@@ -277,16 +280,23 @@ with full audit, premium-module enable/disable.
 
 **Design lock (2026-05-02):** super-admin status lives on `users.role` (the
 existing `user_role` enum); workspace-member roles are unaffected.
-Impersonation is a server-side construct backed by `impersonation_sessions`
-— the actor's user_id stays on every audit_log entry, so an impersonated
-action always traces back to the super-admin who triggered it. Feature
-flags are workspace-scoped boolean toggles with optional config jsonb,
-upserted on (workspace, key).
+Impersonation was meant to be a server-side construct backed by
+`impersonation_sessions`, but no identity overlay was ever built:
+starting a session only recorded a row, and nothing read it (I047).
+**Superseded in Phase 0 (PC-03, PR #50):** the Impersonate control and
+its service path are removed; `impersonation_sessions` stays in the
+schema as history only. Console actions run under a `PlatformContext`
+and are audited at platform scope or against their explicit target
+workspace, always with the super-admin's own user id. Real impersonation
+needs a read-only, time-boxed identity-overlay design first (PC-18).
+Feature flags are workspace-scoped boolean toggles with optional config
+jsonb, upserted on (workspace, key).
 
 - [x] **P14-01.** Schema (migration `0013_loud_wendigo.sql`): `impersonation_sessions` (actor + target + workspace + reason + start/end timestamps; partial unique index forces at most one active session per actor) and `feature_flags` (per-workspace per-key boolean + config jsonb). `isSuperAdmin(ctx)` helper added in `src/lib/services/context.ts`.
 - [x] **P14-02.** Admin service (`src/lib/services/admin.ts`): every operation calls `assertSuperAdmin(ctx, op)` first. `listAllWorkspaces` (member count + lead count + total usage cost via aggregate queries), `startImpersonation` (verifies target is a workspace member; auto-closes prior active session by the same actor; audit-logs into the target workspace), `endImpersonation`, `listImpersonationSessions(activeOnly?)`, `activeImpersonationFor(userId)`, `setFeatureFlag` (key shape `[a-z][a-z0-9_.]*` enforced; upserts), `listFeatureFlags`, `listAllUsers`, `recentAuditAcrossWorkspaces`.
 - [x] **P14-03.** Tests in `src/tests/admin.test.ts` (10 cases): every admin operation rejects non-super_admin actors; listAllWorkspaces returns aggregated metrics; impersonation start + end flow with audit trail; second start by same actor closes prior; cross-workspace target rejection; double-end rejected; activeOnly filter on session list; feature flag upsert behavior + key shape validation + workspace scoping. **336/336 total tests pass.**
 - [x] **P14-04.** UI: `/admin` (workspace list with metrics, active impersonation sessions panel, recent platform-wide audit feed), `/admin/workspaces/[id]` (member list with per-member Impersonate form + reason input, active-impersonation banner with End button, feature-flag matrix for the known keys: crm.hubspot, rag.openai, outreach.send, mailbox.imap_sync, connector.serpapi). Dashboard exposes the Admin link only when `session.user.role === 'super_admin'`.
+  - **Phase 0 (PC-03):** the impersonation panel, Impersonate form and End button are removed (see the design lock above).
 - [x] **P14-05.** Deployed 2026-05-02. SHA `a506b67`. Migration `0013_loud_wendigo.sql` applied; impersonation_sessions + feature_flags live. All 3 services healthy on existing ports; wandizz untouched. The bootstrap super-admin (jb.poltrade@gmail.com) now sees an "Admin (god mode)" link on the dashboard.
 
 **Phase 14 complete.**
@@ -298,6 +308,8 @@ locked roadmap. Bring-your-own provider keys (OpenAI, HubSpot PAT, SerpAPI,
 SMTP/IMAP) are the gating items for full production use. The S3 storage
 backend stays opt-in via env (STORAGE_PROVIDER=s3 + Hetzner/MinIO/R2/AWS
 credentials).
+(Phase 0 note: production is on `STORAGE_PROVIDER=local` with the
+`app-storage` volume; see the P9-06 correction and `docs/DEPLOYMENT.md`.)
 
 ## Phase 15 — User management lifecycle + sidebar
 
@@ -1025,6 +1037,77 @@ editable). Branch `feat/setup-mode-system-defaults`.
 - [x] **SM-04.** `/settings/integrations`: Setup-mode card with switch button; simple mode renders a read-only system-defaults summary instead of the edit forms; `mock` removed from all customer-facing dropdowns; "inherit env default" relabeled "platform default".
 - [x] **SM-05.** Tests: systemDefaultProvider auto-detect + prod loud-failure; setSetupMode suite; onboarding 9-step updates. vitest env now blanks ALL vendor keys for determinism.
 - [ ] **SM-deploy.** Verify prod `.env` on agregat has the system keys (`GEMINI_API_KEY` at minimum) and NO `*_PROVIDER=mock` selectors, apply migration `0058`, rebuild, smoke-test onboarding + integrations page.
+
+## Phase 0 — stop the bleeding (audit 2026-10-01)
+
+**Goal.** Stop the production defects the 2026-10-01 audit found before
+any new feature work: mail that suppressed and contacted the wrong
+people, a console that leaked platform audit rows into tenants, pages
+that crashed, and an AI guide that described features the code did not
+have. Built in five parallel lanes on `chore/test-harness-foundation`
+(PR #49) and integrated on `phase0/integration`, which carries every
+lane commit so each lane PR shows as merged when it lands.
+
+**Merge and deploy order.** #49 first, then `phase0/integration` (all
+five lanes). Migrations 0061–0065 (all from #53) run host-side with
+`pnpm db:migrate`. No other lane has a migration.
+
+### Delivered
+
+- [x] **P0-01 (#54, flow:F-02, X3).** `/pipeline/[id]` no longer answers 500 (the dead double join on `contact_associations` is gone); mailbox bulk actions are module-scope server actions (no "Functions cannot be passed directly to Client Components"). One copy of the mail bulk-action helpers (`src/lib/mail-bulk-actions.ts`).
+- [x] **P0-02 (#54, ia:F-02).** Send settings and cost details are admin-only; `/mailbox/queue` shows readable reasons for held and failed entries.
+- [x] **P0-03 (#54, PC-01, I050).** Platform and workspace audit date filters work (no JS Date inside raw `sql`), read Since/Until in the viewer's time zone, and Until covers its whole minute.
+- [x] **P0-04 (#54, PC-02, I124).** `/admin/providers` live checks test the platform tier only (console key, else env var); one platform provider-key catalogue (`src/lib/platform-provider-keys.ts`).
+- [x] **P0-05 (#54, ia:F-04, I043).** Only owners grant, change or remove the owner role; nobody re-roles themselves; the last owner stays; member changes and their audit rows share one transaction.
+- [x] **P0-06 (#54, ia:F-05).** The active workspace is resolved once per page; the onboarding redirect loop is gone.
+- [x] **P0-07 (#54, ia:F-07, I117).** One screen for signed-in users without a workspace; a pre-authorisation always grants a workspace (named one, or their own), also for accounts that already exist and when the named workspace was archived.
+- [x] **P0-08 (#54, ia:F-08, I115).** Follow-up steps can be removed; the CRM connection page is one form (no nested Test form) with Restore for archived connections.
+- [x] **P0-09 (#54, KL-11, I106).** Document and CRM CSV downloads go through authenticated routes instead of `file://` links; a failed browser download returns to a page with the reason.
+- [x] **P0-10 (#54).** Server actions redirect a stale session (signed out, inactive, no workspace) instead of erroring.
+- [x] **P0-11 (#50, PC-03, I051, I047).** Super-admin console runs on `PlatformContext` (`requirePlatformAdmin()`); platform events are audited at platform scope and tenant effects against the explicit target workspace, never the switcher's; the no-op Impersonate control is removed; `/admin/audit` filters platform events and rows of deleted workspaces. Refile script for already-misfiled rows: `scripts/remediation/refile-platform-audit.ts`.
+- [x] **P0-12 (#50, DS-04:confirmations).** High-impact console and settings actions ask first; dialogs name the workspace by name and slug; super-admin promotion and billing exemption are type-to-confirm.
+- [x] **P0-13 (#53, flow:F-01, X1).** Inbound relevance gate: only mail that answers our outreach (prospect reply, auto-reply, DSN about our mail) is classified and can notify, draft or suppress; bulk and unrelated mail is filed with no side effects. Migration 0063.
+- [x] **P0-14 (#53, flow:F-03).** Suppressions record their source; upserts never downgrade; an admin revokes instead of deleting; `/mailbox/suppression` splits active, expired and revoked. Migration 0061.
+- [x] **P0-15 (#53, ia:F-03).** Reply auto-actions are admin-only switches on `/settings/outreach`, suppress/close off by default (migration 0062 also switched them off on every workspace, audited first, and switched autopilot auto-approve off).
+- [x] **P0-16 (#53, flow:F-04, I095).** Failing mailboxes notify owners/admins once, hold their outreach and follow-ups, re-check on a growing delay (1 h, 6 h after a refused login, max 24 h) and explain the fix (incl. the port-465 hint). Migration 0064.
+- [x] **P0-17 (#53, flow:F-05, I007, I012, I089, I090).** Required send mode: one-to-one mail has no unsubscribe footer/headers; the unsubscribe link opts out only when confirmed on its page (POST; GET and HEAD change nothing), then cancels the address's queued sends and pending follow-ups and closes its open leads; only recipient RCPT rejections (5.1.x non-existent) suppress; a refused login marks the mailbox failing; compose sends the signature once.
+- [x] **P0-18 (#53, flow:F-06).** Reviewed, revertible remediation for the X1 damage (`scripts/remediation/2026-10-funnel`, `remediation_runs` / `remediation_log`, migration 0065).
+- [x] **P0-19 (#51, AP-01).** Assistant handbook truth pass: every behavioural claim tagged `{H-xx}` and pinned by a `[handbook H-xx]` test (`src/tests/handbook-claims.test.ts`), Known limitations by issue id, `BRAND_NAME`.
+- [x] **P0-20 (#51, AP-02).** Model-aware parameters and output floors, honest failures, the guide billed like other AI work (platform-admin questions are free for the tenant), panel retry keeps the question; Anthropic rate table and metered Gemini thinking tokens (owner sign-off per commit, see below); API routes answer auth errors with one JSON shape (I183).
+- [x] **P0-21 (#52, DS-04:backstops, I078).** Branded `error.tsx` / `global-error.tsx` / `not-found.tsx`; typed action errors with flashes instead of crashes (review detail, recipe, admin Revoke).
+- [x] **P0-22 (#52, DS-02, I149).** Legacy CSS defect pack (CTAs, ghost links, badges, cards, support status badges).
+- [x] **P0-23 (#52, DS-03, I145).** No sideways page scroll on any route at 390 px; wide tables scroll in `TableScroll`; Playwright smoke over every route at 1440 and 390 px (`e2e/`, `pnpm test:e2e`).
+- [x] **P0-24 (integration).** Cross-lane seams reconciled on `phase0/integration`: providers console platform-only end to end (PENDING_EXCEPTIONS empty); one deterministic p34 suite; health check and guide describe F-04 failing mailboxes; handbook claims H-16/H-17/H-18/H-25 rewritten and H-26–H-31 added for the other lanes (H-31: only a reply to our outreach cancels the remaining follow-ups, flow:F-01); one UTC formatter and flash builder; X3 and I115 removed from `e2e/known-issues.json`; seed-demo logs the real target database.
+
+### Follow-ups recorded by the lanes (not done)
+
+Owner actions (platform owner, around the deploy):
+- [ ] **P0-F01.** Sign off (or drop) per commit before merge: `9d43e2c` Anthropic rate table (lowers charges) and `1497e03` Gemini thinking tokens metered as output (raises charges). Acknowledge the larger handbook prompt (≈1.7k → 5.3k input tokens per guide question). Read the platform-status table on `/admin/providers` and record the effective prod AI provider and model in #51.
+- [ ] **P0-F02.** Deploy: migrations 0061–0065 host-side; within one IMAP tick confirm both failing prod mailboxes (workspaces 1 and 2) raised `mailbox.failing` to their owners/admins; fix their SMTP/IMAP settings from the mailbox page advice and press Test again.
+- [ ] **P0-F03.** Post-deploy checks: no "Functions cannot be passed directly to Client Components" for `/mailbox/[id]` in 24 h of logs; `/pipeline/<id>` renders; Download works and an archived document returns to its page; no suppressions from non-prospect mail since deploy (`nonProspectReplySuppressionsSinceF01 = 0`); `/admin/audit?workspace=platform` and `?workspace=deleted` show the right rows; archive/restore confirms show the slug.
+- [ ] **P0-F04.** F-06 X1 remediation per `scripts/remediation/2026-10-funnel/README.md`: rehearse on a restored snapshot (dry run, `--apply --skip-preconditions`, `--revert`, compare), wait ≥ 48 h after deploy, dry-run on prod (plan version 2), owner reviews `report.md` and signs off the R6 flags, `pg_dump`, then `--apply` with the edited `decisions.csv`; post-checks must read 0, and the run's `remediation.apply` rows show under `/admin/audit?workspace=platform` (never `?workspace=deleted`). Never commit the reports.
+- [ ] **P0-F05.** PC-03 audit refile: dry run from the agregat host checkout (`--scope all` by default, or `cross-tenant`), owner chooses the scope, then `--apply --expect <fingerprint>`; `--revert <runId>` undoes it.
+- [ ] **P0-F06.** Copy `e2e/github-workflow-e2e.yml` unchanged to `.github/workflows/e2e.yml` (the automation token cannot push workflow files); its first GitHub Actions run is the real test. Never set `ENABLE_TEST_ROUTES` in production.
+- [ ] **P0-F07.** Owner sign-off on the DS-02/DS-03 look changes listed in #52 (classed sections lose the nested card and mono h2; `/admin/users` create form wraps on desktop; phone sidebar keeps the Emergency group open; open support threads info-blue for customers, amber in the admin inbox).
+
+Engineering (Phase 1 unless noted):
+- [ ] **P0-F08 (flow:F-04 follow-up).** Paused mailboxes still fail their due queue entries and follow-ups instead of holding them; only the copy was corrected. Decide hold vs fail with F-28.
+- [ ] **P0-F09 (F-32).** Bounce auto-suppression stays inert until bounces are matched to our sends from the parsed delivery report.
+- [ ] **P0-F10 (F-28).** Full SMTP failure taxonomy: store stage + enhanced code on the failure row; queue backoff for transient failures.
+- [ ] **P0-F11 (ia:F-03 E2E).** Playwright: an admin sees the four reply auto-action switches and a warning count matching the seed; a manager sees them read-only (the #52 harness now exists).
+- [ ] **P0-F12 (KL-11 E2E).** Playwright test of a real document download (and an archived one returning to its page).
+- [ ] **P0-F13 (DS-04 E2E).** Browser tests for the confirm dialogs (today: unit tests with stubbed dialogs and static form checks).
+- [ ] **P0-F14 (perf).** `listMyWorkspaces` still resolves the active workspace a second time on every page (~3 queries): pass `ctx.workspaceId` from AppShell or memoise resolution per request.
+- [ ] **P0-F15 (F-25).** Pending invites on the no-workspace screen (ia:F-07).
+- [ ] **P0-F16 (I052).** Confirm dialogs could also name the workspace owner's email.
+- [ ] **P0-F17 (PC-18).** Real impersonation needs a read-only, time-boxed identity-overlay design first; nothing applies `impersonation_sessions` today.
+- [ ] **P0-F18 (AP-00).** jsdom / React Testing Library harness; then replace the AP-02 panel tests (reducer + react-dom/server render) with RTL.
+- [ ] **P0-F19 (AP-02).** Anthropic prompt caching for the larger handbook (cost estimates in #51).
+- [ ] **P0-F20 (AP-01, optional).** Move the `[handbook H-xx]` pins from `handbook-claims.test.ts` into their owning services' suites (the coverage check scans every test file).
+- [ ] **P0-F21 (AP-02, later).** The built-in (no-model) fallback answer is English only.
+- [ ] **P0-F22 (DS-03).** Automate desktop H1 x-position parity (checked once by hand; the smoke only bounds scrollWidth).
+- [ ] **P0-F23 (X5).** Dev-only hydration mismatch on `/drafts`, `/leads`, `/pipeline`, `/review`, `/communication/follow-ups` under `next dev --turbopack` (`e2e/known-issues.json`, devServerOnly). Confirmed dev-only on the integration branch: against a production build (`next build` + `next start`), the Playwright smoke passed every route and 120 extra loads of these six routes (10 each at 1440 and 390 px) showed 0 page errors and 0 console errors. Owner: accept as dev-only, or chase it with the turbopack dev server.
+- [ ] **P0-F24 (housekeeping).** One early mail-safety test run applied 0061–0065 to the shared default `lead_test` DB; a checkout without them must recreate `lead_test` before testing.
 
 ## Discovered along the way
 

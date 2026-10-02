@@ -6,15 +6,21 @@
 import Link from 'next/link';
 import type { Hint, HintSeverity } from '@/lib/services/hints';
 
-const CLASS_FOR: Record<HintSeverity, string> = {
-  info: 'badge',
-  warning: 'badge badge-bad',
-  action: 'badge',
+// I151: info and action used to share the amber default and warning was
+// red, so nothing told the operator what was merely informational, what
+// needed them, and what had actually failed. Action stays amber — the
+// "needs your attention" tone — and only critical (a failed send, a
+// bounce) is red.
+const HINT_BADGE_CLASS: Readonly<Record<HintSeverity, string>> = {
+  info: 'badge badge-info',
+  action: 'badge badge-warn',
+  warning: 'badge badge-warn',
+  critical: 'badge badge-bad',
   success: 'badge badge-good',
 };
 
 export function HintBadge({ hint }: Readonly<{ hint: Hint }>) {
-  const className = CLASS_FOR[hint.severity];
+  const className = HINT_BADGE_CLASS[hint.severity];
   const inner = (
     <span className={className} title={hint.detail ?? undefined}>
       {hint.text}

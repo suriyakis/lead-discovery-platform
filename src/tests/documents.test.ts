@@ -87,7 +87,7 @@ describe('uploadDocument', () => {
     expect(result.document.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(result.document.status).toBe('ready');
     expect(result.document.storageProvider).toBe('local');
-    expect(result.url.startsWith('file://')).toBe(true);
+    expect(result.url).toBe(`/api/documents/${result.document.id}/download`);
     expect(await storage.exists(result.document.storageKey)).toBe(true);
   });
 
@@ -237,6 +237,40 @@ describe('listDocuments + getDocument + streamDocument', () => {
     await expect(
       getDocument(ctx(s.workspaceB, s.ownerB), a.document.id),
     ).rejects.toBeInstanceOf(DocumentServiceError);
+    await expect(
+      streamDocument(ctx(s.workspaceB, s.ownerB), a.document.id),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  // KL-11 / I106: the link used to be file://<server path>.
+  it('getDocument and a dedup re-upload link to the authenticated download route', async () => {
+    const s = await setup();
+    const first = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'spec.txt',
+      body: Buffer.from('same bytes'),
+    });
+    const route = `/api/documents/${first.document.id}/download`;
+    expect((await getDocument(ctx(s.workspaceA, s.ownerA), first.document.id)).url).toBe(route);
+    const again = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'copy.txt',
+      body: Buffer.from('same bytes'),
+    });
+    expect(again.deduplicated).toBe(true);
+    expect(again.url).toBe(route);
+  });
+
+  it('streamDocument lets a viewer read', async () => {
+    const s = await setup();
+    const result = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
+      filename: 'plain.txt',
+      body: Buffer.from('for viewers too'),
+    });
+    const { document, stream } = await streamDocument(
+      ctx(s.workspaceA, s.ownerA, 'viewer'),
+      result.document.id,
+    );
+    stream.destroy();
+    expect(document.id).toBe(result.document.id);
   });
 
   it('streamDocument returns the bytes back', async () => {

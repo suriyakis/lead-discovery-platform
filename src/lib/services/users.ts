@@ -1,9 +1,15 @@
 // User & membership management. Covers super-admin platform-wide ops
 // (account lifecycle, pre-authorize) and workspace-admin per-workspace
 // ops (add/remove member, change role). Every mutation is audit-logged.
+//
+// The platform-wide ops take a PlatformContext and audit at platform
+// scope (workspace_id NULL): a user is not owned by any one workspace, and
+// these payloads carry emails, names and free-text reasons. Filing them
+// into the admin's current workspace leaked them to that tenant's
+// /settings/audit (I051).
 
 import bcrypt from 'bcryptjs';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   accounts,
@@ -15,16 +21,16 @@ import {
   type User,
 } from '@/lib/db/schema/auth';
 import {
+  workspaceMemberRole,
   workspaceMembers,
+  workspaces,
   type WorkspaceMember,
   type WorkspaceMemberRole,
 } from '@/lib/db/schema/workspaces';
-import { recordAuditEvent } from './audit';
-import {
-  canAdminWorkspace,
-  isSuperAdmin,
-  type WorkspaceContext,
-} from './context';
+import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
+import { canAdminWorkspace, canOwnWorkspace, type WorkspaceContext } from './context';
+import { isPlatformContext, type PlatformContext } from './platform-context';
+import { applyPreauthorization } from './workspace-provisioning';
 
 export class UserServiceError extends Error {
   public readonly code: string;
@@ -49,17 +55,24 @@ function normalizeEmail(input: string): string {
   return input.trim().toLowerCase();
 }
 
+/** Platform ops accept only a PlatformContext — a WorkspaceContext with
+ *  role super_admin is rejected, so nothing can fall back to filing the
+ *  audit row into an ambient workspace. */
+function assertPlatform(pctx: PlatformContext, op: string): void {
+  if (!isPlatformContext(pctx)) throw denied(op);
+}
+
 // ---- account lifecycle (super_admin) -------------------------------
 
 export async function setAccountStatus(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   status: AccountStatus,
   reason: string | null = null,
 ): Promise<User> {
-  if (!isSuperAdmin(ctx)) throw denied('users.set_account_status');
+  assertPlatform(pctx, 'users.set_account_status');
   const target = await loadUser(targetUserId);
-  if (target.id === ctx.userId && status !== 'active') {
+  if (target.id === pctx.actorUserId && status !== 'active') {
     // Don't let a super-admin lock themselves out.
     throw conflict('cannot change your own account status');
   }
@@ -69,7 +82,7 @@ export async function setAccountStatus(
       accountStatus: status,
       accountStatusReason: reason?.trim() || null,
       accountStatusUpdatedAt: new Date(),
-      accountStatusUpdatedBy: ctx.userId,
+      accountStatusUpdatedBy: pctx.actorUserId,
     })
     .where(eq(users.id, targetUserId))
     .returning();
@@ -79,23 +92,20 @@ export async function setAccountStatus(
       'invariant_violation',
     );
   }
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.set_account_status',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { status, reason: reason ?? null, prior: target.accountStatus },
-    },
-  );
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.set_account_status',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { status, reason: reason ?? null, prior: target.accountStatus },
+  });
   return updated;
 }
 
 export async function listAllUsers(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   filter: { status?: AccountStatus; limit?: number } = {},
 ): Promise<User[]> {
-  if (!isSuperAdmin(ctx)) throw denied('users.list_all');
+  assertPlatform(pctx, 'users.list_all');
   const rows = filter.status
     ? await db
         .select()
@@ -110,86 +120,125 @@ export async function listAllUsers(
 
 export interface PreauthorizeInput {
   email: string;
-  /** Workspace to drop the user into on first signin. Optional. */
+  /**
+   * The workspace to drop the user into. null or absent means "their own
+   * new workspace": they get a workspace they own (unless they already
+   * have one), never zero memberships (audit I117).
+   */
   workspaceId?: bigint | null;
-  /** Role they should land at. Defaults to 'member'. */
+  /** Role in the named workspace. Defaults to 'member'; with no
+   *  workspace they become the owner of their own. */
   role?: WorkspaceMemberRole;
 }
 
+/**
+ * Put an email on the allow-list. Someone who signs up with it later is
+ * handled at first sign-in (workspace-provisioning.ts provisionOnSignIn).
+ * When the account already exists, the entry is applied now: the account
+ * is activated, the membership (or their own workspace) is created and
+ * the entry is marked consumed. Before audit I117 that path only
+ * activated the account, and the entry stayed unconsumed for good.
+ */
 export async function preauthorizeEmail(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   input: PreauthorizeInput,
 ): Promise<PreauthorizedEmail> {
-  if (!isSuperAdmin(ctx)) throw denied('users.preauthorize');
+  assertPlatform(pctx, 'users.preauthorize');
   const email = normalizeEmail(input.email);
   if (!EMAIL_RE.test(email)) throw invalid('invalid email');
+  const workspaceId = input.workspaceId ?? null;
+  const role: WorkspaceMemberRole =
+    workspaceId === null ? 'owner' : parseMemberRole(input.role ?? 'member');
 
-  // Idempotent: re-preauthorizing the same email replaces the prior
-  // unconsumed entry.
-  await db
-    .delete(preauthorizedEmails)
-    .where(
-      and(
-        eq(preauthorizedEmails.email, email),
-        isNull(preauthorizedEmails.consumedAt),
-      ),
-    );
+  const { entry, existingUserId } = await db.transaction(async (tx) => {
+    if (workspaceId !== null) {
+      const [target] = await tx
+        .select({ status: workspaces.status })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+      if (!target) throw notFound('workspace');
+      if (target.status !== 'active') throw invalid('that workspace is archived');
+    }
 
-  const [created] = await db
-    .insert(preauthorizedEmails)
-    .values({
-      email,
-      workspaceId: input.workspaceId ? input.workspaceId.toString() : null,
-      role: input.role ?? 'member',
-      createdBy: ctx.userId,
-    })
-    .returning();
-  if (!created) {
-    throw new UserServiceError(
-      'preauthorize insert returned no row',
-      'invariant_violation',
-    );
-  }
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.preauthorize',
-      entityType: 'preauthorized_email',
-      entityId: created.id,
-      payload: {
+    // Re-preauthorizing an email replaces its earlier entry, consumed or
+    // not (email is unique, and the audit log keeps the history).
+    await tx.delete(preauthorizedEmails).where(eq(preauthorizedEmails.email, email));
+
+    const [created] = await tx
+      .insert(preauthorizedEmails)
+      .values({
         email,
-        workspaceId: input.workspaceId?.toString() ?? null,
-        role: input.role ?? 'member',
-      },
-    },
-  );
-
-  // If the user already exists (and signed in before being pre-approved),
-  // lift them to active right away.
-  const existing = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
-  if (existing[0] && existing[0].accountStatus !== 'active') {
-    await db
-      .update(users)
-      .set({
-        accountStatus: 'active',
-        accountStatusUpdatedAt: new Date(),
-        accountStatusUpdatedBy: ctx.userId,
+        workspaceId: workspaceId?.toString() ?? null,
+        role,
+        createdBy: pctx.actorUserId,
       })
-      .where(eq(users.id, existing[0].id));
-  }
+      .returning();
+    if (!created) {
+      throw new UserServiceError(
+        'preauthorize insert returned no row',
+        'invariant_violation',
+      );
+    }
 
-  return created;
+    // Locked like createFirstWorkspace locks it, so the two cannot both
+    // give this user a workspace of their own.
+    const [existing] = await tx
+      .select({ id: users.id, accountStatus: users.accountStatus })
+      .from(users)
+      .where(sql`lower(${users.email}) = ${email}`)
+      .limit(1)
+      .for('no key update');
+    if (!existing) return { entry: created, existingUserId: null };
+
+    // The account already exists: apply the entry now.
+    if (existing.accountStatus !== 'active') {
+      await tx
+        .update(users)
+        .set({
+          accountStatus: 'active',
+          accountStatusUpdatedAt: new Date(),
+          accountStatusUpdatedBy: pctx.actorUserId,
+        })
+        .where(eq(users.id, existing.id));
+    }
+    await applyPreauthorization(tx, {
+      userId: existing.id,
+      email,
+      entry: created,
+      actorUserId: pctx.actorUserId,
+    });
+    const [consumed] = await tx
+      .select()
+      .from(preauthorizedEmails)
+      .where(eq(preauthorizedEmails.id, created.id))
+      .limit(1);
+    return { entry: consumed ?? created, existingUserId: existing.id };
+  });
+
+  // Platform scope (I051): the payload names an email, and the entry is
+  // not owned by any one workspace. The membership it grants is audited
+  // in the target workspace by applyPreauthorization.
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.preauthorize',
+    entityType: 'preauthorized_email',
+    entityId: entry.id,
+    payload: {
+      email,
+      workspaceId: workspaceId?.toString() ?? null,
+      role,
+      appliedToExistingUser: existingUserId,
+    },
+  });
+
+  return entry;
 }
 
 export async function listPreauthorizedEmails(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   filter: { activeOnly?: boolean } = {},
 ): Promise<PreauthorizedEmail[]> {
-  if (!isSuperAdmin(ctx)) throw denied('users.list_preauthorized');
+  assertPlatform(pctx, 'users.list_preauthorized');
   if (filter.activeOnly) {
     return db
       .select()
@@ -200,10 +249,10 @@ export async function listPreauthorizedEmails(
 }
 
 export async function revokePreauthorize(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   id: string,
 ): Promise<void> {
-  if (!isSuperAdmin(ctx)) throw denied('users.revoke_preauthorize');
+  assertPlatform(pctx, 'users.revoke_preauthorize');
   const existing = await db
     .select()
     .from(preauthorizedEmails)
@@ -214,14 +263,11 @@ export async function revokePreauthorize(
     throw conflict('already consumed');
   }
   await db.delete(preauthorizedEmails).where(eq(preauthorizedEmails.id, id));
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.revoke_preauthorize',
-      entityType: 'preauthorized_email',
-      entityId: id,
-    },
-  );
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.revoke_preauthorize',
+    entityType: 'preauthorized_email',
+    entityId: id,
+  });
 }
 
 // ---- workspace membership (workspace-admin) ------------------------
@@ -237,61 +283,156 @@ export async function listWorkspaceMembers(
     .where(eq(workspaceMembers.workspaceId, ctx.workspaceId));
 }
 
+// The one implementation of per-workspace member changes; the
+// /settings/members actions call it. (The super-admin console's
+// cross-workspace variants live in admin.ts.) Rules:
+//   - owner, admin and super_admin may add, re-role and remove members;
+//   - only an owner or a super_admin may grant 'owner', or re-role or
+//     remove a member who currently IS an owner. Before audit I043
+//     (deliverable ia:F-04) an admin could add or promote anyone to
+//     owner and demote or remove the real owners;
+//   - nobody changes their own role, whatever it is;
+//   - the last owner can be neither demoted nor removed.
+// Each change runs in one transaction that first locks the workspace
+// row, so two concurrent changes cannot both pass the last-owner check,
+// and writes its audit row on that same transaction, so the change and
+// its audit row commit (or roll back) together on one connection.
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Every workspace role, in the order the members page lists them. */
+const MEMBER_ROLES: readonly WorkspaceMemberRole[] = workspaceMemberRole.enumValues;
+
+const ownerOnly = () =>
+  new UserServiceError(
+    'Permission denied: only a workspace owner can grant, change or remove the owner role',
+    'permission_denied',
+  );
+
+/**
+ * The roles this actor may hand out when adding a member or changing a
+ * role. Empty for non-admins; 'owner' only for owners and super-admins.
+ */
+export function assignableMemberRoles(ctx: WorkspaceContext): WorkspaceMemberRole[] {
+  if (!canAdminWorkspace(ctx)) return [];
+  return canOwnWorkspace(ctx) ? [...MEMBER_ROLES] : MEMBER_ROLES.filter((r) => r !== 'owner');
+}
+
+/**
+ * True if the actor may change the role of, or remove, a member who
+ * currently holds `currentRole`. Says nothing about the actor's own row
+ * (self role changes are always refused) or the last-owner guard.
+ */
+export function canManageMemberWithRole(
+  ctx: WorkspaceContext,
+  currentRole: WorkspaceMemberRole,
+): boolean {
+  if (!canAdminWorkspace(ctx)) return false;
+  return currentRole !== 'owner' || canOwnWorkspace(ctx);
+}
+
+function parseMemberRole(role: unknown): WorkspaceMemberRole {
+  const match = MEMBER_ROLES.find((r) => r === role);
+  if (!match) throw invalid(`invalid workspace role: ${String(role)}`);
+  return match;
+}
+
+/**
+ * Lock the workspace row until the transaction ends, serialising member
+ * changes in this workspace. FOR NO KEY UPDATE, not FOR UPDATE: inserts
+ * that reference this row from other connections (audit rows, leads,
+ * jobs) take FOR KEY SHARE on it, which FOR UPDATE would block for the
+ * whole member change.
+ */
+async function lockWorkspaceMembership(tx: Tx, workspaceId: bigint): Promise<void> {
+  const rows = await tx
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .for('no key update');
+  if (!rows[0]) throw notFound('workspace');
+}
+
+async function loadMembership(
+  tx: Tx,
+  workspaceId: bigint,
+  userId: string,
+): Promise<WorkspaceMember | null> {
+  const rows = await tx
+    .select()
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.userId, userId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+async function countOwners(tx: Tx, workspaceId: bigint): Promise<number> {
+  const [row] = await tx
+    .select({ n: count() })
+    .from(workspaceMembers)
+    .where(
+      and(
+        eq(workspaceMembers.workspaceId, workspaceId),
+        eq(workspaceMembers.role, 'owner'),
+      ),
+    );
+  return row?.n ?? 0;
+}
+
 export async function setMemberRole(
   ctx: WorkspaceContext,
   targetUserId: string,
   role: WorkspaceMemberRole,
 ): Promise<WorkspaceMember> {
   if (!canAdminWorkspace(ctx)) throw denied('users.set_member_role');
-  const existing = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .limit(1);
-  if (!existing[0]) throw notFound('workspace_member');
-  // Don't let an admin demote the last owner.
-  if (existing[0].role === 'owner' && role !== 'owner') {
-    const owners = await db
-      .select()
-      .from(workspaceMembers)
+  const nextRole = parseMemberRole(role);
+  if (nextRole === 'owner' && !canOwnWorkspace(ctx)) throw ownerOnly();
+  if (targetUserId === ctx.userId) {
+    throw conflict('cannot change your own workspace role');
+  }
+  return db.transaction(async (tx) => {
+    await lockWorkspaceMembership(tx, ctx.workspaceId);
+    const existing = await loadMembership(tx, ctx.workspaceId, targetUserId);
+    if (!existing) throw notFound('workspace_member');
+    if (existing.role === 'owner' && !canOwnWorkspace(ctx)) throw ownerOnly();
+    // Nothing changes, so nothing to audit.
+    if (existing.role === nextRole) return existing;
+    if (existing.role === 'owner' && (await countOwners(tx, ctx.workspaceId)) <= 1) {
+      throw conflict('cannot demote the last owner');
+    }
+    const [updated] = await tx
+      .update(workspaceMembers)
+      .set({ role: nextRole, updatedAt: new Date() })
       .where(
         and(
           eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.role, 'owner'),
+          eq(workspaceMembers.id, existing.id),
         ),
+      )
+      .returning();
+    if (!updated) {
+      throw new UserServiceError(
+        'member role update returned no row',
+        'invariant_violation',
       );
-    if (owners.length <= 1) {
-      throw conflict('cannot demote the last owner');
     }
-  }
-  const [updated] = await db
-    .update(workspaceMembers)
-    .set({ role, updatedAt: new Date() })
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .returning();
-  if (!updated) {
-    throw new UserServiceError(
-      'member role update returned no row',
-      'invariant_violation',
+    await recordAuditEvent(
+      ctx,
+      {
+        kind: 'user.set_member_role',
+        entityType: 'workspace_member',
+        entityId: updated.id,
+        payload: { targetUserId, role: nextRole, prior: existing.role },
+      },
+      tx,
     );
-  }
-  await recordAuditEvent(ctx, {
-    kind: 'user.set_member_role',
-    entityType: 'workspace_member',
-    entityId: updated.id,
-    payload: { targetUserId, role, prior: existing[0].role },
+    return updated;
   });
-  return updated;
 }
 
 export async function removeMember(
@@ -299,44 +440,36 @@ export async function removeMember(
   targetUserId: string,
 ): Promise<void> {
   if (!canAdminWorkspace(ctx)) throw denied('users.remove_member');
-  const existing = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .limit(1);
-  if (!existing[0]) throw notFound('workspace_member');
-  if (existing[0].role === 'owner') {
-    const owners = await db
-      .select()
-      .from(workspaceMembers)
+  await db.transaction(async (tx) => {
+    await lockWorkspaceMembership(tx, ctx.workspaceId);
+    const existing = await loadMembership(tx, ctx.workspaceId, targetUserId);
+    if (!existing) throw notFound('workspace_member');
+    if (existing.role === 'owner') {
+      if (!canOwnWorkspace(ctx)) throw ownerOnly();
+      // Also covers an owner leaving on their own: they can, unless no
+      // other owner would remain.
+      if ((await countOwners(tx, ctx.workspaceId)) <= 1) {
+        throw conflict('cannot remove the last owner');
+      }
+    }
+    await tx
+      .delete(workspaceMembers)
       .where(
         and(
           eq(workspaceMembers.workspaceId, ctx.workspaceId),
-          eq(workspaceMembers.role, 'owner'),
+          eq(workspaceMembers.id, existing.id),
         ),
       );
-    if (owners.length <= 1) {
-      throw conflict('cannot remove the last owner');
-    }
-  }
-  await db
-    .delete(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
+    await recordAuditEvent(
+      ctx,
+      {
+        kind: 'user.remove_member',
+        entityType: 'workspace_member',
+        entityId: existing.id,
+        payload: { targetUserId, role: existing.role },
+      },
+      tx,
     );
-  await recordAuditEvent(ctx, {
-    kind: 'user.remove_member',
-    entityType: 'workspace_member',
-    entityId: existing[0].id,
-    payload: { targetUserId, role: existing[0].role },
   });
 }
 
@@ -346,42 +479,48 @@ export async function addMember(
   role: WorkspaceMemberRole = 'member',
 ): Promise<WorkspaceMember> {
   if (!canAdminWorkspace(ctx)) throw denied('users.add_member');
-  const existing = await db
-    .select()
-    .from(workspaceMembers)
-    .where(
-      and(
-        eq(workspaceMembers.workspaceId, ctx.workspaceId),
-        eq(workspaceMembers.userId, targetUserId),
-      ),
-    )
-    .limit(1);
-  if (existing[0]) throw conflict('already a member');
-  const target = await loadUser(targetUserId);
-  if (target.accountStatus !== 'active') {
-    throw conflict(`target user account is ${target.accountStatus}`);
-  }
-  const [created] = await db
-    .insert(workspaceMembers)
-    .values({
-      workspaceId: ctx.workspaceId,
-      userId: targetUserId,
-      role,
-    })
-    .returning();
-  if (!created) {
-    throw new UserServiceError(
-      'member insert returned no row',
-      'invariant_violation',
+  const newRole = parseMemberRole(role);
+  if (newRole === 'owner' && !canOwnWorkspace(ctx)) throw ownerOnly();
+  return db.transaction(async (tx) => {
+    await lockWorkspaceMembership(tx, ctx.workspaceId);
+    if (await loadMembership(tx, ctx.workspaceId, targetUserId)) {
+      throw conflict('already a member');
+    }
+    const [target] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.id, targetUserId))
+      .limit(1);
+    if (!target) throw notFound('user');
+    if (target.accountStatus !== 'active') {
+      throw conflict(`target user account is ${target.accountStatus}`);
+    }
+    const [created] = await tx
+      .insert(workspaceMembers)
+      .values({
+        workspaceId: ctx.workspaceId,
+        userId: targetUserId,
+        role: newRole,
+      })
+      .returning();
+    if (!created) {
+      throw new UserServiceError(
+        'member insert returned no row',
+        'invariant_violation',
+      );
+    }
+    await recordAuditEvent(
+      ctx,
+      {
+        kind: 'user.add_member',
+        entityType: 'workspace_member',
+        entityId: created.id,
+        payload: { targetUserId, role: newRole },
+      },
+      tx,
     );
-  }
-  await recordAuditEvent(ctx, {
-    kind: 'user.add_member',
-    entityType: 'workspace_member',
-    entityId: created.id,
-    payload: { targetUserId, role },
+    return created;
   });
-  return created;
 }
 
 // ---- Phase 30: password auth ---------------------------------------
@@ -407,10 +546,10 @@ export interface CreatePasswordUserInput {
  * a workspace at the given role. Mirrors the Wandizz "team user" flow.
  */
 export async function createPasswordUser(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   input: CreatePasswordUserInput,
 ): Promise<User> {
-  if (!isSuperAdmin(ctx)) throw denied('users.create_password_user');
+  assertPlatform(pctx, 'users.create_password_user');
   const email = normalizeEmail(input.email);
   if (!EMAIL_RE.test(email)) throw invalid('invalid email');
   if (input.password.length < MIN_PASSWORD_LEN) {
@@ -440,7 +579,7 @@ export async function createPasswordUser(
       role: 'member',
       accountStatus: input.accountStatus ?? 'active',
       accountStatusUpdatedAt: new Date(),
-      accountStatusUpdatedBy: ctx.userId,
+      accountStatusUpdatedBy: pctx.actorUserId,
       passwordHash,
     })
     .returning();
@@ -460,20 +599,17 @@ export async function createPasswordUser(
     });
   }
 
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.create_password_user',
-      entityType: 'user',
-      entityId: created.id,
-      payload: {
-        email,
-        platformRole: 'member',
-        workspaceId: input.workspaceId?.toString() ?? null,
-        workspaceRole: input.workspaceRole ?? null,
-      },
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.create_password_user',
+    entityType: 'user',
+    entityId: created.id,
+    payload: {
+      email,
+      platformRole: 'member',
+      workspaceId: input.workspaceId?.toString() ?? null,
+      workspaceRole: input.workspaceRole ?? null,
     },
-  );
+  });
 
   return created;
 }
@@ -489,12 +625,12 @@ export async function createPasswordUser(
  * Both transitions are audit-logged with the prior + new role.
  */
 export async function setUserPlatformRole(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   role: 'member' | 'super_admin',
 ): Promise<User> {
-  if (!isSuperAdmin(ctx)) throw denied('users.set_platform_role');
-  if (targetUserId === ctx.userId) {
+  assertPlatform(pctx, 'users.set_platform_role');
+  if (targetUserId === pctx.actorUserId) {
     throw conflict('cannot change your own platform role');
   }
   const target = await loadUser(targetUserId);
@@ -523,38 +659,35 @@ export async function setUserPlatformRole(
       'invariant_violation',
     );
   }
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.set_platform_role',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { role, prior: target.role },
-    },
-  );
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.set_platform_role',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { role, prior: target.role },
+  });
   return updated;
 }
 
 /**
- * Set or rotate a user's password. Super-admin can change anyone's;
- * a user can change their own (caller should pre-verify the existing
- * password if that's the policy). Rotating logs the user out of every
- * existing session as a side effect.
+ * Super-admin password reset (the /admin/users/[id] console). Rotating
+ * logs the user out of every existing session as a side effect.
+ *
+ * Platform-only: users changing their OWN password go through
+ * changeOwnPassword, which verifies the current password first.
  */
 export async function setUserPassword(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
   newPassword: string,
   options: { invalidateExistingSessions?: boolean } = {},
 ): Promise<void> {
-  const isSelf = targetUserId === ctx.userId;
-  if (!isSelf && !isSuperAdmin(ctx)) {
-    throw denied('users.set_password');
-  }
+  assertPlatform(pctx, 'users.set_password');
+  const isSelf = targetUserId === pctx.actorUserId;
   if (newPassword.length < MIN_PASSWORD_LEN) {
     throw invalid(`password must be at least ${MIN_PASSWORD_LEN} characters`);
   }
-  const target = await loadUser(targetUserId);
+  // Throws not_found before anything is written.
+  await loadUser(targetUserId);
   const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
   await db
     .update(users)
@@ -562,22 +695,18 @@ export async function setUserPassword(
     .where(eq(users.id, targetUserId));
 
   // Invalidate every existing session by default — the safer option for
-  // password resets. Skip via opts when called from a self-flow that
-  // wants to keep the current session.
+  // password resets. Skip via opts when the caller wants to keep the
+  // current session.
   if (options.invalidateExistingSessions !== false) {
     await db.delete(sessions).where(eq(sessions.userId, targetUserId));
   }
 
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.set_password',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { wasSelf: isSelf },
-    },
-  );
-  void target;
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.set_password',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { wasSelf: isSelf },
+  });
 }
 
 /**
@@ -617,11 +746,11 @@ export async function verifyUserPassword(
  * (lock-out protection — demote them first).
  */
 export async function deleteUserGlobally(
-  ctx: WorkspaceContext,
+  pctx: PlatformContext,
   targetUserId: string,
 ): Promise<void> {
-  if (!isSuperAdmin(ctx)) throw denied('users.delete');
-  if (targetUserId === ctx.userId) {
+  assertPlatform(pctx, 'users.delete');
+  if (targetUserId === pctx.actorUserId) {
     throw conflict('cannot delete yourself');
   }
   const target = await loadUser(targetUserId);
@@ -629,29 +758,10 @@ export async function deleteUserGlobally(
     throw conflict('cannot delete a super-admin — demote first');
   }
 
-  // Audit BEFORE delete so the trail still references the doomed id.
-  await recordAuditEvent(
-    { workspaceId: ctx.workspaceId, userId: ctx.userId },
-    {
-      kind: 'user.delete',
-      entityType: 'user',
-      entityId: targetUserId,
-      payload: { email: target.email, name: target.name ?? null },
-    },
-  );
-
   // Sessions + accounts cascade via FK. workspace_members cascades.
-  // workspaces.owner_user_id has no ON DELETE so we'd hit a constraint
-  // if this user owns any workspace — guard upfront.
-  const ownedRows = await db
-    .select()
-    .from(workspaceMembers)
-    .where(eq(workspaceMembers.userId, targetUserId));
-  void ownedRows;
   // workspaces.ownerUserId references users.id without ON DELETE. If the
   // target owns any workspace, the delete would FK-fail. We pre-check
   // and refuse with a useful message rather than letting Postgres throw.
-  const { workspaces } = await import('@/lib/db/schema/workspaces');
   const ownsRows = await db
     .select({ id: workspaces.id })
     .from(workspaces)
@@ -661,6 +771,17 @@ export async function deleteUserGlobally(
       `user owns ${ownsRows.length} workspace(s) — transfer ownership before delete`,
     );
   }
+
+  // Audit BEFORE delete so the trail still references the doomed id —
+  // but after every refusal, so a blocked delete leaves no "deleted" row.
+  // Platform scope: the payload names the user, and no single tenant
+  // owns that record.
+  await recordPlatformAuditEvent(pctx.actorUserId, {
+    kind: 'user.delete',
+    entityType: 'user',
+    entityId: targetUserId,
+    payload: { email: target.email, name: target.name ?? null },
+  });
 
   await db.delete(users).where(eq(users.id, targetUserId));
 }

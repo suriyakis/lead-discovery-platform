@@ -8,6 +8,7 @@
 // available via constructor / workspace setting override.
 
 import { z, type ZodSchema } from 'zod';
+import { AIOutputError } from './errors';
 import type {
   AIGenInput,
   AIGenOptions,
@@ -24,6 +25,9 @@ interface GeminiResponseShape {
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
+    /** Thinking tokens (2.5+ / 3.x). Billed by Google at the output rate
+     *  but NOT included in candidatesTokenCount. */
+    thoughtsTokenCount?: number;
   };
   promptFeedback?: {
     blockReason?: string;
@@ -71,6 +75,14 @@ function canDisableThinking(model: string): boolean {
  *  models where thinking can't be turned off. */
 const THINKING_HEADROOM_TOKENS = 2048;
 
+/** finishReason values meaning the safety layer withheld the answer. */
+const GEMINI_DECLINE_REASONS: ReadonlySet<string> = new Set([
+  'SAFETY',
+  'PROHIBITED_CONTENT',
+  'BLOCKLIST',
+  'SPII',
+]);
+
 export class GeminiAIProvider implements IAIProvider {
   public readonly id = 'gemini';
   public readonly model: string;
@@ -106,21 +118,32 @@ export class GeminiAIProvider implements IAIProvider {
     const text = (json.candidates?.[0]?.content?.parts ?? [])
       .map((p) => p.text ?? '')
       .join('');
-    if (!text) {
-      const block = json.promptFeedback?.blockReason;
-      if (block) {
-        throw new Error(`gemini blocked: ${block}`);
-      }
-      throw new Error('gemini returned empty text');
-    }
-    return {
-      text,
-      model,
-      usage: {
-        inputTokens: json.usageMetadata?.promptTokenCount ?? 0,
-        outputTokens: json.usageMetadata?.candidatesTokenCount ?? 0,
-      },
+    // Thinking tokens are billed as output, so they are metered as output
+    // too (I179) — before, every Gemini 2.5+/3.x answer under-recovered.
+    const usage = {
+      inputTokens: json.usageMetadata?.promptTokenCount ?? 0,
+      outputTokens:
+        (json.usageMetadata?.candidatesTokenCount ?? 0) +
+        (json.usageMetadata?.thoughtsTokenCount ?? 0),
     };
+    if (!text) {
+      // Typed (AP-02) so callers can tell "no answer" from a transport
+      // failure; the messages are unchanged.
+      const block = json.promptFeedback?.blockReason;
+      const finish = json.candidates?.[0]?.finishReason ?? null;
+      if (block) {
+        throw new AIOutputError(
+          { kind: 'refusal', provider: this.id, model, stopReason: block, usage },
+          `gemini blocked: ${block}`,
+        );
+      }
+      const declined = finish !== null && GEMINI_DECLINE_REASONS.has(finish);
+      throw new AIOutputError(
+        { kind: declined ? 'refusal' : 'empty', provider: this.id, model, stopReason: finish, usage },
+        'gemini returned empty text',
+      );
+    }
+    return { text, model, usage };
   }
 
   async generateJson<T>(

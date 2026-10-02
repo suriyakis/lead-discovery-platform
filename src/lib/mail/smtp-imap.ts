@@ -1,9 +1,11 @@
 // nodemailer (SMTP) + imapflow (IMAP) implementation of IMailProvider.
 
 import nodemailer, { type Transporter } from 'nodemailer';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
-import { simpleParser } from 'mailparser';
+import { simpleParser, type MailParserOptions } from 'mailparser';
 import type {
+  ConnectionCheck,
   ConnectionTestResult,
   FetchInboundOptions,
   IMailProvider,
@@ -13,6 +15,12 @@ import type {
   OutboundMessage,
   SendResult,
 } from './index';
+import {
+  deliveryStatusText,
+  extractRelevanceSignals,
+  unfoldHeaderValue,
+} from './relevance';
+import { describeConnectionError, isAuthFailure } from './connection-errors';
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -32,7 +40,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  *   587: STARTTLS
  *   25:  STARTTLS (no auth, mostly legacy)
  */
-function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
+export function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
   if (port === 465) return true;
   if (port === 587 || port === 25) return false;
   return operatorChoice;
@@ -46,10 +54,33 @@ function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
  *   993: implicit SSL
  *   143: STARTTLS
  */
-function resolveImapSecure(port: number, operatorChoice: boolean): boolean {
+export function resolveImapSecure(port: number, operatorChoice: boolean): boolean {
   if (port === 993) return true;
   if (port === 143) return false;
   return operatorChoice;
+}
+
+/**
+ * The nodemailer transport options for a mailbox. Port 465 always gets
+ * implicit TLS (`secure: true`, TLS before the greeting); 587 / 25 get a
+ * plain connect that nodemailer upgrades with STARTTLS whenever the server
+ * offers it. flow:F-04: hosts that refuse 587 (the Plesk host behind
+ * workspace 1's mailbox listens on 25 / 465 / 993 only) work by switching
+ * the mailbox to 465 — exported so that stays pinned by a test.
+ */
+export function smtpTransportOptions(config: MailboxConfig): SMTPTransport.Options {
+  return {
+    host: config.smtpHost,
+    port: config.smtpPort,
+    secure: resolveSmtpSecure(config.smtpPort, config.smtpSecure),
+    auth: {
+      user: config.smtpUser,
+      pass: config.smtpPassword,
+    },
+    tls: { rejectUnauthorized: false },
+    connectionTimeout: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    socketTimeout: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  };
 }
 
 export class SmtpImapMailProvider implements IMailProvider {
@@ -82,7 +113,11 @@ export class SmtpImapMailProvider implements IMailProvider {
       })),
     });
 
-    return { messageId: info.messageId, raw: info.response };
+    return {
+      messageId: info.messageId,
+      raw: info.response,
+      rejected: partialRejections(info),
+    };
   }
 
   async fetchInbound(options: FetchInboundOptions = {}): Promise<InboundMessage[]> {
@@ -137,33 +172,22 @@ export class SmtpImapMailProvider implements IMailProvider {
   // ---- helpers --------------------------------------------------------
 
   private buildTransporter(): Transporter {
-    return nodemailer.createTransport({
-      host: this.config.smtpHost,
-      port: this.config.smtpPort,
-      secure: resolveSmtpSecure(this.config.smtpPort, this.config.smtpSecure),
-      auth: {
-        user: this.config.smtpUser,
-        pass: this.config.smtpPassword,
-      },
-      tls: { rejectUnauthorized: false },
-      connectionTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      socketTimeout: this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    });
+    return nodemailer.createTransport(smtpTransportOptions(this.config));
   }
 
-  private async testSmtp(): Promise<{ ok: boolean; detail?: string }> {
+  private async testSmtp(): Promise<ConnectionCheck> {
     const transporter = this.buildTransporter();
     try {
       await transporter.verify();
       return { ok: true };
     } catch (err) {
-      return { ok: false, detail: explain(err) };
+      return { ok: false, detail: explain(err), authFailed: isAuthFailure(err) };
     } finally {
       transporter.close();
     }
   }
 
-  private async testImap(): Promise<{ ok: boolean; detail?: string }> {
+  private async testImap(): Promise<ConnectionCheck> {
     if (!this.config.imap) return { ok: false, detail: 'imap not configured' };
     const client = new ImapFlow({
       host: this.config.imap.host,
@@ -179,7 +203,7 @@ export class SmtpImapMailProvider implements IMailProvider {
       await client.mailboxOpen(this.config.imap.folder);
       return { ok: true };
     } catch (err) {
-      return { ok: false, detail: explain(err) };
+      return { ok: false, detail: explain(err), authFailed: isAuthFailure(err) };
     } finally {
       await client.logout().catch(() => undefined);
     }
@@ -190,22 +214,34 @@ export class SmtpImapMailProvider implements IMailProvider {
 
 async function parseFetched(msg: FetchMessageObject): Promise<InboundMessage | null> {
   if (!msg.source) return null;
-  const parsed = await simpleParser(msg.source);
+  return parseRawMessage(msg.source, msg.uid ?? 0);
+}
+
+/**
+ * Parse one raw RFC 5322 message into an InboundMessage. Exported so the
+ * relevance gate can be tested on real .eml fixtures through the real
+ * parser.
+ *
+ * flow:F-01: the relevance signals are captured here, from the raw header
+ * lines and the report parts, because mailparser's structured header map
+ * folds every List-* header into one 'list' object and returns objects for
+ * Content-Type / addresses — the old String() pass stored those as
+ * '[object Object]'. `keepDeliveryStatus` keeps a DSN's
+ * message/delivery-status part as a part we can read instead of dropping
+ * it; its text is appended to the body so the operator still sees it.
+ */
+export async function parseRawMessage(
+  source: Buffer | string,
+  uid = 0,
+): Promise<InboundMessage | null> {
+  const parsed = await simpleParser(source, PARSER_OPTIONS);
 
   const from = pickFirstAddress(parsed.from?.value);
   if (!from) return null;
   const messageId = (parsed.messageId ?? '').trim();
   if (!messageId) return null;
 
-  const headers: Record<string, string | string[]> = {};
-  for (const [key, value] of parsed.headers.entries()) {
-    headers[key] =
-      typeof value === 'string'
-        ? value
-        : Array.isArray(value)
-        ? value.map(String)
-        : String(value);
-  }
+  const headers = jsonSafeHeaders(parsed.headerLines ?? [], parsed.headers);
 
   const referencesRaw = parsed.references;
   const references = Array.isArray(referencesRaw)
@@ -214,8 +250,28 @@ async function parseFetched(msg: FetchMessageObject): Promise<InboundMessage | n
     ? [referencesRaw]
     : [];
 
+  const attachments = (parsed.attachments ?? []).map((a) => ({
+    filename: a.filename ?? 'unnamed',
+    contentType: a.contentType ?? 'application/octet-stream',
+    sizeBytes: a.size ?? 0,
+    content: a.content as Buffer,
+  }));
+
+  const relevanceSignals = extractRelevanceSignals({
+    headers,
+    fromAddress: from.address,
+    parts: attachments.map((a) => ({ contentType: a.contentType, content: a.content })),
+    source: 'parser',
+  });
+
+  let textBody = parsed.text ?? null;
+  const report = deliveryStatusText(attachments);
+  if (report && !(textBody ?? '').includes(report)) {
+    textBody = textBody ? `${textBody.trimEnd()}\n\n${report}\n` : `${report}\n`;
+  }
+
   return {
-    uid: msg.uid ?? 0,
+    uid,
     messageId,
     inReplyTo: parsed.inReplyTo ?? null,
     references,
@@ -223,17 +279,51 @@ async function parseFetched(msg: FetchMessageObject): Promise<InboundMessage | n
     to: collectAddresses(parsed.to),
     cc: collectAddresses(parsed.cc),
     subject: parsed.subject ?? '',
-    textBody: parsed.text ?? null,
+    textBody,
     htmlBody: typeof parsed.html === 'string' ? parsed.html : null,
     receivedAt: parsed.date ?? new Date(),
     headers,
-    attachments: (parsed.attachments ?? []).map((a) => ({
-      filename: a.filename ?? 'unnamed',
-      contentType: a.contentType ?? 'application/octet-stream',
-      sizeBytes: a.size ?? 0,
-      content: a.content as Buffer,
-    })),
+    relevanceSignals,
+    attachments,
   };
+}
+
+/** mailparser supports keepDeliveryStatus (mail-parser.js) but
+ *  @types/mailparser does not declare it. */
+const PARSER_OPTIONS: MailParserOptions & { keepDeliveryStatus: boolean } = {
+  keepDeliveryStatus: true,
+};
+
+/** Headers whose decoded (encoded-word) text is worth keeping over the raw line. */
+const DECODED_TEXT_HEADERS = ['subject', 'from', 'to', 'cc', 'reply-to', 'sender'] as const;
+
+/**
+ * JSON-safe header record: lower-cased name → unfolded raw value, an array
+ * when the header repeats. Built from the raw header lines so List-*,
+ * Content-Type and friends keep their real values; the few human-facing
+ * headers take mailparser's decoded text so encoded words read normally.
+ */
+function jsonSafeHeaders(
+  lines: ReadonlyArray<{ key: string; line: string }>,
+  decoded: ReadonlyMap<string, unknown>,
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const { key, line } of lines) {
+    const name = key.toLowerCase();
+    const value = unfoldHeaderValue(line);
+    const prev = out[name];
+    out[name] = prev === undefined ? value : Array.isArray(prev) ? [...prev, value] : [prev, value];
+  }
+  for (const name of DECODED_TEXT_HEADERS) {
+    if (Array.isArray(out[name])) continue;
+    const value = decoded.get(name);
+    if (typeof value === 'string') {
+      out[name] = value;
+    } else if (value && typeof value === 'object' && typeof (value as { text?: unknown }).text === 'string') {
+      out[name] = (value as { text: string }).text;
+    }
+  }
+  return out;
 }
 
 function pickFirstAddress(
@@ -268,9 +358,28 @@ function addrToString(addr: MailAddress): string {
   return addr.name ? `"${addr.name.replace(/"/g, '\\"')}" <${addr.address}>` : addr.address;
 }
 
-function explain(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err) {
-    return String((err as { message: unknown }).message);
+/** flow:F-05 — nodemailer accepts a message when at least one recipient
+ *  passed RCPT TO and lists the refused ones (with the server's reply) on
+ *  `rejectedErrors`. Surface them so the service can tell a non-existent
+ *  address from a delivered one. */
+function partialRejections(info: unknown): SendResult['rejected'] {
+  const errors = (info as { rejectedErrors?: unknown }).rejectedErrors;
+  if (!Array.isArray(errors) || errors.length === 0) return undefined;
+  const out: NonNullable<SendResult['rejected']>[number][] = [];
+  for (const raw of errors) {
+    const e = (raw ?? {}) as { recipient?: unknown; responseCode?: unknown; response?: unknown };
+    if (typeof e.recipient !== 'string') continue;
+    out.push({
+      address: e.recipient,
+      responseCode: typeof e.responseCode === 'number' ? e.responseCode : null,
+      response: typeof e.response === 'string' ? e.response : null,
+    });
   }
-  return String(err);
+  return out.length > 0 ? out : undefined;
+}
+
+/** flow:F-04: keep the server's response code / text (imapflow's refused
+ *  LOGIN is a bare "Command failed" otherwise). */
+function explain(err: unknown): string {
+  return describeConnectionError(err);
 }

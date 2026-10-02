@@ -2,9 +2,10 @@
 // workspace and does two things a human account manager would:
 //
 //   1. RULE FINDINGS — deterministic audit of configuration + operations:
-//      empty wallet, recipes without a target country, mock search, no
-//      mailbox, failed runs, review backlog, stale drafts, pending
-//      follow-up approvals.
+//      empty wallet, no active product, no mailbox / each failing
+//      mailbox / no active mailbox, recipes without a target country,
+//      failed runs, review backlog, stale drafts, pending follow-up
+//      approvals. (There is no mock-search finding yet — see I073.)
 //   2. COMMUNICATION REVIEW — the AI reads a sample of recent outbound
 //      conversations and judges them the way a recipient would: is the
 //      flow natural? does it repeat itself? does it contradict earlier
@@ -13,15 +14,21 @@
 // The result is persisted as a report (score 0–100 + advice) and, when
 // anything is wrong, a warning notification linking to /health.
 
-import { and, count, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
+import { formatUtc } from '@/lib/format-utc';
 import { connectorRecipes, connectorRuns } from '@/lib/db/schema/connectors';
 import {
   workspaceHealthReports,
   type WorkspaceHealthReport,
 } from '@/lib/db/schema/health';
-import { mailMessages, mailThreads, mailboxes } from '@/lib/db/schema/mailing';
+import {
+  mailMessages,
+  mailThreads,
+  mailboxes,
+  type Mailbox,
+} from '@/lib/db/schema/mailing';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { productProfiles } from '@/lib/db/schema/products';
 import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
@@ -29,6 +36,7 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
+import { summarizeMailboxFailure } from './mailbox';
 import { notify } from './notifications';
 import { getTokenWallet, hasTokens } from './token-ledger';
 
@@ -69,6 +77,29 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 
 // ---- rule findings --------------------------------------------------
 
+/**
+ * flow:F-04: what "no active mailbox" means depends on why. Only a
+ * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
+ * follow-up processOne check); sends through a PAUSED one are refused
+ * and the queue entries / follow-ups that come due are marked failed.
+ */
+export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean): string {
+  const why = anyFailing && anyPaused ? 'failing or paused' : anyFailing ? 'failing' : 'paused';
+  const parts = [`No mailbox is active (each one is ${why}) — no replies are read.`];
+  if (anyFailing) {
+    parts.push(
+      'Outreach and follow-ups queued on a failing mailbox are held until it works again.',
+    );
+  }
+  if (anyPaused) {
+    parts.push(
+      'Outreach and follow-ups that come due on a paused mailbox are marked failed, not held — ' +
+        're-enable it before they are due.',
+    );
+  }
+  return parts.join(' ');
+}
+
 export async function collectRuleFindings(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<HealthFinding[]> {
@@ -100,18 +131,23 @@ export async function collectRuleFindings(
     });
   }
 
-  const [mbs] = await db
-    .select({ c: count() })
+  const mbs = await db
+    .select({
+      id: mailboxes.id,
+      name: mailboxes.name,
+      status: mailboxes.status,
+      lastError: mailboxes.lastError,
+      lastErrorAt: mailboxes.lastErrorAt,
+      failingSince: mailboxes.failingSince,
+      smtpHost: mailboxes.smtpHost,
+      smtpPort: mailboxes.smtpPort,
+      imapHost: mailboxes.imapHost,
+      imapPort: mailboxes.imapPort,
+    })
     .from(mailboxes)
-    .where(and(eq(mailboxes.workspaceId, wsId), eq(mailboxes.status, 'active')));
-  if (Number(mbs?.c ?? 0) === 0) {
-    findings.push({
-      severity: 'warning',
-      code: 'mailbox.none',
-      message: 'No active mailbox — approved drafts cannot be sent.',
-      href: '/mailbox/new',
-    });
-  }
+    .where(and(eq(mailboxes.workspaceId, wsId), ne(mailboxes.status, 'archived')))
+    .orderBy(asc(mailboxes.id));
+  findings.push(...mailboxFindings(mbs));
 
   const recipes = await db
     .select({
@@ -125,7 +161,9 @@ export async function collectRuleFindings(
     findings.push({
       severity: 'warning',
       code: 'recipes.no_country',
-      message: `${Number(recipeRow.total) - Number(recipeRow.withCountry)} of ${recipeRow.total} recipes have no target country — the geography gate cannot verify those leads and holds them for manual review.`,
+      // No target country = no geography gate (applyGeoGate → 'no_gate'):
+      // nothing is held for review, leads from anywhere pass straight on.
+      message: `${Number(recipeRow.total) - Number(recipeRow.withCountry)} of ${recipeRow.total} recipes have no target country — the geography gate is off for them, so leads from any country pass review and can be emailed.`,
       href: '/connectors',
     });
   }
@@ -206,6 +244,76 @@ export async function collectRuleFindings(
   }
 
   return findings;
+}
+
+/** A mailbox as the rule check reads it. */
+export type MailboxFindingRow = Pick<
+  Mailbox,
+  | 'id'
+  | 'name'
+  | 'status'
+  | 'lastError'
+  | 'lastErrorAt'
+  | 'failingSince'
+  | 'smtpHost'
+  | 'smtpPort'
+  | 'imapHost'
+  | 'imapPort'
+>;
+
+/**
+ * Mailbox findings (AP-01 wording, flow:F-04 behaviour). The statuses
+ * behave differently, so the copy says what each one really does:
+ *   - none connected (archived ones do not count): nothing is sent and
+ *     no replies are read;
+ *   - each FAILING mailbox, by name and linking to its page (I095): its
+ *     queued outreach and follow-ups are HELD, not sent and not failed;
+ *     replies to it are not read (and nothing is sent from it when SMTP
+ *     is the broken side); the advice is the mailbox page's own
+ *     (summarizeMailboxFailure — e.g. "use port 465 with TLS on connect"
+ *     when a server refuses 587), plus the last error;
+ *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing ones hold
+ *     their queue, paused ones mark due sends failed.
+ * A paused mailbox next to an active one is the operator's choice, not
+ * a finding.
+ */
+export function mailboxFindings(rows: ReadonlyArray<MailboxFindingRow>): HealthFinding[] {
+  const live = rows.filter((m) => m.status !== 'archived');
+  const out: HealthFinding[] = [];
+  for (const mb of live.filter((m) => m.status === 'failing')) {
+    const summary = summarizeMailboxFailure(mb);
+    const since = mb.failingSince ? ` since ${formatUtc(mb.failingSince)}` : '';
+    const when = mb.lastErrorAt ? ` (${formatUtc(mb.lastErrorAt)})` : '';
+    out.push({
+      severity: 'warning',
+      code: 'mailbox.failing',
+      message:
+        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice}` +
+        ` Last error${when}: ${(mb.lastError ?? 'unknown').slice(0, 300)}`,
+      href: `/mailbox/${mb.id}`,
+    });
+  }
+  if (!live.some((m) => m.status === 'active')) {
+    out.push(
+      live.length === 0
+        ? {
+            severity: 'warning',
+            code: 'mailbox.none',
+            message: 'No mailbox is connected — nothing can be sent and no replies are read.',
+            href: '/mailbox/new',
+          }
+        : {
+            severity: 'warning',
+            code: 'mailbox.none',
+            message: noActiveMailboxMessage(
+              live.some((m) => m.status === 'failing'),
+              live.some((m) => m.status === 'paused'),
+            ),
+            href: '/mailbox',
+          },
+    );
+  }
+  return out;
 }
 
 // ---- AI communication review ----------------------------------------

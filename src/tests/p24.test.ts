@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { db } from '@/lib/db/client';
+import { auditLog } from '@/lib/db/schema/audit';
 import {
   type WorkspaceContext,
   makeWorkspaceContext,
@@ -10,6 +11,7 @@ import {
 } from '@/lib/services/admin';
 import { recordAuditEvent } from '@/lib/services/audit';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -57,7 +59,7 @@ describe('listAuditAcrossWorkspaces', () => {
       { kind: 'test.thing', entityType: 'thing', entityId: '2' },
     );
     const all = await listAuditAcrossWorkspaces(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
     );
     expect(all.length).toBeGreaterThanOrEqual(2);
     // Newest first.
@@ -77,7 +79,7 @@ describe('listAuditAcrossWorkspaces', () => {
       { kind: 'test.b' },
     );
     const onlyA = await listAuditAcrossWorkspaces(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { workspaceId: s.workspaceA },
     );
     expect(onlyA.every((e) => e.workspaceId === s.workspaceA)).toBe(true);
@@ -94,7 +96,7 @@ describe('listAuditAcrossWorkspaces', () => {
       { kind: 'kind.beta' },
     );
     const filtered = await listAuditAcrossWorkspaces(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
       { kind: 'kind.alpha' },
     );
     expect(filtered.every((e) => e.kind === 'kind.alpha')).toBe(true);
@@ -104,8 +106,75 @@ describe('listAuditAcrossWorkspaces', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      listAuditAcrossWorkspaces(ctx(s.workspaceA, s.ownerA)),
+      listAuditAcrossWorkspaces(smuggled(ctx(s.workspaceA, s.ownerA))),
     ).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+});
+
+// The since / until filters used to bind a JS Date inside a raw sql``
+// template, which postgres.js cannot encode: every /admin/audit request
+// with Since or Until set failed (audit finding I050, deliverable PC-01).
+describe('listAuditAcrossWorkspaces date window', () => {
+  const since = new Date('2026-03-10T10:00:00.000Z');
+  const until = new Date('2026-03-10T12:00:00.000Z');
+
+  /** One probe row on each side of each bound, plus one inside (in B). */
+  async function seedAroundWindow(s: Setup) {
+    const at = async (iso: string, workspaceId = s.workspaceA): Promise<bigint> => {
+      const [row] = await db
+        .insert(auditLog)
+        .values({
+          workspaceId,
+          userId: s.ownerA,
+          kind: 'window.probe',
+          payload: {},
+          createdAt: new Date(iso),
+        })
+        .returning();
+      return row!.id;
+    };
+    return {
+      beforeSince: await at('2026-03-10T09:59:59.999Z'),
+      atSince: await at('2026-03-10T10:00:00.000Z'),
+      inside: await at('2026-03-10T11:00:00.000Z', s.workspaceB),
+      atUntil: await at('2026-03-10T12:00:00.000Z'),
+      afterUntil: await at('2026-03-10T12:00:00.001Z'),
+    };
+  }
+
+  async function ids(s: Setup, filter: Parameters<typeof listAuditAcrossWorkspaces>[1]) {
+    const rows = await listAuditAcrossWorkspaces(platformCtx(s.superAdmin), {
+      kind: 'window.probe',
+      ...filter,
+    });
+    return rows.map((r) => r.id);
+  }
+
+  it('keeps only rows inside since..until, both bounds inclusive, newest first', async () => {
+    const s = await setup();
+    const r = await seedAroundWindow(s);
+    expect(await ids(s, { since, until })).toEqual([r.atUntil, r.inside, r.atSince]);
+  });
+
+  it('since alone drops only the rows before it', async () => {
+    const s = await setup();
+    const r = await seedAroundWindow(s);
+    expect(await ids(s, { since })).toEqual([r.afterUntil, r.atUntil, r.inside, r.atSince]);
+  });
+
+  it('until alone drops only the rows after it', async () => {
+    const s = await setup();
+    const r = await seedAroundWindow(s);
+    expect(await ids(s, { until })).toEqual([r.atUntil, r.inside, r.atSince, r.beforeSince]);
+  });
+
+  it('combines the window with the workspace filter', async () => {
+    const s = await setup();
+    const r = await seedAroundWindow(s);
+    expect(await ids(s, { since, until, workspaceId: s.workspaceA })).toEqual([
+      r.atUntil,
+      r.atSince,
+    ]);
   });
 });
 
@@ -125,7 +194,7 @@ describe('distinctAuditKindsAcross', () => {
       { kind: 'alpha.event' },
     );
     const kinds = await distinctAuditKindsAcross(
-      ctx(s.workspaceA, s.superAdmin, 'super_admin'),
+      platformCtx(s.superAdmin),
     );
     const filtered = kinds.filter(
       (k) => k === 'alpha.event' || k === 'zeta.event',
@@ -136,7 +205,7 @@ describe('distinctAuditKindsAcross', () => {
   it('rejects non-super-admin', async () => {
     const s = await setup();
     await expect(
-      distinctAuditKindsAcross(ctx(s.workspaceA, s.ownerA)),
+      distinctAuditKindsAcross(smuggled(ctx(s.workspaceA, s.ownerA))),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
 });

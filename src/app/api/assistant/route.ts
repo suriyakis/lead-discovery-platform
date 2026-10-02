@@ -1,19 +1,26 @@
 // POST /api/assistant — the in-app AI guide ("Ask the platform").
 // Body: { question: string, history?: [{role, content}] }
-// Metered AI usage; blocked (402) on an empty wallet like every other
-// AI feature.
+//
+// Metered AI usage (kind ai.assistant). It does NOT 402 on an empty
+// wallet: askAssistant then skips the model and returns a free,
+// deterministic answer built from the rule findings, with a
+// [/settings/billing] link (source: 'deterministic'). A super-admin's
+// question is metered as platform support and never debited.
+//
+// Errors — `detail` is always our own copy, never provider text:
+//   401 unauthorized · 400 no_workspace · 403 account_inactive
+//   400 invalid_input · 429 rate_limited
+//   502 empty_answer (retryable) — the model returned no visible text
+//   500 assistant_failed (retryable) — anything else; logged server-side
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
+import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { AssistantError, askAssistant } from '@/lib/services/assistant';
-import { TokenError, assertTokens } from '@/lib/services/token-ledger';
+import { authErrorToResponse } from '@/lib/services/http';
 import { rateLimitAllow } from '@/lib/rate-limit';
+import { HISTORY_TURN_MAX_CHARS } from '@/lib/assistant/panel-state';
 
 const InputSchema = z.object({
   question: z.string().min(1).max(2000),
@@ -21,7 +28,10 @@ const InputSchema = z.object({
     .array(
       z.object({
         role: z.enum(['user', 'assistant']),
-        content: z.string().max(4000),
+        // Clipped, never rejected: a long earlier answer must not turn
+        // every later question into a 400 (askAssistant reads only the
+        // first 500 characters of each turn).
+        content: z.string().transform((s) => s.slice(0, HISTORY_TURN_MAX_CHARS)),
       }),
     )
     .max(16)
@@ -37,12 +47,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
-    if (err instanceof AuthRequiredError) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-    if (err instanceof NoWorkspaceError) {
-      return NextResponse.json({ error: 'no_workspace' }, { status: 400 });
-    }
+    const res = authErrorToResponse(err);
+    if (res) return res;
     throw err;
   }
 
@@ -61,25 +67,36 @@ export async function POST(req: Request): Promise<NextResponse> {
     !rateLimitAllow(`assistant:user:${ctx.userId}`, 10, 60_000)
   ) {
     return NextResponse.json(
-      { error: 'rate_limited', detail: 'Too many questions — try again in a minute.' },
+      { error: 'rate_limited', detail: 'Too many questions — try again in a minute.', retryable: true },
       { status: 429 },
     );
   }
 
   try {
-    await assertTokens(ctx);
     const result = await askAssistant(ctx, parsed.question, parsed.history ?? []);
-    return NextResponse.json({ ok: true, answer: result.answer });
+    return NextResponse.json({
+      ok: true,
+      answer: result.answer,
+      source: result.source,
+      ...(result.findings ? { findings: result.findings } : {}),
+    });
   } catch (err) {
-    if (err instanceof TokenError) {
-      return NextResponse.json({ error: err.code, detail: err.message }, { status: 402 });
-    }
     if (err instanceof AssistantError) {
-      return NextResponse.json({ error: err.code, detail: err.message }, { status: 400 });
+      const status = err.code === 'empty_answer' ? 502 : 400;
+      return NextResponse.json(
+        { error: err.code, detail: err.message, retryable: err.retryable },
+        { status },
+      );
     }
+    // Provider failures (429/529/timeouts) and anything unexpected. The
+    // raw message can carry vendor response text — log it, don't show it.
     console.error('[assistant] failed:', err);
     return NextResponse.json(
-      { error: 'assistant_failed', detail: err instanceof Error ? err.message : 'unknown' },
+      {
+        error: 'assistant_failed',
+        detail: 'The AI guide is unavailable right now. Your question is kept — try again in a moment.',
+        retryable: true,
+      },
       { status: 500 },
     );
   }

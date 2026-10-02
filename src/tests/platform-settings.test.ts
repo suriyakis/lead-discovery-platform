@@ -16,6 +16,7 @@ import {
 } from '@/lib/services/provider-settings';
 import { DeepSeekAIProvider } from '@/lib/ai';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx, smuggled } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -52,10 +53,10 @@ describe('platform settings service', () => {
   it('super-admin gating + validation', async () => {
     const s = await setup();
     const owner = ctx(s.workspaceA, s.ownerA, 'owner');
-    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const sa = platformCtx(s.ownerA);
 
     await expect(
-      setPlatformSettings(owner, { 'ai.provider': 'anthropic' }),
+      setPlatformSettings(smuggled(owner), { 'ai.provider': 'anthropic' }),
     ).rejects.toThrow(/Permission denied/);
     await expect(
       setPlatformSettings(sa, { 'ai.provider': 'not-a-vendor' }),
@@ -83,7 +84,7 @@ describe('platform settings service', () => {
   it('resolveActiveProvider: workspace > platform > env > default', async () => {
     const s = await setup();
     const owner = ctx(s.workspaceA, s.ownerA, 'owner');
-    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const sa = platformCtx(s.ownerA);
 
     // env only
     let r = await resolveActiveProvider(owner, 'ai', 'openai');
@@ -102,7 +103,7 @@ describe('platform settings service', () => {
 
   it('resolvePlatformModel: platform model beats env, env is fallback', async () => {
     const s = await setup();
-    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const sa = platformCtx(s.ownerA);
 
     expect(await resolvePlatformModel('ai', 'env-model')).toBe('env-model');
     await setPlatformSettings(sa, { 'ai.model': 'deepseek-v4-flash' });
@@ -112,7 +113,7 @@ describe('platform settings service', () => {
 
   it('auto-detect sees console keys, not just env vars', async () => {
     const s = await setup();
-    const sa = ctx(s.workspaceA, s.ownerA, 'super_admin');
+    const sa = platformCtx(s.ownerA);
     const owner = ctx(s.workspaceA, s.ownerA, 'owner');
     const { setPlatformSecret, deletePlatformSecret } = await import(
       '@/lib/services/secrets'

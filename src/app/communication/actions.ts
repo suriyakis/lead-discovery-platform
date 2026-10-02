@@ -21,6 +21,7 @@ import {
   safeSyncOne,
   unmarkSpam,
 } from '@/lib/services/mail';
+import { affectedNote, parseSelectedIds as parseIds, retrySummary } from '@/lib/mail-bulk-actions';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 const FILTER_KEYS = [
@@ -55,26 +56,6 @@ function backToFolderError(formData: FormData, msg: string): never {
   const params = makeRedirectParams(formData);
   params.set('error', msg);
   redirect(`/communication?${params.toString()}`);
-}
-
-function parseIds(formData: FormData): bigint[] {
-  const out: bigint[] = [];
-  for (const raw of formData.getAll('ids')) {
-    const s = String(raw);
-    if (!/^\d+$/.test(s)) continue;
-    try {
-      out.push(BigInt(s));
-    } catch {
-      // skip
-    }
-  }
-  return out;
-}
-
-function affectedNote(verb: string, n: number): string {
-  if (n === 0) return `No messages ${verb} (nothing was selected or eligible).`;
-  if (n === 1) return `1 message ${verb}.`;
-  return `${n} messages ${verb}.`;
 }
 
 export async function trashSelected(formData: FormData): Promise<void> {
@@ -156,23 +137,7 @@ export async function retrySelected(formData: FormData): Promise<void> {
   const c = await getWorkspaceContext();
   const ids = parseIds(formData);
   try {
-    const r = await retrySend(c, ids);
-    const parts: string[] = [];
-    if (r.retried.length > 0)
-      parts.push(
-        r.retried.length === 1
-          ? '1 message resent'
-          : `${r.retried.length} messages resent`,
-      );
-    if (r.skippedHardBounce.length > 0)
-      parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
-    if (r.skippedIneligible.length > 0)
-      parts.push(`${r.skippedIneligible.length} ineligible`);
-    if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);
-    backToFolder(
-      formData,
-      parts.length > 0 ? parts.join(', ') + '.' : 'Nothing to retry.',
-    );
+    backToFolder(formData, retrySummary(await retrySend(c, ids)));
   } catch (err) {
     if (isNextRedirectError(err)) throw err;
     backToFolderError(
@@ -207,18 +172,28 @@ export async function syncMailbox(formData: FormData): Promise<void> {
   }
 
   let synced = 0;
+  let syncedName = '';
   let totalFetched = 0;
   let totalInserted = 0;
   const failures: string[] = [];
-  const paused: string[] = [];
+  const failing: string[] = [];
   for (const mb of targets) {
-    const outcome = await safeSyncOne(c, mb);
+    let outcome: Awaited<ReturnType<typeof safeSyncOne>>;
+    try {
+      outcome = await safeSyncOne(c, mb);
+    } catch (err) {
+      failures.push(`${mb.name} (${truncate(err instanceof Error ? err.message : 'sync failed')})`);
+      continue;
+    }
     if (outcome.kind === 'synced') {
       synced++;
+      syncedName = mb.name;
       totalFetched += outcome.fetched;
       totalInserted += outcome.inserted;
-    } else if (outcome.kind === 'auth_failed') {
-      paused.push(`${mb.name} (paused: ${truncate(outcome.message)})`);
+    } else if (outcome.kind === 'failing') {
+      // flow:F-04: a failing mailbox is re-checked, not just synced; the
+      // mailbox page explains the error and how to fix it.
+      failing.push(`${mb.name} (failing: ${truncate(outcome.message)})`);
     } else {
       failures.push(
         `${mb.name} (will back off: ${truncate(outcome.message)})`,
@@ -232,11 +207,13 @@ export async function syncMailbox(formData: FormData): Promise<void> {
   if (synced > 0) {
     parts.push(
       synced === 1
-        ? `Synced ${targets.find((t) => true)?.name ?? '1 mailbox'} — fetched ${totalFetched}, new ${totalInserted}`
+        ? `Synced ${syncedName || '1 mailbox'} — fetched ${totalFetched}, new ${totalInserted}`
         : `Synced ${synced} mailbox(es) — fetched ${totalFetched}, new ${totalInserted}`,
     );
   }
-  if (paused.length > 0) parts.push(`auto-paused: ${paused.join('; ')}`);
+  if (failing.length > 0) {
+    parts.push(`failing, open the mailbox to fix: ${failing.join('; ')}`);
+  }
   if (failures.length > 0) parts.push(`failed: ${failures.join('; ')}`);
 
   if (synced === 0) {

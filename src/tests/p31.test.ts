@@ -13,6 +13,7 @@ import {
   verifyUserPassword,
 } from '@/lib/services/users';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { platformCtx } from './helpers/platform';
 
 interface Setup {
   workspaceA: bigint;
@@ -30,7 +31,7 @@ async function setup(): Promise<Setup> {
   const workspaceA = await seedWorkspace({ name: 'A', ownerUserId: ownerA });
   // Create a password user.
   const u = await createPasswordUser(
-    ctx(workspaceA, superAdmin, 'super_admin'),
+    platformCtx(superAdmin),
     {
       email: 'pwuser@test.local',
       password: 'oldpass11',

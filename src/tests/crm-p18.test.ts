@@ -110,6 +110,7 @@ async function seedScenario(s: Setup) {
   });
   const provider = new MockMailProvider();
   await sendMessage(ctx(s.workspaceA, s.ownerA), {
+    mode: 'sequence',
     mailboxId: mb.id,
     to: [{ address: 'anna@target.com', name: 'Anna Kowalska' }],
     subject: 'Hi Anna',
@@ -268,6 +269,7 @@ describe('pushThreadAsNotes', () => {
       },
     });
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
+      mode: 'sequence',
       mailboxId: mb.id,
       to: [{ address: 'x@target.com' }],
       subject: 'a',

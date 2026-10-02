@@ -76,6 +76,18 @@ export function makeWorkspaceContext(input: {
 // (`canWrite`, `canAdminWorkspace`) rather than checking role names inline.
 // When the role matrix grows, the change is local.
 
+// Every workspace role, viewer included, may read the workspace's data.
+// Spelled out (not ALL_ROLES) so a future role has to be added here on
+// purpose before it can read anything.
+const READ_ROLES: ReadonlySet<WorkspaceRole> = new Set([
+  'owner',
+  'admin',
+  'manager',
+  'member',
+  'viewer',
+  'super_admin',
+]);
+
 const WRITE_ROLES: ReadonlySet<WorkspaceRole> = new Set([
   'owner',
   'admin',
@@ -87,6 +99,11 @@ const WRITE_ROLES: ReadonlySet<WorkspaceRole> = new Set([
 const ADMIN_ROLES: ReadonlySet<WorkspaceRole> = new Set(['owner', 'admin', 'super_admin']);
 
 const OWNER_ROLES: ReadonlySet<WorkspaceRole> = new Set(['owner', 'super_admin']);
+
+/** True if the role can read tenant data (pages, document downloads). */
+export function canRead(ctx: WorkspaceContext): boolean {
+  return READ_ROLES.has(ctx.role);
+}
 
 /** True if the role can write tenant data (drafts, comments, approvals). */
 export function canWrite(ctx: WorkspaceContext): boolean {

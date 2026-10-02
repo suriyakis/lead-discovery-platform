@@ -7,13 +7,14 @@ import { sourceRecords } from '@/lib/db/schema/connectors';
 import { reviewItems } from '@/lib/db/schema/review';
 import { productProfiles } from '@/lib/db/schema/products';
 import { knowledgeSources } from '@/lib/db/schema/documents';
-import { outreachDrafts } from '@/lib/db/schema/outreach';
+import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import {
   type WorkspaceContext,
   makeWorkspaceContext,
 } from '@/lib/services/context';
 import {
   hintsForDraft,
+  hintsForDrafts,
   hintsForLead,
   hintsForThread,
   leadStateSummary,
@@ -203,6 +204,38 @@ describe('hintsForThread', () => {
     expect(cls?.text).toBe('interest');
   });
 
+  // DS-02 / I151: a bounce is a delivery failure (red), not a warning.
+  it('classifies a bounce reply as critical', async () => {
+    const s = await setup();
+    const mb = await seedMailbox(s.workspaceA);
+    const [thread] = await db
+      .insert(mailThreads)
+      .values({
+        workspaceId: s.workspaceA,
+        mailboxId: mb,
+        subject: 'Delivery Status Notification',
+        externalThreadKey: `key-bounce-${Date.now()}`,
+        participants: ['mailer-daemon@y.com'],
+      })
+      .returning();
+    await db.insert(mailMessages).values({
+      workspaceId: s.workspaceA,
+      mailboxId: mb,
+      threadId: thread!.id,
+      direction: 'inbound',
+      status: 'received',
+      messageId: `<b-${Date.now()}@x>`,
+      fromAddress: 'mailer-daemon@y.com',
+      toAddresses: ['sales@example.com'],
+      subject: 'Delivery Status Notification (Failure)',
+      bodyText: 'address not found',
+      replyClassification: 'bounce',
+      replyClassificationConfidence: 95,
+    });
+    const hints = await hintsForThread(ctx(s.workspaceA, s.ownerA), thread!.id);
+    expect(hints.find((h) => h.type === 'reply_classification')?.severity).toBe('critical');
+  });
+
   it('returns empty for non-existent thread', async () => {
     const s = await setup();
     const hints = await hintsForThread(ctx(s.workspaceA, s.ownerA), 999_999n);
@@ -241,6 +274,49 @@ describe('hintsForDraft', () => {
     expect(fs).toBeDefined();
     expect(fs?.severity).toBe('warning');
     expect(fs?.text).toMatch(/2 forbidden/);
+  });
+
+  // DS-02 / I151: a failed send renders red (critical); "warning" is amber
+  // now. Both the single and the batched (/drafts) paths must agree.
+  it('marks a failed send as critical, single and batched', async () => {
+    const s = await setup();
+    const mb = await seedMailbox(s.workspaceA);
+    const { productId, reviewItemId, sourceRecordId } = await seedLead(s.workspaceA, 'relevant');
+    const [d] = await db
+      .insert(outreachDrafts)
+      .values({
+        workspaceId: s.workspaceA,
+        reviewItemId,
+        sourceRecordId,
+        productProfileId: productId,
+        method: 'rules',
+        channel: 'email',
+        language: 'en',
+        body: 'hi',
+        status: 'approved',
+        confidence: 70,
+      })
+      .returning();
+    await db.insert(outreachQueue).values({
+      workspaceId: s.workspaceA,
+      mailboxId: mb,
+      draftId: d!.id,
+      toAddresses: ['x@y.com'],
+      subject: 'Hello',
+      bodyText: 'hi',
+      status: 'failed',
+      lastError: 'SMTP 550 mailbox unavailable',
+    });
+
+    const single = await hintsForDraft(ctx(s.workspaceA, s.ownerA), d!.id);
+    const failed = single.find((h) => h.type === 'send_failed');
+    expect(failed?.severity).toBe('critical');
+    expect(failed?.detail).toBe('SMTP 550 mailbox unavailable');
+
+    const batched = await hintsForDrafts({ workspaceId: s.workspaceA }, [d!]);
+    expect(batched.get(d!.id.toString())?.find((h) => h.type === 'send_failed')?.severity).toBe(
+      'critical',
+    );
   });
 
   it('returns empty for non-existent draft', async () => {

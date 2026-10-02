@@ -27,3 +27,4 @@ export * from './notifications';
 export * from './health';
 export * from './support';
 export * from './platform-settings';
+export * from './remediation';

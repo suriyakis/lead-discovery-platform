@@ -163,7 +163,9 @@ Build:
 
 Build:
 - `/admin` UI gated by `super_admin` role.
-- Impersonation tokens (audited start/end events).
+- Impersonation tokens (audited start/end events). *Shipped as a no-op —
+  sessions were recorded but never applied — and removed in 2026-10 (PC-03).
+  A real read-only "view as" is a separate future item (PC-18).*
 - Per-workspace and global cost views.
 
 ## Future / unscheduled

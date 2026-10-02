@@ -26,6 +26,7 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { mailboxes } from '@/lib/db/schema/mailing';
 import { productProfiles } from '@/lib/db/schema/products';
 import {
+  workspaceMembers,
   workspaces,
   type Workspace,
 } from '@/lib/db/schema/workspaces';
@@ -228,8 +229,9 @@ export async function getOnboardingState(
   const runDone = Number(recordRow?.c ?? 0) > 0;
 
   // ─── Step 7: first review decision ─────────────────────────────────
-  // Approving/rejecting the first leads teaches the learning memory and
-  // unlocks outreach — a lead only becomes contactable once approved.
+  // Approving/rejecting the first leads teaches the learning memory. It
+  // does NOT make a lead contactable: that takes "Promote to pipeline" on
+  // /leads plus a contact email on the pipeline lead (see I001).
   const [decisionRow] = await db
     .select({ c: count() })
     .from(reviewItems)
@@ -333,7 +335,7 @@ export async function getOnboardingState(
       key: 'review',
       title: 'Review your first leads',
       blurb:
-        'Approve or reject what discovery found. Approvals become contactable leads; every decision (and comment) trains the learning memory, so the platform qualifies better each week.',
+        'Approve or reject what discovery found. Every decision (and comment) trains the learning memory, so the platform qualifies better each week. To contact a company, promote it to the pipeline from Leads and add its contact email.',
       done: reviewDone,
       href: '/review',
       why: reviewDone ? undefined : 'No approve/reject decisions yet.',
@@ -417,14 +419,14 @@ export async function setSetupMode(
 }
 
 /**
- * Move the wizard to `in_progress` if it's still `pending`. Used when
- * the operator first lands on /onboarding so the dashboard knows
- * they've at least started.
+ * Move the wizard to `in_progress` if it's still `pending`. Returns true
+ * only for the call that made the move: the conditional UPDATE is atomic,
+ * so two concurrent requests cannot both see `pending`.
  */
 export async function markOnboardingStarted(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const moved = await db
     .update(workspaces)
     .set({ onboardingStatus: 'in_progress', updatedAt: new Date() })
     .where(
@@ -432,5 +434,36 @@ export async function markOnboardingStarted(
         eq(workspaces.id, ctx.workspaceId),
         eq(workspaces.onboardingStatus, 'pending'),
       ),
-    );
+    )
+    .returning({ id: workspaces.id });
+  return moved.length > 0;
+}
+
+/**
+ * Start the active workspace's wizard on behalf of someone who can run
+ * it, and say whether this call started it. The dashboard redirects to
+ * /onboarding only when this returns true, so the redirect happens once
+ * per workspace (audit I042, deliverable ia:F-05):
+ *
+ * - Non-admins never start it. They cannot finish the wizard, and
+ *   sending them there looped them between /dashboard and /onboarding.
+ * - A super-admin inspecting a tenant in god mode never starts it, so
+ *   looking around does not use up the owner's first-run redirect.
+ */
+export async function claimOnboardingStart(ctx: WorkspaceContext): Promise<boolean> {
+  if (!canAdminWorkspace(ctx)) return false;
+  if (ctx.role === 'super_admin') {
+    const [member] = await db
+      .select({ id: workspaceMembers.id })
+      .from(workspaceMembers)
+      .where(
+        and(
+          eq(workspaceMembers.workspaceId, ctx.workspaceId),
+          eq(workspaceMembers.userId, ctx.userId),
+        ),
+      )
+      .limit(1);
+    if (!member) return false;
+  }
+  return markOnboardingStarted(ctx);
 }

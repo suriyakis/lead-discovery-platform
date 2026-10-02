@@ -14,11 +14,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
-import {
-  AuthRequiredError,
-  NoWorkspaceError,
-  getWorkspaceContext,
-} from '@/lib/services/auth-context';
+import { getWorkspaceContext } from '@/lib/services/auth-context';
+import { authErrorToResponse } from '@/lib/services/http';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
 
@@ -48,12 +45,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     ctx = await getWorkspaceContext();
   } catch (err) {
-    if (err instanceof AuthRequiredError) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    }
-    if (err instanceof NoWorkspaceError) {
-      return NextResponse.json({ error: 'no_workspace' }, { status: 400 });
-    }
+    const res = authErrorToResponse(err);
+    if (res) return res;
     throw err;
   }
 
@@ -87,6 +80,9 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   try {
     const sent = await sendMessage(ctx, {
+      // flow:F-05: an operator's reply in a thread is personal mail — no
+      // bulk unsubscribe footer, no List-Unsubscribe headers.
+      mode: 'one_to_one',
       mailboxId: parsed.mailboxId,
       to: [{ address: parsed.to }],
       subject: useTranslation

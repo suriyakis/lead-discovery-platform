@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { SupportStatusBadge } from '@/components/SupportStatusBadge';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -74,9 +75,7 @@ export default async function SupportThreadPage({
           <h1 className="page-title">{thread.subject}</h1>
           <p className="page-lede">
             Started {thread.createdAt.toLocaleString()} ·{' '}
-            <span className={thread.status === 'open' ? 'badge' : 'badge muted'}>
-              {thread.status}
-            </span>
+            <SupportStatusBadge status={thread.status} audience="customer" />
           </p>
         </header>
 
