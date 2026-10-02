@@ -128,7 +128,7 @@ describe('askAssistant', () => {
     expect(prompt).not.toContain('EMPTY');
     expect(prompt).toContain('Active products: 1');
     expect(prompt).toContain(
-      'Mailboxes: 0 active, 0 failing (queued sends held, not read), 0 paused (not sending, due sends fail, not read)',
+      'Mailboxes: 0 active, 0 failing (queued sends held, not read), 0 paused (not sending, queued sends held, due follow-ups fail, not read)',
     );
     expect(prompt).toContain('why am I getting no leads?');
     expect(stub.lastInput!.system).toContain(`guide of ${BRAND_NAME}`);
@@ -157,7 +157,7 @@ describe('askAssistant', () => {
     ]);
     await askAssistant(ctx(s.workspaceA, s.ownerA), 'why are replies not showing up?');
     expect(stub.lastInput!.prompt).toContain(
-      'Mailboxes: 0 active, 1 failing (queued sends held, not read), 1 paused (not sending, due sends fail, not read)',
+      'Mailboxes: 0 active, 1 failing (queued sends held, not read), 1 paused (not sending, queued sends held, due follow-ups fail, not read)',
     );
   });
 

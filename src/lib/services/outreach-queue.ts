@@ -7,8 +7,17 @@
 // Phase 19 ships the schema + service + manual drain. The BullMQ recurring
 // worker is a thin wrapper around drainQueue() that any deployment can
 // schedule (left out of the service layer to keep tests clean).
+//
+// PC-10 (I007, I013, I014): a failed attempt is classified
+// (src/lib/mail/send-failure.ts) — transient and local errors come back
+// with exponential backoff, a refused mailbox login holds the entry behind
+// the failing mailbox, only permanent failures end 'failed'. A delivered
+// send turns 'sent' in the same transaction as its mail_messages row.
+// Failed, skipped and cancelled entries can be retried or requeued by
+// hand; both go back through suppression, caps and cooldown. Entries stuck
+// in 'sending' are settled by the stuck-work reaper (stuck-work.ts).
 
-import { and, asc, count, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   outreachDrafts,
@@ -22,7 +31,15 @@ import {
   type SendDelayMode,
 } from '@/lib/db/schema/outreach';
 import { mailMessages, mailboxes } from '@/lib/db/schema/mailing';
-import { classifySmtpError } from '@/lib/mail/smtp-errors';
+import {
+  SEND_FAILURE_POLICY,
+  classifySendFailure,
+  decideRetry,
+  isAfterDelivery,
+  type SendFailureKind,
+} from '@/lib/mail/send-failure';
+import { formatUtc } from '@/lib/format-utc';
+import { resolveSendInterrupted } from '@/lib/ops/work-incidents';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
@@ -31,7 +48,8 @@ import {
   canWrite,
   type WorkspaceContext,
 } from './context';
-import { sendMessage, type SendMode } from './mail';
+import { MailServiceError, sendMessage, type SendMode } from './mail';
+import { markQueueEntrySent, trashEarlierFailedCopies } from './outreach-queue-sent';
 import { prepareOutboundDualBody } from './language-resolution';
 import { isSuppressed } from './suppression';
 import {
@@ -337,9 +355,11 @@ export async function rescheduleQueueEntry(
   if (existing.status !== 'queued') {
     throw conflict(`cannot reschedule entry in status ${existing.status}`);
   }
+  // PC-10: the operator chose the time — a pending retry backoff no
+  // longer holds the entry back.
   const [updated] = await db
     .update(outreachQueue)
-    .set({ scheduledSendAt, updatedAt: new Date() })
+    .set({ scheduledSendAt, nextAttemptAt: null, updatedAt: new Date() })
     .where(eq(outreachQueue.id, id))
     .returning();
   if (!updated) {
@@ -383,6 +403,9 @@ export interface DrainResult {
   sent: number;
   failed: number;
   skipped: number;
+  /** PC-10: entries whose attempt failed for a retryable reason and that
+   *  went back to the queue with a backoff (next_attempt_at). */
+  retrying: number;
 }
 
 export interface DrainOptions {
@@ -394,6 +417,11 @@ export interface DrainOptions {
   now?: Date;
 }
 
+/** What one attempt at an entry came to. */
+export type EntryOutcome = 'sent' | 'failed' | 'skipped' | 'retrying';
+
+const EMPTY_DRAIN: DrainResult = { picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0 };
+
 export async function drainQueue(
   ctx: WorkspaceContext,
   options: DrainOptions = {},
@@ -401,30 +429,14 @@ export async function drainQueue(
   if (!canWrite(ctx)) throw denied('outreach.queue.drain');
   const settings = await getSendSettings(ctx);
   if (settings.emergencyPause) {
-    return { picked: 0, sent: 0, failed: 0, skipped: 0 };
+    return { ...EMPTY_DRAIN };
   }
   const now = options.now ?? new Date();
 
-  // Daily cap: count outbound mail sent in the trailing 24h.
-  const dayStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const sentToday = await db
-    .select({ c: count() })
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.direction, 'outbound'),
-        gte(mailMessages.createdAt, dayStart),
-      ),
-    );
-  const remainingCap = Math.max(
-    0,
-    settings.dailyEmailLimit - Number(sentToday[0]?.c ?? 0),
-  );
-
+  const remainingCap = await remainingDailyCap(ctx, settings, now);
   const limit = Math.min(options.limit ?? 50, remainingCap, 200);
   if (limit === 0) {
-    return { picked: 0, sent: 0, failed: 0, skipped: 0 };
+    return { ...EMPTY_DRAIN };
   }
 
   const due = await db
@@ -435,22 +447,54 @@ export async function drainQueue(
         eq(outreachQueue.workspaceId, ctx.workspaceId),
         eq(outreachQueue.status, 'queued'),
         lte(outreachQueue.scheduledSendAt, now),
+        // PC-10: an entry backing off after a failed attempt waits.
+        or(isNull(outreachQueue.nextAttemptAt), lte(outreachQueue.nextAttemptAt, now)),
       ),
     )
     .orderBy(asc(outreachQueue.scheduledSendAt))
     .limit(limit);
 
-  let sent = 0;
-  let failed = 0;
-  let skipped = 0;
+  const result: DrainResult = { ...EMPTY_DRAIN, picked: due.length };
   for (const entry of due) {
-    const result = await processEntry(ctx, entry, settings, options.providerOverride, now);
-    if (result === 'sent') sent++;
-    else if (result === 'failed') failed++;
-    else skipped++;
+    const outcome = await processEntry(ctx, entry, settings, options.providerOverride, now);
+    if (outcome === 'sent') result.sent++;
+    else if (outcome === 'failed') result.failed++;
+    else if (outcome === 'retrying') result.retrying++;
+    else result.skipped++;
   }
-  return { picked: due.length, sent, failed, skipped };
+  return result;
 }
+
+/**
+ * The workspace daily cap left: the limit minus the emails DELIVERED in
+ * the trailing 24 hours. PC-10: failed attempts are not counted — with
+ * automatic retries every failed attempt would otherwise eat a slot of
+ * the cap meant for real sends.
+ */
+async function remainingDailyCap(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  settings: OutreachSendSettings,
+  now: Date,
+): Promise<number> {
+  const dayStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const sentToday = await db
+    .select({ c: count() })
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.workspaceId, ctx.workspaceId),
+        eq(mailMessages.direction, 'outbound'),
+        inArray(mailMessages.status, [...DELIVERED_STATUSES]),
+        gte(mailMessages.createdAt, dayStart),
+      ),
+    );
+  return Math.max(0, settings.dailyEmailLimit - Number(sentToday[0]?.c ?? 0));
+}
+
+/** Outbound mail_messages statuses that mean the email went out. Caps and
+ *  the domain cooldown count these only; a failed or refused attempt
+ *  reached nobody. */
+const DELIVERED_STATUSES = ['sent', 'delivered'] as const;
 
 async function processEntry(
   ctx: WorkspaceContext,
@@ -458,11 +502,18 @@ async function processEntry(
   settings: OutreachSendSettings,
   providerOverride: IMailProvider | undefined,
   now: Date,
-): Promise<'sent' | 'failed' | 'skipped'> {
-  // Claim the row. Best-effort optimistic update.
+): Promise<EntryOutcome> {
+  // Claim the row. Best-effort optimistic update. PC-10: claimed_at is
+  // wall-clock (not the `now` test seam) — the reaper compares it with
+  // the real time.
   const claim = await db
     .update(outreachQueue)
-    .set({ status: 'sending', attemptCount: entry.attemptCount + 1, updatedAt: new Date() })
+    .set({
+      status: 'sending',
+      attemptCount: entry.attemptCount + 1,
+      claimedAt: new Date(),
+      updatedAt: new Date(),
+    })
     .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'queued')))
     .returning();
   if (claim.length === 0) return 'skipped';
@@ -519,9 +570,28 @@ async function processEntry(
     // repeated failed logins against the provider's rate limit / fail2ban,
     // and no entry turns 'failed' for a problem that is ours. The entry
     // goes out once the mailbox is reactivated.
-    if (await isMailboxFailing(ctx, entry.mailboxId)) {
+    // PC-10 (I014): a PAUSED mailbox holds its queue the same way — the
+    // operator paused it to fix something, its emails wait instead of
+    // failing (they used to fail, after paying for the translation).
+    const mailboxState = await mailboxSendState(ctx, entry.mailboxId);
+    if (mailboxState === 'failing') {
       await holdEntry(entry, now, MAILBOX_FAILING_HOLD_REASON);
       return 'skipped';
+    }
+    if (mailboxState === 'paused') {
+      await holdEntry(entry, now, MAILBOX_PAUSED_HOLD_REASON);
+      return 'skipped';
+    }
+    if (mailboxState === 'archived' || mailboxState === 'missing') {
+      await settleClaimed(entry.id, {
+        status: 'failed',
+        lastFailureKind: 'policy',
+        lastError:
+          mailboxState === 'archived'
+            ? 'Not sent: the mailbox it was queued on is archived.'
+            : 'Not sent: the mailbox it was queued on no longer exists.',
+      });
+      return 'failed';
     }
 
     // Phase 43: per-mailbox sending policy. Checks business window
@@ -552,8 +622,11 @@ async function processEntry(
       return 'skipped';
     }
 
-    // Domain cooldown: any prior outbound to this domain in the last
-    // domainCooldownHours triggers skip.
+    // Domain cooldown: any prior DELIVERED outbound to this domain in the
+    // last domainCooldownHours triggers skip. PC-10: a failed attempt
+    // reached nobody, so it does not start a cooldown — otherwise every
+    // automatic retry (or a manual Retry / Requeue) would be blocked by
+    // the failed attempt before it.
     if (settings.domainCooldownHours > 0) {
       const cutoff = new Date(
         now.getTime() - settings.domainCooldownHours * 60 * 60_000,
@@ -569,6 +642,7 @@ async function processEntry(
             and(
               eq(mailMessages.workspaceId, ctx.workspaceId),
               eq(mailMessages.direction, 'outbound'),
+              inArray(mailMessages.status, [...DELIVERED_STATUSES]),
               gte(mailMessages.createdAt, cutoff),
             ),
           );
@@ -632,6 +706,7 @@ async function processEntry(
     // Send. flow:F-05: cold first touches are sequence mail (unsubscribe
     // footer + List-Unsubscribe); a draft answering the prospect's reply
     // is one-to-one.
+    const draftId = entry.draftId;
     const sendInput: Parameters<typeof sendMessage>[1] = {
       mode: await sendModeForEntry(ctx, entry),
       mailboxId: entry.mailboxId,
@@ -645,24 +720,34 @@ async function processEntry(
       subject: sendSubject,
       text: sendText,
       html: entry.bodyHtml ?? undefined,
-      sourceDraftId: entry.draftId ?? undefined,
+      sourceDraftId: draftId ?? undefined,
       bodyTextNative,
       nativeLanguage,
       targetLanguage,
+      // PC-10 (I013): 'sent' commits with the mail_messages row, so no
+      // failure after the insert can leave a delivered email 'failed'.
+      // Earlier failed attempts of the same draft leave the Errors folder
+      // in the same step: nobody can re-send an email that went out.
+      onPersisted: async (tx, message) => {
+        await markQueueEntrySent(tx, {
+          workspaceId: ctx.workspaceId,
+          entryId: entry.id,
+          messageId: message.id,
+        });
+        if (draftId) {
+          await trashEarlierFailedCopies(tx, {
+            workspaceId: ctx.workspaceId,
+            draftId,
+            deliveredMessageId: message.id,
+          });
+        }
+      },
       providerOverride,
     };
     if (entry.inReplyTo) sendInput.inReplyTo = entry.inReplyTo;
     if (entry.references.length > 0) sendInput.references = entry.references;
 
-    const sentMessage = await sendMessage(ctx, sendInput);
-    await db
-      .update(outreachQueue)
-      .set({
-        status: 'sent',
-        sentMessageId: sentMessage.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(outreachQueue.id, entry.id));
+    await sendMessage(ctx, sendInput);
     // Phase 43: bump the per-mailbox counters so subsequent canSendNow
     // calls see the updated sentToday/sentThisHour. Best-effort.
     try {
@@ -676,28 +761,269 @@ async function processEntry(
     }
     return 'sent';
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // flow:F-05: a refused SMTP login is the mailbox's problem (sendMessage
-    // has marked it failing), not this entry's — keep it queued behind the
-    // failing-mailbox hold instead of failing it.
-    if (classifySmtpError(err, entry.toAddresses).kind === 'auth') {
+    return settleFailedAttempt(entry, err, now);
+  }
+}
+
+/**
+ * PC-10: what a failed attempt becomes (src/lib/mail/send-failure.ts).
+ * Only rows still 'sending' (this attempt's claim) are written.
+ */
+async function settleFailedAttempt(
+  entry: OutreachQueueEntry,
+  err: unknown,
+  now: Date,
+): Promise<EntryOutcome> {
+  const message = err instanceof Error ? err.message : String(err);
+
+  // The mail server took the email; only recording it failed afterwards.
+  // It went out — never retry it.
+  if (isAfterDelivery(err)) {
+    await settleClaimed(entry.id, {
+      status: 'sent',
+      lastFailureKind: null,
+      nextAttemptAt: null,
+      lastError: clip(`Sent, but recording it failed: ${message}`),
+    });
+    return 'sent';
+  }
+
+  // A recipient suppressed between the drain's own check and the send
+  // (sendMessage refuses it): skipped, like the drain's check.
+  if (err instanceof MailServiceError && err.code === 'suppressed') {
+    await settleClaimed(entry.id, { status: 'skipped', lastError: clip(message) });
+    return 'skipped';
+  }
+
+  const attempt = entry.attemptCount + 1; // this attempt (the claim's bump)
+  const failure = classifySendFailure(err, [
+    ...entry.toAddresses,
+    ...entry.ccAddresses,
+    ...entry.bccAddresses,
+  ]);
+  const decision = decideRetry(failure.kind, attempt, now);
+  const label = SEND_FAILURE_POLICY[failure.kind].label;
+
+  switch (decision.action) {
+    case 'hold':
+      // flow:F-05: a refused SMTP login is the mailbox's problem
+      // (sendMessage has marked it failing), not this entry's — keep it
+      // queued behind the failing-mailbox hold instead of failing it.
       await holdEntry(
         entry,
         now,
-        `${MAILBOX_FAILING_HOLD_REASON} Last error: ${message}`.slice(0, 2000),
+        clip(`${MAILBOX_FAILING_HOLD_REASON} Last error: ${message}`),
+        failure.kind,
       );
       return 'skipped';
+    case 'retry':
+      await settleClaimed(entry.id, {
+        status: 'queued',
+        nextAttemptAt: decision.nextAttemptAt,
+        lastFailureKind: failure.kind,
+        lastError: clip(
+          `Attempt ${decision.attempt} of ${decision.maxAttempts} failed (${label}): ${message} ` +
+            `Next attempt after ${formatUtc(decision.nextAttemptAt)}.`,
+        ),
+      });
+      return 'retrying';
+    case 'give_up':
+      await settleClaimed(entry.id, {
+        status: 'failed',
+        nextAttemptAt: null,
+        lastFailureKind: failure.kind,
+        lastError: clip(`Gave up after ${decision.attempt} attempts (${label}): ${message}`),
+      });
+      return 'failed';
+    case 'fail':
+      await settleClaimed(entry.id, {
+        status: 'failed',
+        nextAttemptAt: null,
+        lastFailureKind: failure.kind,
+        lastError: clip(`${label}: ${message}`),
+      });
+      return 'failed';
+  }
+}
+
+function clip(text: string): string {
+  return text.slice(0, 2000);
+}
+
+/** Write the outcome of this attempt — only while the row is still the
+ *  attempt's own claim ('sending'). */
+async function settleClaimed(
+  entryId: bigint,
+  set: Partial<
+    Pick<
+      OutreachQueueEntry,
+      'status' | 'lastError' | 'lastFailureKind' | 'nextAttemptAt' | 'attemptCount' | 'scheduledSendAt'
+    >
+  >,
+): Promise<void> {
+  await db
+    .update(outreachQueue)
+    .set({ ...set, updatedAt: new Date() })
+    .where(and(eq(outreachQueue.id, entryId), eq(outreachQueue.status, 'sending')));
+}
+
+// ---- manual recovery (PC-10) --------------------------------------
+
+/** Statuses an operator can put back into the queue. */
+export const RECOVERABLE_QUEUE_STATUSES: readonly OutreachQueueStatus[] = [
+  'failed',
+  'skipped',
+  'cancelled',
+];
+
+export function isRecoverableQueueStatus(status: OutreachQueueStatus): boolean {
+  return RECOVERABLE_QUEUE_STATUSES.includes(status);
+}
+
+/** Why an entry in a non-recoverable status cannot be put back (shown to
+ *  the operator as is). */
+const NOT_RECOVERABLE_MESSAGE: Partial<Record<OutreachQueueStatus, string>> = {
+  queued: 'That email is already waiting in the queue.',
+  sending: 'That email is being sent right now.',
+  sent: 'That email has already been sent.',
+};
+
+/**
+ * Put a failed, skipped or cancelled entry back into the queue, due now,
+ * with a fresh set of automatic attempts. Nothing is sent here: the next
+ * drain picks it up and applies every check again (suppression, geography,
+ * mailbox state, the mailbox's sending policy, the workspace daily cap,
+ * the domain cooldown).
+ */
+export async function requeueQueueEntry(
+  ctx: WorkspaceContext,
+  id: bigint,
+  options: { now?: Date } = {},
+): Promise<OutreachQueueEntry> {
+  if (!canWrite(ctx)) throw denied('outreach.queue.requeue');
+  return putBack(ctx, id, 'requeue', options.now ?? new Date());
+}
+
+export interface RetryQueueEntryResult {
+  /** 'queued' = put back but not attempted now (sending paused, or the
+   *  daily limit is used up); otherwise the outcome of the attempt. */
+  outcome: EntryOutcome | 'queued';
+  /** Why it was not attempted now ('queued' only). */
+  reason?: 'paused' | 'daily_limit';
+  entry: OutreachQueueEntry;
+}
+
+/**
+ * Retry now: put the entry back (as requeueQueueEntry) and attempt it at
+ * once through the same path as the drain — so suppression, geography,
+ * mailbox state, the sending policy, the daily cap and the domain
+ * cooldown all apply. Under the send-queue emergency pause, or with the
+ * daily limit used up, it stays queued instead.
+ */
+export async function retryQueueEntry(
+  ctx: WorkspaceContext,
+  id: bigint,
+  options: DrainOptions = {},
+): Promise<RetryQueueEntryResult> {
+  if (!canWrite(ctx)) throw denied('outreach.queue.retry');
+  const now = options.now ?? new Date();
+  const requeued = await putBack(ctx, id, 'retry', now);
+  const settings = await getSendSettings(ctx);
+  if (settings.emergencyPause) {
+    return { outcome: 'queued', reason: 'paused', entry: requeued };
+  }
+  if ((await remainingDailyCap(ctx, settings, now)) === 0) {
+    return { outcome: 'queued', reason: 'daily_limit', entry: requeued };
+  }
+  const outcome = await processEntry(ctx, requeued, settings, options.providerOverride, now);
+  return { outcome, entry: await loadEntry(ctx, id) };
+}
+
+async function putBack(
+  ctx: WorkspaceContext,
+  id: bigint,
+  op: 'requeue' | 'retry',
+  now: Date,
+): Promise<OutreachQueueEntry> {
+  const existing = await loadEntry(ctx, id);
+  if (!isRecoverableQueueStatus(existing.status)) {
+    throw conflict(NOT_RECOVERABLE_MESSAGE[existing.status] ?? 'That email cannot be put back.');
+  }
+  if (existing.draftId) {
+    const [draft] = await db
+      .select({ status: outreachDrafts.status })
+      .from(outreachDrafts)
+      .where(
+        and(
+          eq(outreachDrafts.workspaceId, ctx.workspaceId),
+          eq(outreachDrafts.id, existing.draftId),
+        ),
+      )
+      .limit(1);
+    // Same gate as enqueueDraft: only approved content goes out.
+    if (draft && draft.status !== 'approved') {
+      throw conflict(
+        `Its draft is now ${draft.status.replace('_', ' ')}, and only an approved draft is sent. Approve it (or queue its replacement) instead.`,
+      );
     }
-    await db
+  }
+
+  let updated: OutreachQueueEntry | undefined;
+  try {
+    [updated] = await db
       .update(outreachQueue)
       .set({
-        status: 'failed',
-        lastError: message,
+        status: 'queued',
+        scheduledSendAt: now,
+        nextAttemptAt: null,
+        attemptCount: 0,
+        claimedAt: null,
+        lastError: null,
+        lastFailureKind: null,
         updatedAt: new Date(),
       })
-      .where(eq(outreachQueue.id, entry.id));
-    return 'failed';
+      .where(
+        and(
+          eq(outreachQueue.workspaceId, ctx.workspaceId),
+          eq(outreachQueue.id, id),
+          // Optimistic: nobody moved it since we read it.
+          eq(outreachQueue.status, existing.status),
+        ),
+      )
+      .returning();
+  } catch (err) {
+    // outreach_queue_draft_active_idx: one waiting / sending entry per draft.
+    if (isUniqueViolation(err)) {
+      throw conflict(
+        'This draft already has an email waiting in the queue. Cancel that one first, or leave this one as it is.',
+      );
+    }
+    throw err;
   }
+  if (!updated) {
+    throw conflict('That email changed in the meantime. Reload the page to see where it is now.');
+  }
+
+  await recordAuditEvent(ctx, {
+    kind: `outreach.queue.${op}`,
+    entityType: 'outreach_queue',
+    entityId: id,
+    payload: {
+      from: existing.status,
+      previousFailureKind: existing.lastFailureKind,
+      previousError: existing.lastError?.slice(0, 500) ?? null,
+      attemptsBefore: existing.attemptCount,
+    },
+  });
+  if (existing.lastFailureKind === ('interrupted' satisfies SendFailureKind)) {
+    await resolveSendInterrupted(ctx.workspaceId, id, ctx.userId);
+  }
+  return updated;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
 }
 
 // ---- recipient opt-out (flow:F-05) --------------------------------
@@ -774,22 +1100,33 @@ async function sendModeForEntry(
 export const MAILBOX_FAILING_HOLD_MS = 30 * 60 * 1000;
 export const MAILBOX_FAILING_HOLD_REASON =
   'Held: the mailbox is failing (see its last error). Fix it under Edit settings and Reactivate — this send then goes out.';
+/** PC-10 (I014): a paused mailbox holds its queue instead of failing it. */
+export const MAILBOX_PAUSED_HOLD_REASON =
+  'Held: the mailbox is paused. Set it back to active under Edit settings — this send then goes out.';
 
-async function isMailboxFailing(
+type MailboxSendState = 'active' | 'failing' | 'paused' | 'archived' | 'missing';
+
+async function mailboxSendState(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   mailboxId: bigint,
-): Promise<boolean> {
+): Promise<MailboxSendState> {
   const [row] = await db
     .select({ status: mailboxes.status })
     .from(mailboxes)
     .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
     .limit(1);
-  return row?.status === 'failing';
+  return row?.status ?? 'missing';
 }
 
 /** Put a claimed entry back to 'queued' (undoing the claim's attempt
- *  bump) and look at it again after MAILBOX_FAILING_HOLD_MS. */
-async function holdEntry(entry: OutreachQueueEntry, now: Date, reason: string): Promise<void> {
+ *  bump) and look at it again after MAILBOX_FAILING_HOLD_MS. Only the
+ *  attempt's own claim ('sending') is written. */
+async function holdEntry(
+  entry: OutreachQueueEntry,
+  now: Date,
+  reason: string,
+  failureKind?: SendFailureKind,
+): Promise<void> {
   await db
     .update(outreachQueue)
     .set({
@@ -797,9 +1134,10 @@ async function holdEntry(entry: OutreachQueueEntry, now: Date, reason: string): 
       attemptCount: entry.attemptCount,
       scheduledSendAt: new Date(now.getTime() + MAILBOX_FAILING_HOLD_MS),
       lastError: reason,
+      ...(failureKind ? { lastFailureKind: failureKind } : {}),
       updatedAt: new Date(),
     })
-    .where(eq(outreachQueue.id, entry.id));
+    .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'sending')));
 }
 
 // ---- internals ----------------------------------------------------

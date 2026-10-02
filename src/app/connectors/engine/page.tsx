@@ -489,7 +489,7 @@ export default async function CrawlEnginePage({
                                     >
                                       run #{r.id.toString()}
                                     </Link>{' '}
-                                    {r.status === 'succeeded' ? (
+                                    {r.status === 'succeeded' || r.status === 'partial' ? (
                                       <strong>
                                         {r.status} · {r.recordCount} records
                                       </strong>

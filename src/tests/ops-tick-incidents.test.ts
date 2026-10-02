@@ -1,4 +1,5 @@
-// PC-07 acceptance (2): for each of the 8 repeatable ticks, a per-workspace
+// PC-07 acceptance (2): for each repeatable tick (8, plus PC-10's stuck-work
+// reaper), a per-workspace
 // error creates exactly one open ops_event per fingerprint with its
 // occurrences counted, and the workspace's next success resolves it.
 //
@@ -46,7 +47,7 @@ vi.mock('@/lib/services/outreach-queue', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/services/outreach-queue')>()),
   drainQueue: vi.fn(async (ctx: { workspaceId: bigint }) => {
     check('drain', ctx.workspaceId);
-    return { picked: 0, sent: 0, failed: 0, skipped: 0 };
+    return { picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0 };
   }),
 }));
 vi.mock('@/lib/services/mailbox', async (importOriginal) => ({
@@ -122,6 +123,13 @@ vi.mock('@/lib/services/learning-synthesis', async (importOriginal) => ({
       proposalsReceived: 0,
       lessonsCreated: 0,
     };
+  }),
+}));
+vi.mock('@/lib/services/stuck-work', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/services/stuck-work')>()),
+  reapStuckWork: vi.fn(async (ctx: { workspaceId: bigint }) => {
+    check('reaper', ctx.workspaceId);
+    return { sendsSettledSent: 0, sendsFailed: 0, runsFailed: 0, runsCancelled: 0 };
   }),
 }));
 vi.mock('@/lib/services/token-ledger', async (importOriginal) => {
@@ -221,6 +229,7 @@ const CASES: TickCase[] = [
     title: 'Workspace health check',
     beforeRun: resetHealthClaims,
   },
+  { tick: 'ops.reaper.tick', step: 'reaper', title: 'Stuck-work reaper' },
 ];
 
 describe.each(CASES)('$tick: per-workspace failure → one incident, resolved on success', (c) => {

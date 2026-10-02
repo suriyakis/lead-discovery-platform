@@ -52,8 +52,14 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
 2. CONNECTORS + RECIPES ([/connectors]) run discovery. A recipe holds the
    search queries (written in your language; auto-translated for foreign
    markets), the TARGET COUNTRY and the search Language. Open a connector
-   and then one of its runs to see that run's log. The Crawl engine
-   ([/connectors/engine]) runs recipes on a schedule with quiet hours.
+   and then one of its runs to see that run's log. A run where every
+   search query failed (rate limit, quota, provider error) ends
+   "failed" and notifies you; one where only some failed ends
+   "partial". A run in progress can be cancelled from its page (it stops
+   after the query it is on and keeps what it found), and a run that
+   makes no progress for 15 minutes is marked failed automatically.
+   {H-33} The Crawl engine ([/connectors/engine]) runs recipes on a
+   schedule with quiet hours.
 3. QUALIFICATION: every discovered record is AI-qualified against every
    active product: relevance score, confidence, reasons, and a geography
    verdict. THE GEOGRAPHY GATE IS HARD when the recipe has a target
@@ -108,6 +114,17 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    business window, timezone, weekends and holidays) are on that
    mailbox's page, opened from [/mailbox]. {H-06} A held queue entry
    shows its reason on [/mailbox/queue].
+   A send that fails for a temporary reason (the mail server busy or
+   greylisting, a dropped connection, a translation error) is retried
+   automatically, waiting longer each time, up to 5 attempts (3 for an
+   error before sending); a refused mailbox login holds the email
+   instead, and only a recipient address the server says does not exist
+   is suppressed. Failed, skipped and cancelled entries have "Retry now"
+   and "Requeue" on [/mailbox/queue] for anyone who can edit; both go
+   through suppression, the limits and the domain cooldown again. An
+   entry still "sending" after 10 minutes is settled automatically: sent
+   if a sent copy exists, otherwise failed as "Interrupted: delivery
+   unknown" (check the Sent folder before you retry it). {H-32}
 9. TRANSLATION: you write in your language. On a draft you can generate
    the translation and review it side by side; the edited translation is
    exactly what is sent. If you don't, the queue translates the approved
@@ -196,9 +213,9 @@ The two pause switches — what each really stops:
   queueing drafts. {H-10}
 - Neither one stops follow-ups, replies or emails you send by hand,
   crawl schedules, or mailbox sync. A PAUSED mailbox sends nothing and
-  is not synced (its queued emails fail instead of waiting); pause one
-  with the status switch on its Edit page, opened from [/mailbox].
-  {H-23} To stop everything: both pauses, pause every mailbox, and
+  is not synced; its queued emails wait (held, not failed) until it is
+  active again. Pause one with the status switch on its Edit page,
+  opened from [/mailbox]. {H-23} To stop everything: both pauses, pause every mailbox, and
   switch off the crawl plans on [/connectors/engine].
 - The send queue is drained every 30 seconds and mailboxes sync every 2
   minutes whatever autopilot's "Auto-drain" and "Sync inbound" switches

@@ -195,6 +195,8 @@ See `IJobQueue` in `docs/ARCHITECTURE.md`. Job types defined as the system grows
 
 **Owner alerts (PC-08).** `src/lib/ops/watchdog.ts` (in-process timer: stale ticks on two consecutive checks become `tick.stale` incidents, then the dispatcher and the daily digest run), `src/lib/services/ops-alerts.ts` (`dispatchOpsAlerts`, `sendDailyDigestIfDue`, `alertControlChange` / `notifyControlChange` for the stop, hold and pause controls, `sendTestAlert` and `getOwnerAlertStatus` for the console), `src/lib/ops/alert-config.ts` (env), `src/lib/ops/alert-messages.ts` (message formats, grouping, noise), `src/lib/ops/ntfy.ts` (the sink). Console: `src/components/OwnerAlertsPanel.tsx` on `/admin/providers`.
 
+**Stuck work and send failures (PC-10).** `src/lib/services/stuck-work.ts` (the `ops.reaper.tick`: queue rows stuck in `sending`, runs without progress or never started), `src/lib/mail/send-failure.ts` (failure kinds, retry policy and backoff, the error tags `sendMessage` sets), `src/lib/services/outreach-queue-sent.ts` (settling queue rows as sent inside the mail insert transaction), `src/lib/ops/work-incidents.ts` (`send.interrupted`, `run.failed`, `run.stuck`). Queue recovery: `requeueQueueEntry` / `retryQueueEntry` in `services/outreach-queue.ts`; run Cancel: `requestRunCancel` in `services/connector-run.ts`, polled by `connectors/runner.ts`.
+
 ### File Storage
 
 **Phase.** 1 (interface + local-FS impl), 9+ (S3-compatible for production).

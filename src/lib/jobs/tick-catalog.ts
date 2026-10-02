@@ -27,6 +27,9 @@ export const CRAWL_ENGINE_TICK_MS = 5 * 60 * 1000;
  *  lives on the workspace row; this is just how often we look for due
  *  ones. The service claims each due workspace atomically. */
 export const HEALTH_CHECK_TICK_MS = 6 * 60 * 60 * 1000;
+/** PC-10: the stuck-work reaper (sends stuck in 'sending' > 10 min, runs
+ *  without progress > 15 min) — src/lib/services/stuck-work.ts. */
+export const STUCK_WORK_TICK_MS = 5 * 60 * 1000;
 
 export type TickName =
   | 'autopilot.tick'
@@ -36,7 +39,8 @@ export type TickName =
   | 'knowledge.compact.tick'
   | 'mail.trash.purge.tick'
   | 'crawl.engine.tick'
-  | 'health.check.tick';
+  | 'health.check.tick'
+  | 'ops.reaper.tick';
 
 export interface TickDefinition {
   readonly name: TickName;
@@ -90,6 +94,12 @@ export const TICK_CATALOG: readonly TickDefinition[] = [
     everyMs: HEALTH_CHECK_TICK_MS,
     jobId: 'health-check-tick',
     label: 'Workspace health check',
+  },
+  {
+    name: 'ops.reaper.tick',
+    everyMs: STUCK_WORK_TICK_MS,
+    jobId: 'ops-reaper-tick',
+    label: 'Stuck-work reaper',
   },
 ];
 

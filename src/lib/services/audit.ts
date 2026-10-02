@@ -67,6 +67,31 @@ export async function recordPlatformAuditEvent(
   return inserted[0];
 }
 
+/**
+ * Record an audit event a background job takes in a workspace with
+ * nobody acting (user_id NULL), e.g. the stuck-work reaper settling a
+ * send or failing a run (PC-10). Not attributed to the workspace owner:
+ * the owner did not do it.
+ */
+export async function recordSystemAuditEvent(
+  workspaceId: bigint,
+  event: AuditEventInput,
+): Promise<AuditLogEntry> {
+  const row: NewAuditLogEntry = {
+    workspaceId,
+    userId: null,
+    kind: event.kind,
+    entityType: event.entityType ?? null,
+    entityId: serializeEntityId(event.entityId),
+    payload: { ...(event.payload ?? {}), actor: 'system' } as NewAuditLogEntry['payload'],
+  };
+  const inserted = await db.insert(auditLog).values(row).returning();
+  if (!inserted[0]) {
+    throw new Error('audit_log insert returned no row');
+  }
+  return inserted[0];
+}
+
 export interface ListAuditFilter {
   kind?: string | readonly string[];
   since?: Date;

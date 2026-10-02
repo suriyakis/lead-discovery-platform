@@ -88,6 +88,11 @@ export class InternetSearchConnector implements ISourceConnector {
 
     const totalQueries = recipe.searchQueries.length;
     let totalRecords = 0;
+    // PC-10 (I074): a failed query is reported as a non-fatal error (the
+    // run goes on and ends 'partial'); when EVERY query failed the run
+    // produced nothing and must end 'failed', so the operator is told.
+    let failedQueries = 0;
+    let firstFailure: { code: string; message: string } | null = null;
 
     for (let qIdx = 0; qIdx < recipe.searchQueries.length; qIdx++) {
       const query = recipe.searchQueries[qIdx]!;
@@ -123,13 +128,38 @@ export class InternetSearchConnector implements ISourceConnector {
         const message = err instanceof Error ? err.message : String(err);
         const errorCode =
           err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : 'search_error';
+        const fatal = errorCode === 'no_key' || errorCode === 'unauthorized';
+        failedQueries += 1;
+        firstFailure ??= { code: errorCode, message };
+        if (!fatal && failedQueries === totalQueries) {
+          // This was the last query and every one before it failed too.
+          yield {
+            kind: 'log',
+            level: 'error',
+            message: `internet_search: query "${query}" failed: ${message}`,
+            payload: { code: errorCode },
+          };
+          yield {
+            kind: 'error',
+            error: {
+              message:
+                `all ${totalQueries} search ${totalQueries === 1 ? 'query' : 'queries'} failed ` +
+                `(first: ${firstFailure.code}: ${firstFailure.message})`,
+              payload: { code: firstFailure.code, failedQueries, totalQueries },
+            },
+            fatal: true,
+          };
+          return;
+        }
         yield {
           kind: 'error',
           error: { message: `query "${query}" failed: ${message}`, payload: { code: errorCode } },
-          fatal: errorCode === 'no_key' || errorCode === 'unauthorized',
+          fatal,
         };
-        if (errorCode === 'no_key' || errorCode === 'unauthorized') return;
-        // Non-fatal: continue to the next query.
+        if (fatal) return;
+        // Non-fatal: continue to the next query. The progress event is the
+        // runner's checkpoint (heartbeat + cancel poll) for this query too.
+        yield { kind: 'progress', current: qIdx + 1, total: totalQueries };
         continue;
       }
 
@@ -191,8 +221,11 @@ export class InternetSearchConnector implements ISourceConnector {
 
     yield {
       kind: 'log',
-      level: 'info',
-      message: `internet_search: complete (${totalRecords} record(s) across ${totalQueries} query(s))`,
+      level: failedQueries > 0 ? 'warn' : 'info',
+      message:
+        `internet_search: complete (${totalRecords} record(s) across ${totalQueries} query(s)` +
+        (failedQueries > 0 ? `, ${failedQueries} failed` : '') +
+        ')',
     };
   }
 }

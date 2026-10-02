@@ -623,7 +623,7 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(queue[0]!.status).toBe('queued');
 
     const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
-    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0 });
+    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0 });
     expect((await queueRows(s))[0]!.status).toBe('queued');
   });
 
@@ -675,9 +675,10 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     await withJobQueue(q, () => registerRepeatableJobs());
     expect(q.schedules).toContainEqual({ type: 'autopilot.tick', everyMs: AUTOPILOT_TICK_MS });
 
-    // The post-crawl hook (skipped under Vitest, so pinned at source).
+    // The post-crawl hook (skipped under Vitest, so pinned at source). PC-10:
+    // a 'partial' run (some queries failed) that found records counts too.
     expect(readSrc('lib/connectors/runner.ts')).toMatch(
-      /finalStatus === 'succeeded' && recordCount > 0[\s\S]{0,400}await runOnce\(ctx\)/,
+      /\(finalStatus === 'succeeded' \|\| finalStatus === 'partial'\) &&\s+recordCount > 0[\s\S]{0,400}await runOnce\(ctx\)/,
     );
 
     const s = await setup();
@@ -957,7 +958,7 @@ describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () 
     expect(row!.imapNextSyncAfter!.getTime() - Date.now()).toBeGreaterThan(50 * 60 * 1000);
   });
 
-  it('[handbook H-23] a paused mailbox sends nothing, and its queued email fails instead of waiting', async () => {
+  it('[handbook H-23] a paused mailbox sends nothing, and its queued email waits instead of failing', async () => {
     const s = await setup();
     const { mailbox } = await queuedEmail(s);
     await updateMailbox(ctx(s), mailbox.id, { status: 'paused' });
@@ -973,9 +974,14 @@ describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () 
       }),
     ).rejects.toThrow(/paused/);
 
-    const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
-    expect(r.failed).toBe(1);
-    expect((await queueRows(s))[0]!.status).toBe('failed');
+    // PC-10 (I014): held, not failed — and nothing reaches the server.
+    const provider = new MockMailProvider();
+    const r = await drainQueue(ctx(s), { providerOverride: provider });
+    expect(r.failed).toBe(0);
+    expect(provider.sent).toHaveLength(0);
+    const [held] = await queueRows(s);
+    expect(held!.status).toBe('queued');
+    expect(held!.lastError).toMatch(/^Held: the mailbox is paused/);
   });
 });
 

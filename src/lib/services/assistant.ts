@@ -134,9 +134,10 @@ async function workspaceSnapshot(
     `Review queue (new + needs_review): ${Number(reviewPending[0]?.c ?? 0)}`,
     `Unapproved drafts: ${Number(draftsPending[0]?.c ?? 0)}`,
     // A failing mailbox holds its queued sends until it works again; a
-    // paused one sends nothing and fails what comes due (flow:F-04). Neither
-    // is read — the model needs the split to diagnose either.
-    `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (queued sends held, not read), ${mailboxCount('paused')} paused (not sending, due sends fail, not read)`,
+    // paused one sends nothing, holds its queued sends (PC-10) and fails the
+    // follow-ups that come due (flow:F-04). Neither is read — the model
+    // needs the split to diagnose either.
+    `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (queued sends held, not read), ${mailboxCount('paused')} paused (not sending, queued sends held, due follow-ups fail, not read)`,
   ].join('\n');
 }
 

@@ -147,7 +147,7 @@ Sketch only — full shape decided when the module is built.
 
 `connector_recipes`: id, workspaceId, connectorId, name, templateType, seedUrls, searchQueries, selectors (jsonb), paginationRules (jsonb), enrichmentRules (jsonb), normalizationMapping (jsonb), evidenceRules (jsonb), active.
 
-`connector_runs`: id, workspaceId, connectorId, recipeId nullable, productProfileIds (bigint[]), status, progress, startedAt, completedAt, errorPayload (jsonb).
+`connector_runs`: id, workspaceId, connectorId, recipeId nullable, productProfileIds (bigint[]), status (`pending` / `running` / `succeeded` / `partial` / `failed` / `cancelled`), progress, startedAt, completedAt, errorPayload (jsonb). PC-10: `partial` = finished but some steps (search queries) failed, a run where every query failed is `failed`; `last_progress_at` is the runner's heartbeat (a running run without progress for 15 min is failed by the stuck-work reaper); `cancel_requested_at` is set by Cancel and polled by the runner between steps, so Cancel works from any process.
 
 `connector_run_logs`: id, runId, level, message, payload (jsonb), createdAt.
 
@@ -166,6 +166,9 @@ The review queue. State, assigned user, comments (separate `review_comments` tab
 ### `outreach_drafts` (Phase 8)
 Linked to a workspace, product profile, and target entity (company/contact/opportunity).
 
+### `outreach_queue` (Phase 19; PC-10)
+The send queue: status (`queued` / `sending` / `sent` / `failed` / `skipped` / `cancelled`), scheduled_send_at, attempt_count, last_error, sent_message_id. PC-10 adds `claimed_at` (set when the drain claims the row; a row still `sending` 10 minutes later is settled by the stuck-work reaper: `sent` when a sent copy of its draft exists from the claim on, else `failed` as interrupted), `next_attempt_at` (exponential backoff after a retryable failure; the drain skips the row until then) and `last_failure_kind` (`transient` / `local` / `unknown` / `sender_auth` / `recipient_hard` / `policy` / `interrupted`, CHECK in the migration's custom block; see `src/lib/mail/send-failure.ts`). A delivered send turns `sent` in the same transaction as its `mail_messages` row.
+
 ### `learning_events`, `learning_lessons` (Phase 5)
 `learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12.
 
@@ -179,7 +182,7 @@ Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`).
 ### `job_heartbeats`, `ops_events` (Phase 1, PC-07)
 Operational visibility (I021/I022). Not tenant-owned bookkeeping, written by background jobs (no user acts). See `docs/OPS_MONITORING.md`.
 
-`job_heartbeats`: one row per job name (the 8 repeatable ticks and the on-demand `connector.run`). name (pk), kind (`tick` / `job`), interval_ms, queue_provider, boot_id + registered_at (written by the schedule registration at boot), last_started_at / last_finished_at / last_ok_at, last_status (`running` / `ok` / `degraded` / `failed`), last_duration_ms, last_error (masked) + last_error_at, last_summary (jsonb, the handler's structured summary), next_due_at (informational), run_count, consecutive_failures. Staleness is computed on read, never stored.
+`job_heartbeats`: one row per job name (the 9 repeatable ticks, incl. PC-10's `ops.reaper.tick`, and the on-demand `connector.run`). name (pk), kind (`tick` / `job`), interval_ms, queue_provider, boot_id + registered_at (written by the schedule registration at boot), last_started_at / last_finished_at / last_ok_at, last_status (`running` / `ok` / `degraded` / `failed`), last_duration_ms, last_error (masked) + last_error_at, last_summary (jsonb, the handler's structured summary), next_due_at (informational), run_count, consecutive_failures. Staleness is computed on read, never stored.
 
 `ops_events`: the incident stream. scope (`platform` / `workspace`; a CHECK ties `workspace_id` to it), workspace_id (cascade), kind, severity (`info` / `warning` / `error` / `critical`), source (job or subsystem), dedupe_key, fingerprint (sha256 over scope + workspace + kind + dedupe key), title, message (masked), payload (jsonb, masked), occurrences, first_seen_at / last_seen_at, acknowledged_at / acknowledged_by, resolved_at / resolved_by / resolution (`auto` / `manual`). A partial unique index keeps one open row per fingerprint, so repeats bump `occurrences`. Resolved rows are kept 90 days (`OPS_EVENTS_RETENTION_DAYS`).
 

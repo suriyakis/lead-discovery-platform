@@ -68,6 +68,13 @@ Then add a recipe (`/connectors/<id>/recipes/new`) with `searchQueries` like
 Click **Run now** on the recipe. Within a few seconds the run completes,
 records land in `/review`, qualifications are auto-computed.
 
+The run page refreshes itself while the run is pending or running and
+has a **Cancel run** button (any role that can edit): the run stops
+after the search query it is on and keeps the records found so far.
+A run ends `failed` (with a notification) when every query failed,
+`partial` when only some did. A run with no progress for 15 minutes
+(or still pending after an hour) is failed automatically.
+
 ### 3.4 Configure a mailbox
 
 `/mailbox/new`. SMTP host/port/user/password + IMAP host/port/user/password.
@@ -234,6 +241,15 @@ CRM connection.
   by design — vectors are deterministic but synthetic.
 - "Push to CRM failed" → open `/settings/crm/<id>`; the recent-syncs
   timeline shows HTTP code + error body.
+- "An email failed in the send queue" → `/mailbox/queue`, Failed tab.
+  The badge says why (temporary failure, mailbox login refused,
+  address does not exist, refused, interrupted). Temporary failures
+  are retried automatically (5 attempts, 3 for errors before sending).
+  **Retry now** sends it again at once, **Requeue** puts it back for
+  the background sender; both re-check suppression, limits and the
+  domain cooldown. "Interrupted: delivery unknown" means the send was
+  cut off and may have gone out: check the mailbox's Sent folder
+  first. Entries stuck in `sending` are settled after 10 minutes.
 
 Anything outside this guide is either in `docs/ARCHITECTURE.md`,
 `docs/MODULES.md`, or `docs/ROADMAP.md`.

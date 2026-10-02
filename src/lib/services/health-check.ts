@@ -78,10 +78,11 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 // ---- rule findings --------------------------------------------------
 
 /**
- * flow:F-04: what "no active mailbox" means depends on why. Only a
- * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
- * follow-up processOne check); sends through a PAUSED one are refused
- * and the queue entries / follow-ups that come due are marked failed.
+ * flow:F-04: what "no active mailbox" means depends on why. A FAILING
+ * mailbox holds its queue and its follow-ups (outreach-queue
+ * mailboxSendState, the follow-up processOne check). PC-10 (I014): a
+ * PAUSED one holds its queue too, but follow-ups that come due on it are
+ * still refused and marked failed.
  */
 export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean): string {
   const why = anyFailing && anyPaused ? 'failing or paused' : anyFailing ? 'failing' : 'paused';
@@ -93,8 +94,8 @@ export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean):
   }
   if (anyPaused) {
     parts.push(
-      'Outreach and follow-ups that come due on a paused mailbox are marked failed, not held — ' +
-        're-enable it before they are due.',
+      'Outreach queued on a paused mailbox waits until it is active again; follow-ups that ' +
+        'come due on it are marked failed, not held — re-enable it before they are due.',
     );
   }
   return parts.join(' ');
@@ -273,7 +274,8 @@ export type MailboxFindingRow = Pick<
  *     (summarizeMailboxFailure — e.g. "use port 465 with TLS on connect"
  *     when a server refuses 587), plus the last error;
  *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing ones hold
- *     their queue, paused ones mark due sends failed.
+ *     their queue, paused ones hold the queue but mark due follow-ups
+ *     failed.
  * A paused mailbox next to an active one is the operator's choice, not
  * a finding.
  */

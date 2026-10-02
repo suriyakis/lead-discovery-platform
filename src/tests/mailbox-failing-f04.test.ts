@@ -628,12 +628,13 @@ describe('health check: failing mailboxes (F-04)', () => {
     const none = findings.find((f) => f.code === 'mailbox.none');
     expect(none?.message).toContain('failing or paused');
     expect(none?.message).toContain('queued on a failing mailbox are held');
-    expect(none?.message).toContain('on a paused mailbox are marked failed, not held');
+    expect(none?.message).toContain('Outreach queued on a paused mailbox waits');
+    expect(none?.message).toContain('come due on it are marked failed, not held');
     expect(none?.message).not.toContain('approved drafts cannot be sent');
     expect(none?.href).toBe('/mailbox');
   });
 
-  it('only paused mailboxes: never claims the queue is held', async () => {
+  it('only paused mailboxes: the queue waits (PC-10), follow-ups are not held', async () => {
     const s = await setup();
     const p = await makeMailbox(s, 'resting');
     await pauseMailbox(s.c, p.id);

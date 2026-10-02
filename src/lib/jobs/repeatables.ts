@@ -14,6 +14,9 @@
 //                                          workspace with followUpEnabled,
 //                                          process pending follow-ups whose
 //                                          scheduled_for has passed.
+//   ops.reaper.tick        every 5 min  → PC-10: settle stuck sends and
+//                                          stuck discovery runs
+//                                          (services/stuck-work.ts)
 //
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
@@ -43,6 +46,7 @@ import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
 import { processDueHealthChecks } from '@/lib/services/health-check';
+import { reapStuckWork } from '@/lib/services/stuck-work';
 import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
 import { recordTickRegistration } from '@/lib/services/job-heartbeats';
 import {
@@ -65,6 +69,7 @@ export {
   IMAP_TICK_MS,
   KNOWLEDGE_COMPACT_TICK_MS,
   MAIL_TRASH_PURGE_TICK_MS,
+  STUCK_WORK_TICK_MS,
 } from './tick-catalog';
 
 function ownerCtx(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
@@ -424,6 +429,48 @@ const handleHealthCheckTick: InstrumentedHandler = async (_payload, { incidents 
   });
 };
 
+/**
+ * PC-10: settle stuck work in every active workspace — sends stuck in
+ * 'sending' for more than 10 minutes, runs without progress for 15 (or
+ * pending for 60). Platform maintenance, not automation: it sends nothing
+ * and starts nothing, so it runs whatever the workspace's pause says.
+ */
+const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents }) => {
+  const wss = await activeWorkspaces();
+  const now = new Date();
+  let sendsSettledSent = 0;
+  let sendsFailed = 0;
+  let runsFailed = 0;
+  let runsCancelled = 0;
+  let workspacesFailed = 0;
+  for (const ws of wss) {
+    try {
+      const r = await reapStuckWork({ workspaceId: ws.id }, now);
+      sendsSettledSent += r.sendsSettledSent;
+      sendsFailed += r.sendsFailed;
+      runsFailed += r.runsFailed;
+      runsCancelled += r.runsCancelled;
+    } catch (err) {
+      workspacesFailed++;
+      console.error(
+        `[ops.reaper.tick] workspace=${ws.id} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+      await incidents.failed({ workspaceId: ws.id }, err);
+      continue;
+    }
+    await incidents.succeeded({ workspaceId: ws.id });
+  }
+  return {
+    workspaces: wss.length,
+    sendsSettledSent,
+    sendsFailed,
+    runsFailed,
+    runsCancelled,
+    workspacesFailed,
+  };
+};
+
 const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
   'autopilot.tick': handleAutopilotTick,
   'outreach.drain.tick': handleDrainTick,
@@ -433,6 +480,7 @@ const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
   'mail.trash.purge.tick': handleMailTrashPurgeTick,
   'crawl.engine.tick': handleCrawlEngineTick,
   'health.check.tick': handleHealthCheckTick,
+  'ops.reaper.tick': handleStuckWorkTick,
 };
 
 /** Platform incident raised when startup could not schedule the ticks. */

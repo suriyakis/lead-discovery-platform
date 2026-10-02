@@ -95,6 +95,7 @@ so a dead worker that writes nothing still turns stale.
 | `crawl.engine.tick` | 5 min | 10 min |
 | `outreach.follow_up.tick` | 1 h | 1 h |
 | `health.check.tick` | 6 h | 1 h |
+| `ops.reaper.tick` | 5 min | 10 min |
 | `mail.trash.purge.tick` | 24 h | 1 h |
 | `knowledge.compact.tick` | 7 days | 1 h |
 
@@ -114,12 +115,15 @@ incidents:
 
 | Kind | Scope | Raised when | Resolved when |
 |---|---|---|---|
-| `tick.workspace_failed` | workspace | one workspace's step inside a tick throws (all 8 ticks; compaction and synthesis separately; a failed knowledge-cluster merge counts) | that workspace's step next succeeds |
+| `tick.workspace_failed` | workspace | one workspace's step inside a tick throws (every tick, incl. the reaper; compaction and synthesis separately; a failed knowledge-cluster merge counts) | that workspace's step next succeeds |
 | `tick.failed` | platform | a whole tick throws | the tick next finishes |
 | `job.failed` | platform | `connector.run` throws, or a BullMQ job without an instrumented handler fails | the next success of that job name |
 | `worker.error` | platform (critical) | the BullMQ worker emits `error` (usually Redis) | the next completed job |
 | `jobs.schedule_registration_failed` | platform (critical) | startup could not schedule the ticks | the next successful registration |
 | `tick.stale` | platform | the watchdog sees a tick stale (outside the boot grace) on 2 consecutive checks (PC-08) | a watchdog check sees it running again |
+| `send.interrupted` | workspace (error) | the stuck-work reaper failed a queued send cut off mid-flight with no sent copy (PC-10); one per queue row | an operator retries or requeues that row |
+| `run.failed` | workspace (warning) | a discovery run ended `failed`, incl. every search query failing (PC-10); one per recipe, occurrences counted | the recipe's next run that succeeds or partly succeeds |
+| `run.stuck` | workspace (error) | the reaper failed a run with no progress for 15 min or pending for 60 min (PC-10); one per recipe | as `run.failed` |
 | `alerts.delivery_failed` | platform (warning) | the ntfy server refuses an owner alert or does not answer (PC-08); never alerted itself | the next delivered alert |
 
 - **Fingerprinted and deduplicated.** The fingerprint covers scope,
@@ -133,6 +137,38 @@ incidents:
 - **Retention.** Resolved incidents are kept for
   `OPS_EVENTS_RETENTION_DAYS` = 90 days. The deletion runs in the retention
   tick (PC-35). Open incidents are never deleted.
+
+### Stuck work (PC-10)
+
+`ops.reaper.tick` (every 5 min, per active workspace,
+`src/lib/services/stuck-work.ts`) settles work a restart or crash left
+behind. Every write is conditional on the state it read, and the
+reaper's own changes are audited as system events (`user_id` NULL,
+`outreach.queue.reaped`, `connector_run.reaped`).
+
+| Stuck | After | Becomes |
+|---|---|---|
+| `outreach_queue` row in `sending` | 10 min after `claimed_at` | `sent` when a sent / delivered copy of its draft exists from the claim on; otherwise `failed`, kind `interrupted`, "Interrupted: delivery unknown" + `send.interrupted`. Never re-sent automatically. |
+| `connector_runs` `running`, no `last_progress_at` | 15 min | `failed` + `run.stuck` + the tenant's `run.failed` notification |
+| `connector_runs` `running` with an unanswered cancel request | 2 min | `cancelled` |
+| `connector_runs` `pending` | 60 min | `failed` (never started). Longer because under BullMQ a run can wait behind others; the runner only starts `pending` runs, so a reaped run never starts late. |
+
+Send failures are classified before the queue acts
+(`src/lib/mail/send-failure.ts`): transient (SMTP 4xx, no reply) 5
+attempts and local (before the SMTP submission) 3, with backoff 5, 10,
+20, 40 min (cap 2 h); a refused login holds the row behind the failing
+mailbox; recipient-hard and policy refusals fail. A delivered send is
+`sent` in the same transaction as its `mail_messages` row.
+
+To see what is stuck right now:
+
+```sql
+SELECT id, workspace_id, claimed_at, attempt_count FROM outreach_queue
+WHERE status = 'sending' ORDER BY claimed_at;
+
+SELECT id, workspace_id, status, last_progress_at, cancel_requested_at
+FROM connector_runs WHERE status IN ('pending', 'running') ORDER BY id;
+```
 
 Until the console pages ship (PC-31 platform, PC-22 / PC-32 tenant), read
 both tables with psql:
