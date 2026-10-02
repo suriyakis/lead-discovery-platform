@@ -22,6 +22,7 @@ import { setActiveWorkspace } from '@/lib/services/workspace';
 import {
   SESSION_TOUCH_INTERVAL_MS,
   resolveWorkspaceSelection,
+  touchSession,
 } from '@/lib/services/workspace-resolution';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 import {
@@ -308,6 +309,47 @@ describe('each browser session keeps its own workspace (MOB-06)', () => {
     expect(row.userAgent).toMatch(/^Safari x+$/);
     expect(row.userAgent).toHaveLength(300);
     expect(row.activeWorkspaceId).toBeNull();
+  });
+
+  it('a request still in flight never overwrites a switch made in the same session meanwhile', async () => {
+    const { user, one, two } = await twoWorkspaces();
+    const a = await signInBrowser(user, 'Laptop');
+    const t0 = new Date('2026-10-02T10:00:00Z');
+
+    // A new session's first request READ an empty pointer and picked One
+    // (the fallback); before it pins, the user switches this session to Two.
+    const readByFirstRequest = { activeWorkspaceId: null, lastSeenAt: null, userAgent: null };
+    await setActiveWorkspace(user, two, { sessionToken: a.token });
+    await touchSession(a.token, readByFirstRequest, {
+      workspaceId: one,
+      userAgent: 'Firefox',
+      now: t0,
+    });
+    let row = await sessionRow(a.token);
+    expect(row.activeWorkspaceId).toBe(two);
+    // The touch itself still lands.
+    expect(row.lastSeenAt?.toISOString()).toBe(t0.toISOString());
+    expect(row.userAgent).toBe('Firefox');
+
+    // Same for a stale (left) pointer: the read said Two, the session has
+    // since moved to One — the in-flight re-pin to Two's fallback is dropped.
+    const three = await seedWorkspace({ name: 'Three', ownerUserId: user });
+    await setActiveWorkspace(user, one, { sessionToken: a.token });
+    await touchSession(
+      a.token,
+      { activeWorkspaceId: two, lastSeenAt: t0, userAgent: 'Firefox' },
+      { workspaceId: three, userAgent: 'Firefox', now: t0 },
+    );
+    row = await sessionRow(a.token);
+    expect(row.activeWorkspaceId).toBe(one);
+
+    // An unchanged pointer is still pinned normally.
+    await touchSession(
+      a.token,
+      { activeWorkspaceId: one, lastSeenAt: t0, userAgent: 'Firefox' },
+      { workspaceId: three, userAgent: 'Firefox', now: t0 },
+    );
+    expect((await sessionRow(a.token)).activeWorkspaceId).toBe(three);
   });
 
   it('a deleted workspace clears the session pointer (FK ON DELETE SET NULL)', async () => {

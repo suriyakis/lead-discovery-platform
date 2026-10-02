@@ -3,7 +3,7 @@
 // logic without importing next-auth. The request's session token comes in
 // as a plain option (auth-context reads it from the cookie).
 
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { sessions, users } from '@/lib/db/schema/auth';
 import { workspaceMembers, workspaces } from '@/lib/db/schema/workspaces';
@@ -59,7 +59,9 @@ export interface WorkspaceSelection {
  * With a session token, the result is pinned on the session row when it
  * differs from the stored pointer (a new session, or one whose workspace
  * the user has since left), so a later switch in ANOTHER session — which
- * moves the last-used value — no longer moves this one. The row's
+ * moves the last-used value — no longer moves this one. The pin only
+ * lands if the pointer is still what this request read (see touchSession),
+ * so a slow request never undoes a switch made meanwhile. The row's
  * lastSeenAt (at most every 5 minutes) and User-Agent are kept current in
  * the same write.
  *
@@ -206,29 +208,56 @@ export async function resolveWorkspaceSelection(
 
 /**
  * Pin the resolved workspace on the session row (when it changed) and
- * record lastSeenAt / User-Agent, in one write and only when something is
- * due. Best-effort: a failed write must not fail the page — the next
- * request pins again.
+ * record lastSeenAt / User-Agent, only when something is due. Best-effort:
+ * a failed write must not fail the page — the next request pins again.
+ *
+ * The pin is a compare-and-set against the pointer this request READ. A
+ * new session fires several requests at once (page, RSC prefetches,
+ * /api/attention); one still in flight that picked the last-used
+ * workspace must not overwrite a switch the user made in this session a
+ * moment later (setActiveWorkspace, /go). When the pointer has moved, the
+ * pin is skipped and only lastSeenAt / User-Agent are written.
+ *
+ * Exported for the race test; callers go through resolveWorkspaceSelection.
  */
-async function touchSession(
+export async function touchSession(
   token: string,
   row: { activeWorkspaceId: bigint | null; lastSeenAt: Date | null; userAgent: string | null },
   next: { workspaceId: bigint | null; userAgent: string | null; now: Date },
 ): Promise<void> {
-  const patch: Partial<typeof sessions.$inferInsert> = {};
-  if (next.workspaceId !== null && row.activeWorkspaceId !== next.workspaceId) {
-    patch.activeWorkspaceId = next.workspaceId;
-  }
+  const pin =
+    next.workspaceId !== null && row.activeWorkspaceId !== next.workspaceId
+      ? next.workspaceId
+      : null;
+  const touch: Partial<typeof sessions.$inferInsert> = {};
   if (
     row.lastSeenAt === null ||
     next.now.getTime() - row.lastSeenAt.getTime() >= SESSION_TOUCH_INTERVAL_MS
   ) {
-    patch.lastSeenAt = next.now;
+    touch.lastSeenAt = next.now;
   }
-  if (next.userAgent && next.userAgent !== row.userAgent) patch.userAgent = next.userAgent;
-  if (Object.keys(patch).length === 0) return;
+  if (next.userAgent && next.userAgent !== row.userAgent) touch.userAgent = next.userAgent;
+  const touchDue = Object.keys(touch).length > 0;
+  if (pin === null && !touchDue) return;
   try {
-    await db.update(sessions).set(patch).where(eq(sessions.sessionToken, token));
+    if (pin !== null) {
+      const pinned = await db
+        .update(sessions)
+        .set({ ...touch, activeWorkspaceId: pin })
+        .where(
+          and(
+            eq(sessions.sessionToken, token),
+            row.activeWorkspaceId === null
+              ? isNull(sessions.activeWorkspaceId)
+              : eq(sessions.activeWorkspaceId, row.activeWorkspaceId),
+          ),
+        )
+        .returning({ token: sessions.sessionToken });
+      // Pinned (with the touch), or the pointer moved under us: the
+      // user's newer choice stands; only the touch is still owed.
+      if (pinned.length > 0 || !touchDue) return;
+    }
+    await db.update(sessions).set(touch).where(eq(sessions.sessionToken, token));
   } catch (err) {
     console.error(
       '[workspace-resolution] session touch failed:',
