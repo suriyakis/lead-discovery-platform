@@ -8,6 +8,7 @@
 import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';
 import { describeActionError, withFlash } from '@/lib/action-errors';
+import { AutomationGateError } from '@/lib/services/automation-gate';
 import { ConnectorServiceError, startRun } from '@/lib/services/connector-run';
 import { TokenError } from '@/lib/services/token-ledger';
 
@@ -30,13 +31,17 @@ export async function runRecipeNowAction(
     const { run } = await startRun(ctx, { connectorId, recipeId });
     runId = run.id;
   } catch (err) {
-    const failure = describeActionError(err, [ConnectorServiceError, TokenError], {
-      permission_denied:
-        "Your role in this workspace is read-only, so you can't start runs. Ask a workspace admin if you need edit access.",
-      // startRun's only conflict: the connector is switched off.
-      conflict: 'This connector is inactive — activate it before running its recipes.',
-      not_found: 'That recipe or connector no longer exists, so no run was started.',
-    });
+    const failure = describeActionError(
+      err,
+      [ConnectorServiceError, TokenError, AutomationGateError],
+      {
+        permission_denied:
+          "Your role in this workspace is read-only, so you can't start runs. Ask a workspace admin if you need edit access.",
+        // startRun's only conflict: the connector is switched off.
+        conflict: 'This connector is inactive — activate it before running its recipes.',
+        not_found: 'That recipe or connector no longer exists, so no run was started.',
+      },
+    );
     if (failure.code === 'not_found') {
       redirect(withFlash(`/connectors/${connectorId}`, { message: failure.message }));
     }

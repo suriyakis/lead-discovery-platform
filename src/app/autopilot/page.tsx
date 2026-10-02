@@ -1,6 +1,19 @@
 // Phase 27: Autopilot console. Reorganized around an "Autonomous Flow"
 // visualization at the top + a scope picker that lets the operator
 // switch between Workspace-default settings and per-product overrides.
+//
+// PC-05: the "Emergency pause (kill switch)" checkbox (which wrote
+// autopilot_settings.emergency_pause and stopped autopilot runs only) is
+// replaced by the workspace pause control (#pause): one standalone action
+// that stops every kind of automatic work, never plan-gated.
+//
+// PC-13: the page says what really runs. The flow view is rendered from
+// resolveAutomationPolicy (autopilotFlow) — the send queue is shown as
+// always on in the background, and a paused product holds its mail. The
+// dead "Sync inbound mail" and "Auto-drain the send queue" switches are
+// gone (I019). Per-product overrides are narrow-only — inherit or off, a
+// higher threshold — and enforced (I020); a product is paused with its own
+// Pause / Resume. The full consolidation into /automation is PC-34.
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
@@ -12,19 +25,27 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
-import { canAdminWorkspace } from '@/lib/services/context';
+import { canAdminWorkspace, canWrite } from '@/lib/services/context';
 import {
   AutopilotError,
   clearProductAutopilotSettings,
   getAutopilotSettings,
-  getEffectiveAutopilotSettings,
   getProductAutopilotSettings,
   listAutopilotLog,
   listProductAutopilotSettings,
+  pauseProductAutomation,
+  resumeProductAutomation,
   runOnce,
   updateAutopilotSettings,
   upsertProductAutopilotSettings,
 } from '@/lib/services/autopilot';
+import {
+  autopilotFlow,
+  productPolicy,
+  resolveAutomationPolicy,
+  type FlowStep,
+  type ProductPolicy,
+} from '@/lib/services/automation-policy';
 import { listMailboxes } from '@/lib/services/mailbox';
 import { listCrmConnections } from '@/lib/services/crm';
 import { listProductProfiles } from '@/lib/services/product-profile';
@@ -32,27 +53,10 @@ import type { AutopilotSettings, AutopilotProductSettings } from '@/lib/db/schem
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
-import { clearAutopilotOverridesConfirm } from '@/lib/confirm-copy';
-
-type FlowStepKey =
-  | 'discovery'
-  | 'classify'
-  | 'auto_approve'
-  | 'auto_send'
-  | 'auto_drain'
-  | 'classify_reply'
-  | 'auto_handover';
-
-interface FlowStep {
-  key: FlowStepKey;
-  label: string;
-  blurb: string;
-  scope: 'manual' | 'inline' | 'workspace' | 'product';
-  /** Read-only — derived from settings. */
-  enabled?: boolean;
-  /** Settings field this step toggles, when scope is 'workspace' or 'product'. */
-  field?: keyof AutopilotSettings;
-}
+import { AutomationPauseControl } from '@/components/AutomationPauseControl';
+import { clearAutopilotOverridesConfirm, resumeProductConfirm } from '@/lib/confirm-copy';
+import { getAutomationPauseOverview } from '@/lib/services/automation-pause';
+import { PlanLimitError } from '@/lib/services/plan-limits';
 
 export default async function AutopilotPage({
   searchParams,
@@ -79,7 +83,7 @@ export default async function AutopilotPage({
     throw err;
   }
 
-  const [base, log, mailboxes, crmConns, products, productOverlays] =
+  const [base, log, mailboxes, crmConns, products, productOverlays, pauseOverview] =
     await Promise.all([
       getAutopilotSettings(ctx),
       listAutopilotLog(ctx, 100),
@@ -87,7 +91,10 @@ export default async function AutopilotPage({
       listCrmConnections(ctx),
       listProductProfiles(ctx, { includeArchived: false }),
       listProductAutopilotSettings(ctx),
+      getAutomationPauseOverview(ctx),
     ]);
+  // After getAutopilotSettings, so the policy sees the settings row.
+  const policy = await resolveAutomationPolicy(ctx);
   const overlayByProduct = new Map(
     productOverlays.map((o) => [o.productProfileId.toString(), o]),
   );
@@ -97,15 +104,12 @@ export default async function AutopilotPage({
   // Resolve current scope from searchParams.
   const productId =
     sp.scope && /^\d+$/.test(sp.scope) ? BigInt(sp.scope) : null;
-  const isProductScope = productId !== null;
   const product = productId
     ? products.find((p) => p.id === productId) ?? null
     : null;
 
-  // Effective settings for the visual flow + form defaults.
-  const effective: AutopilotSettings = product
-    ? await getEffectiveAutopilotSettings(ctx, product.id)
-    : base;
+  const flow = autopilotFlow(policy, product ? product.id : null);
+  const resolved = product ? productPolicy(policy, product.id) : null;
   const overlay = product
     ? await getProductAutopilotSettings(ctx, product.id)
     : null;
@@ -124,12 +128,9 @@ export default async function AutopilotPage({
     try {
       await updateAutopilotSettings(c, {
         autopilotEnabled: formData.get('autopilotEnabled') === 'on',
-        emergencyPause: formData.get('emergencyPause') === 'on',
         enableAutoApproveProjects: formData.get('enableAutoApproveProjects') === 'on',
         autoApproveThreshold: num('autoApproveThreshold'),
         enableAutoEnqueueOutreach: formData.get('enableAutoEnqueueOutreach') === 'on',
-        enableAutoDrainQueue: formData.get('enableAutoDrainQueue') === 'on',
-        enableAutoSyncInbound: formData.get('enableAutoSyncInbound') === 'on',
         enableAutoCrmContactSync: formData.get('enableAutoCrmContactSync') === 'on',
         enableAutoCrmDealOnQualified: formData.get('enableAutoCrmDealOnQualified') === 'on',
         maxApprovalsPerRun: num('maxApprovalsPerRun'),
@@ -140,7 +141,10 @@ export default async function AutopilotPage({
       redirect('/autopilot?message=Workspace+defaults+saved');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
-      const m = err instanceof AutopilotError ? err.message : 'failed';
+      // I063: a lapsed plan's refusal says why instead of "failed"; only
+      // switching something ON is refused (PC-13).
+      const m =
+        err instanceof AutopilotError || err instanceof PlanLimitError ? err.message : 'failed';
       redirect(`/autopilot?error=${encodeURIComponent(m)}`);
     }
   }
@@ -149,11 +153,10 @@ export default async function AutopilotPage({
     'use server';
     const c = await getWorkspaceContext();
     const pid = BigInt(String(formData.get('productProfileId')));
-    // Tri-state inputs from the form: "inherit", "on", "off".
-    const tri = (k: string): boolean | null | undefined => {
+    // PC-13: two states per switch — "inherit" or "off" (narrow-only).
+    const narrow = (k: string): false | null | undefined => {
       const v = String(formData.get(k) ?? '');
       if (v === 'inherit') return null;
-      if (v === 'on') return true;
       if (v === 'off') return false;
       return undefined;
     };
@@ -170,16 +173,15 @@ export default async function AutopilotPage({
     try {
       await upsertProductAutopilotSettings(c, {
         productProfileId: pid,
-        autopilotEnabled: tri('autopilotEnabled'),
-        emergencyPause: tri('emergencyPause'),
-        enableAutoApproveProjects: tri('enableAutoApproveProjects'),
+        autopilotEnabled: narrow('autopilotEnabled'),
+        enableAutoApproveProjects: narrow('enableAutoApproveProjects'),
         autoApproveThreshold: num('autoApproveThreshold'),
-        enableAutoEnqueueOutreach: tri('enableAutoEnqueueOutreach'),
-        enableAutoCrmContactSync: tri('enableAutoCrmContactSync'),
-        enableAutoCrmDealOnQualified: tri('enableAutoCrmDealOnQualified'),
+        enableAutoEnqueueOutreach: narrow('enableAutoEnqueueOutreach'),
+        enableAutoCrmContactSync: narrow('enableAutoCrmContactSync'),
+        enableAutoCrmDealOnQualified: narrow('enableAutoCrmDealOnQualified'),
         defaultMailboxId: big('defaultMailboxId'),
       });
-      redirect(`/autopilot?scope=${pid}&message=Product+overlay+saved`);
+      redirect(`/autopilot?scope=${pid}&message=Product+overrides+saved`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof AutopilotError ? err.message : 'failed';
@@ -192,15 +194,53 @@ export default async function AutopilotPage({
     const c = await getWorkspaceContext();
     const pid = BigInt(String(formData.get('productProfileId')));
     await clearProductAutopilotSettings(c, pid);
-    redirect(`/autopilot?scope=${pid}&message=Overlay+cleared`);
+    redirect(`/autopilot?scope=${pid}&message=Overrides+cleared`);
+  }
+
+  async function pauseProduct(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const pid = BigInt(String(formData.get('productProfileId')));
+    try {
+      const r = await pauseProductAutomation(c, pid);
+      redirect(
+        `/autopilot?scope=${pid}&message=${encodeURIComponent(
+          r.alreadyPaused ? 'This product was already paused.' : 'Product paused: its automation and outbound mail wait.',
+        )}`,
+      );
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof AutopilotError ? err.message : 'failed';
+      redirect(`/autopilot?scope=${pid}&error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function resumeProduct(formData: FormData) {
+    'use server';
+    const c = await getWorkspaceContext();
+    const pid = BigInt(String(formData.get('productProfileId')));
+    try {
+      await resumeProductAutomation(c, pid);
+      redirect(`/autopilot?scope=${pid}&message=Product+resumed`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof AutopilotError ? err.message : 'failed';
+      redirect(`/autopilot?scope=${pid}&error=${encodeURIComponent(m)}`);
+    }
   }
 
   async function runNow() {
     'use server';
     const c = await getWorkspaceContext();
     const r = await runOnce(c);
+    // PC-06: a held run stops at the guard step — say why.
+    const guard = r.steps.length === 1 && r.steps[0]?.step === 'guard' ? r.steps[0] : null;
     redirect(
-      `/autopilot?message=${encodeURIComponent(`runOnce — ${r.steps.length} steps`)}`,
+      `/autopilot?message=${encodeURIComponent(
+        guard?.detail?.startsWith('held: ')
+          ? `Nothing ran. ${guard.detail.slice('held: '.length)}`
+          : `runOnce — ${r.steps.length} steps`,
+      )}`,
     );
   }
 
@@ -211,28 +251,41 @@ export default async function AutopilotPage({
       </p>
       <h1>Autopilot</h1>
       <p className="muted">
-        Workspace-wide orchestrator with per-product overrides. Pick a
-        product to dial in how far automation runs for that specific
-        product.
+        Autopilot approves, drafts, queues and hands over to the CRM on its
+        own, every 5 minutes and after each crawl that found records. Pick a
+        product to narrow what it does for that product, or to pause it.
       </p>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <MasterStrip settings={base} runNow={runNow} />
+      <MasterStrip settings={base} paused={pauseOverview.pause !== null} runNow={runNow} />
+
+      <AutomationPauseControl overview={pauseOverview} returnTo="/autopilot" />
 
       <AutonomousFlow
-        eff={effective}
+        steps={flow}
         scopeLabel={product ? product.name : 'Workspace defaults'}
       />
 
       <ScopePicker
         products={products}
         overlayByProduct={overlayByProduct}
-        currentScope={isProductScope ? productId!.toString() : 'default'}
+        currentScope={productId !== null ? productId.toString() : 'default'}
       />
 
+      {product && resolved ? (
+        <ProductPauseControl
+          product={product}
+          resolved={resolved}
+          canPause={canWrite(ctx)}
+          canResume={canEdit}
+          pauseProduct={pauseProduct}
+          resumeProduct={resumeProduct}
+        />
+      ) : null}
+
       {canEdit ? (
-        isProductScope && product ? (
+        product ? (
           <ProductOverlayForm
             product={product}
             overlay={overlay}
@@ -279,31 +332,25 @@ export default async function AutopilotPage({
 
 function MasterStrip({
   settings,
+  paused,
   runNow,
 }: Readonly<{
   settings: AutopilotSettings;
+  /** PC-05: the workspace pause (it stops autopilot with everything else). */
+  paused: boolean;
   runNow: () => Promise<void>;
 }>) {
   return (
     <section>
-      <div
-        style={{
-          display: 'flex',
-          gap: '1rem',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-        }}
-      >
+      <div className="autopilot-master-strip">
         <strong>Master state:</strong>
         <span
           className={
-            settings.autopilotEnabled && !settings.emergencyPause
-              ? 'badge badge-good'
-              : 'badge badge-bad'
+            settings.autopilotEnabled && !paused ? 'badge badge-good' : 'badge badge-bad'
           }
         >
-          {settings.emergencyPause
-            ? '🛑 emergency pause'
+          {paused
+            ? '🛑 paused (all automation)'
             : settings.autopilotEnabled
               ? '🟢 enabled'
               : '⚫ disabled'}
@@ -316,78 +363,26 @@ function MasterStrip({
   );
 }
 
+/** PC-13: the flow as resolveAutomationPolicy sees it (autopilotFlow). */
 function AutonomousFlow({
-  eff,
+  steps,
   scopeLabel,
-}: Readonly<{ eff: AutopilotSettings; scopeLabel: string }>) {
-  const steps: FlowStep[] = [
-    {
-      key: 'discovery',
-      label: '1. Discovery',
-      blurb: 'Connectors fetch source records.',
-      scope: 'manual',
-    },
-    {
-      key: 'classify',
-      label: '2. Classify',
-      blurb: 'AI scores relevance per product. Runs as records land.',
-      scope: 'inline',
-    },
-    {
-      key: 'auto_approve',
-      label: '3. Auto-approve',
-      blurb: `Threshold ${eff.autoApproveThreshold}/100`,
-      scope: 'workspace',
-      enabled: eff.enableAutoApproveProjects,
-      field: 'enableAutoApproveProjects',
-    },
-    {
-      key: 'auto_send',
-      label: '4. Generate + queue',
-      blurb: 'Auto-generate outreach drafts & enqueue.',
-      scope: 'workspace',
-      enabled: eff.enableAutoEnqueueOutreach,
-      field: 'enableAutoEnqueueOutreach',
-    },
-    {
-      key: 'auto_drain',
-      label: '5. Send queue',
-      blurb: 'Drain the send queue with daily caps + cooldowns.',
-      scope: 'workspace',
-      enabled: eff.enableAutoDrainQueue,
-      field: 'enableAutoDrainQueue',
-    },
-    {
-      key: 'classify_reply',
-      label: '6. Classify replies',
-      blurb: 'Inbound classification + auto-actions. Always on.',
-      scope: 'inline',
-    },
-    {
-      key: 'auto_handover',
-      label: '7. Hand over to CRM',
-      blurb: 'Sync contacts + create deals on qualified leads.',
-      scope: 'workspace',
-      enabled: eff.enableAutoCrmContactSync || eff.enableAutoCrmDealOnQualified,
-      field: 'enableAutoCrmContactSync',
-    },
-  ];
+}: Readonly<{ steps: readonly FlowStep[]; scopeLabel: string }>) {
   return (
     <section>
       <h2>Autonomous flow — {scopeLabel}</h2>
       <p className="muted">
-        Each step shows whether it is currently running for the scope above.
+        What runs right now for the scope above, and why a step waits.
       </p>
       <ol className="autopilot-flow">
         {steps.map((s, idx) => (
-          <li key={s.key}>
-            <div className={`flow-step flow-step-${stepBadgeClass(s)}`}>
-              <span className="flow-step-icon">{stepIcon(s)}</span>
+          <li key={s.key} data-flow-step={s.key} data-flow-status={s.status}>
+            <div className={`flow-step flow-step-${s.status}`}>
+              <span className="flow-step-icon">{FLOW_ICONS[s.status]}</span>
               <div>
-                <strong>{s.label}</strong>
-                <p className="muted" style={{ margin: 0, fontSize: '0.825rem' }}>
-                  {s.blurb}
-                </p>
+                <strong>{s.label}</strong>{' '}
+                <span className="muted small">{FLOW_STATUS_LABELS[s.status]}</span>
+                <p className="muted small flow-step-blurb">{s.blurb}</p>
               </div>
             </div>
             {idx < steps.length - 1 ? (
@@ -402,6 +397,24 @@ function AutonomousFlow({
   );
 }
 
+const FLOW_ICONS: Readonly<Record<FlowStep['status'], string>> = {
+  on: '✓',
+  off: '–',
+  always: '⟳',
+  inline: '⚡',
+  held: '⏸',
+  partial: '◐',
+};
+
+const FLOW_STATUS_LABELS: Readonly<Record<FlowStep['status'], string>> = {
+  on: 'on',
+  off: 'off',
+  always: 'always on',
+  inline: 'as work arrives',
+  held: 'waiting',
+  partial: 'partly waiting',
+};
+
 function ScopePicker({
   products,
   overlayByProduct,
@@ -415,8 +428,8 @@ function ScopePicker({
     <section>
       <h2>Edit scope</h2>
       <p className="muted">
-        Pick what to edit: the workspace-wide defaults, or a per-product
-        overlay that overrides specific steps for that product.
+        Pick what to edit: the workspace-wide defaults, or one product, which
+        can switch steps off, require a higher threshold, or be paused.
       </p>
       <nav className="scope-tabs">
         <Link
@@ -426,7 +439,7 @@ function ScopePicker({
           Workspace defaults
         </Link>
         {products.map((p) => {
-          const has = overlayByProduct.has(p.id.toString());
+          const o = overlayByProduct.get(p.id.toString());
           return (
             <Link
               key={p.id.toString()}
@@ -434,7 +447,11 @@ function ScopePicker({
               className={currentScope === p.id.toString() ? 'active' : ''}
             >
               {p.name}
-              {has ? <span className="badge"> override</span> : null}
+              {o?.pausedAt ? (
+                <span className="badge badge-warn"> paused</span>
+              ) : o ? (
+                <span className="badge"> override</span>
+              ) : null}
             </Link>
           );
         })}
@@ -459,7 +476,7 @@ function WorkspaceDefaultsForm({
       <h2>Workspace defaults</h2>
       <form action={saveDefault} className="edit-draft-form">
         <fieldset className="ks-kind-fields">
-          <legend className="muted">Master switches</legend>
+          <legend className="muted">Master switch</legend>
           <label className="checkbox-row">
             <input
               type="checkbox"
@@ -468,23 +485,13 @@ function WorkspaceDefaultsForm({
             />
             <span>Autopilot enabled (master)</span>
           </label>
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              name="emergencyPause"
-              defaultChecked={settings.emergencyPause}
-            />
-            <span>🛑 Emergency pause (kill switch)</span>
-          </label>
+          <p className="muted small">
+            To stop everything at once, use <a href="#pause">Pause all automation</a> above.
+          </p>
         </fieldset>
 
         <fieldset className="ks-kind-fields">
-          <legend className="muted">Per-step toggles</legend>
-          <Step
-            name="enableAutoSyncInbound"
-            label="Sync inbound mail (workspace-wide)"
-            checked={settings.enableAutoSyncInbound}
-          />
+          <legend className="muted">Steps</legend>
           <Step
             name="enableAutoApproveProjects"
             label="Auto-approve relevant review items"
@@ -502,24 +509,27 @@ function WorkspaceDefaultsForm({
           </label>
           <Step
             name="enableAutoEnqueueOutreach"
-            label="Auto-generate + enqueue outreach drafts"
+            label="Generate + queue outreach drafts (approved in the owner's name, nobody reviews them)"
             checked={settings.enableAutoEnqueueOutreach}
           />
           <Step
-            name="enableAutoDrainQueue"
-            label="Auto-drain the send queue (workspace-wide)"
-            checked={settings.enableAutoDrainQueue}
-          />
-          <Step
             name="enableAutoCrmContactSync"
-            label="Auto-sync qualified leads' contacts to CRM"
+            label="Sync new and changed qualified leads' contacts to the CRM"
             checked={settings.enableAutoCrmContactSync}
           />
           <Step
             name="enableAutoCrmDealOnQualified"
-            label="Auto-create CRM deals on qualified state"
+            label="Create CRM deals for qualified leads whose contact is synced"
             checked={settings.enableAutoCrmDealOnQualified}
           />
+          <p className="muted small">
+            Not autopilot steps, always on in the background: approved emails
+            send from the <Link href="/mailbox/queue">send queue</Link> every
+            30 seconds within each mailbox&apos;s window, unless automation is
+            paused or the workspace is not live yet; mailboxes are read every
+            2 minutes while Mailbox auto-sync is on in{' '}
+            <Link href="/settings/outreach">Outreach config</Link>.
+          </p>
         </fieldset>
 
         <fieldset className="ks-kind-fields">
@@ -590,6 +600,69 @@ function WorkspaceDefaultsForm({
   );
 }
 
+/** PC-13: pause / resume one product (any editor pauses; owners and
+ *  admins resume). */
+function ProductPauseControl({
+  product,
+  resolved,
+  canPause,
+  canResume,
+  pauseProduct,
+  resumeProduct,
+}: Readonly<{
+  product: ProductProfile;
+  resolved: ProductPolicy;
+  canPause: boolean;
+  canResume: boolean;
+  pauseProduct: (formData: FormData) => Promise<void>;
+  resumeProduct: (formData: FormData) => Promise<void>;
+}>) {
+  return (
+    <section id="product-pause">
+      <h2>Pause {product.name}</h2>
+      {resolved.pause ? (
+        <>
+          <p>
+            <span className="badge badge-warn">Paused</span> since{' '}
+            {resolved.pause.since.toLocaleString()}. Autopilot does nothing for
+            this product, its queued emails and follow-ups wait (nothing fails
+            or is lost), and no AI reply drafts are written for its leads.
+            Email you write yourself still sends.
+          </p>
+          {canResume ? (
+            <form action={resumeProduct}>
+              <input type="hidden" name="productProfileId" value={product.id.toString()} />
+              <ConfirmFormButton
+                className="primary-btn"
+                message={resumeProductConfirm(product.name)}
+              >
+                Resume {product.name}
+              </ConfirmFormButton>
+            </form>
+          ) : (
+            <p className="muted small">Owners and admins can resume it.</p>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="muted">
+            Pausing stops autopilot for this product and holds its queued
+            emails and follow-ups until an owner or admin resumes it.
+          </p>
+          {canPause ? (
+            <form action={pauseProduct}>
+              <input type="hidden" name="productProfileId" value={product.id.toString()} />
+              <button type="submit" className="ghost-btn">
+                Pause {product.name}
+              </button>
+            </form>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
 function ProductOverlayForm({
   product,
   overlay,
@@ -605,14 +678,23 @@ function ProductOverlayForm({
   saveProductOverlay: (formData: FormData) => Promise<void>;
   clearOverlay: (formData: FormData) => Promise<void>;
 }>) {
+  const hasOverrides =
+    overlay !== null &&
+    (overlay.autopilotEnabled === false ||
+      overlay.enableAutoApproveProjects === false ||
+      overlay.enableAutoEnqueueOutreach === false ||
+      overlay.enableAutoCrmContactSync === false ||
+      overlay.enableAutoCrmDealOnQualified === false ||
+      overlay.autoApproveThreshold !== null ||
+      overlay.defaultMailboxId !== null);
   return (
     <section>
       <h2>Overrides for {product.name}</h2>
       <p className="muted">
-        Each toggle can <strong>inherit</strong> the workspace default, or
-        explicitly turn that step on/off for this product. Workspace-wide
-        steps (sync inbound, drain queue) cannot be overridden — they
-        always use the workspace setting.
+        A product can only narrow what the workspace runs: each step either
+        inherits the workspace setting or is off for this product, and the
+        approval threshold can only be higher. To run a step for some
+        products only, switch it on for the workspace and off for the others.
       </p>
       <form action={saveProductOverlay} className="edit-draft-form">
         <input
@@ -622,24 +704,18 @@ function ProductOverlayForm({
         />
 
         <fieldset className="ks-kind-fields">
-          <legend className="muted">Master switches</legend>
-          <TriToggle
+          <legend className="muted">Master switch</legend>
+          <NarrowToggle
             name="autopilotEnabled"
-            label="Autopilot enabled (master)"
+            label="Autopilot for this product"
             base={base.autopilotEnabled}
             override={overlay?.autopilotEnabled ?? null}
-          />
-          <TriToggle
-            name="emergencyPause"
-            label="🛑 Emergency pause"
-            base={base.emergencyPause}
-            override={overlay?.emergencyPause ?? null}
           />
         </fieldset>
 
         <fieldset className="ks-kind-fields">
-          <legend className="muted">Per-step (overridable)</legend>
-          <TriToggle
+          <legend className="muted">Steps</legend>
+          <NarrowToggle
             name="enableAutoApproveProjects"
             label="Auto-approve relevant review items"
             base={base.enableAutoApproveProjects}
@@ -647,32 +723,33 @@ function ProductOverlayForm({
           />
           <label>
             <span>
-              Approval threshold (workspace default {base.autoApproveThreshold})
+              Approval threshold (workspace {base.autoApproveThreshold}; only a
+              higher one applies)
             </span>
             <input
               type="number"
               name="autoApproveThreshold"
               defaultValue={overlay?.autoApproveThreshold ?? ''}
               placeholder={`inherit (${base.autoApproveThreshold})`}
-              min={0}
+              min={base.autoApproveThreshold}
               max={100}
             />
           </label>
-          <TriToggle
+          <NarrowToggle
             name="enableAutoEnqueueOutreach"
-            label="Auto-generate + enqueue outreach drafts"
+            label="Generate + queue outreach drafts"
             base={base.enableAutoEnqueueOutreach}
             override={overlay?.enableAutoEnqueueOutreach ?? null}
           />
-          <TriToggle
+          <NarrowToggle
             name="enableAutoCrmContactSync"
-            label="Auto-sync qualified leads' contacts to CRM"
+            label="Sync qualified leads' contacts to the CRM"
             base={base.enableAutoCrmContactSync}
             override={overlay?.enableAutoCrmContactSync ?? null}
           />
-          <TriToggle
+          <NarrowToggle
             name="enableAutoCrmDealOnQualified"
-            label="Auto-create CRM deals on qualified state"
+            label="Create CRM deals for qualified leads"
             base={base.enableAutoCrmDealOnQualified}
             override={overlay?.enableAutoCrmDealOnQualified ?? null}
           />
@@ -700,15 +777,15 @@ function ProductOverlayForm({
           </label>
         </fieldset>
 
-        <div className="action-row" style={{ display: 'flex', gap: '0.5rem' }}>
+        <div className="action-row">
           <button type="submit" className="primary-btn">
-            Save overlay
+            Save overrides
           </button>
         </div>
       </form>
 
-      {overlay ? (
-        <form action={clearOverlay} style={{ marginTop: '1rem' }}>
+      {overlay && hasOverrides ? (
+        <form action={clearOverlay} className="action-row">
           <input
             type="hidden"
             name="productProfileId"
@@ -739,8 +816,8 @@ function Step({
   );
 }
 
-/** Inherit | On | Off radio group — used by per-product overlay form. */
-function TriToggle({
+/** PC-13: Inherit | Off radio group — a product override can only narrow. */
+function NarrowToggle({
   name,
   label,
   base,
@@ -751,7 +828,7 @@ function TriToggle({
   base: boolean;
   override: boolean | null;
 }>) {
-  const value = override === null ? 'inherit' : override ? 'on' : 'off';
+  const value = override === false ? 'off' : 'inherit';
   return (
     <div className="tri-toggle">
       <span className="tri-toggle-label">{label}</span>
@@ -769,35 +846,14 @@ function TriToggle({
           <input
             type="radio"
             name={name}
-            value="on"
-            defaultChecked={value === 'on'}
-          />{' '}
-          on
-        </label>
-        <label>
-          <input
-            type="radio"
-            name={name}
             value="off"
             defaultChecked={value === 'off'}
           />{' '}
-          off
+          off for this product
         </label>
       </span>
     </div>
   );
-}
-
-function stepBadgeClass(s: FlowStep): string {
-  if (s.scope === 'manual') return 'manual';
-  if (s.scope === 'inline') return 'inline';
-  return s.enabled ? 'on' : 'off';
-}
-
-function stepIcon(s: FlowStep): string {
-  if (s.scope === 'manual') return '👤';
-  if (s.scope === 'inline') return '⚡';
-  return s.enabled ? '✓' : '–';
 }
 
 function outcomeClass(o: string): string {

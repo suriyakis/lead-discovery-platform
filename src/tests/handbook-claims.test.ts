@@ -72,12 +72,13 @@ import {
   drainQueue,
   enqueueDraft,
   getSendSettings,
-  updateSendSettings,
 } from '@/lib/services/outreach-queue';
 import { saveSendSettingsAction } from '@/app/mailbox/queue/actions';
 import { workspaceMembers } from '@/lib/db/schema/workspaces';
 import { expectRedirect } from './helpers/next-render';
 import {
+  pauseProductAutomation,
+  resumeProductAutomation,
   runOnce,
   updateAutopilotSettings,
   upsertProductAutopilotSettings,
@@ -89,6 +90,8 @@ import {
   updateFollowUpConfig,
 } from '@/lib/services/follow-up';
 import { analyseReply, classifyReply, type ReplyClass } from '@/lib/services/reply-classifier';
+import { pauseAutomation, resumeAutomation, undoPause } from '@/lib/services/automation-pause';
+import { PAUSED_MESSAGE } from '@/lib/services/automation-gate';
 import {
   getReplyAutoActions,
   switchesOf,
@@ -145,7 +148,7 @@ interface Setup {
 let seq = 0;
 
 async function setup(
-  opts: { plan?: 'free' | 'starter' | 'pro' } = {},
+  opts: { plan?: 'free' | 'starter' | 'pro'; live?: boolean } = {},
 ): Promise<Setup> {
   seq += 1;
   const ownerId = await seedUser({ email: `hb-owner-${seq}@test.local` });
@@ -154,6 +157,7 @@ async function setup(
     name: `Handbook ${seq}`,
     ownerUserId: ownerId,
     plan: opts.plan,
+    live: opts.live,
     extraMembers: [{ userId: adminId, role: 'admin' }],
   });
   return { workspaceId, ownerId, adminId };
@@ -535,7 +539,7 @@ describe('send queue', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 // ---- autopilot service ---------------------------------------------
 
 describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
-  it('[handbook H-07] the background tick auto-approves "new" items at the threshold in the owner\'s name, never needs_review ones', async () => {
+  it('[handbook H-07] the background tick auto-approves "new" items at the threshold as autopilot (no person), never needs_review ones', async () => {
     const s = await setup();
     const { items } = await discover(s, { count: 2 });
     expect(items).toHaveLength(2);
@@ -555,13 +559,18 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     const approved = await reviewItem(fresh.id);
     expect(approved.state).toBe('approved');
-    expect(approved.approvedByUserId).toBe(s.ownerId);
+    // PC-11 (I034): a machine decision carries no person's name.
+    expect(approved.approvedByUserId).toBeNull();
+    expect(approved.approvalReason).toBe('autopilot');
     expect((await reviewItem(geoHeld.id)).state).toBe('needs_review');
   });
 
-  it('[handbook H-08] generate + enqueue writes, approves (as the owner) and queues a draft with no human step', async () => {
+  it('[handbook H-08] generate + enqueue writes, approves (as the owner) and queues a draft with no human step, only for a lead with a contact email', async () => {
     const s = await setup();
-    const { product, items } = await discover(s);
+    const { product, items } = await discover(s, { count: 2 });
+    // The second approved item has no pipeline lead (no contact email):
+    // it gets no draft and waits (PC-11, I001).
+    await approveReviewItem(adminCtx(s), items[1]!.id);
     await approveReviewItem(adminCtx(s), items[0]!.id);
     const lead = await ensureQualifiedLead(ctx(s), items[0]!.id, product.id);
     await updateContact(ctx(s), lead.id, { contactEmail: 'anna@target.com' });
@@ -587,44 +596,97 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(queue[0]!.toAddresses).toEqual(['anna@target.com']);
   });
 
-  it('[handbook H-09] the autopilot emergency pause stops autopilot runs but not the send queue', async () => {
+  it('[handbook H-09] one pause, never plan- or wallet-gated, stops the queue, autopilot, crawls and background work; nothing fails', async () => {
     const s = await setup();
     await queuedEmail(s);
     await updateAutopilotSettings(ctx(s), {
       autopilotEnabled: true,
-      emergencyPause: true,
-      enableAutoDrainQueue: true,
+      enableAutoApproveProjects: true,
     });
-    const run = await runOnce(ctx(s));
-    expect(run.steps).toEqual([{ step: 'guard', outcome: 'skipped', detail: 'emergency_pause' }]);
+    await pauseAutomation(ctx(s), { source: 'api' });
 
-    // What the 30-second drain tick does for every active workspace.
+    const run = await runOnce(ctx(s));
+    expect(run.steps).toEqual([
+      { step: 'guard', outcome: 'skipped', detail: `held: ${PAUSED_MESSAGE}` },
+    ]);
     const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
-    expect(r.sent).toBe(1);
-    expect((await queueRows(s))[0]!.status).toBe('sent');
+    expect(r).toMatchObject({ picked: 0, sent: 0, failed: 0, heldReason: PAUSED_MESSAGE });
+    expect((await queueRows(s))[0]!.status).toBe('queued');
+    for (const tick of ['outreach.drain.tick', 'autopilot.tick', 'crawl.engine.tick']) {
+      expect(await runTick(tick)).toMatchObject({ held: 1 });
+    }
+    expect((await queueRows(s))[0]!.status).toBe('queued');
+
+    // A lapsed plan with an empty wallet can still pause.
+    const broke = await setup({ plan: 'free' });
+    await db
+      .update(workspaces)
+      .set({ tokenBalance: 0n, subscriptionStatus: 'canceled' })
+      .where(eq(workspaces.id, broke.workspaceId));
+    await expect(pauseAutomation(ctx(broke), { source: 'api' })).resolves.toMatchObject({
+      alreadyPaused: false,
+    });
   });
 
-  it('[handbook H-10] the send-queue emergency pause stops sending but autopilot keeps writing, approving and queueing', async () => {
+  it('[handbook H-10] while paused mail still syncs, a hand-written send needs "send anyway" (audited), owners/admins resume, the pauser can undo for 10 s', async () => {
     const s = await setup();
-    const { product, items } = await discover(s);
-    await approveReviewItem(ctx(s), items[0]!.id);
-    const lead = await ensureQualifiedLead(ctx(s), items[0]!.id, product.id);
-    await updateContact(ctx(s), lead.id, { contactEmail: 'anna@target.com' });
-    await makeMailbox(s);
-    await updateSendSettings(ctx(s), { emergencyPause: true });
-    await updateAutopilotSettings(ctx(s), {
-      autopilotEnabled: true,
-      enableAutoEnqueueOutreach: true,
+    const mailbox = await makeMailbox(s, { imap: true });
+    const member = makeWorkspaceContext({
+      workspaceId: s.workspaceId,
+      userId: s.adminId,
+      role: 'member',
     });
+    await pauseAutomation(member, { source: 'api' });
 
-    await runOnce(ctx(s));
-    const queue = await queueRows(s);
-    expect(queue).toHaveLength(1);
-    expect(queue[0]!.status).toBe('queued');
+    // Inbox sync keeps reading.
+    const inbox = new MockMailProvider();
+    inbox.enqueueInbound({
+      uid: 1,
+      messageId: `<hb-paused-${seq}@sender.example>`,
+      inReplyTo: null,
+      references: [],
+      from: { address: 'someone@sender.example' },
+      to: [{ address: mailbox.fromAddress }],
+      cc: [],
+      subject: 'Hello',
+      textBody: 'Hi there',
+      htmlBody: null,
+      receivedAt: new Date(Date.now() - 1000),
+      headers: {},
+      attachments: [],
+    });
+    await expect(syncInbound(ctx(s), mailbox.id, inbox)).resolves.toMatchObject({ inserted: 1 });
 
-    const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
-    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0 });
-    expect((await queueRows(s))[0]!.status).toBe('queued');
+    // A reply by hand is refused until confirmed, then sent and audited.
+    const reply = {
+      mode: 'one_to_one' as const,
+      origin: 'manual' as const,
+      mailboxId: mailbox.id,
+      to: [{ address: 'someone@sender.example' }],
+      subject: 'Re: Hello',
+      text: 'Thanks',
+      providerOverride: new MockMailProvider(),
+    };
+    await expect(sendMessage(ctx(s), reply)).rejects.toMatchObject({
+      reason: 'paused',
+      overridable: true,
+    });
+    await expect(sendMessage(ctx(s), { ...reply, confirmPaused: true })).resolves.toBeDefined();
+    const overrides = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.workspaceId, s.workspaceId), eq(auditLog.kind, 'outbound.override')));
+    expect(overrides).toHaveLength(1);
+
+    // A member cannot resume; the person who paused can undo at once.
+    await expect(resumeAutomation(member, { source: 'api' })).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    await expect(undoPause(member)).resolves.toMatchObject({ undone: true });
+    await pauseAutomation(member, { source: 'api' });
+    await expect(resumeAutomation(adminCtx(s), { source: 'api' })).resolves.toMatchObject({
+      wasPaused: true,
+    });
   });
 
   it('[handbook H-11] autopilot needs Starter or Pro (or billing exempt); a lapsed plan stops the runs', async () => {
@@ -634,8 +696,8 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     ).rejects.toMatchObject({ code: 'plan_limit' });
     // Switching things OFF always works.
     await expect(
-      updateAutopilotSettings(ctx(free), { emergencyPause: true }),
-    ).resolves.toMatchObject({ emergencyPause: true });
+      updateAutopilotSettings(ctx(free), { autopilotEnabled: false }),
+    ).resolves.toMatchObject({ autopilotEnabled: false });
 
     const exempt = await setup({ plan: 'free' });
     await db
@@ -659,7 +721,7 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(run.steps).toEqual([{ step: 'guard', outcome: 'skipped', detail: 'plan_no_autopilot' }]);
   });
 
-  it('[handbook H-12] autopilot runs every 5 minutes and after each discovery run with records, only while on and unpaused', async () => {
+  it('[handbook H-12] autopilot runs every 5 minutes and after each discovery run with records, only while on and not paused', async () => {
     expect(AUTOPILOT_TICK_MS).toBe(5 * 60 * 1000);
     class RecordingQueue extends InMemoryJobQueue {
       public schedules: Array<{ type: string; everyMs: number }> = [];
@@ -682,29 +744,35 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     const s = await setup();
     expect((await runOnce(ctx(s))).steps[0]!.detail).toBe('autopilot_disabled');
-    await updateAutopilotSettings(ctx(s), { autopilotEnabled: true, emergencyPause: true });
-    expect((await runOnce(ctx(s))).steps[0]!.detail).toBe('emergency_pause');
+    await updateAutopilotSettings(ctx(s), { autopilotEnabled: true });
+    await pauseAutomation(ctx(s), { source: 'api' });
+    expect((await runOnce(ctx(s))).steps[0]!.detail).toBe(`held: ${PAUSED_MESSAGE}`);
   });
 
-  it('[handbook H-13] per-product overrides only narrow a step; product master and emergency-pause overrides are not applied', async () => {
+  it('[handbook H-13] per-product overrides only narrow; a paused product gets no autopilot work and its email waits until an owner or admin resumes it', async () => {
     const s = await setup();
     const { product, items } = await discover(s);
     const item = items[0]!;
 
-    // The workspace step is off: a product "on" cannot widen it.
+    // The workspace step is off: a product "on" is refused, not saved.
     await updateAutopilotSettings(ctx(s), {
       autopilotEnabled: true,
       enableAutoApproveProjects: false,
       autoApproveThreshold: 50,
     });
-    await upsertProductAutopilotSettings(ctx(s), {
-      productProfileId: product.id,
-      enableAutoApproveProjects: true,
-    });
-    await runOnce(ctx(s));
-    expect((await reviewItem(item.id)).state).toBe('new');
+    await expect(
+      upsertProductAutopilotSettings(ctx(s), {
+        productProfileId: product.id,
+        enableAutoApproveProjects: true as unknown as false,
+      }),
+    ).rejects.toMatchObject({ code: 'widening_override' });
+    // ...and so is a threshold below the workspace's.
+    await expect(
+      upsertProductAutopilotSettings(ctx(s), { productProfileId: product.id, autoApproveThreshold: 40 }),
+    ).rejects.toMatchObject({ code: 'widening_override' });
 
-    // The workspace step is on: a product "off" narrows it.
+    // The workspace step is on: a product "off" narrows it, and so does the
+    // product's autopilot switched off.
     await updateAutopilotSettings(ctx(s), { enableAutoApproveProjects: true });
     await upsertProductAutopilotSettings(ctx(s), {
       productProfileId: product.id,
@@ -712,14 +780,45 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     });
     await runOnce(ctx(s));
     expect((await reviewItem(item.id)).state).toBe('new');
-
-    // Product master OFF + product emergency pause ON are saved but ignored.
     await upsertProductAutopilotSettings(ctx(s), {
       productProfileId: product.id,
       enableAutoApproveProjects: null,
       autopilotEnabled: false,
-      emergencyPause: true,
     });
+    await runOnce(ctx(s));
+    expect((await reviewItem(item.id)).state).toBe('new');
+
+    // Paused by anyone who can edit: nothing runs for it.
+    await upsertProductAutopilotSettings(ctx(s), { productProfileId: product.id, autopilotEnabled: null });
+    const member = makeWorkspaceContext({
+      workspaceId: s.workspaceId,
+      userId: s.adminId,
+      role: 'member',
+    });
+    await pauseProductAutomation(member, product.id);
+    await runOnce(ctx(s));
+    expect((await reviewItem(item.id)).state).toBe('new');
+
+    // Its queued email waits — still queued, not failed; a member cannot
+    // resume, an admin can, and then it goes out.
+    const q = await queuedEmail(s);
+    await pauseProductAutomation(member, q.product.id);
+    const held = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
+    expect(held).toMatchObject({ sent: 0, failed: 0, deferred: 1 });
+    expect((await queueRows(s))[0]!).toMatchObject({ status: 'queued' });
+    await expect(resumeProductAutomation(member, q.product.id)).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    await resumeProductAutomation(adminCtx(s), q.product.id);
+    await db
+      .update(outreachQueue)
+      .set({ scheduledSendAt: new Date(Date.now() - 1000) })
+      .where(eq(outreachQueue.id, q.entry.id));
+    const sent = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
+    expect(sent).toMatchObject({ sent: 1 });
+
+    // Resumed: autopilot works for the product again.
+    await resumeProductAutomation(adminCtx(s), product.id);
     await runOnce(ctx(s));
     expect((await reviewItem(item.id)).state).toBe('approved');
   });
@@ -755,6 +854,7 @@ describe('follow-up service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mailbox.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -827,6 +927,7 @@ describe('follow-up service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
       const to = `lead${i}@target.com`;
       const sent = await sendMessage(ctx(s), {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mailbox.id,
         to: [{ address: to }],
         subject: `Hi ${i}`,
@@ -957,7 +1058,7 @@ describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () 
     expect(row!.imapNextSyncAfter!.getTime() - Date.now()).toBeGreaterThan(50 * 60 * 1000);
   });
 
-  it('[handbook H-23] a paused mailbox sends nothing, and its queued email fails instead of waiting', async () => {
+  it('[handbook H-23] a paused mailbox sends nothing and holds its due email (queued with the reason, never failed)', async () => {
     const s = await setup();
     const { mailbox } = await queuedEmail(s);
     await updateMailbox(ctx(s), mailbox.id, { status: 'paused' });
@@ -965,6 +1066,7 @@ describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () 
     await expect(
       sendMessage(ctx(s), {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: mailbox.id,
         to: [{ address: 'someone@target.com' }],
         subject: 'Hi',
@@ -973,9 +1075,36 @@ describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () 
       }),
     ).rejects.toThrow(/paused/);
 
+    const provider = new MockMailProvider();
+    const r = await drainQueue(ctx(s), { providerOverride: provider });
+    expect(r).toMatchObject({ failed: 0, sent: 0, deferred: 1 });
+    expect(provider.sent).toHaveLength(0);
+    const [row] = await queueRows(s);
+    expect(row!.status).toBe('queued');
+    expect(row!.lastError).toMatch(/^Held: the mailbox is paused/);
+    expect(row!.scheduledSendAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('[handbook H-32] a workspace that is not live holds cold email in the queue while a hand-written email sends', async () => {
+    const s = await setup({ live: false });
+    const { mailbox } = await queuedEmail(s);
     const r = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
-    expect(r.failed).toBe(1);
-    expect((await queueRows(s))[0]!.status).toBe('failed');
+    expect(r).toMatchObject({ sent: 0, failed: 0, deferred: 1 });
+    const [row] = await queueRows(s);
+    expect(row!.status).toBe('queued');
+    expect(row!.lastError).toMatch(/not live/);
+
+    await expect(
+      sendMessage(ctx(s), {
+        mode: 'one_to_one',
+        origin: 'manual',
+        mailboxId: mailbox.id,
+        to: [{ address: 'someone@target.com' }],
+        subject: 'Hi',
+        text: 'by hand',
+        providerOverride: new MockMailProvider(),
+      }),
+    ).resolves.toMatchObject({ status: 'sent' });
   });
 });
 
@@ -1197,6 +1326,7 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     await expect(
       sendMessage(ctx(s), {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: mailbox.id,
         to: [{ address: 'gone@target.com' }],
         subject: 'Hi',
@@ -1211,6 +1341,7 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     await expect(
       sendMessage(ctx(s), {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: mailbox.id,
         to: [{ address: 'kept@target.com' }],
         subject: 'Hi',
@@ -1280,6 +1411,7 @@ describe('inbound sync — classification of non-replies', { timeout: DB_TEST_TI
     // A reply to one of our emails is classified and notifies.
     const sent = await sendMessage(ctx(s), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mailbox.id,
       to: [{ address: 'anna@target.com' }],
       subject: 'Concrete sealing',
@@ -1327,6 +1459,7 @@ describe('Phase 0 claims from the other lanes', { timeout: DB_TEST_TIMEOUT_MS },
     const provider = new MockMailProvider();
     await sendMessage(ctx(s), {
       mode: 'one_to_one',
+      origin: 'manual',
       mailboxId: mailbox.id,
       to: [{ address: 'anna@target.com' }],
       subject: 'Following our call',
@@ -1335,6 +1468,7 @@ describe('Phase 0 claims from the other lanes', { timeout: DB_TEST_TIMEOUT_MS },
     });
     await sendMessage(ctx(s), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mailbox.id,
       to: [{ address: 'olga@target.com' }],
       subject: 'Concrete sealing',

@@ -164,9 +164,8 @@ export default async function OutreachSettingsPage({
     'use server';
     const c = await getWorkspaceContext();
     const autoDraftReplies = formData.get('autoDraftReplies') === 'on';
-    const autoSendReplies = formData.get('autoSendReplies') === 'on';
     try {
-      await updateOutreachDefaults(c, { autoDraftReplies, autoSendReplies });
+      await updateOutreachDefaults(c, { autoDraftReplies });
       redirect('/settings/outreach?message=Reply+automation+saved');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -354,25 +353,12 @@ export default async function OutreachSettingsPage({
           <div className="config-row-label">
             <p className="config-row-title">Auto-draft replies</p>
             <p className="config-row-sub">
-              Generate the next reply via AI and queue it for your review.
+              AI writes the next reply on lead threads for your review. A
+              reply draft is never sent on its own: you approve each one.
               Recommended: on.
             </p>
           </div>
           <ToggleSwitch name="autoDraftReplies" defaultChecked={ws.autoDraftReplies} />
-        </div>
-
-        <div className="config-divider" />
-
-        <div className="config-row">
-          <div className="config-row-label">
-            <p className="config-row-title">Auto-send replies</p>
-            <p className="config-row-sub">
-              Send high-confidence drafts without manual approval. Implies
-              auto-draft. Recommended: off until you have weeks of supervised
-              drafts.
-            </p>
-          </div>
-          <ToggleSwitch name="autoSendReplies" defaultChecked={ws.autoSendReplies} />
         </div>
 
         <div className="config-card-actions">

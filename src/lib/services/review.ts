@@ -182,29 +182,63 @@ export async function getReviewItem(
 
 // ---- transitions -------------------------------------------------------
 
+/** Who made a review decision: a person, or autopilot's auto-approve step
+ *  (I034). The knowledge workstream's decision record (KL-02) takes over
+ *  the same two values. */
+export type ReviewDecisionOrigin = 'operator' | 'autopilot';
+
 interface BasicTransitionOptions {
   /** Set when a transition implies an explicit reason. */
   reason?: string | null;
+  /** Default 'operator'. */
+  origin?: ReviewDecisionOrigin;
+  /** Act only on an item still in this state; otherwise nothing is written
+   *  (autopilot's approve: an item a person touched meanwhile is left
+   *  alone). */
+  expectState?: ReviewItemState;
+  /** Extra audit payload (autopilot: the run and the products). */
+  auditPayload?: Record<string, unknown>;
 }
 
+interface StateChangeOutcome {
+  item: ReviewItem;
+  /** False when nothing was written: the item was already in the target
+   *  state, or not in `expectState`. */
+  changed: boolean;
+}
+
+/**
+ * Move a review item to `to`: the row, one audit row and (approve /
+ * reject) the learning feed. PC-11 (I018): a same-state transition is a
+ * no-op — no audit row, no learning — so re-approving an approved item
+ * writes nothing. The row is locked, so two concurrent decisions on one
+ * item serialize and the second sees the first's state.
+ */
 async function applyStateChange(
   ctx: WorkspaceContext,
   id: bigint,
   to: ReviewItemState,
   options: BasicTransitionOptions = {},
-): Promise<ReviewItem> {
+): Promise<StateChangeOutcome> {
   if (!canWrite(ctx)) throw permissionDenied(`set review state -> ${to}`);
+  const origin = options.origin ?? 'operator';
+  const reason = options.reason ?? null;
 
-  return db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     const existing = await tx
       .select()
       .from(reviewItems)
       .where(
         and(eq(reviewItems.workspaceId, ctx.workspaceId), eq(reviewItems.id, id)),
-      );
+      )
+      .for('update');
     const item = existing[0];
     if (!item) throw notFound();
-    if (TERMINAL_STATES.has(item.state) && to !== item.state) {
+    if (options.expectState && item.state !== options.expectState) {
+      return { item, changed: false };
+    }
+    if (item.state === to) return { item, changed: false };
+    if (TERMINAL_STATES.has(item.state)) {
       throw conflict(`review item is in terminal state '${item.state}'`);
     }
 
@@ -214,15 +248,16 @@ async function applyStateChange(
       updatedAt: now,
     };
 
-    // Side-channel timestamps for the common transitions.
+    // Side-channel timestamps for the common transitions. An autopilot
+    // approval is a machine decision: no person's name on it (I034).
     if (to === 'approved') {
-      updates.approvedByUserId = ctx.userId;
+      updates.approvedByUserId = origin === 'autopilot' ? null : ctx.userId;
       updates.approvedAt = now;
-      updates.approvalReason = options.reason ?? null;
+      updates.approvalReason = origin === 'autopilot' ? 'autopilot' : reason;
     } else if (to === 'rejected') {
       updates.rejectedByUserId = ctx.userId;
       updates.rejectedAt = now;
-      updates.rejectionReason = options.reason ?? null;
+      updates.rejectionReason = reason;
     }
 
     const updated = await tx
@@ -240,31 +275,34 @@ async function applyStateChange(
       entityType: 'review_item',
       entityId: result.id,
       payload: {
+        ...options.auditPayload,
         previousState: item.state,
         newState: to,
-        reason: options.reason ?? null,
+        reason,
+        origin,
       },
     });
 
-    return { result, sourceRecordId: item.sourceRecordId };
-  }).then(async ({ result, sourceRecordId }) => {
-    // After commit, feed the decision into the learning layer so future
-    // qualifications can auto-approve / auto-reject similar records.
-    // Best-effort — failure logs but does not undo the state change.
-    if (to === 'approved' || to === 'rejected') {
-      try {
-        await feedDecisionIntoLearning(ctx, {
-          reviewItemId: result.id,
-          sourceRecordId,
-          decision: to,
-          reason: options.reason ?? null,
-        });
-      } catch (err) {
-        console.error(`[review.${to}] feedDecisionIntoLearning failed:`, err);
-      }
-    }
-    return result;
+    return { item: result, changed: true };
   });
+
+  // After commit, feed the decision into the learning layer so future
+  // qualifications can auto-approve / auto-reject similar records.
+  // Best-effort — failure logs but does not undo the state change.
+  if (outcome.changed && (to === 'approved' || to === 'rejected')) {
+    try {
+      await feedDecisionIntoLearning(ctx, {
+        reviewItemId: outcome.item.id,
+        sourceRecordId: outcome.item.sourceRecordId,
+        decision: to,
+        reason,
+        origin,
+      });
+    } catch (err) {
+      console.error(`[review.${to}] feedDecisionIntoLearning failed:`, err);
+    }
+  }
+  return outcome;
 }
 
 /**
@@ -276,6 +314,12 @@ async function applyStateChange(
  * actionType maps to lesson categories the heuristic / AI extractor recognise:
  *   approved → qualification_positive
  *   rejected → qualification_negative
+ *
+ * Called once per decision, with its origin. What an autopilot-origin
+ * decision emits per product, and how synthesis treats it, is the
+ * knowledge workstream's contract (I032, I034, KL-02); here an autopilot
+ * decision's events carry no person and reinforce no lessons — a machine
+ * approval must not confirm the rules that produced it.
  */
 async function feedDecisionIntoLearning(
   ctx: WorkspaceContext,
@@ -284,6 +328,7 @@ async function feedDecisionIntoLearning(
     sourceRecordId: bigint;
     decision: 'approved' | 'rejected';
     reason: string | null;
+    origin: ReviewDecisionOrigin;
   },
 ): Promise<void> {
   const actionType =
@@ -317,7 +362,7 @@ async function feedDecisionIntoLearning(
       }),
     ),
   ).map(BigInt);
-  if (appliedLessonIds.length > 0) {
+  if (appliedLessonIds.length > 0 && args.origin === 'operator') {
     const { reinforceLessons } = await import('./learning');
     void reinforceLessons(
       ctx,
@@ -335,6 +380,7 @@ async function feedDecisionIntoLearning(
       actionType,
       originalComment: args.reason,
       confidence,
+      origin: args.origin,
     });
     return;
   }
@@ -347,27 +393,57 @@ async function feedDecisionIntoLearning(
       actionType,
       originalComment: args.reason,
       confidence,
+      origin: args.origin,
     });
   }
 }
 
+const itemOf = (o: StateChangeOutcome): ReviewItem => o.item;
+
+/** Approve (a person). Re-approving an approved item writes nothing. */
 export const approveReviewItem = (
   ctx: WorkspaceContext,
   id: bigint,
   reason?: string | null,
-) => applyStateChange(ctx, id, 'approved', { reason: reason ?? null });
+) => applyStateChange(ctx, id, 'approved', { reason: reason ?? null }).then(itemOf);
 
 export const rejectReviewItem = (
   ctx: WorkspaceContext,
   id: bigint,
   reason?: string | null,
-) => applyStateChange(ctx, id, 'rejected', { reason: reason ?? null });
+) => applyStateChange(ctx, id, 'rejected', { reason: reason ?? null }).then(itemOf);
 
 export const ignoreReviewItem = (ctx: WorkspaceContext, id: bigint) =>
-  applyStateChange(ctx, id, 'ignored');
+  applyStateChange(ctx, id, 'ignored').then(itemOf);
 
 export const flagForReview = (ctx: WorkspaceContext, id: bigint) =>
-  applyStateChange(ctx, id, 'needs_review');
+  applyStateChange(ctx, id, 'needs_review').then(itemOf);
+
+/**
+ * Autopilot's approve (stepAutoApproveProjects, PC-11). Origin 'autopilot':
+ * approvedByUserId NULL and approvalReason 'autopilot', so it is never
+ * mistaken for the owner's decision (I034); the learning feed runs once,
+ * with that origin. Conditional: only an item still 'new' is approved — an
+ * item a person touched meanwhile is left alone ({ approved: false }). One
+ * call per review item, whatever the number of products it is approved for
+ * (`productProfileIds`, recorded on the audit row with the run).
+ */
+export async function autopilotApproveReviewItem(
+  ctx: WorkspaceContext,
+  id: bigint,
+  input: { runId: string; productProfileIds: readonly bigint[] },
+): Promise<{ approved: boolean }> {
+  if (!canWrite(ctx)) throw permissionDenied('autopilot approve');
+  const outcome = await applyStateChange(ctx, id, 'approved', {
+    origin: 'autopilot',
+    expectState: 'new',
+    auditPayload: {
+      runId: input.runId,
+      productProfileIds: input.productProfileIds.map((p) => p.toString()),
+    },
+  });
+  return { approved: outcome.changed };
+}
 
 /** Archiving requires admin permission since it removes from active queue. */
 export async function archiveReviewItem(

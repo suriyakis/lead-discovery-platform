@@ -115,6 +115,28 @@ docker compose exec app pnpm db:migrate
 
 That's the whole deploy. **No manual editing on the server.** If you need to debug, copy logs out, fix in the repo, push, redeploy.
 
+### Release steps: Phase 1 automation control (PC-05, PC-06, PC-13, flow:F-07)
+
+The release that brings the workspace pause, holds, the accountable-owner rule and the go-live hold needs these extra steps. Run the scripts from the host checkout against the prod `DATABASE_URL`, with a `pg_dump` taken first.
+
+1. **Before the deploy: accountable owners.** From this release on, an active workspace whose owner account is not active, or whose owner is not a member, runs no automatic work (inbox sync included) from the first tick after the deploy. Check first (read only, works before the migration):
+
+   ```bash
+   DATABASE_URL=... pnpm exec tsx scripts/remediation/check-accountable-owners.ts
+   ```
+
+   Exit 0 means every active workspace passes. Exit 1 lists the workspaces that would stop: reactivate the owner or transfer ownership in the super-admin console before deploying, or accept that they stop.
+2. **Deploy and migrate** as above. The migrations carry over the old Emergency pause switches (a workspace with either one on starts paused) and clear the dead autopilot toggles.
+3. **After the deploy: go-live.** Every workspace starts not live, existing ones included. Cold, follow-up and AI-reply mail is held `not_live` (manual mail still sends) until a super-admin releases the workspace on `/admin/workspaces/[id]` with a reason. Release the workspaces that should keep sending.
+4. **After the deploy: legacy feature flags.** The old `feature_flags` were never enforced. Import the disabled ones as `pending_review` holds, which are not enforced until the platform owner confirms them on `/admin/workspaces/[id]` ("Legacy flags to review"):
+
+   ```bash
+   DATABASE_URL=... pnpm exec tsx scripts/remediation/import-legacy-feature-flags.ts          # dry run
+   DATABASE_URL=... pnpm exec tsx scripts/remediation/import-legacy-feature-flags.ts --apply  # idempotent
+   ```
+
+   `pnpm db:migrate` does not run this import. It must run, and the owner must review the rows, before the release that drops `feature_flags`.
+
 ### Backups
 
 - **Postgres:** `pg_dump` once a day, written to a local backups directory and uploaded to off-host storage. Retention: 30 days. Script lives at `scripts/backup-postgres.sh`.

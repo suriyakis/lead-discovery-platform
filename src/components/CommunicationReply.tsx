@@ -29,6 +29,9 @@ interface CommunicationReplyProps {
   nativeLanguage: string;
   /** Recipient's resolved language, or null when it matches native / no lead. */
   targetLanguage: string | null;
+  /** PC-05: automation is paused in this workspace — the reply needs an
+   *  explicit "send anyway" (audited). */
+  automationPaused?: boolean;
 }
 
 export function CommunicationReply({
@@ -42,6 +45,7 @@ export function CommunicationReply({
   defaultSignatureId,
   nativeLanguage,
   targetLanguage,
+  automationPaused = false,
 }: CommunicationReplyProps) {
   const [to, setTo] = useState(defaultTo);
   const [subject, setSubject] = useState(defaultSubject);
@@ -58,6 +62,10 @@ export function CommunicationReply({
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  // PC-05: the pause needs a "send anyway" — shown up front when the page
+  // knew it was paused, or after the server refused because it became so.
+  const [pauseNotice, setPauseNotice] = useState(automationPaused);
+  const [confirmPaused, setConfirmPaused] = useState(false);
 
   const canTranslate = Boolean(targetLanguage) && targetLanguage !== nativeLanguage;
   const isRtl = targetLanguage === 'he' || targetLanguage === 'ar';
@@ -146,6 +154,7 @@ export function CommunicationReply({
             inReplyTo,
             references,
             signatureId: signaturePick,
+            ...(pauseNotice && confirmPaused ? { confirmPaused: true } : {}),
             // When a translation is shown, send it (with the native body kept
             // as the thread reference); otherwise send the body as written.
             ...(shown && canTranslate
@@ -162,8 +171,11 @@ export function CommunicationReply({
           messageId?: string;
           error?: string;
           detail?: string;
+          reason?: string;
+          overridable?: boolean;
         };
         if (!res.ok || !j.ok) {
+          if (j.reason === 'paused' && j.overridable) setPauseNotice(true);
           setError(j.detail || j.error || `request failed (${res.status})`);
           return;
         }
@@ -366,6 +378,20 @@ export function CommunicationReply({
         </section>
       ) : null}
 
+      {pauseNotice ? (
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={confirmPaused}
+            onChange={(e) => setConfirmPaused(e.target.checked)}
+          />
+          <span>
+            Automation is paused in this workspace. Send this reply anyway (it is recorded in
+            the audit log).
+          </span>
+        </label>
+      ) : null}
+
       <div
         className="action-row"
         style={{
@@ -383,7 +409,8 @@ export function CommunicationReply({
             !to ||
             !subject ||
             !body ||
-            (canTranslate && shown && !tBody.trim())
+            (canTranslate && shown && !tBody.trim()) ||
+            (pauseNotice && !confirmPaused)
           }
           className="primary-btn"
         >

@@ -23,6 +23,7 @@ import { getAIProviderForCtx } from '@/lib/ai';
 import { detectLanguageFromText, getLanguageName } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
 import { getWorkspaceNativeLanguage } from './workspace';
+import { checkGate } from './automation-gate';
 import type { WorkspaceContext } from './context';
 
 /** Normalise an ISO tag to its base, lowercased code ('en-GB' → 'en'). */
@@ -379,7 +380,9 @@ export type AutoTranslateOutcome =
   | 'skipped:not_inbound'
   | 'skipped:disabled'
   | 'skipped:not_found'
-  | 'skipped:not_outreach';
+  | 'skipped:not_outreach'
+  /** PC-06: Background AI is on hold (or no accountable owner). */
+  | 'skipped:held';
 
 /**
  * Best-effort auto-translate for an inbound message. Wired into
@@ -432,6 +435,12 @@ export async function maybeAutoTranslateInbound(
   if (!row.bodyText || !row.bodyText.trim()) return 'skipped:no_body';
   if (row.bodyTextNative && row.bodyTextNative.trim())
     return 'skipped:already_translated';
+
+  // PC-06 + PC-05: inbound auto-translation is Background AI — skipped
+  // while paused, under a hold, without an accountable owner, or with an
+  // empty wallet.
+  const gate = await checkGate(ctx, 'background_ai', { manual: false, spendsTokens: true });
+  if (!gate.allowed) return 'skipped:held';
 
   // Pivot on the workspace's native language, not a hardcoded English.
   const native = await getWorkspaceNativeLanguage(ctx);

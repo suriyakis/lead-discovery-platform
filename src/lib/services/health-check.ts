@@ -35,6 +35,7 @@ import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
 import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { getAIProviderForCtx } from '@/lib/ai';
+import { checkGate } from './automation-gate';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
 import { summarizeMailboxFailure } from './mailbox';
 import { notify } from './notifications';
@@ -78,10 +79,11 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 // ---- rule findings --------------------------------------------------
 
 /**
- * flow:F-04: what "no active mailbox" means depends on why. Only a
- * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
- * follow-up processOne check); sends through a PAUSED one are refused
- * and the queue entries / follow-ups that come due are marked failed.
+ * flow:F-04 + PC-05: what "no active mailbox" means depends on why. Both
+ * a FAILING and a PAUSED mailbox hold their queue — the automation gate
+ * defers due entries and follow-ups instead of failing them (P0-F08) —
+ * but a failing one also stops reading replies, while a paused one is
+ * the operator's own choice.
  */
 export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean): string {
   const why = anyFailing && anyPaused ? 'failing or paused' : anyFailing ? 'failing' : 'paused';
@@ -93,8 +95,8 @@ export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean):
   }
   if (anyPaused) {
     parts.push(
-      'Outreach and follow-ups that come due on a paused mailbox are marked failed, not held — ' +
-        're-enable it before they are due.',
+      'Outreach and follow-ups that come due on a paused mailbox are held (not sent, not failed) ' +
+        'until you re-enable it.',
     );
   }
   return parts.join(' ');
@@ -272,8 +274,8 @@ export type MailboxFindingRow = Pick<
  *     is the broken side); the advice is the mailbox page's own
  *     (summarizeMailboxFailure — e.g. "use port 465 with TLS on connect"
  *     when a server refuses 587), plus the last error;
- *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing ones hold
- *     their queue, paused ones mark due sends failed.
+ *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing and paused
+ *     ones both hold their queue (PC-05).
  * A paused mailbox next to an active one is the operator's choice, not
  * a finding.
  */
@@ -426,6 +428,10 @@ export async function reviewCommunicationQuality(
 
 export async function runWorkspaceHealthCheck(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  options: {
+    /** PC-06: a person pressed Run now (the tick passes false). */
+    manual?: boolean;
+  } = {},
 ): Promise<WorkspaceHealthReport> {
   const [ws] = await db
     .select({ intervalDays: workspaces.healthCheckIntervalDays })
@@ -438,9 +444,17 @@ export async function runWorkspaceHealthCheck(
 
   // The AI part costs tokens — skip it (rules still run) on an empty
   // wallet; the empty wallet is itself the top finding at that point.
-  const commReview = (await hasTokens(ctx))
-    ? await reviewCommunicationQuality(ctx, intervalDays)
-    : [];
+  // PC-06: also under a Background AI hold, and for the scheduled run
+  // when the workspace has no accountable owner.
+  // PC-05: the scheduled run also skips it while the workspace is paused.
+  const aiGate = await checkGate(ctx, 'background_ai', {
+    manual: options.manual ?? false,
+    spendsTokens: true,
+  });
+  const commReview =
+    aiGate.allowed && (await hasTokens(ctx))
+      ? await reviewCommunicationQuality(ctx, intervalDays)
+      : [];
 
   // Score: start at 100; -15 per warning, -5 per info; communication
   // naturalness averages in when we have reviews (weighted 40%).
@@ -492,7 +506,7 @@ export async function runHealthCheckNow(
   if (!canAdminWorkspace(ctx)) {
     throw new HealthCheckError('Permission denied: health.run', 'permission_denied');
   }
-  const report = await runWorkspaceHealthCheck(ctx);
+  const report = await runWorkspaceHealthCheck(ctx, { manual: true });
   await db
     .update(workspaces)
     .set({ healthCheckLastAt: new Date(), updatedAt: new Date() })
@@ -517,10 +531,18 @@ export async function listHealthReports(
  * (enabled + lastAt older than their interval), then run each. The
  * conditional UPDATE prevents double-runs across concurrent ticks.
  */
-export async function processDueHealthChecks(): Promise<{
+export async function processDueHealthChecks(
+  options: {
+    /** PC-13: only these workspaces (the health-check tick passes the
+     *  ones whose automation policy runs the health check). Omitted = every
+     *  active workspace with the health check on. */
+    workspaceIds?: readonly bigint[];
+  } = {},
+): Promise<{
   checked: number;
   failed: number;
 }> {
+  if (options.workspaceIds && options.workspaceIds.length === 0) return { checked: 0, failed: 0 };
   const due = await db
     .select({
       id: workspaces.id,
@@ -530,7 +552,11 @@ export async function processDueHealthChecks(): Promise<{
     })
     .from(workspaces)
     .where(
-      and(eq(workspaces.status, 'active'), eq(workspaces.healthCheckEnabled, true)),
+      and(
+        eq(workspaces.status, 'active'),
+        eq(workspaces.healthCheckEnabled, true),
+        options.workspaceIds ? inArray(workspaces.id, [...options.workspaceIds]) : undefined,
+      ),
     );
 
   let checked = 0;
@@ -553,7 +579,7 @@ export async function processDueHealthChecks(): Promise<{
       .returning({ id: workspaces.id });
     if (!claimed[0]) continue;
     try {
-      await runWorkspaceHealthCheck({ workspaceId: ws.id });
+      await runWorkspaceHealthCheck({ workspaceId: ws.id }, { manual: false });
       checked++;
     } catch (err) {
       failed++;

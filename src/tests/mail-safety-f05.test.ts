@@ -306,6 +306,7 @@ describe('one-to-one mode (I089) and the signature (I090)', () => {
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'one_to_one',
+      origin: 'manual',
       mailboxId: s.mailboxId,
       to: [{ address: 'anna@target.com' }],
       subject: 'Re: Hello',
@@ -372,6 +373,7 @@ describe('one-to-one mode (I089) and the signature (I090)', () => {
     await expect(
       sendMessage(c, {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: s.mailboxId,
         to: [{ address: 'anna@target.com' }],
         subject: 'Re: Hello',
@@ -599,6 +601,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
       await expect(
         sendMessage(c, {
           mode: 'one_to_one',
+          origin: 'manual',
           mailboxId: s.mailboxId,
           to: [{ address: to }],
           subject: 'Hello',
@@ -675,6 +678,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: s.mailboxId,
         to: [{ address: 'gone@target.com' }, { address: 'busy@target.com' }],
         subject: 'Hello',
@@ -711,6 +715,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
       await expect(
         sendMessage(ctx(s.workspaceA, s.ownerA), {
           mode: 'sequence',
+          origin: 'manual',
           mailboxId: s.mailboxId,
           to: [{ address: 'anna@target.com' }],
           subject: 'Hello',
@@ -741,6 +746,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
     }
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'one_to_one',
+      origin: 'manual',
       mailboxId: s.mailboxId,
       to: [{ address: 'ok@target.com' }, { address: 'gone@target.com' }],
       cc: [{ address: 'busy@target.com' }],
@@ -779,6 +785,7 @@ describe('follow-ups never compose for a suppressed address or a failing mailbox
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: s.mailboxId,
       to: [{ address: to }],
       subject: 'Hi',

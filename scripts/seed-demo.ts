@@ -551,11 +551,14 @@ async function main(): Promise<void> {
       autoTopupEnabled: true,
       autoTopupPackId: 'pack_m',
       autoTopupLastAt: null,
+      // flow:F-07: the demo workspace shows a live outreach pipeline, so it
+      // is released (new workspaces start not live).
+      outreachLiveAt: ago(30),
+      outreachLiveByUserId: ADMIN_ID,
       healthCheckEnabled: true,
       healthCheckIntervalDays: 7,
       healthCheckLastAt: ago(1, 4),
       autoDraftReplies: true,
-      autoSendReplies: false,
       followUpEnabled: true,
       followUpIntervalDays: 6,
       followUpMaxSteps: 3,
@@ -1544,7 +1547,6 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     fixedDelayMinutes: 15,
     randomDelayMinMinutes: 4,
     randomDelayMaxMinutes: 25,
-    emergencyPause: false,
     updatedBy: ADMIN_ID,
     updatedAt: ago(12),
   });
@@ -2960,12 +2962,9 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   await db.insert(s.autopilotSettings).values({
     workspaceId: A,
     autopilotEnabled: true,
-    emergencyPause: false,
     enableAutoApproveProjects: true,
     autoApproveThreshold: 82,
     enableAutoEnqueueOutreach: true,
-    enableAutoDrainQueue: true,
-    enableAutoSyncInbound: true,
     enableAutoCrmContactSync: true,
     enableAutoCrmDealOnQualified: false,
     maxApprovalsPerRun: 15,
@@ -2985,11 +2984,9 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     const runId = uuidish();
     const at = ago(d, h);
     const steps: [string, string, string, string | null][] = [
-      ['guard', 'success', 'Plan Pro · tokens OK · emergency pause off', null],
-      ['auto_sync_inbound', 'success', `Synced 2 mailbox(es): ${between(0, 4)} new inbound message(s)`, null],
+      ['guard', 'success', 'Plan Pro · tokens OK · not paused', null],
       ['auto_approve_projects', d === 4 ? 'skipped' : 'success', d === 4 ? 'No review items above threshold 82' : `Auto-approved ${between(1, 3)} item(s) ≥ 82`, d === 4 ? null : 'review_item'],
       ['auto_enqueue_outreach', 'success', `Enqueued ${between(1, 3)} approved draft(s) to sales@${MAIL_DOMAIN}`, 'outreach_queue'],
-      ['auto_drain_queue', d === 1 ? 'error' : 'success', d === 1 ? 'SMTP 421 from smtp.example.com — 1 item will retry' : `Dispatched ${between(1, 4)} queued message(s)`, null],
       ['auto_crm_contact_sync', 'success', 'Pushed 1 contact to HubSpot', 'qualified_lead'],
       ['auto_crm_deal_on_qualified', 'skipped', 'Disabled in workspace settings', null],
     ];

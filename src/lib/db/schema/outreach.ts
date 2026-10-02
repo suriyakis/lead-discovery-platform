@@ -263,6 +263,11 @@ export const outreachQueue = pgTable(
 
     attemptCount: smallint('attempt_count').notNull().default(0),
     lastError: text('last_error'),
+    /** PC-05: when the drain last claimed the row ('queued' → 'sending'),
+     *  from the database clock. The claim takes a share lock on the
+     *  workspace row and refuses while the workspace is paused, so no
+     *  claim is ever later than automation_paused_at. */
+    claimedAt: timestamp('claimed_at', { mode: 'date', withTimezone: true }),
     /** mail_message id once sent. */
     sentMessageId: bigint('sent_message_id', { mode: 'bigint' }),
 
@@ -312,6 +317,12 @@ export const outreachSendSettings = pgTable('outreach_send_settings', {
   fixedDelayMinutes: smallint('fixed_delay_minutes').notNull().default(15),
   randomDelayMinMinutes: smallint('random_delay_min_minutes').notNull().default(5),
   randomDelayMaxMinutes: smallint('random_delay_max_minutes').notNull().default(30),
+  /**
+   * @deprecated PC-05: read by nothing. Migrated into the workspace pause
+   * (workspaces.automation_paused_at); kept one release as a write-only
+   * mirror of it (services/automation-pause.ts) so a rollback to the old
+   * code still sees a pause, then dropped.
+   */
   emergencyPause: boolean('emergency_pause').notNull().default(false),
   updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })

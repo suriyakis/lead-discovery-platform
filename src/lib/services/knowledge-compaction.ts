@@ -20,6 +20,7 @@ import { db } from '@/lib/db/client';
 import { learningLessons, type LearningLesson } from '@/lib/db/schema/learning';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
+import { assertGate } from './automation-gate';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
 
 export class KnowledgeCompactionError extends Error {
@@ -90,6 +91,10 @@ export async function compactWorkspaceKnowledge(
   ctx: WorkspaceContext,
 ): Promise<CompactionSummary> {
   if (!canAdminWorkspace(ctx)) throw permissionDenied('knowledge.compact');
+  // PC-06: Background AI hold (or scope 'all'). PC-05 (I110): merging
+  // clusters calls the AI, so an empty wallet refuses it up front instead
+  // of spending past zero.
+  await assertGate(ctx, 'background_ai', { spendsTokens: true });
   const startedAt = new Date();
 
   const retiredStaleCount = await retireStaleLessons(ctx);
@@ -129,7 +134,12 @@ export async function compactWorkspaceKnowledgeUnattended(
 ): Promise<CompactionSummary> {
   // Synthesize a bare write-context. The downstream queries only read
   // ctx.workspaceId; nothing in this service needs userId/role.
-  const ctx = { workspaceId, userId: 'system', role: 'admin' as const };
+  const ctx = { workspaceId, userId: 'system', role: 'admin' as const, trigger: 'automation' as const };
+  // PC-06 + PC-05: automatic Background AI — the workspace pause, a hold,
+  // a missing accountable owner or an empty wallet (I110: the cluster
+  // pass calls the AI) stops it. The tick checks first; this guards
+  // direct callers.
+  await assertGate(ctx, 'background_ai', { spendsTokens: true });
   const startedAt = new Date();
 
   const retiredStaleCount = await retireStaleLessons(ctx);

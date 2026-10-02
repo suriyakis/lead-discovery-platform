@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
+import { outreachQueue } from '@/lib/db/schema/outreach';
 import {
   AIOutputError,
   _setAIProviderForTests,
@@ -25,7 +26,10 @@ import {
   askAssistant,
 } from '@/lib/services/assistant';
 import { BRAND_NAME } from '@/lib/brand';
+import { pauseAutomation } from '@/lib/services/automation-pause';
+import { setPlatformOutboundStop } from '@/lib/services/holds';
 import { createProductProfile } from '@/lib/services/product-profile';
+import { platformCtx } from './helpers/platform';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 class CapturingProvider implements IAIProvider {
@@ -128,7 +132,7 @@ describe('askAssistant', () => {
     expect(prompt).not.toContain('EMPTY');
     expect(prompt).toContain('Active products: 1');
     expect(prompt).toContain(
-      'Mailboxes: 0 active, 0 failing (queued sends held, not read), 0 paused (not sending, due sends fail, not read)',
+      'Mailboxes: 0 active, 0 failing (queued sends held, not read), 0 paused (not sending, due sends held, not failed, not read)',
     );
     expect(prompt).toContain('why am I getting no leads?');
     expect(stub.lastInput!.system).toContain(`guide of ${BRAND_NAME}`);
@@ -157,7 +161,52 @@ describe('askAssistant', () => {
     ]);
     await askAssistant(ctx(s.workspaceA, s.ownerA), 'why are replies not showing up?');
     expect(stub.lastInput!.prompt).toContain(
-      'Mailboxes: 0 active, 1 failing (queued sends held, not read), 1 paused (not sending, due sends fail, not read)',
+      'Mailboxes: 0 active, 1 failing (queued sends held, not read), 1 paused (not sending, due sends held, not failed, not read)',
+    );
+    expect(stub.lastInput!.prompt).not.toContain('due sends fail');
+  });
+
+  it('tells the model why nothing is sending: the pause, the platform outbound stop, the go-live hold (PC-05, F-07)', async () => {
+    const s = await setup();
+    const stub = new CapturingProvider();
+    _setAIProviderForTests(stub);
+    const owner = ctx(s.workspaceA, s.ownerA);
+
+    // Running normally: the queue counts, the state line and "live".
+    const row = { workspaceId: s.workspaceA, mailboxId: 1n, toAddresses: ['a@x.test'], subject: 'Hi' };
+    await db.insert(outreachQueue).values([
+      { ...row, status: 'queued' },
+      { ...row, status: 'queued', lastError: 'Held: the mailbox is paused.' },
+      { ...row, status: 'failed', lastError: '550 no such user' },
+    ]);
+    await askAssistant(owner, 'why is nothing sending?');
+    let prompt = stub.lastInput!.prompt;
+    expect(prompt).toContain(
+      'Send queue: 2 queued (1 held or waiting to retry; each entry on [/mailbox/queue] says why), 1 failed in the last 7 days',
+    );
+    expect(prompt).toMatch(/^Automation: Manual: /m);
+    expect(prompt).toContain('Go-live: live');
+    expect(stub.lastInput!.system).toContain('the workspace not live yet');
+
+    // Paused: who paused and why reach the model.
+    await pauseAutomation(owner, { source: 'api', reason: 'checking the copy' });
+    await askAssistant(owner, 'why is nothing sending?');
+    prompt = stub.lastInput!.prompt;
+    expect(prompt).toMatch(/^Automation: Paused: nothing is sent/m);
+    expect(prompt).toMatch(/^Paused because: Paused by .+: checking the copy/m);
+
+    // The platform-wide outbound stop outranks the pause.
+    const admin = await seedUser({ email: 'root@test.local', role: 'super_admin' });
+    await setPlatformOutboundStop(platformCtx(admin), 'provider incident');
+    await askAssistant(owner, 'why is nothing sending?');
+    expect(stub.lastInput!.prompt).toMatch(/^Automation: Stopped by the platform: .*provider incident/m);
+
+    // A workspace that is not live yet.
+    const ownerB = await seedUser({ email: 'assistant-b@test.local' });
+    const workspaceB = await seedWorkspace({ name: 'B', ownerUserId: ownerB, live: false });
+    await askAssistant(ctx(workspaceB, ownerB), 'why did my campaign not go out?');
+    expect(stub.lastInput!.prompt).toContain(
+      'Go-live: NOT live yet: cold outreach, follow-ups and AI reply emails are held until the platform releases the workspace',
     );
   });
 

@@ -170,28 +170,70 @@ export type AccountStatusValue = (typeof ACCOUNT_STATUSES)[number];
  * has none — re-applying it only updates the reason). Feed it to
  * ConfirmFormButton's messageByValue on the status select.
  */
-export function accountStatusConfirms(user: {
-  name: string | null;
-  email: string;
-  role: string;
-  accountStatus: string;
-}): Partial<Record<AccountStatusValue, string>> {
+export function accountStatusConfirms(
+  user: {
+    name: string | null;
+    email: string;
+    role: string;
+    accountStatus: string;
+  },
+  /** PC-06: workspaces this user is the accountable owner of. */
+  ownedWorkspaces: readonly WorkspaceRef[] = [],
+): Partial<Record<AccountStatusValue, string>> {
   const who = userLabel(user);
   const superNote =
     user.role === 'super_admin'
       ? `\n\nNote: ${user.email} is a super-admin, and account status does not lock super-admins out. Demote them first.`
       : '';
+  const stopNote = ownerStopNote(ownedWorkspaces);
+  const resumeNote =
+    ownedWorkspaces.length > 0
+      ? `\n\nAutomatic work resumes in the workspace${ownedWorkspaces.length === 1 ? '' : 's'} they own: ${ownedWorkspaces.map((w) => workspaceLabel(w)).join(', ')}.`
+      : '';
   const all: Record<AccountStatusValue, string> = {
-    active: `Set ${who} to active?\n\nThey get access to their workspaces on their next page load.`,
-    pending: `Set ${who} back to pending?\n\nThey lose access on their next page load and wait on the pending screen until someone approves them.${superNote}`,
-    suspended: `Suspend ${who}?\n\nThey lose access to every workspace on their next page load, until a super-admin sets them back to active.${superNote}`,
-    rejected: `Reject ${who}?\n\nThey lose access to every workspace on their next page load and see an "Account rejected" notice.${superNote}`,
+    active: `Set ${who} to active?\n\nThey get access to their workspaces on their next page load.${resumeNote}`,
+    pending: `Set ${who} back to pending?\n\nThey lose access on their next page load and wait on the pending screen until someone approves them.${stopNote}${superNote}`,
+    suspended: `Suspend ${who}?\n\nThey lose access to every workspace on their next page load, until a super-admin sets them back to active.${stopNote}${superNote}`,
+    rejected: `Reject ${who}?\n\nThey lose access to every workspace on their next page load and see an "Account rejected" notice.${stopNote}${superNote}`,
   };
   const out: Partial<Record<AccountStatusValue, string>> = {};
   for (const status of ACCOUNT_STATUSES) {
     if (status !== user.accountStatus) out[status] = all[status];
   }
   return out;
+}
+
+/**
+ * PC-06 accountable-owner rule, said where an owner is suspended:
+ * automation acts only as an active owner, so their workspaces stop all
+ * automatic work (members can still work by hand).
+ */
+export function ownerStopNote(ownedWorkspaces: readonly WorkspaceRef[]): string {
+  if (ownedWorkspaces.length === 0) return '';
+  const names = ownedWorkspaces.map((w) => workspaceLabel(w, { quoted: true })).join(', ');
+  return `\n\nThey own ${names}. Automation only ever acts as an active owner, so all automatic work there stops (sending, inbox sync, discovery, autopilot, CRM sync, background AI) until they are active again or ownership moves. Members can still work by hand.`;
+}
+
+// ---- holds (console, PC-06) -------------------------------------------------
+
+export function placeHoldConfirm(ws: WorkspaceRef): string {
+  return `Put a hold on ${workspaceLabel(ws, { quoted: true })}?\n\nThe work you picked stops there for automatic and manual use alike until the platform releases it (or it expires). Its owners and admins are notified, every member sees a banner, and they cannot release it.`;
+}
+
+export function releaseHoldConfirm(ws: WorkspaceRef, scopeLabel: string): string {
+  return `Release the hold on ${scopeLabel.toLowerCase()} for ${workspaceLabel(ws, { quoted: true })}?\n\nThat work can run again at once, including anything that was waiting. Its owners and admins are notified.`;
+}
+
+export function confirmLegacyHoldConfirm(
+  ws: WorkspaceRef,
+  flagKey: string,
+  scopeLabel: string,
+): string {
+  return `Enforce the legacy flag ${flagKey} as a hold on ${scopeLabel.toLowerCase()} for ${workspaceLabel(ws, { quoted: true })}?\n\nIt was never enforced before: from now on that work stops there, manual and automatic, until the platform releases it. Its owners and admins are notified.`;
+}
+
+export function discardLegacyHoldConfirm(ws: WorkspaceRef, flagKey: string): string {
+  return `Discard the legacy flag ${flagKey} for ${workspaceLabel(ws, { quoted: true })}?\n\nIt was never enforced, so nothing changes for the workspace. The row stays in its hold history as discarded.`;
 }
 
 export function revokePreauthConfirm(p: {
@@ -254,10 +296,10 @@ export function archiveCrmConnectionConfirm(c: { name: string; system: string })
 
 // ---- autopilot ------------------------------------------------------------
 
-/** The per-product override columns (NULL = inherit). */
+/** The per-product override columns (NULL = inherit; PC-13: an override
+ *  is only ever false — overrides narrow). */
 export interface AutopilotOverlayLike {
   autopilotEnabled: boolean | null;
-  emergencyPause: boolean | null;
   enableAutoApproveProjects: boolean | null;
   autoApproveThreshold: number | null;
   enableAutoEnqueueOutreach: boolean | null;
@@ -266,10 +308,11 @@ export interface AutopilotOverlayLike {
   defaultMailboxId: bigint | null;
 }
 
-/** The workspace defaults those columns fall back to. */
+/** The workspace defaults those columns fall back to. (PC-05: there is
+ *  no workspace emergency pause any more — stopping everything is the
+ *  workspace pause, see resumeAutomationConfirm.) */
 export interface AutopilotBaseLike {
   autopilotEnabled: boolean;
-  emergencyPause: boolean;
   enableAutoApproveProjects: boolean;
   autoApproveThreshold: number;
   enableAutoEnqueueOutreach: boolean;
@@ -277,20 +320,19 @@ export interface AutopilotBaseLike {
   enableAutoCrmDealOnQualified: boolean;
 }
 
-/** Same labels as the toggles on /autopilot. */
+/** Same labels as the product override toggles on /autopilot. */
 const AUTOPILOT_STEP_LABELS = {
-  autopilotEnabled: 'Autopilot (master)',
+  autopilotEnabled: 'Autopilot for this product',
   enableAutoApproveProjects: 'Auto-approve relevant review items',
-  enableAutoEnqueueOutreach: 'Auto-generate + enqueue outreach drafts',
-  enableAutoCrmContactSync: "Auto-sync qualified leads' contacts to CRM",
-  enableAutoCrmDealOnQualified: 'Auto-create CRM deals on qualified state',
+  enableAutoEnqueueOutreach: 'Generate + queue outreach drafts',
+  enableAutoCrmContactSync: "Sync qualified leads' contacts to the CRM",
+  enableAutoCrmDealOnQualified: 'Create CRM deals for qualified leads',
 } as const;
 
 /**
  * Confirm text for "Clear all overrides for <product>": spells out what
  * the product actually starts doing once it inherits the workspace
- * defaults — above all automation that turns ON and an emergency pause
- * that is lifted.
+ * defaults — above all automation that turns ON.
  */
 export function clearAutopilotOverridesConfirm(
   productName: string,
@@ -307,17 +349,11 @@ export function clearAutopilotOverridesConfirm(
     (base[key] ? turnsOn : turnsOff).push(AUTOPILOT_STEP_LABELS[key]);
   }
   const effects: string[] = [];
-  if (overlay.emergencyPause === true && !base.emergencyPause) {
-    effects.push(`- Lifts the emergency pause on ${productName}.`);
-  }
-  if (overlay.emergencyPause === false && base.emergencyPause) {
-    effects.push(`- Pauses ${productName} (the workspace is on emergency pause).`);
-  }
   if (turnsOn.length > 0) effects.push(`- Turns ON: ${turnsOn.join('; ')}.`);
   if (turnsOff.length > 0) effects.push(`- Turns off: ${turnsOff.join('; ')}.`);
   if (
     overlay.autoApproveThreshold !== null &&
-    overlay.autoApproveThreshold !== base.autoApproveThreshold
+    overlay.autoApproveThreshold > base.autoApproveThreshold
   ) {
     effects.push(
       `- Approval threshold: ${overlay.autoApproveThreshold} → ${base.autoApproveThreshold}.`,
@@ -330,5 +366,61 @@ export function clearAutopilotOverridesConfirm(
     effects.length > 0
       ? effects.join('\n')
       : 'Nothing changes in practice: every override matches the workspace default.';
-  return `Clear all autopilot overrides for "${productName}"?\n\nEvery step for this product goes back to the workspace default.\n${body}`;
+  return `Clear all autopilot overrides for "${productName}"?\n\nEvery step for this product goes back to the workspace default. A pause stays until someone resumes the product.\n${body}`;
+}
+
+/** PC-13: confirm text for resuming a paused product. */
+export function resumeProductConfirm(productName: string): string {
+  return `Resume "${productName}"?\n\nAutopilot works for it again on its next run, and its held emails and follow-ups go out at their next turn (within 15 minutes), within each mailbox's sending window.`;
+}
+
+// ---- workspace pause (PC-05) ------------------------------------------------
+
+export interface PauseImpactLike {
+  queued: number;
+  queuedDue: number;
+  /** Already formatted for the reader (UTC), or null when nothing is queued. */
+  nextSendAt: string | null;
+  pendingFollowUps: number;
+  awaitingApprovalFollowUps: number;
+  enabledCrawlPlans: number;
+  autopilotEnabled: boolean;
+  heldInboundActions: number;
+}
+
+function plural(n: number, one: string, many: string = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Resume asks first: everything that waited starts again at once. */
+export function resumeAutomationConfirm(impact: PauseImpactLike): string {
+  const lines = [
+    `- Send queue: ${plural(impact.queued, 'queued email')}${
+      impact.queued > 0
+        ? ` (${impact.queuedDue} already due${impact.nextSendAt ? `, next ${impact.nextSendAt}` : ''})`
+        : ''
+    }, within the daily limit and sending windows.`,
+    `- Follow-ups: ${plural(impact.pendingFollowUps, 'pending step')} composed by AI and sent on schedule${
+      impact.awaitingApprovalFollowUps > 0
+        ? ` (${impact.awaitingApprovalFollowUps} more wait for your approval)`
+        : ''
+    }.`,
+    `- Scheduled crawls: ${plural(impact.enabledCrawlPlans, 'enabled plan')}.`,
+    `- Autopilot: ${impact.autopilotEnabled ? 'on — its next run starts within 5 minutes' : 'off (stays off)'}.`,
+    '- Reply auto-actions, background AI, auto top-up and the trash purge.',
+  ];
+  const held =
+    impact.heldInboundActions > 0
+      ? `\n\n${plural(impact.heldInboundActions, 'reply auto-action')} waited while paused. They are not applied on resume — check those replies yourself.`
+      : '';
+  return `Resume all automation in this workspace?\n\nWhat starts again at once:\n${lines.join('\n')}${held}`;
+}
+
+/** The go-live release (console, flow:F-07). */
+export function releaseGoLiveConfirm(ws: WorkspaceRef): string {
+  return `Release ${workspaceLabel(ws, { quoted: true })} for outreach?\n\nIts cold emails, follow-ups and AI reply drafts start sending on their schedule — anything held in its queue goes out within the daily limit. Its owners and admins are notified.`;
+}
+
+export function revokeGoLiveConfirm(ws: WorkspaceRef): string {
+  return `Put ${workspaceLabel(ws, { quoted: true })} back on the go-live hold?\n\nIts cold emails, follow-ups and AI reply drafts stop and wait in the queue (not failed) until it is released again. Email its members write themselves still sends. Its owners and admins are notified.`;
 }

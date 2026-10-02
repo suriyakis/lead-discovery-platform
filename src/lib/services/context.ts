@@ -31,7 +31,18 @@ export interface WorkspaceContext {
   userId: string;
   /** Role of the user inside this workspace, or `super_admin` for platform admins. */
   role: WorkspaceRole;
+  /**
+   * PC-06: who started the work. Absent = a person, through a request.
+   * 'automation' = background work acting as the workspace's accountable
+   * owner (makeAutomationContext). The automation gate reads it: the
+   * accountable-owner rule applies to automatic work only; holds apply to
+   * both.
+   */
+  trigger?: WorkTrigger;
 }
+
+/** See WorkspaceContext.trigger. */
+export type WorkTrigger = 'user' | 'automation';
 
 export class WorkspaceContextError extends Error {
   constructor(message: string) {
@@ -68,6 +79,24 @@ export function makeWorkspaceContext(input: {
     userId: input.userId,
     role: input.role as WorkspaceRole,
   };
+}
+
+/**
+ * PC-06: the context background work runs under. Automation acts as the
+ * workspace's accountable owner (workspaces.owner_user_id) — never as a
+ * fallback member — and is marked as automatic so the gate applies the
+ * accountable-owner rule (services/automation-gate.ts).
+ */
+export function makeAutomationContext(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
+  return {
+    ...makeWorkspaceContext({ workspaceId, userId: ownerUserId, role: 'owner' }),
+    trigger: 'automation',
+  };
+}
+
+/** True when the work was started by automation rather than a person. */
+export function isAutomatic(ctx: Pick<WorkspaceContext, 'trigger'>): boolean {
+  return ctx.trigger === 'automation';
 }
 
 // ---- role-based authorization helpers ----------------------------------

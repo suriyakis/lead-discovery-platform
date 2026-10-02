@@ -167,7 +167,7 @@ The review queue. State, assigned user, comments (separate `review_comments` tab
 Linked to a workspace, product profile, and target entity (company/contact/opportunity).
 
 ### `learning_events`, `learning_lessons` (Phase 5)
-`learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12.
+`learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12. An event recorded for an autopilot decision has `user_id` NULL (PC-11); a review item autopilot approved has `approved_by_user_id` NULL and `approval_reason` 'autopilot'.
 
 ### `remediation_runs`, `remediation_log` (Phase 0, flow:F-06)
 Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`). Not tenant-owned: a run spans workspaces and is driven by a platform super admin.
@@ -175,6 +175,25 @@ Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`).
 `remediation_runs`: id (text, the dry-run batch id), script, module, plan_hash, decisions_hash, options (jsonb), status (`applying` / `applied` / `failed` / `reverted` / `revert_partial`), summary (jsonb: per-category counts, post-apply checks), error, applied_by / started_at / finished_at, reverted_by / reverted_at.
 
 `remediation_log`: one row per changed row — run_id, workspace_id, category (`R1a`, `R4`, …), table_name (allow-listed), row_id, action (`update` / `delete` / `ledger_credit`), before / after (jsonb images: the changed columns for an update, the whole row for a delete), reverted_at.
+
+### `workspace_holds` (Phase 1, PC-06)
+Holds stop work in one workspace (tenant-owned, cascade on workspace delete). kind (`hold` / `note` — a note is a legacy flag with no capability, never enforced), scope (`all` / `capabilities`), capabilities (`automation_capability[]`: sending, inbox_sync, inbound_actions, discovery, autopilot, crm_sync, background_ai, auto_topup), state (`active` / `pending_review` / `released` / `discarded`), source (`tenant` / `platform`), reason, blocks_access (enforced from PC-21), expires_at (NULL = until released), placed_by / placed_at, confirmed_by / confirmed_at, ended_by / ended_at / end_reason, legacy_flag_key (unique per workspace — makes the feature_flags import idempotent), history (jsonb, every transition). CHECK constraints keep the shape honest (a hold has scope `all` with no list or a non-empty list; a note has an empty list and is only pending or discarded; the reason is never blank). Only `active`, unexpired `hold` rows are enforced, by `services/automation-gate.ts`.
+
+`workspaces.automation_owner_incident_at`: set once when automation first finds no accountable owner (the incident), cleared when the owner is back.
+
+`feature_flags` is legacy: nothing reads it, the console no longer writes it, and it is dropped one release after `scripts/remediation/import-legacy-feature-flags.ts --apply` has run.
+
+### The workspace pause, the go-live hold and `workspace_automation_state` (Phase 1, PC-05)
+`workspaces.automation_paused_at` (NULL = running; set from the database clock under a row lock), `automation_paused_by_user_id`, `automation_pause_reason`, `automation_pause_source`: the single workspace pause (`services/automation-pause.ts`). `workspaces.outreach_live_at` / `outreach_live_by_user_id`: the go-live hold (NULL = not live: cold, follow-up and AI-reply mail is held; set by a super-admin, `services/go-live.ts`). `outreach_queue.claimed_at`: when the drain last claimed the row (database clock; never after `automation_paused_at`). `automation_capability` gains `trash_purge`.
+
+View `workspace_automation_state` (plain, not materialized): one row per workspace with every workspace-level gate input — workspace_status, owner_user_id, owner_account_status, owner_is_member, owner_incident_at, paused_at / paused_by_user_id / pause_reason / pause_source, outreach_live_at / outreach_live_by_user_id, wallet_has_tokens (billing-exempt or a positive balance), billing_exempt, plan, subscription_status. The gate and the ticks read it.
+
+`autopilot_settings.emergency_pause` and `outreach_send_settings.emergency_pause` are legacy: migrated into the pause (a workspace started paused if either was on), read by nothing, written only as a mirror of the pause, and dropped one release later.
+
+### Product overrides, the product pause and the dead toggles (Phase 1, PC-13)
+`autopilot_product_settings` is narrow-only: each override switch (`autopilot_enabled`, `enable_auto_approve_projects`, `enable_auto_enqueue_outreach`, `enable_auto_crm_contact_sync`, `enable_auto_crm_deal_on_qualified`) is NULL (inherit) or false (off) — CHECK `autopilot_product_settings_narrow_only_check`; `auto_approve_threshold` only ever raises the workspace's (the resolver takes the higher). `paused_at` / `paused_by_user_id` (FK users, set null): the product pause. `emergency_pause` is legacy (never applied, carried into `paused_at` by migration `p1_automation_control_policy`, cleared, read by nothing, dropped one release later). `services/automation-policy.ts` is the only reader.
+
+`autopilot_settings.enable_auto_drain_queue`, `autopilot_settings.enable_auto_sync_inbound` and `workspaces.auto_send_replies` are legacy: read and written by nothing, set to false by the migration, dropped one release later.
 
 ## Reserved fields and tables (no migration needed for future phases)
 

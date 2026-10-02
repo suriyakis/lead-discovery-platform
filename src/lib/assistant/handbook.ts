@@ -167,42 +167,61 @@ marked failing instead). {H-18} Counts per class are on
 workspaces): without one its switches cannot be turned on, and a lapsed
 plan stops the runs. {H-11} It runs every 5 minutes and right after
 every discovery run that found records, but only while its master switch
-is on and its emergency pause is off. {H-12} Every step is off until an
-admin turns it on:
-- Sync inbound mail.
+is on and automation is not paused (see Pausing below). {H-12} Every
+step is off until an admin turns it on:
 - Auto-approve: review items still in "new" whose relevance score
-  reaches the threshold (default 70) are approved and recorded as
-  approved by the workspace owner (or by whoever started the run that
-  triggered it), although no person looked at them. needs_review
-  (geo-unverified) items are never auto-approved. {H-07}
+  reaches the threshold (default 70, or the product's higher one) are
+  approved and recorded as approved by autopilot — no person's name,
+  reason "autopilot" — although no person looked at them; an item that
+  fits several products is approved once. needs_review (geo-unverified)
+  items are never auto-approved. {H-07}
 - Generate + enqueue: for approved items, writes a draft, approves it
-  in the workspace owner's name and puts it in the send queue; nobody
-  reviews those emails. It still needs a pipeline lead with a contact
-  email (see Known limitations, I001). {H-08}
-- Auto-drain the send queue, CRM contact sync, CRM deal on qualified.
-Per-product overrides (pick a product on [/autopilot]) can switch a step
-off for that product or change its threshold. They cannot switch on a
-step the workspace has off, and the per-product master and emergency
-pause overrides are not applied. {H-13} The Crawl engine page
-([/connectors/engine]) repeats the master, auto-approve, threshold and
-generate + enqueue switches; they change the same settings as
-[/autopilot].
+  in the workspace owner's name and puts it in the send queue, oldest
+  approval first; nobody reviews those emails. It only takes items whose
+  pipeline lead has a contact email: the others get no draft and wait
+  (the run log counts them as needs_contact; see Known limitations,
+  I001). {H-08}
+- CRM contact sync (new and changed qualified leads only) and CRM deal
+  on qualified (only for leads whose contact is already synced); every
+  push shows on the lead's timeline.
+Sending queued mail and reading mailboxes are not autopilot steps: they
+always run in the background (see Pausing below).
+Per-product overrides (pick a product on [/autopilot]) only narrow what
+the workspace runs: autopilot or a step can be switched off for that
+product, or its approval threshold raised; switching on what the
+workspace has off is refused. "Pause <product>" there (anyone who can
+edit; owners and admins resume) stops autopilot for that product and
+holds its queued emails and follow-ups — not sent, not failed — until it
+is resumed; email you write yourself still sends. {H-13} The Crawl engine
+page ([/connectors/engine]) shows the autopilot steps read-only, with a
+link to [/autopilot] to change them.
 
-The two pause switches — what each really stops:
-- Autopilot "Emergency pause" ([/autopilot]) stops autopilot runs only.
-  Emails already in the send queue keep going out. {H-09}
-- Send-queue "Emergency pause" (owners and admins, on [/mailbox/queue])
-  stops the send queue only. Autopilot keeps writing, approving and
-  queueing drafts. {H-10}
-- Neither one stops follow-ups, replies or emails you send by hand,
-  crawl schedules, or mailbox sync. A PAUSED mailbox sends nothing and
-  is not synced (its queued emails fail instead of waiting); pause one
-  with the status switch on its Edit page, opened from [/mailbox].
-  {H-23} To stop everything: both pauses, pause every mailbox, and
-  switch off the crawl plans on [/connectors/engine].
-- The send queue is drained every 30 seconds and mailboxes sync every 2
-  minutes whatever autopilot's "Auto-drain" and "Sync inbound" switches
-  say; those only add an extra pass inside an autopilot run. Background
+Pausing all automation — one switch for the whole workspace:
+- "Pause all automation" (on [/autopilot] and [/mailbox/queue]; anyone
+  who can edit, never blocked by the plan or an empty wallet) stops at
+  the next item everything that runs on its own: the send queue,
+  follow-ups (nothing is composed), autopilot, scheduled crawls, reply
+  auto-actions (the suppress and close switches on [/settings/outreach]
+  wait for you), background AI (drafting, translation, compaction),
+  auto top-up and the trash purge.
+  Nothing fails or is lost — it waits — and a banner on every page says
+  who paused and when. {H-09}
+- While paused, mailboxes keep syncing so replies still arrive. An email
+  you write yourself (a thread reply, compose, approving a follow-up)
+  sends only after you tick "send anyway", which is recorded in the
+  audit log. Only owners and admins resume; whoever paused can undo it
+  within 10 seconds. {H-10}
+- A paused, failing or archived mailbox holds its due emails and
+  follow-ups — not sent, not failed — until it is active again; each
+  queue entry says why. Pause or re-enable a mailbox with the status
+  switch on its Edit page, opened from [/mailbox]. {H-23}
+- New workspaces are not live for outreach: cold emails, follow-ups and
+  AI reply drafts wait in the send queue until the platform releases
+  the workspace (a banner says so), while email you write yourself sends
+  normally. {H-32}
+- Approved emails in the send queue go out every 30 seconds and
+  mailboxes sync every 2 minutes, whether or not autopilot is on: only
+  the pause, a hold or the go-live hold stops sending. Background
   mailbox sync is switched off under "Mailbox auto-sync" on
   [/settings/outreach].
 
@@ -294,8 +313,8 @@ evidence chain.
 - [/settings/outreach] (owners and admins; everyone else sees only the
   reply auto-action switches, read-only): workspace native language,
   default outreach language, "Auto-draft replies" (AI drafts the next
-  reply on lead threads for your review; "Auto-send replies" has no
-  effect yet, so reply drafts always wait for you), the reply
+  reply on lead threads for your review; a reply draft is never sent
+  until you approve it), the reply
   auto-action switches (see Replies), follow-up schedule and approval,
   mailbox auto-sync, trash retention.
 - [/settings/members]: owners and admins add teammates and set their
@@ -346,10 +365,11 @@ platform settings is never filed in your workspace. {H-30}
   (2) does it have a pipeline lead with a contact email (open the lead
   from [/pipeline])? (3) is it really in the queue on [/mailbox/queue]?
   Hand-approved drafts can't be queued from the draft page yet (Known
-  limitations, I002). (4) is the send-queue Emergency pause on
-  ([/mailbox/queue]; an owner or admin switches it off)? For autopilot
-  drafts also check the master switch and the Emergency pause on
-  [/autopilot]. (5) has the daily email limit
+  limitations, I002). (4) is automation paused (the banner says who
+  paused it; an owner or admin resumes it on [/autopilot]), or is the
+  workspace not live for outreach yet (the platform releases it)? For
+  autopilot drafts also check the master switch on [/autopilot].
+  (5) has the daily email limit
   been reached, or is a domain cooldown or the mailbox's business window
   holding it (the queue entry shows why)? (6) is the mailbox paused or
   failing? (7) is the address on [/mailbox/suppression], or did the
@@ -363,24 +383,21 @@ platform settings is never filed in your workspace. {H-30}
   override the product's Language field; (5) the workspace native
   language ([/settings/outreach]); otherwise English. {H-19}
   Translations can be reviewed on the draft before it is sent.
-- "Everything is paused": check (1) the token wallet on
-  [/settings/billing] — an empty wallet pauses discovery, drafting and
-  translation; (2) the master switch and the Emergency pause on
-  [/autopilot]; (3) the send-queue Emergency pause on [/mailbox/queue];
-  (4) each mailbox's status under [/mailbox] — paused or failing.
+- "Everything is paused": check (1) the banner at the top of the page —
+  automation may be paused (owners and admins resume it on [/autopilot]),
+  on hold by the platform, or not live for outreach yet; (2) the token
+  wallet on [/settings/billing] — an empty wallet pauses discovery,
+  drafting and translation; (3) the autopilot master switch on
+  [/autopilot]; (4) each mailbox's status under [/mailbox] — paused or
+  failing.
 
 ${KNOWN_LIMITATIONS_HEADING}
-- I001: Nothing creates pipeline leads or contact emails automatically. Approving a review item (by hand or by autopilot) does not make it contactable: promote it on [/leads], then set the contact email on the lead's page (opened from [/pipeline]). Autopilot's generate + enqueue fails for a lead without a contact email, leaves an approved draft behind and then skips that lead for good; an admin can free it with "Archive (mark superseded)" on the draft's page so the next run tries again.
+- I001: Nothing creates pipeline leads or contact emails automatically. Approving a review item (by hand or by autopilot) does not make it contactable: promote it on [/leads], then set the contact email on the lead's page (opened from [/pipeline]). Autopilot's generate + enqueue skips an approved item until its lead has a contact email (no draft is written for it meanwhile) and picks it up on the next run after you add one. A draft autopilot approved before this fix without being able to queue it still blocks its lead: an admin can free it with "Archive (mark superseded)" on the draft's page so the next run tries again.
 - I002: On a draft's page the "Enqueue for send" form disappears once the draft is approved, so a hand-approved draft (cold email or AI reply draft) cannot be queued; only autopilot's generate + enqueue queues drafts today. The only manual route is sending the text yourself (from the thread on [/communication], or from a mailbox's compose page), which skips the queue's caps, cooldowns, business windows and geography re-check.
 - I005: Follow-ups are never scheduled after a cold email, so the follow-up cadence set on [/settings/outreach] sends nothing for cold outreach.
 - X1: Until Phase 0 every message synced from a mailbox was classified as if it were a reply, so newsletters and notifications raised "replied" notifications and, with the auto-suppress switches on, suppressed their senders (sometimes colleagues or customers) and closed their leads. Now only mail that answers your outreach is classified and can notify or act; everything else is filed on its thread with no class, no notification and no side effect, whatever the switches say. {H-25} Addresses suppressed and contacts created the old way stay until they are cleaned up: check [/mailbox/suppression] and have an admin revoke the ones you never meant to block.
 - I073: If the research provider chosen on [/settings/integrations] (Gemini or Perplexity) has no working key, discovery silently falls back to mock search: leads called "Mock result N" on example-*.test domains, possibly qualified at token cost. The run's log says provider=mock.
-- I004: There is no single switch that stops everything: each Emergency pause stops only its own part (see Autopilot), and follow-ups, manual sends, crawl plans and mailbox sync keep running.
-- I020: The per-product "Autopilot enabled" and "Emergency pause" overrides on [/autopilot] are saved but not applied.
-- I062: Saving the autopilot form on [/connectors/engine] while the Emergency pause is on also switches the autopilot master off; use [/autopilot] instead.
-- I063: After a plan lapses, ticking the Emergency pause on [/autopilot] fails unless every other switch is unticked in the same save; the send-queue pause on [/mailbox/queue] (owners and admins) always works.
 - I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), and a class cannot be corrected.
-- I019: "Auto-send replies" does nothing yet, and autopilot's "Auto-drain" and "Sync inbound" switches do not control the background drain and sync.
 `.trim();
 
 const CLAIM_TAG_RE = /\{(H-\d{2})\}/g;

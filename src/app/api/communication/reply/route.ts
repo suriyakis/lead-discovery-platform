@@ -10,6 +10,10 @@
 // send that exact (possibly edited) text and keep the native reply as the
 // thread reference; otherwise the reply is sent as written. No silent
 // auto-translation.
+//
+// PC-05: while automation is paused a reply is refused (409, reason
+// 'paused', overridable) until the operator confirms "send anyway"
+// (confirmPaused); the confirmed send is audited as outbound.override.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -17,6 +21,7 @@ import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { authErrorToResponse } from '@/lib/services/http';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
+import { AutomationGateError } from '@/lib/services/automation-gate';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
 
 const InputSchema = z.object({
@@ -34,6 +39,8 @@ const InputSchema = z.object({
   targetLanguage: z.string().min(2).max(10).optional(),
   translatedSubject: z.string().max(998).optional(),
   translatedBody: z.string().max(50_000).optional(),
+  /** PC-05: the operator confirmed "send anyway" while automation is paused. */
+  confirmPaused: z.boolean().optional(),
 });
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -96,6 +103,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       inReplyTo: parsed.inReplyTo ?? undefined,
       references: parsed.references,
       signatureId,
+      // flow:F-07: a person writing — never held by the go-live hold.
+      origin: 'manual',
+      confirmPaused: parsed.confirmPaused === true,
     });
     return NextResponse.json({
       ok: true,
@@ -103,6 +113,21 @@ export async function POST(req: Request): Promise<NextResponse> {
       threadId: sent.threadId?.toString() ?? null,
     });
   } catch (err) {
+    // PC-06: a Sending hold or the platform outbound stop refuses the
+    // reply; 409 with the gate's sentence (it names the hold and why).
+    // PC-05: `overridable` tells the composer it may ask "send anyway"
+    // (the workspace pause); a hold or the platform stop is not.
+    if (err instanceof AutomationGateError) {
+      return NextResponse.json(
+        {
+          error: err.code,
+          reason: err.reason,
+          detail: err.message,
+          overridable: err.overridable,
+        },
+        { status: 409 },
+      );
+    }
     if (err instanceof MailServiceError) {
       const status = err.code === 'permission_denied' ? 403 : 400;
       return NextResponse.json(

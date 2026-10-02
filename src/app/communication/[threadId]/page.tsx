@@ -28,6 +28,7 @@ import { listSignatures, defaultSignature } from '@/lib/services/signatures';
 import { getMailbox } from '@/lib/services/mailbox';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
+import { loadAutomationState } from '@/lib/services/automation-gate';
 import {
   markAsSpam,
   moveToTrash,
@@ -260,6 +261,9 @@ export default async function CommunicationDetail({
       // best-effort — no preview when resolution fails
     }
   }
+
+  // PC-05: a reply while automation is paused needs "send anyway".
+  const automationPaused = (await loadAutomationState(ctx.workspaceId)).pause !== null;
 
   return (
     <AppShell>
@@ -561,6 +565,7 @@ export default async function CommunicationDetail({
             defaultSignatureId={def?.id.toString() ?? null}
             nativeLanguage={replyNativeLanguage}
             targetLanguage={replyTargetLanguage}
+            automationPaused={automationPaused}
           />
         </section>
       </div>

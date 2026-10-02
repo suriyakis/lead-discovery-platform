@@ -661,6 +661,7 @@ describe('sendMessage', () => {
 
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com', name: 'Target' }],
       subject: 'Glass tender Q3',
@@ -684,6 +685,7 @@ describe('sendMessage', () => {
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'lead@target.com' }],
         subject: 'Re: Glass tender Q3',
@@ -701,6 +703,7 @@ describe('sendMessage', () => {
 
     const first = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Tender Q3',
@@ -709,6 +712,7 @@ describe('sendMessage', () => {
     });
     const second = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Re: Tender Q3',
@@ -729,6 +733,7 @@ describe('sendMessage', () => {
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA, 'viewer'), {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'lead@target.com' }],
         subject: 'x',
@@ -745,6 +750,7 @@ describe('sendMessage', () => {
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'lead@target.com' }],
         subject: 'x',
@@ -874,6 +880,7 @@ describe('listThreads + getThread + getMessage', () => {
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'one@x.com' }],
       subject: 'one',
@@ -883,6 +890,7 @@ describe('listThreads + getThread + getMessage', () => {
     await new Promise((r) => setTimeout(r, 5));
     const second = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'two@x.com' }],
       subject: 'two',
@@ -900,6 +908,7 @@ describe('listThreads + getThread + getMessage', () => {
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'x@x.com' }],
       subject: 'x',
@@ -918,6 +927,7 @@ describe('isolation', () => {
     const mb = await makeMailbox(s, s.workspaceA, s.ownerA);
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'x@x.com' }],
       subject: 'x',
@@ -1073,6 +1083,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     // Three threads via sendMessage (creates mail_threads rows).
     const a = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead-a@target.com' }],
       subject: 'Lead A',
@@ -1081,6 +1092,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     });
     const b = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead-b@target.com' }],
       subject: 'Lead B',
@@ -1089,6 +1101,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     });
     const c = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'random-c@target.com' }],
       subject: 'Random C',
@@ -1139,6 +1152,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'x@y.com' }],
       subject: 'no filter',
@@ -1158,6 +1172,7 @@ describe('listThreads kind filter + countThreadsByKind (P52)', () => {
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb1.id,
       to: [{ address: 'x@y.com' }],
       subject: 'in mb1',
@@ -2149,6 +2164,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'broken@test.com' }],
         subject: 'attempt 1',
@@ -2174,6 +2190,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'broken@test.com' }],
         subject: 'attempt 1',
@@ -2198,6 +2215,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'someone@test.com' }],
         subject: 'attempt',
@@ -2221,6 +2239,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
       await expect(
         sendMessage(ctx(s.workspaceA, s.ownerA), {
           mode: 'sequence',
+          origin: 'manual',
           mailboxId: mb.id,
           to: [{ address: 'loop@test.com' }],
           subject: `try ${i + 1}`,
@@ -2250,6 +2269,7 @@ describe('sendMessage failure persistence + bounce-loop (P61-08)', () => {
       await expect(
         sendMessage(ctx(s.workspaceA, s.ownerA), {
           mode: 'sequence',
+          origin: 'manual',
           mailboxId: mb.id,
           to: [{ address: addr }],
           subject: 'mixed',

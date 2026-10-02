@@ -463,6 +463,27 @@
       "when": 1790883377761,
       "tag": "0065_faithful_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1790900700589,
+      "tag": "0066_p1_automation_control_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1790903522330,
+      "tag": "0067_p1_automation_control_pause",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1790908432329,
+      "tag": "0068_p1_automation_control_policy",
+      "breakpoints": true
     }
   ]
 }

@@ -23,10 +23,11 @@ import { connectorRecipes, connectors } from '@/lib/db/schema/connectors';
 import { mailboxes, type MailboxStatus } from '@/lib/db/schema/mailing';
 import { productProfiles } from '@/lib/db/schema/products';
 import { reviewItems } from '@/lib/db/schema/review';
-import { outreachDrafts } from '@/lib/db/schema/outreach';
+import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { AIOutputError, getAIProviderForCtx, type AIGenOptions } from '@/lib/ai';
 import { PLATFORM_HANDBOOK } from '@/lib/assistant/handbook';
 import { BRAND_NAME } from '@/lib/brand';
+import { getAutomationState } from './automation-policy';
 import { canAdminWorkspace, isSuperAdmin, type WorkspaceContext } from './context';
 import { collectRuleFindings } from './health-check';
 import { getTokenWallet, type TokenWallet } from './token-ledger';
@@ -120,6 +121,17 @@ async function workspaceSnapshot(
         .where(eq(mailboxes.workspaceId, wsId))
         .groupBy(mailboxes.status),
     ]);
+  // F-07: the send queue's counts, so "why is nothing sending?" can say how
+  // much waits. A queued entry with a note was held by the gate (or waits
+  // to retry); the note on /mailbox/queue says which.
+  const [queue] = await db
+    .select({
+      queued: sql<number>`count(*) filter (where ${outreachQueue.status} = 'queued')::int`,
+      withNote: sql<number>`count(*) filter (where ${outreachQueue.status} = 'queued' and ${outreachQueue.lastError} is not null)::int`,
+      failedRecently: sql<number>`count(*) filter (where ${outreachQueue.status} = 'failed' and ${outreachQueue.updatedAt} >= now() - interval '7 days')::int`,
+    })
+    .from(outreachQueue)
+    .where(eq(outreachQueue.workspaceId, wsId));
 
   const recipeRow = recipes[0] ?? { total: 0, withCountry: 0 };
   const mailboxCount = (status: MailboxStatus) =>
@@ -133,11 +145,42 @@ async function workspaceSnapshot(
     `Recipes: ${Number(recipeRow.total)} (${Number(recipeRow.withCountry)} with a target country set)`,
     `Review queue (new + needs_review): ${Number(reviewPending[0]?.c ?? 0)}`,
     `Unapproved drafts: ${Number(draftsPending[0]?.c ?? 0)}`,
-    // A failing mailbox holds its queued sends until it works again; a
-    // paused one sends nothing and fails what comes due (flow:F-04). Neither
-    // is read — the model needs the split to diagnose either.
-    `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (queued sends held, not read), ${mailboxCount('paused')} paused (not sending, due sends fail, not read)`,
+    // A failing or paused mailbox holds its due sends (and follow-ups) until
+    // it works again or is re-enabled — nothing fails (PC-05). Neither is
+    // read — the model needs the split to diagnose either.
+    `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (queued sends held, not read), ${mailboxCount('paused')} paused (not sending, due sends held, not failed, not read)`,
+    `Send queue: ${Number(queue?.queued ?? 0)} queued (${Number(queue?.withNote ?? 0)} held or waiting to retry; each entry on [/mailbox/queue] says why), ${Number(queue?.failedRecently ?? 0)} failed in the last 7 days`,
+    ...(await automationSnapshot(ctx)),
   ].join('\n');
+}
+
+/**
+ * PC-05 / PC-06 / flow:F-07: the stops above the mailboxes — the workspace
+ * pause, holds, the platform-wide outbound stop, no accountable owner —
+ * and the go-live hold, so the model can answer "why is nothing sending?".
+ * Best-effort: a failure leaves one "unknown" line, never the answer.
+ */
+async function automationSnapshot(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<string[]> {
+  try {
+    const s = await getAutomationState(ctx);
+    const lines = [`Automation: ${s.summary}`];
+    // The paused summary says what stops, not who paused or why.
+    if (s.kind === 'paused' && s.reasons.length > 0) {
+      lines.push(`Paused because: ${s.reasons.join('; ')}`);
+    }
+    lines.push(
+      s.live
+        ? 'Go-live: live (cold outreach, follow-ups and AI reply emails may send)'
+        : 'Go-live: NOT live yet: cold outreach, follow-ups and AI reply emails are held until the platform releases the workspace; manual email sends normally',
+    );
+    if (s.degradations.length > 0) lines.push(`Degraded: ${s.degradations.join(' ')}`);
+    return lines;
+  } catch (err) {
+    console.error('[assistant] automation state unavailable:', err);
+    return ['Automation: unknown (the automation state could not be read)'];
+  }
 }
 
 /**
@@ -190,9 +233,10 @@ export async function askAssistant(
     '  about 250 words; the panel is small.',
     '- Reference in-app paths in [square brackets], e.g. [/settings/billing],',
     '  exactly as they appear in the handbook — the UI turns them into links.',
-    '- When the snapshot explains the problem (no active mailbox, a failing',
-    '  or paused mailbox, no active product, recipes without a target',
-    '  country), SAY SO first — that is the actual answer.',
+    '- When the snapshot explains the problem (automation paused, on hold or',
+    '  stopped by the platform, the workspace not live yet, no active',
+    '  mailbox, a failing or paused mailbox, no active product, recipes',
+    '  without a target country), SAY SO first — that is the actual answer.',
     '- The handbook\'s "Known limitations right now" section lists what does',
     '  not work yet. If the question touches one, say so plainly and give the',
     '  workaround it names; never claim that part works.',

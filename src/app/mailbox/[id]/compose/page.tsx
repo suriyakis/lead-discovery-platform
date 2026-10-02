@@ -12,6 +12,7 @@ import { defaultSignature, listSignatures } from '@/lib/services/signatures';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { ENABLED_LANGUAGE_OPTIONS } from '@/lib/i18n/language';
 import { ComposeForm } from './ComposeForm';
+import { loadAutomationState } from '@/lib/services/automation-gate';
 
 export default async function ComposeMessagePage({
   params,
@@ -58,6 +59,8 @@ export default async function ComposeMessagePage({
   // appended once, on send. Pre-filling it here sent it twice.
   const initialBody = sp.body ?? '';
   const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
+  // PC-05: while paused, the form asks for "send anyway" before sending.
+  const automationPaused = (await loadAutomationState(ctx.workspaceId)).pause !== null;
 
   return (
     <AppShell>
@@ -88,6 +91,7 @@ export default async function ComposeMessagePage({
           nativeLanguage={nativeLanguage}
           cancelHref={`/mailbox/${id}`}
           draftId={sp.draftId}
+          automationPaused={automationPaused}
         />
       </AppShell>
   );

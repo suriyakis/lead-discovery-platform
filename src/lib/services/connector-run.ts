@@ -20,6 +20,7 @@ import { type RunResult } from '@/lib/connectors/runner';
 import { getJobQueue } from '@/lib/jobs';
 import { registerJobHandlers, type ConnectorRunJobPayload } from '@/lib/jobs/bootstrap';
 import { recordAuditEvent } from './audit';
+import { assertGate } from './automation-gate';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 import { normalizeCountry } from './geo';
 import { translateText } from './translation';
@@ -616,6 +617,9 @@ export async function startRun(
   input: StartRunInput,
 ): Promise<{ run: ConnectorRun; jobId: string; result?: RunResult }> {
   if (!canWrite(ctx)) throw permissionDenied('start connector run');
+  // PC-06: every discovery run starts here (recipe Run now, crawl plans,
+  // the tick) — a Discovery hold stops them all.
+  await assertGate(ctx, 'discovery');
   // Prepaid gate: discovery runs drive search + AI qualification spend.
   // Empty wallet (and not billing-exempt) → refuse to start new runs.
   const { assertTokens } = await import('./token-ledger');

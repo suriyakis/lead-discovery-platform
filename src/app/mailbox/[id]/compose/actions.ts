@@ -4,6 +4,7 @@ import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { translateText } from '@/lib/services/translation';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
+import { AutomationGateError } from '@/lib/services/automation-gate';
 import { MailboxServiceError } from '@/lib/services/mailbox';
 import { buildComposeSendInput, type SendComposeInput } from './compose-input';
 
@@ -40,7 +41,10 @@ export async function translateComposeAction(input: {
 
 export async function sendComposeAction(
   input: SendComposeInput,
-): Promise<{ ok: true; threadId: string | null } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; threadId: string | null }
+  | { ok: false; error: string; needsPauseConfirm?: boolean }
+> {
   const ctx = await getWorkspaceContext();
   const native = await getWorkspaceNativeLanguage(ctx);
   // flow:F-05: one-to-one mode, signature appended once by sendMessage.
@@ -51,6 +55,14 @@ export async function sendComposeAction(
     const created = await sendMessage(ctx, built.input);
     return { ok: true, threadId: created.threadId?.toString() ?? null };
   } catch (err) {
+    // PC-05: paused — the form shows the "send anyway" confirm and retries.
+    if (err instanceof AutomationGateError) {
+      return {
+        ok: false,
+        error: err.message,
+        ...(err.reason === 'paused' && err.overridable ? { needsPauseConfirm: true } : {}),
+      };
+    }
     if (err instanceof MailServiceError || err instanceof MailboxServiceError) {
       return { ok: false, error: err.message };
     }

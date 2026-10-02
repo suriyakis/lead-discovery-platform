@@ -59,6 +59,10 @@ export default async function AdminUserDetail({
   );
 
   const isSelf = user.id === pctx.actorUserId;
+  // PC-06: the active workspaces this user is the accountable owner of.
+  const ownedWorkspaces = allWorkspaces
+    .filter((w) => w.ownerUserId === user.id && w.status === 'active')
+    .map((w) => ({ name: w.name, slug: w.slug }));
 
   async function saveProfile(formData: FormData) {
     'use server';
@@ -267,6 +271,15 @@ export default async function AdminUserDetail({
         {user.accountStatusReason ? (
           <p className="muted">Reason: {user.accountStatusReason}</p>
         ) : null}
+        {ownedWorkspaces.length > 0 ? (
+          <p className="muted">
+            Owner of {ownedWorkspaces.map((w) => w.name).join(', ')}. While
+            this account is not active, all automatic work there stops
+            (sending, inbox sync, discovery, autopilot, CRM sync, background
+            AI): automation only ever acts as an active owner. Members can
+            still work by hand.
+          </p>
+        ) : null}
         {isSelf ? (
           <p className="muted">You can&apos;t change your own account status here.</p>
         ) : (
@@ -285,7 +298,10 @@ export default async function AdminUserDetail({
               <input type="text" name="reason" maxLength={200} />
             </label>
             <ConfirmFormButton
-              messageByValue={{ field: 'status', messages: accountStatusConfirms(user) }}
+              messageByValue={{
+                field: 'status',
+                messages: accountStatusConfirms(user, ownedWorkspaces),
+              }}
             >
               Apply
             </ConfirmFormButton>

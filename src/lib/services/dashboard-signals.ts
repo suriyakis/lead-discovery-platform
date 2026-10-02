@@ -8,6 +8,7 @@ import { db } from '@/lib/db/client';
 import { outreachDrafts, outreachQueue, outreachSendSettings } from '@/lib/db/schema/outreach';
 import { mailMessages } from '@/lib/db/schema/mailing';
 import { reviewItems } from '@/lib/db/schema/review';
+import { workspaces } from '@/lib/db/schema/workspaces';
 import { qualifiedLeads, type PipelineState } from '@/lib/db/schema/pipeline';
 import type { WorkspaceContext } from './context';
 
@@ -35,6 +36,8 @@ export interface DashboardSignals {
     sentToday: number;
     dailyCap: number;
     nextSendAt: Date | null;
+    /** PC-05: the workspace pause (it holds the send queue with every
+     *  other kind of automatic work). */
     paused: boolean;
   };
   funnel: Record<PipelineState, number>;
@@ -88,6 +91,7 @@ export async function getDashboardSignals(
       nextSendRow,
       sendSettings,
       leadRows,
+      pauseRow,
     ] = await Promise.all([
       db
         .select({ n: sql<number>`count(*)::int` })
@@ -179,6 +183,11 @@ export async function getDashboardSignals(
         .select({ state: qualifiedLeads.state })
         .from(qualifiedLeads)
         .where(eq(qualifiedLeads.workspaceId, ws)),
+      db
+        .select({ pausedAt: workspaces.automationPausedAt })
+        .from(workspaces)
+        .where(eq(workspaces.id, ws))
+        .limit(1),
     ]);
 
     const drafts = { ...ZERO_DRAFTS };
@@ -209,7 +218,7 @@ export async function getDashboardSignals(
         sentToday: sentTodayRow[0]?.n ?? 0,
         dailyCap: settings?.dailyEmailLimit ?? 50,
         nextSendAt: nextSendRow[0]?.at ?? null,
-        paused: settings?.emergencyPause ?? false,
+        paused: Boolean(pauseRow[0]?.pausedAt),
       },
       funnel,
     };

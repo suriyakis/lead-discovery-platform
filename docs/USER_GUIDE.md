@@ -33,7 +33,7 @@ If anything is wrong, ping Sancho — VPS-side ops are his job.
 | Settings → CRM  | `/settings/crm`                | CRM connections + bulk CSV export. |
 | Settings → Usage| `/settings/usage`              | Per-provider cost view, BYOK vs platform key breakdown. |
 | Learning        | `/learning`                    | Workspace lessons distilled from review feedback. Embedding-aware. |
-| Admin (god mode)| `/admin`                       | Super-admin only. Workspaces, users, billing, support inbox, providers, platform audit log, feature flags. |
+| Admin (god mode)| `/admin`                       | Super-admin only. Workspaces, users, billing, support inbox, providers, platform audit log, holds. |
 
 ## 3. First-day setup (one product, one mailbox, one connector)
 
@@ -156,12 +156,77 @@ MinIO, R2 all need path style). For native AWS, leave it false.
    `document_chunks` + the HNSW vector index.
 4. The reply assistant on `/mailbox/threads/<id>` is now grounded.
 
+### Pausing all automation
+
+Something looks wrong (wrong list, wrong copy, a complaint)? Press **Pause
+all automation** on `/autopilot` or `/mailbox/queue`. Anyone who can edit
+can press it, on any plan and with an empty wallet. At the next item it
+stops everything that runs on its own: the send queue, follow-ups (nothing
+is composed), autopilot, scheduled crawls, reply auto-actions, background
+AI, auto top-up and the trash purge. Nothing fails — it waits. Mailboxes
+keep syncing, so replies still arrive. A banner on every page says who
+paused and when; the person who paused can **Undo** for 10 seconds.
+Emails you write yourself (a thread reply, compose, approving a follow-up)
+still go out after you tick "send anyway" (recorded in the audit log).
+Owners and admins **Resume**; the confirm lists what starts again,
+including reply auto-actions that waited (they are not applied — check
+those replies yourself).
+
+A new workspace is also **not live** for outreach until the platform
+releases it: its cold emails, follow-ups and AI reply drafts wait in the
+queue (a banner says so) while email you write yourself sends normally.
+
+### Pausing one product, and what autopilot really does
+
+Only one product is the problem? Open `/autopilot`, pick the product and
+press **Pause <product>** (anyone who can edit). Autopilot then does
+nothing for it — no approvals, drafts, queueing or CRM pushes — and its
+queued emails and follow-ups wait (still queued, with the reason shown;
+nothing fails). Owners and admins **Resume** it. Email you write yourself
+still sends.
+
+A product can only narrow what the workspace runs: on `/autopilot` each of
+its steps either inherits the workspace or is off for it, and its approval
+threshold can only be higher. To run a step for some products only, switch
+it on for the workspace and off for the others.
+
+What autopilot picks each run: auto-approve takes the best-scoring
+"new" items that reach their product's threshold, one item at a time
+however many products it fits, and records the approval as autopilot's
+(no person's name). Generate + queue takes approved items oldest first,
+but only those whose pipeline lead has a contact email; the others get
+no draft and wait — the autopilot log counts them as `needs_contact` —
+until you add an email on the lead's page. A product switched off or
+paused never uses up the per-run limits of the others. CRM pushes appear
+on the lead's timeline, and a lead is pushed again only after it changed.
+
+Approved emails in the send queue always go out (every 30 seconds, within
+each mailbox's window) and mailboxes are read every 2 minutes while
+**Mailbox auto-sync** is on in `/settings/outreach` — neither is an
+autopilot switch. `/connectors/engine` shows the autopilot steps read-only;
+change them on `/autopilot`.
+
 ## 6. Admin operations (super-admin only)
 
 - `/admin` — platform totals, workspace metrics, billing and token grants
   per workspace, recent audit feed across the platform.
 - `/admin/workspaces/<id>` — profile, billing and tokens, lifecycle
-  (archive / restore / delete), members and roles, feature flag matrix.
+  (archive / restore / delete), members and roles, and **Holds**: place a
+  hold on all work or on chosen capabilities (Sending, Inbox sync,
+  Discovery, Autopilot, CRM sync, Background AI, Reply auto-actions, Auto
+  top-up) with a reason and an optional duration, or release one with a
+  reason. A hold stops that work for automatic and manual use alike; the
+  tenant sees it on a banner, its owners and admins are notified, and they
+  cannot release it. **Legacy flags to review** lists the old feature
+  flags (never enforced) imported as pending holds: Confirm enforces one,
+  Discard drops it. Automatic work also stops by itself while the
+  workspace owner is not active or no longer a member (a suspended owner
+  stops their workspace's automation; members can still work by hand).
+  **Outreach go-live** (above Holds): every workspace starts not live —
+  its cold emails, follow-ups and AI reply drafts wait in the queue (never
+  failed) while email its members write themselves sends. Release it with
+  an audited reason once it is ready; "Put back on hold" reverses it. The
+  section also shows whether the tenant has paused its automation.
 - `/admin/users`, `/admin/users/<id>` — account status, pre-authorisation,
   password users, platform role, memberships.
 - `/admin/support` — the support inbox across every workspace.
@@ -181,11 +246,11 @@ on which workspace your switcher points at:
 - **Platform level** (`workspace_id` empty, visible only in `/admin/audit`):
   account status, pre-authorisations, password users and resets, platform
   roles, user profile edits, user deletion, workspace deletion, provider
-  keys and platform settings. These rows name people, so no tenant sees
+  keys and platform settings, and the platform-wide outbound stop. These rows name people, so no tenant sees
   them.
 - **The affected workspace** (also visible to its admins in Settings →
   Audit): billing exemption, token grants, workspace profile and lifecycle,
-  members and roles, feature flags, support replies and status changes.
+  members and roles, holds, support replies and status changes.
 
 **There is no impersonation.** The old "Impersonate" button recorded a
 session but never changed who you were acting as, so it was removed. To see

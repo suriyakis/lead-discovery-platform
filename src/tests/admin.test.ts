@@ -1,16 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { db } from '@/lib/db/client';
-import { featureFlags } from '@/lib/db/schema/admin';
 import {
   type WorkspaceContext,
   makeWorkspaceContext,
 } from '@/lib/services/context';
-import {
-  listAllUsers,
-  listAllWorkspaces,
-  listFeatureFlags,
-  setFeatureFlag,
-} from '@/lib/services/admin';
+import { listAllUsers, listAllWorkspaces } from '@/lib/services/admin';
+import { placePlatformHold } from '@/lib/services/holds';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { platformCtx, smuggled } from './helpers/platform';
 
@@ -56,10 +51,10 @@ describe('super-admin gating', () => {
       code: 'permission_denied',
     });
     await expect(
-      setFeatureFlag(smuggled(owner), {
-        workspaceId: s.workspaceA,
-        key: 'crm.hubspot',
-        enabled: true,
+      placePlatformHold(smuggled(owner), s.workspaceA, {
+        scope: 'capabilities',
+        capabilities: ['crm_sync'],
+        reason: 'not a platform context',
       }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
@@ -74,10 +69,10 @@ describe('super-admin gating', () => {
       code: 'permission_denied',
     });
     await expect(
-      setFeatureFlag(smuggled(godMode), {
-        workspaceId: s.workspaceB,
-        key: 'crm.hubspot',
-        enabled: true,
+      placePlatformHold(smuggled(godMode), s.workspaceB, {
+        scope: 'capabilities',
+        capabilities: ['crm_sync'],
+        reason: 'not a platform context',
       }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
   });
@@ -111,57 +106,13 @@ describe('impersonation', () => {
   });
 });
 
-// ============ feature flags =======================================
+// ============ feature flags (replaced by holds — PC-06) ============
 
 describe('feature flags', () => {
-  it('upserts on (workspace, key)', async () => {
-    const s = await setup();
-    const god = platformCtx(s.godUser);
-    const a = await setFeatureFlag(god, {
-      workspaceId: s.workspaceA,
-      key: 'crm.hubspot',
-      enabled: false,
-    });
-    const b = await setFeatureFlag(god, {
-      workspaceId: s.workspaceA,
-      key: 'crm.hubspot',
-      enabled: true,
-      config: { plan: 'pro' },
-    });
-    expect(b.id).toBe(a.id);
-    expect(b.enabled).toBe(true);
-    expect((b.config as { plan?: string }).plan).toBe('pro');
-  });
-
-  it('rejects bad key shape', async () => {
-    const s = await setup();
-    const god = platformCtx(s.godUser);
-    await expect(
-      setFeatureFlag(god, {
-        workspaceId: s.workspaceA,
-        key: 'BadKey-WithDash',
-        enabled: true,
-      }),
-    ).rejects.toMatchObject({ code: 'invalid_input' });
-  });
-
-  it('listFeatureFlags scoped to a workspace', async () => {
-    const s = await setup();
-    const god = platformCtx(s.godUser);
-    await setFeatureFlag(god, {
-      workspaceId: s.workspaceA,
-      key: 'crm.hubspot',
-      enabled: true,
-    });
-    await setFeatureFlag(god, {
-      workspaceId: s.workspaceB,
-      key: 'rag.openai',
-      enabled: true,
-    });
-    const inA = await listFeatureFlags(god, s.workspaceA);
-    expect(inA.map((f) => f.key)).toEqual(['crm.hubspot']);
-    const inB = await listFeatureFlags(god, s.workspaceB);
-    expect(inB.map((f) => f.key)).toEqual(['rag.openai']);
-    void featureFlags;
+  it('the admin service no longer writes or lists the never-read flags (I048)', async () => {
+    // Holds replace them (services/holds.ts); the legacy rows are imported
+    // as pending_review holds (src/tests/holds-pc06.test.ts).
+    const mod = await import('@/lib/services/admin');
+    expect(Object.keys(mod).filter((k) => /featureflag/i.test(k))).toEqual([]);
   });
 });

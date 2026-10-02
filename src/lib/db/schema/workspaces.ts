@@ -138,9 +138,12 @@ export const workspaces = pgTable('workspaces', {
    *  generate the next draft via AI. Operator can flip this OFF if they
    *  prefer to write every reply themselves. Default ON. */
   autoDraftReplies: boolean('auto_draft_replies').notNull().default(true),
-  /** When auto-drafted reply confidence is high enough, send without
-   *  human review. Default OFF — sales replies are too risky to auto-
-   *  send unless the operator opts in. */
+  /**
+   * @deprecated PC-13 (I019): read by nothing — "Auto-send replies" was
+   * saved but never implemented (reply drafts always wait for a person).
+   * Removed from code and UI; set to false by migration
+   * p1_automation_control_policy and dropped one release later.
+   */
   autoSendReplies: boolean('auto_send_replies').notNull().default(false),
 
   /** Phase 50: per-product cap on bytes uploaded to vector storage.
@@ -193,6 +196,50 @@ export const workspaces = pgTable('workspaces', {
    *  /communication or /mailbox/[id]. Default true matches the
    *  Gmail/Outlook expectation. */
   imapAutoSyncEnabled: boolean('imap_auto_sync_enabled').notNull().default(true),
+
+  /** PC-06 accountable-owner rule: automatic work acts as owner_user_id,
+   *  so it stops when that user is not active or no longer a member. Set
+   *  (once, atomically) when the gate first finds no accountable owner —
+   *  that is when the incident is raised — and cleared when the owner is
+   *  accountable again. NULL = no open incident. */
+  automationOwnerIncidentAt: timestamp('automation_owner_incident_at', {
+    mode: 'date',
+    withTimezone: true,
+  }),
+
+  /**
+   * PC-05: the single workspace pause. Non-NULL = paused since then: every
+   * kind of automatic work stops (the queue drain, follow-ups, autopilot,
+   * scheduled crawls, reply auto-actions, background AI, auto top-up and
+   * the trash purge) while inbox sync keeps reading; a manual send needs
+   * an explicit, audited "send anyway". Any write role pauses; owners and
+   * admins resume (services/automation-pause.ts). Set from the database
+   * clock under a row lock, so no queue claim can carry a later time.
+   * Replaces autopilot_settings.emergency_pause and
+   * outreach_send_settings.emergency_pause.
+   */
+  automationPausedAt: timestamp('automation_paused_at', { mode: 'date', withTimezone: true }),
+  /** Who paused (NULL when that user was deleted, or for the legacy-flag
+   *  migration). */
+  automationPausedByUserId: text('automation_paused_by_user_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
+  /** Optional reason the person gave. */
+  automationPauseReason: text('automation_pause_reason'),
+  /** Where the pause came from (PAUSE_SOURCES in services/automation-pause.ts). */
+  automationPauseSource: text('automation_pause_source'),
+
+  /**
+   * flow:F-07: the go-live hold. NULL = not live: automatic outreach —
+   * cold first touches, follow-ups and AI reply drafts — is held (queued,
+   * never failed) while manual mail sends normally. Every workspace starts
+   * not live; a super-admin releases it with an audited reason
+   * (services/go-live.ts) until the F-40 checklist takes over.
+   */
+  outreachLiveAt: timestamp('outreach_live_at', { mode: 'date', withTimezone: true }),
+  outreachLiveByUserId: text('outreach_live_by_user_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
 
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()

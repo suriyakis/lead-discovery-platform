@@ -8,6 +8,7 @@
 
 import { UserCircle } from 'lucide-react';
 import { AssistantPanel } from './AssistantPanel';
+import { AutomationHoldBanner } from './AutomationHoldBanner';
 import { BrandHeader } from './BrandHeader';
 import { CommandPalette } from './CommandPalette';
 import { fetchCommandPaletteEntities } from './command-palette-action';
@@ -18,6 +19,7 @@ import { signOutAction } from '@/lib/auth-actions';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 import { listMyWorkspaces } from '@/lib/services/workspace';
 import { getNavCounts, type NavCounts } from '@/lib/services/nav-counts';
+import type { WorkspaceAutomationNotice } from '@/lib/services/automation-gate';
 
 export interface AppShellProps {
   children: React.ReactNode;
@@ -64,6 +66,9 @@ export async function AppShell({
     supportUnread: 0,
   };
   let unreadNotifications = 0;
+  // PC-06: holds, the platform outbound stop and a missing accountable
+  // owner, shown to every member of the active workspace.
+  let automationNotice: WorkspaceAutomationNotice | null = null;
   if (session?.user?.id) {
     try {
       const { resolveWorkspaceContextForUser } = await import(
@@ -78,6 +83,10 @@ export async function AppShell({
         '@/lib/services/notifications'
       );
       unreadNotifications = await unreadNotificationCount(shellCtx);
+      const { getWorkspaceAutomationNotice } = await import(
+        '@/lib/services/automation-gate'
+      );
+      automationNotice = await getWorkspaceAutomationNotice(shellCtx);
     } catch {
       // No resolvable workspace yet — badges stay at zero.
     }
@@ -145,6 +154,7 @@ export async function AppShell({
           ) : null}
         </div>
       ) : null}
+      {automationNotice ? <AutomationHoldBanner notice={automationNotice} /> : null}
       <div className="app-body">
         <Sidebar isSuperAdmin={showAdmin} navCounts={navCounts} />
         <main className="app-main">{children}</main>

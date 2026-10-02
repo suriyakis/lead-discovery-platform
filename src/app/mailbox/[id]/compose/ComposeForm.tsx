@@ -27,6 +27,8 @@ interface Props {
   nativeLanguage: string;
   cancelHref: string;
   draftId?: string;
+  /** PC-05: automation is paused — sending needs "send anyway". */
+  automationPaused?: boolean;
 }
 
 export function ComposeForm({
@@ -40,6 +42,7 @@ export function ComposeForm({
   nativeLanguage,
   cancelHref,
   draftId,
+  automationPaused = false,
 }: Props) {
   const router = useRouter();
   const [to, setTo] = useState(initialTo);
@@ -54,6 +57,8 @@ export function ComposeForm({
   const [shown, setShown] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [pauseNotice, setPauseNotice] = useState(automationPaused);
+  const [confirmPaused, setConfirmPaused] = useState(false);
 
   const willTranslate = Boolean(target && target !== nativeLanguage);
   const isRtl = target === 'he' || target === 'ar';
@@ -94,10 +99,12 @@ export function ComposeForm({
       translatedBody: shown ? tBody : '',
       draftId,
       signature,
+      confirmPaused: pauseNotice && confirmPaused,
     });
     if (res.ok) {
       router.push(res.threadId ? `/communication/${res.threadId}` : '/mailbox');
     } else {
+      if (res.needsPauseConfirm) setPauseNotice(true);
       setError(res.error);
       setBusy(false);
     }
@@ -212,8 +219,27 @@ export function ComposeForm({
         </section>
       ) : null}
 
+      {pauseNotice ? (
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={confirmPaused}
+            onChange={(e) => setConfirmPaused(e.target.checked)}
+          />
+          <span>
+            Automation is paused in this workspace. Send this email anyway (it is recorded in
+            the audit log).
+          </span>
+        </label>
+      ) : null}
+
       <div className="action-row">
-        <button type="button" className="primary-btn" onClick={onSend} disabled={busy}>
+        <button
+          type="button"
+          className="primary-btn"
+          onClick={onSend}
+          disabled={busy || (pauseNotice && !confirmPaused)}
+        >
           {busy ? 'Working…' : willTranslate && shown ? 'Send translated' : 'Send'}
         </button>
         <Link href={cancelHref} className="ghost-btn">
