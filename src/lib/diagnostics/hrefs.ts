@@ -31,6 +31,7 @@ export const fixHref = {
   integrations: () => tab('settings.integrations'),
   review: () => tab('review.queue'),
   drafts: () => tab('outreach.drafts'),
+  draft: (id: bigint | string) => `${tab('outreach.drafts')}/${id}`,
   followUps: () => tab('outreach.followUps'),
   knowledge: () => tab('products.knowledge'),
   knowledgeSource: (id: bigint | string) => `${tab('products.knowledge')}/${id}`,

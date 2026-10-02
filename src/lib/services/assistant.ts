@@ -6,7 +6,11 @@
 // AP-06 (I129, I055): the state is the diagnostics engine's findings —
 // the same list /health, Today and the notify sweep read, codes, severity,
 // fix page and all — plus a few counts only the guide needs. There is no
-// second diagnostic query here any more.
+// second diagnostic query here any more. MOB-02: the decision counts
+// (open review items, drafts and follow-ups awaiting approval, prospect
+// replies waiting) are the attention summary's — the numbers the sidebar
+// badges and Today show — and every finding code is named, even past the
+// ones listed in full.
 //
 // AP-02 robustness + billing rules:
 //   - Empty wallet (non-exempt tenant): the model is NOT called; the
@@ -22,13 +26,14 @@
 //     never billed (the metering decorator tags it unbilled).
 //   - A refusal returns the deterministic answer instead.
 
-import { and, count, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, count, eq, gte, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { connectors } from '@/lib/db/schema/connectors';
 import { mailboxes, type MailboxStatus } from '@/lib/db/schema/mailing';
 import { productProfiles } from '@/lib/db/schema/products';
-import { reviewItems } from '@/lib/db/schema/review';
-import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
+import { outreachQueue } from '@/lib/db/schema/outreach';
+import { getAttentionSummary } from '@/lib/attention/service';
+import { formatAttentionCount } from '@/lib/attention/types';
 import { AIOutputError, getAIProviderForCtx, type AIGenOptions } from '@/lib/ai';
 import { HANDBOOK_VERSION, PLATFORM_HANDBOOK } from '@/lib/assistant/handbook';
 import { BRAND_NAME } from '@/lib/brand';
@@ -95,17 +100,19 @@ function findingLine(f: Finding): string {
 
 /**
  * The counts only the guide needs — not diagnostics (the findings carry
- * those): the wallet, what exists, what waits, and the send queue's
- * numbers so "why is nothing sending?" can say how much waits.
+ * those): the wallet, what exists, what waits (the attention summary's
+ * numbers, MOB-02: the same as the badges and Today; "unknown" when one
+ * could not be loaded), and the send queue's numbers so "why is nothing
+ * sending?" can say how much waits.
  */
 async function workspaceCounts(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
   wallet: TokenWallet,
   now: Date,
 ): Promise<string> {
   const wsId = ctx.workspaceId;
   const since7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const [products, activeConnectors, reviewOpen, draftsWaiting, mailboxesByStatus, queue, failed7d] =
+  const [products, activeConnectors, attention, mailboxesByStatus, queue, failed7d] =
     await Promise.all([
       db
         .select({ c: count() })
@@ -115,21 +122,9 @@ async function workspaceCounts(
         .select({ c: count() })
         .from(connectors)
         .where(and(eq(connectors.workspaceId, wsId), eq(connectors.active, true))),
-      db
-        .select({ c: count() })
-        .from(reviewItems)
-        .where(
-          and(eq(reviewItems.workspaceId, wsId), inArray(reviewItems.state, ['new', 'needs_review'])),
-        ),
-      db
-        .select({ c: count() })
-        .from(outreachDrafts)
-        .where(
-          and(
-            eq(outreachDrafts.workspaceId, wsId),
-            inArray(outreachDrafts.status, ['draft', 'needs_edit']),
-          ),
-        ),
+      // The findings were just evaluated afresh: the summary reads them
+      // from the engine's memo, so this adds only its count queries.
+      getAttentionSummary(ctx, { now }),
       db
         .select({ status: mailboxes.status, c: count() })
         .from(mailboxes)
@@ -155,6 +150,10 @@ async function workspaceCounts(
         ),
     ]);
   const n = (rows: Array<{ c: number | bigint }>) => Number(rows[0]?.c ?? 0);
+  const waiting = (key: keyof typeof attention.counts) => {
+    const v = attention.counts[key];
+    return v === null ? 'unknown' : formatAttentionCount(v);
+  };
   const mailbox = (status: MailboxStatus) =>
     Number(mailboxesByStatus.find((r) => r.status === status)?.c ?? 0);
   // No "empty wallet" marker: a non-exempt empty wallet never reaches the
@@ -163,8 +162,10 @@ async function workspaceCounts(
     `Counts: tokens ${wallet.balance.toLocaleString()}${wallet.billingExempt ? ' (billing exempt)' : ''}`,
     `active products ${n(products)}`,
     `active search sources ${n(activeConnectors)}`,
-    `open review items ${n(reviewOpen)}`,
-    `drafts awaiting approval ${n(draftsWaiting)}`,
+    `open review items ${waiting('review.open')} (${waiting('review.needsReview')} need review)`,
+    `drafts awaiting approval ${waiting('drafts.approve')}`,
+    `follow-ups awaiting approval ${waiting('followUps.approve')}`,
+    `prospect replies waiting for an answer ${waiting('replies.awaiting')}`,
     `mailboxes ${mailbox('active')} active / ${mailbox('failing')} failing / ${mailbox('paused')} paused`,
     `send queue ${Number(queue[0]?.queued ?? 0)} queued (${Number(queue[0]?.withNote ?? 0)} held or waiting to retry; each entry on [/mailbox/queue] says why), ${n(failed7d)} failed in the last 7 days.`,
   ].join('; ');
@@ -191,7 +192,7 @@ async function automationLine(ctx: Pick<WorkspaceContext, 'workspaceId'>): Promi
  * automation sentence.
  */
 async function workspaceState(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
   wallet: TokenWallet,
 ): Promise<{ text: string; report: DiagnosticsReport }> {
   const report = await getWorkspaceDiagnostics(ctx, { fresh: true });
@@ -207,7 +208,15 @@ async function workspaceState(
     ...(shown.length > 0
       ? shown.map(findingLine)
       : ['- none: every workspace check passes.']),
-    ...(more > 0 ? [`- … and ${more} more on [/health].`] : []),
+    // Every finding code is in the state, even past the ones in full.
+    ...(more > 0
+      ? [
+          `- … and ${more} more on [/health]: ${report.findings
+            .slice(STATE_MAX_FINDINGS)
+            .map((f) => f.code)
+            .join(', ')}.`,
+        ]
+      : []),
     counts,
     automation,
     '</workspace_state>',

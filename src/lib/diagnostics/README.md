@@ -10,6 +10,7 @@ it". Every surface reads it; none keeps a second diagnostic query (I129):
 | 6-hourly notify sweep (`runDiagnosticsSweep`, `health.check.tick`) | same, every active workspace, no AI | refreshes it |
 | Assistant `<workspace_state>` (`assistant.ts`) | same, the 12 most severe findings plus counts | refreshes it |
 | Today "Needs fixing" (`app/today/_attention.tsx`) | `getWorkspaceDiagnostics(ctx)` | 30 s per workspace |
+| Attention summary (`src/lib/attention`, `GET /api/attention`, the sidebar; MOB-02) | `getWorkspaceDiagnostics(ctx, { maxAgeMs: DIAGNOSTICS_ATTENTION_MAX_AGE_MS })` | stale-while-revalidate: a settled result up to 5 min old at once, refreshed in the background |
 
 ## Files
 
@@ -64,7 +65,9 @@ failing mailboxes are one problem area). The weekly report blends the AI
 conversation review in as before: 60% rules, 40% average naturalness, only
 when a review ran. Calibration is fixture-tested (`src/tests/diagnostics.test.ts`):
 a healthy trial workspace scores at least 90 with no notification; the
-production-shaped fixture scores 20 and gets 3 notifications.
+production-shaped fixture (both products judged every record, 28 by the
+rules fallback; its one draft has no lead) scores 20 and gets 3
+notifications.
 
 ## Notifications
 
@@ -121,13 +124,18 @@ notification path.
    fixtures: a new warning or critical in the healthy trial fixture is a
    calibration bug, not a test to update.
 
-Rules contributed from other workstreams' fix PRs (planned): `send.cap_exhausted`
-landed with I070 here; `queue.stuck_sending` (Ops/Outreach, today covered by
-the reaper's `send.interrupted` incident), `follow_ups.unreviewed` (Outreach I005),
-`worker.heartbeat_stale` (Ops I022, today `jobs.stale`), `records.unqualified`
-(Discovery I077: records never qualified for an active product) and
-`qualification.rules_fallback` (Discovery I025: verdicts the rules made when
-the AI failed).
+Rules contributed from other workstreams' fix PRs: `send.cap_exhausted`
+landed with I070 here; MOB-02 added the live signals that needed no new
+producer: `records.unqualified` (I077: in-play records an active product
+never judged, after a one-hour grace; owner Discovery),
+`qualification.rules_fallback` (I025: verdicts the keyword rules made when
+the AI failed — a warning when any came out relevant; owner Discovery),
+`drafts.blocked` (approved but never queued after an hour, or no contact
+email on the lead; owner Outreach) and autopilot step errors in 24 h as a
+warning of `autopilot.state`. Planned: `queue.stuck_sending` (Ops/Outreach,
+today covered by the reaper's `send.interrupted` incident),
+`follow_ups.unreviewed` (Outreach I005) and `worker.heartbeat_stale` (Ops
+I022, today `jobs.stale`).
 
 ## Incidents
 

@@ -4,6 +4,8 @@
 // sweep's policies and ledger; rule isolation; the weekly check's toggle,
 // retry and incident; one source for /health, Today and the assistant;
 // the shared send-cap usage (I070); the country-filter grep; performance.
+// MOB-02: the qualification-gap, rules-fallback and blocked-draft rules,
+// autopilot step errors, and the engine's stale-while-revalidate read.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/connectors/mock';
@@ -44,12 +46,14 @@ import { notifications } from '@/lib/db/schema/notifications';
 import { jobHeartbeats } from '@/lib/db/schema/ops';
 import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { productProfiles } from '@/lib/db/schema/products';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
 import { workspaceProviderSettings, workspaces } from '@/lib/db/schema/workspaces';
 import * as engine from '@/lib/diagnostics/engine';
 import {
   DIAGNOSTICS_MEMO_TTL_MS,
+  _ageDiagnosticsMemoForTests,
   getWorkspaceDiagnostics,
   invalidateDiagnostics,
 } from '@/lib/diagnostics/engine';
@@ -267,12 +271,20 @@ async function reviewQueue(
   );
 }
 
-/** A lead (approved review item + qualified lead) and its draft. */
+/** A lead (approved review item + qualified lead) and its draft. `lead:
+ *  false` = no qualified lead for the pair (production's one draft);
+ *  `contactEmail: null` = a lead without an address. */
 async function draftFor(
   t: Tenant,
   productId: bigint,
-  draft: { status: 'draft' | 'needs_edit' | 'approved'; updatedAt?: Date },
-): Promise<{ leadId: bigint }> {
+  draft: {
+    status: 'draft' | 'needs_edit' | 'approved' | 'rejected';
+    updatedAt?: Date;
+    approvedAt?: Date;
+    lead?: boolean;
+    contactEmail?: string | null;
+  },
+): Promise<{ leadId: bigint | null; draftId: bigint }> {
   const [sr] = await db
     .insert(sourceRecords)
     .values({
@@ -287,28 +299,58 @@ async function draftFor(
     .insert(reviewItems)
     .values({ workspaceId: t.workspaceId, sourceRecordId: sr!.id, state: 'approved' })
     .returning();
-  const [lead] = await db
-    .insert(qualifiedLeads)
+  const [lead] =
+    draft.lead === false
+      ? [null]
+      : await db
+          .insert(qualifiedLeads)
+          .values({
+            workspaceId: t.workspaceId,
+            reviewItemId: ri!.id,
+            productProfileId: productId,
+            state: 'contacted',
+            contactEmail:
+              draft.contactEmail === undefined ? 'lead@prospect.test' : draft.contactEmail,
+          })
+          .returning();
+  const [row] = await db
+    .insert(outreachDrafts)
     .values({
       workspaceId: t.workspaceId,
       reviewItemId: ri!.id,
+      sourceRecordId: sr!.id,
       productProfileId: productId,
-      state: 'contacted',
-      contactEmail: 'lead@prospect.test',
+      status: draft.status,
+      subject: 'Quick question',
+      body: 'Who handles concrete repair?',
+      method: 'rules',
+      ...(draft.updatedAt ? { createdAt: draft.updatedAt, updatedAt: draft.updatedAt } : {}),
+      ...(draft.approvedAt ? { approvedAt: draft.approvedAt } : {}),
     })
-    .returning();
-  await db.insert(outreachDrafts).values({
-    workspaceId: t.workspaceId,
-    reviewItemId: ri!.id,
-    sourceRecordId: sr!.id,
-    productProfileId: productId,
-    status: draft.status,
-    subject: 'Quick question',
-    body: 'Who handles concrete repair?',
-    method: 'rules',
-    ...(draft.updatedAt ? { createdAt: draft.updatedAt, updatedAt: draft.updatedAt } : {}),
-  });
-  return { leadId: lead!.id };
+    .returning({ id: outreachDrafts.id });
+  return { leadId: lead?.id ?? null, draftId: row!.id };
+}
+
+/** Qualify every record of the workspace's review queue that `productId`
+ *  has not judged yet (none relevant); the first `fallback` of them by
+ *  the rules fallback. */
+async function qualifyAll(t: Tenant, productId: bigint, fallback = 0): Promise<void> {
+  const rows = await db
+    .select({ id: reviewItems.sourceRecordId })
+    .from(reviewItems)
+    .where(eq(reviewItems.workspaceId, t.workspaceId))
+    .orderBy(reviewItems.id);
+  await db.insert(qualifications).values(
+    rows.map((r, i) => ({
+      workspaceId: t.workspaceId,
+      sourceRecordId: r.id,
+      productProfileId: productId,
+      isRelevant: false,
+      relevanceScore: 20,
+      confidence: 70,
+      method: i < fallback ? 'rules_fallback' : 'ai',
+    })),
+  ).onConflictDoNothing();
 }
 
 async function autoSuppressions(t: Tenant, n: number, createdAt = ago(10 * DAY)): Promise<void> {
@@ -422,6 +464,10 @@ describe('the rule registry', () => {
       'jobs.stale',
       'queue.failed_24h',
       'send.cap_exhausted',
+      // MOB-02's live signals
+      'records.unqualified',
+      'qualification.rules_fallback',
+      'drafts.blocked',
     ]) {
       expect(ids, id).toContain(id);
     }
@@ -704,7 +750,7 @@ describe('rules', () => {
       .returning();
     await db.insert(outreachFollowUps).values({
       workspaceId: t.workspaceId,
-      qualifiedLeadId: leadId,
+      qualifiedLeadId: leadId!,
       threadId: thread!.id,
       stepNumber: 1,
       totalSteps: 3,
@@ -765,6 +811,10 @@ describe('rules', () => {
       .update(autopilotSettings)
       .set({ autopilotEnabled: true })
       .where(eq(autopilotSettings.workspaceId, t.workspaceId));
+    f = await finding(t, 'autopilot.state');
+    expect(f).toMatchObject({ severity: 'info', title: 'Autopilot is on' });
+    expect(f.facts).toMatchObject({ errors24h: 0, stepsOn: 'auto_approve_projects' });
+    // MOB-02: autopilot_log errors in the last 24 h are a live problem.
     await db.insert(autopilotLog).values({
       workspaceId: t.workspaceId,
       runId: 'r1',
@@ -772,8 +822,155 @@ describe('rules', () => {
       outcome: 'error',
     });
     f = await finding(t, 'autopilot.state');
-    expect(f).toMatchObject({ severity: 'info', title: 'Autopilot is on' });
+    expect(f).toMatchObject({
+      severity: 'warning',
+      title: 'Autopilot is on, with 1 step error in the last 24 hours',
+    });
     expect(f.facts).toMatchObject({ errors24h: 1, stepsOn: 'auto_approve_projects' });
+    // An error older than 24 h is history, not a problem.
+    await db
+      .update(autopilotLog)
+      .set({ createdAt: ago(2 * DAY) })
+      .where(eq(autopilotLog.workspaceId, t.workspaceId));
+    expect((await finding(t, 'autopilot.state')).severity).toBe('info');
+  });
+
+  it('records.unqualified (I077): in-play records an active product never judged; the grace hour; products.none takes over', async () => {
+    const t = await tenant();
+    const p1 = await product(t, 'Sealer');
+    await reviewQueue(t, p1, 5, 1, { updatedAt: ago(3 * DAY) });
+    // Every record judged by the only product: nothing to report.
+    const later = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    expect(await codes(t, later)).not.toContain('records.unqualified');
+    // A second product created after the records were found.
+    await product(t, 'Primer');
+    // Within the grace hour it may still be classifying: quiet.
+    expect(await codes(t)).not.toContain('records.unqualified');
+    const f = (await diagnose(t, later)).findings.find((x) => x.code === 'records.unqualified')!;
+    expect(f).toMatchObject({
+      severity: 'warning',
+      title: '5 records were never qualified for "Primer"',
+      href: '/connectors/engine',
+    });
+    expect(f.facts).toMatchObject({ recordsInPlay: 5, neverQualified: 0, worstProductMissing: 5 });
+    expect(f.detail).toContain('"Primer" (5 of 5)');
+    // Rejected records no longer matter.
+    await db.update(reviewItems).set({ state: 'rejected' }).where(eq(reviewItems.workspaceId, t.workspaceId));
+    expect(await codes(t, later)).not.toContain('records.unqualified');
+  });
+
+  it('records.unqualified: records found while no product was active count as never qualified', async () => {
+    const t = await tenant();
+    const records = await db
+      .insert(sourceRecords)
+      .values(
+        [0, 1, 2].map((i) => ({
+          workspaceId: t.workspaceId,
+          sourceSystem: 'mock',
+          sourceId: `orphan-${i}`,
+          rawData: {},
+          normalizedData: {},
+        })),
+      )
+      .returning({ id: sourceRecords.id });
+    await db.insert(reviewItems).values(
+      records.map((r) => ({
+        workspaceId: t.workspaceId,
+        sourceRecordId: r.id,
+        state: 'new' as const,
+        createdAt: ago(5 * DAY),
+      })),
+    );
+    expect(await codes(t)).toContain('products.none');
+    expect(await codes(t)).not.toContain('records.unqualified');
+    await product(t);
+    const later = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    const f = (await diagnose(t, later)).findings.find((x) => x.code === 'records.unqualified')!;
+    expect(f.title).toBe('3 records were never qualified');
+    expect(f.facts).toMatchObject({ neverQualified: 3 });
+    expect(f.notify.policy).toEqual(notifyEveryDays(30));
+  });
+
+  it('qualification.rules_fallback (I025): relevant fallback verdicts are a warning, the rest info', async () => {
+    const t = await tenant();
+    const p = await product(t);
+    await reviewQueue(t, p, 4, 0);
+    expect(await codes(t)).not.toContain('qualification.rules_fallback');
+    await db
+      .update(qualifications)
+      .set({ method: 'rules_fallback' })
+      .where(eq(qualifications.workspaceId, t.workspaceId));
+    let f = await finding(t, 'qualification.rules_fallback');
+    expect(f).toMatchObject({
+      severity: 'info',
+      title: '4 verdicts were made without the AI',
+      href: '/settings/integrations',
+    });
+    expect(f.notify.policy.kind).toBe('never');
+    // One of them came out relevant (a zero-signal record scores 50).
+    const [one] = await db
+      .select({ id: qualifications.id })
+      .from(qualifications)
+      .where(eq(qualifications.workspaceId, t.workspaceId))
+      .limit(1);
+    await db
+      .update(qualifications)
+      .set({ isRelevant: true, relevanceScore: 50 })
+      .where(eq(qualifications.id, one!.id));
+    f = await finding(t, 'qualification.rules_fallback');
+    expect(f).toMatchObject({ severity: 'warning', title: '1 record was marked relevant without the AI' });
+    expect(f.facts).toMatchObject({ fallbackVerdicts: 4, relevantByFallback: 1 });
+    expect(f.detail).toContain('scores 50');
+    expect(f.notify.policy).toEqual(notifyEveryDays(7));
+    // An archived product's verdicts do not count.
+    await db
+      .update(productProfiles)
+      .set({ active: false })
+      .where(eq(productProfiles.id, p));
+    expect(await codes(t)).not.toContain('qualification.rules_fallback');
+  });
+
+  it('drafts.blocked: approved but never queued, approved without an email, awaiting without an email', async () => {
+    const t = await tenant();
+    const p = await product(t);
+    const box = await mailbox(t, 'active');
+    // Fine: awaiting with an email; approved and queued; rejected without an email.
+    await draftFor(t, p, { status: 'draft' });
+    const queued = await draftFor(t, p, { status: 'approved', approvedAt: ago(3 * DAY) });
+    await db.insert(outreachQueue).values({
+      workspaceId: t.workspaceId,
+      mailboxId: box,
+      draftId: queued.draftId,
+      toAddresses: ['lead@prospect.test'],
+      subject: 'Quick question',
+      bodyText: 'Hi',
+      status: 'sent',
+    });
+    await draftFor(t, p, { status: 'rejected', lead: false });
+    expect(await codes(t)).not.toContain('drafts.blocked');
+
+    // C: awaiting approval, the lead has no address -> info, linked to it.
+    const c = await draftFor(t, p, { status: 'needs_edit', contactEmail: '  ' });
+    let f = await finding(t, 'drafts.blocked');
+    expect(f).toMatchObject({
+      severity: 'info',
+      title: '1 draft has no contact email',
+      href: `/drafts/${c.draftId}`,
+    });
+    expect(f.facts).toMatchObject({ approvedNotQueued: 0, approvedNoContactEmail: 0, awaitingNoContactEmail: 1 });
+
+    // A: approved minutes ago is in the grace; approved 3 days ago is stuck.
+    await draftFor(t, p, { status: 'approved', approvedAt: ago(5 * 60 * 1000) });
+    expect((await finding(t, 'drafts.blocked')).facts.approvedNotQueued).toBe(0);
+    await draftFor(t, p, { status: 'approved', approvedAt: ago(3 * DAY) });
+    // B: approved, no lead at all (production's one draft).
+    await draftFor(t, p, { status: 'approved', lead: false });
+    f = await finding(t, 'drafts.blocked');
+    expect(f).toMatchObject({ severity: 'warning', title: '2 approved drafts are stuck', href: '/drafts' });
+    expect(f.facts).toMatchObject({ approvedNotQueued: 1, approvedNoContactEmail: 1, awaitingNoContactEmail: 1 });
+    expect(f.detail).toContain('never queued');
+    expect(f.detail).toContain('no contact email');
+    expect(f.notify.policy.kind).toBe('never');
   });
 
   it('ops.incidents: open workspace incidents, one finding per kind; covered kinds left out', async () => {
@@ -909,15 +1106,19 @@ describe('the engine', () => {
  * Production-shaped (prod_report 2026-10-01, workspaces 1+2 folded into
  * one): a trial workspace, not live, two products; two failing mailboxes —
  * one with 13 consecutive failures and imap_next_sync_after NULL — and one
- * active; 310 open review items (stale since July) of which 1 is relevant;
+ * active; 310 open review items (stale since July) of which 1 is relevant,
+ * each judged by both products (620 verdicts, 28 by the rules fallback);
  * 141 automatic suppressions in 30 days against 110 distinct inbound
  * senders; auto-approve armed while autopilot is off; Gemini chosen for web
- * search with no key, its crawl plans all disabled; one stale draft.
+ * search with no key, its crawl plans all disabled; one stale draft whose
+ * pair has no lead (so no contact email).
  *
  * Expected findings and DOCUMENTED SCORE 20:
  *   critical  mailbox.failing ×2 (one rule: −25), suppression.spike (−25)
  *   warning   search.mock (−10), review.noise (−10), autopilot.state (−10)
- *   info      review.backlog, drafts.stale, golive.not_live (0)
+ *   info      review.backlog, drafts.stale, golive.not_live,
+ *             qualification.rules_fallback (none relevant), drafts.blocked
+ *             (awaiting, no email) (0)
  *   advisory  plan.limits, learning.unfed (0)
  * Notifications from one sweep: 3 — mailbox.failing (both folded into
  * one), suppression.spike, review.noise. search.mock stays quiet: nothing
@@ -926,7 +1127,7 @@ describe('the engine', () => {
 async function productionShaped(): Promise<Tenant> {
   const t = await tenant('prod', { live: false });
   const p1 = await product(t, 'Vetrofluid');
-  await product(t, 'Concrete repair');
+  const p2 = await product(t, 'Concrete repair');
   // Every production workspace is on the trial (they predate plan limits,
   // which only gate NEW resources: two products stay).
   await db
@@ -968,7 +1169,14 @@ async function productionShaped(): Promise<Tenant> {
     enabled: false,
     recipeIds: [r],
   } as typeof crawlPlans.$inferInsert);
-  await draftFor(t, p1, { status: 'draft', updatedAt: new Date('2026-07-08T12:00:00Z') });
+  await draftFor(t, p1, {
+    status: 'draft',
+    updatedAt: new Date('2026-07-08T12:00:00Z'),
+    lead: false,
+  });
+  // Both products judged every record, the draft's included.
+  await qualifyAll(t, p1);
+  await qualifyAll(t, p2, 28);
   return t;
 }
 
@@ -1004,9 +1212,26 @@ describe('calibration: the production-shaped fixture', () => {
     );
     const context = report.findings.filter((f) => !isProblem(f)).map((f) => f.code);
     expect(new Set(context)).toEqual(
-      new Set(['review.backlog', 'drafts.stale', 'golive.not_live', 'plan.limits', 'learning.unfed']),
+      new Set([
+        'review.backlog',
+        'drafts.stale',
+        'golive.not_live',
+        'plan.limits',
+        'learning.unfed',
+        'qualification.rules_fallback',
+        'drafts.blocked',
+      ]),
     );
+    expect(by('qualification.rules_fallback')[0]!.facts).toMatchObject({
+      fallbackVerdicts: 28,
+      relevantByFallback: 0,
+    });
+    expect(by('drafts.blocked')[0]!.facts).toMatchObject({ awaitingNoContactEmail: 1 });
     expect(report.score).toBe(20);
+    // Both products judged every record: no qualification gap, even after
+    // the grace hour.
+    const later = await diagnose(t, new Date(Date.now() + 2 * 60 * 60 * 1000));
+    expect(later.findings.map((f) => f.code)).not.toContain('records.unqualified');
   });
 
   it('the sweep sends at most 3 notifications, and none again within 24 hours', async () => {
@@ -1351,6 +1576,49 @@ describe('one diagnostic source: /health, Today and the assistant', () => {
     vi.spyOn(engine, 'getWorkspaceDiagnostics').mockRejectedValueOnce(new Error('db down'));
     const html = await renderToHtml(await TodayAttention({ ctx: t.ctx }));
     expect(html).toContain('The workspace checks could not run');
+  });
+});
+
+describe('stale-while-revalidate for the attention summary (MOB-02)', () => {
+  it('maxAgeMs serves a settled result past the TTL at once and refreshes it in the background', async () => {
+    const t = await tenant();
+    await product(t);
+    await mailbox(t, 'active');
+    const first = await getWorkspaceDiagnostics(t.ctx);
+    // A change the next fresh evaluation sees.
+    await mailbox(t, 'failing', { name: 'Late', lastError: 'IMAP: Socket timed out' });
+    _ageDiagnosticsMemoForTests(t.workspaceId, DIAGNOSTICS_MEMO_TTL_MS + 1000);
+    const stale = await getWorkspaceDiagnostics(t.ctx, { maxAgeMs: 5 * 60_000 });
+    expect(stale).toBe(first); // served from the memo, no waiting
+    expect(stale.findings.map((f) => f.code)).not.toContain('mailbox.failing');
+    // The background refresh lands; the next read within the TTL sees it.
+    await vi.waitFor(async () => {
+      const next = await getWorkspaceDiagnostics(t.ctx);
+      expect(next.findings.map((f) => f.code)).toContain('mailbox.failing');
+    });
+  });
+
+  it('past maxAgeMs (or without it) the caller waits for a fresh evaluation', async () => {
+    const t = await tenant();
+    const first = await getWorkspaceDiagnostics(t.ctx);
+    _ageDiagnosticsMemoForTests(t.workspaceId, 10 * 60_000);
+    const again = await getWorkspaceDiagnostics(t.ctx, { maxAgeMs: 5 * 60_000 });
+    expect(again).not.toBe(first);
+    expect(again.evaluatedAt.getTime()).toBeGreaterThan(first.evaluatedAt.getTime() - 1);
+  });
+
+  it('a refresh that started before an invalidation never writes its result back', async () => {
+    const t = await tenant();
+    await getWorkspaceDiagnostics(t.ctx);
+    _ageDiagnosticsMemoForTests(t.workspaceId, DIAGNOSTICS_MEMO_TTL_MS + 1000);
+    await getWorkspaceDiagnostics(t.ctx, { maxAgeMs: 5 * 60_000 }); // starts a refresh
+    invalidateDiagnostics(t.workspaceId);
+    const invalidatedAt = Date.now();
+    await new Promise((r) => setTimeout(r, 750)); // the refresh settles
+    // Had the refresh written back, this read (within the TTL) would get
+    // its evaluation from before the invalidation.
+    const next = await getWorkspaceDiagnostics(t.ctx);
+    expect(next.evaluatedAt.getTime()).toBeGreaterThanOrEqual(invalidatedAt);
   });
 });
 

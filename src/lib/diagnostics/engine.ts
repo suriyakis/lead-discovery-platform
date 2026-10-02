@@ -13,7 +13,10 @@
 //
 //   Memo: the result is kept 30 s per workspace for the pages that render
 //   on every navigation (Today). /health, the weekly report, the sweep and
-//   the assistant ask for a fresh evaluation.
+//   the assistant ask for a fresh evaluation. The attention summary
+//   (MOB-02, polled every 60 s by every open tab) passes `maxAgeMs`: it
+//   takes a settled result up to that old and refreshes it in the
+//   background, so a poll never waits for a full evaluation.
 
 import { describeError } from '@/lib/ops/mask';
 import type { WorkspaceContext } from '@/lib/services/context';
@@ -49,11 +52,33 @@ export interface DiagnosticsOptions {
   now?: Date;
   /** Test seam: another rule list. Bypasses the memo. */
   rules?: readonly DiagnosticRule[];
+  /**
+   * Stale-while-revalidate (MOB-02's attention summary): a settled
+   * memoised result younger than this is returned at once even past the
+   * 30 s TTL, and a fresh evaluation replaces it in the background (one
+   * at a time per workspace). Ignored with `fresh`.
+   */
+  maxAgeMs?: number;
 }
 
 export const DIAGNOSTICS_MEMO_TTL_MS = 30_000;
+/** The attention summary's staleness bound for the findings it carries. */
+export const DIAGNOSTICS_ATTENTION_MAX_AGE_MS = 5 * 60_000;
 const MEMO_MAX_WORKSPACES = 500;
-const memo = new Map<string, { at: number; report: Promise<DiagnosticsReport> }>();
+interface MemoEntry {
+  at: number;
+  report: Promise<DiagnosticsReport>;
+  /** The evaluation finished without throwing. */
+  settled: boolean;
+}
+const memo = new Map<string, MemoEntry>();
+/** Workspaces with a background refresh in flight. */
+const revalidating = new Set<string>();
+/** When each workspace's memo was last invalidated: a background refresh
+ *  that started before then must not write its (older) result back. */
+const invalidatedAt = new Map<string, number>();
+/** Bumped by the test reset: refreshes from before it are discarded. */
+let memoEpoch = 0;
 
 assertUniqueRuleIds(DIAGNOSTIC_RULES);
 
@@ -162,6 +187,55 @@ async function evaluate(
   };
 }
 
+function remember(key: string, report: Promise<DiagnosticsReport>): MemoEntry {
+  const entry: MemoEntry = { at: Date.now(), report, settled: false };
+  memo.delete(key);
+  memo.set(key, entry);
+  report.then(
+    () => {
+      entry.settled = true;
+    },
+    () => {
+      // A failed evaluation is never served from the memo.
+      if (memo.get(key) === entry) memo.delete(key);
+    },
+  );
+  while (memo.size > MEMO_MAX_WORKSPACES) {
+    const oldest = memo.keys().next().value;
+    if (oldest === undefined) break;
+    memo.delete(oldest);
+  }
+  return entry;
+}
+
+/** Re-evaluate in the background; the stale entry stays until it lands. */
+function revalidate(key: string, ctx: Pick<WorkspaceContext, 'workspaceId'>): void {
+  if (revalidating.has(key)) return;
+  revalidating.add(key);
+  const startedAt = Date.now();
+  const epoch = memoEpoch;
+  const report = evaluate(ctx, new Date(startedAt), DIAGNOSTIC_RULES);
+  report
+    .then(
+      () => {
+        if (epoch !== memoEpoch) return;
+        if ((invalidatedAt.get(key) ?? 0) >= startedAt) return;
+        // A fresh evaluation that started later already replaced it.
+        const current = memo.get(key);
+        if (current && current.at > startedAt) return;
+        memo.delete(key);
+        memo.set(key, { at: Date.now(), report, settled: true });
+      },
+      (err) => {
+        const { name, message } = describeError(err);
+        console.error(
+          `[diagnostics] background refresh failed for workspace=${key}: ${name}: ${message}`,
+        );
+      },
+    )
+    .finally(() => revalidating.delete(key));
+}
+
 /** The workspace's findings and score right now. Read-only; any member. */
 export function getWorkspaceDiagnostics(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -171,33 +245,42 @@ export function getWorkspaceDiagnostics(
   const seam = options.now !== undefined || options.rules !== undefined;
   if (!seam && !options.fresh) {
     const hit = memo.get(key);
-    if (hit && Date.now() - hit.at < DIAGNOSTICS_MEMO_TTL_MS) return hit.report;
-  }
-  const report = evaluate(ctx, options.now ?? new Date(), options.rules ?? DIAGNOSTIC_RULES);
-  if (!seam) {
-    memo.delete(key);
-    memo.set(key, { at: Date.now(), report });
-    // A failed evaluation is never served from the memo.
-    report.catch(() => {
-      if (memo.get(key)?.report === report) memo.delete(key);
-    });
-    while (memo.size > MEMO_MAX_WORKSPACES) {
-      const oldest = memo.keys().next().value;
-      if (oldest === undefined) break;
-      memo.delete(oldest);
+    const age = hit ? Date.now() - hit.at : Number.POSITIVE_INFINITY;
+    if (hit && age < DIAGNOSTICS_MEMO_TTL_MS) return hit.report;
+    if (hit && hit.settled && options.maxAgeMs !== undefined && age < options.maxAgeMs) {
+      revalidate(key, ctx);
+      return hit.report;
     }
   }
+  const report = evaluate(ctx, options.now ?? new Date(), options.rules ?? DIAGNOSTIC_RULES);
+  if (!seam) remember(key, report);
   return report;
 }
 
 /** Drop the memo for a workspace after a change the next read must see
  *  (the health settings, a manual check). */
 export function invalidateDiagnostics(workspaceId: bigint): void {
-  memo.delete(workspaceId.toString());
+  const key = workspaceId.toString();
+  memo.delete(key);
+  invalidatedAt.set(key, Date.now());
+  if (invalidatedAt.size > MEMO_MAX_WORKSPACES) {
+    const oldest = invalidatedAt.keys().next().value;
+    if (oldest !== undefined) invalidatedAt.delete(oldest);
+  }
 }
 
 /** Tests: forget every memoised result (truncateAll calls it: workspace
  *  ids restart at 1 after a truncate). */
 export function _resetDiagnosticsMemoForTests(): void {
   memo.clear();
+  revalidating.clear();
+  invalidatedAt.clear();
+  memoEpoch += 1;
+}
+
+/** Tests: age a workspace's memoised result by `ms` (the stale-while-
+ *  revalidate path without waiting). */
+export function _ageDiagnosticsMemoForTests(workspaceId: bigint, ms: number): void {
+  const entry = memo.get(workspaceId.toString());
+  if (entry) entry.at -= ms;
 }

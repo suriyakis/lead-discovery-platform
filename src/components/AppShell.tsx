@@ -12,6 +12,13 @@
 //
 // The chrome draws its icons with Lucide, never emoji (DS-08; the bell,
 // the god-mode crown, the account menu).
+//
+// MOB-02: every number in the chrome (sidebar badges, the bell, the
+// account menu) comes from ONE attention summary (src/lib/attention),
+// computed once per request and shared with the page (Today asks for the
+// same one). The Sidebar receives it as a seed and keeps it current in the
+// browser with useAttention(), because the shell does not re-render on
+// every client-side change. A number that failed to load prints "—".
 
 import { Bell, Crown, UserCircle } from 'lucide-react';
 import Link from 'next/link';
@@ -28,12 +35,15 @@ import { Sidebar } from './Sidebar';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { auth } from '@/lib/auth';
 import { signOutAction } from '@/lib/auth-actions';
-import { ACCOUNT_MENU, type NavCountValues } from '@/lib/nav/registry';
+import { navCountsFromAttention, type ProjectedNavCounts } from '@/lib/attention/project';
+import { getRequestAttentionSummary } from '@/lib/attention/service';
+import type { AttentionSummary } from '@/lib/attention/types';
+import { ACCOUNT_MENU } from '@/lib/nav/registry';
 import { resolveNavCount, tabById, type NavViewer } from '@/lib/nav/resolve';
 import { cx } from '@/lib/ui/cx';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 import { listMyWorkspaces } from '@/lib/services/workspace';
-import { getNavCounts, ZERO_NAV_COUNTS } from '@/lib/services/nav-counts';
+import { NO_NAV_COUNTS } from '@/lib/services/nav-counts';
 import type { WorkspaceRole } from '@/lib/services/context';
 import type { WorkspaceAutomationNotice } from '@/lib/services/automation-gate';
 
@@ -72,11 +82,10 @@ export async function AppShell({
   // Badges and the viewer's role for the active workspace. Resolve the
   // workspace THE SAME WAY pages do (incl. the god-mode branch and the
   // ignore-foreign-pointer rule for normal users) so the shell's badges
-  // never show a different tenant than the page content. Best-effort —
-  // degrades to zero badges and no role when there is no workspace yet.
-  let navCounts: NavCountValues = ZERO_NAV_COUNTS;
+  // never show a different tenant than the page content. With no
+  // workspace yet there are no numbers and no role (not zeros).
+  let attention: AttentionSummary | null = null;
   let role: WorkspaceRole | null = null;
-  let unreadNotifications = 0;
   // PC-06: holds, the platform outbound stop and a missing accountable
   // owner, shown to every member of the active workspace.
   let automationNotice: WorkspaceAutomationNotice | null = null;
@@ -90,27 +99,31 @@ export async function AppShell({
         session.user.role === 'super_admin',
       );
       role = shellCtx.role;
-      navCounts = await getNavCounts({ workspaceId: shellCtx.workspaceId });
-      const { unreadNotificationCount } = await import(
-        '@/lib/services/notifications'
-      );
-      unreadNotifications = await unreadNotificationCount(shellCtx);
       const { getWorkspaceAutomationNotice } = await import(
         '@/lib/services/automation-gate'
       );
-      automationNotice = await getWorkspaceAutomationNotice(shellCtx);
+      const [summary, notice] = await Promise.allSettled([
+        getRequestAttentionSummary(shellCtx, { isSuperAdmin: showAdmin }),
+        getWorkspaceAutomationNotice(shellCtx),
+      ]);
+      attention = summary.status === 'fulfilled' ? summary.value : null;
+      automationNotice = notice.status === 'fulfilled' ? notice.value : null;
     } catch {
-      // No resolvable workspace yet — badges stay at zero.
+      // No resolvable workspace yet — no badges.
     }
   }
-  if (showAdmin) {
+  let nav: ProjectedNavCounts = attention ? navCountsFromAttention(attention) : NO_NAV_COUNTS;
+  if (!attention && showAdmin) {
+    // A super-admin with no workspace still runs the console: its support
+    // badge does not depend on a tenant.
     try {
       const { adminSupportUnreadCount } = await import('@/lib/services/support');
-      navCounts = { ...navCounts, adminSupportUnread: await adminSupportUnreadCount() };
+      nav = { ...nav, values: { ...nav.values, adminSupportUnread: await adminSupportUnreadCount() } };
     } catch {
-      // Table not migrated yet — the console badge stays hidden.
+      nav = { ...nav, unknown: new Set([...nav.unknown, 'adminSupportUnread']) };
     }
   }
+  const unreadNotifications = attention ? attention.counts['notifications.unread'] : 0;
   const viewer: NavViewer = { role, isSuperAdmin: showAdmin };
 
   const slot =
@@ -119,7 +132,7 @@ export async function AppShell({
       <DefaultRightSlot
         email={session.user.email}
         unreadNotifications={unreadNotifications}
-        navCounts={navCounts}
+        nav={nav}
         myWorkspaces={myWorkspaces.map((m) => ({
           id: m.workspace.id.toString(),
           name: m.workspace.name,
@@ -163,9 +176,15 @@ export async function AppShell({
       ) : null}
       {automationNotice ? <AutomationHoldBanner notice={automationNotice} /> : null}
       <div className="app-body">
-        <Sidebar isSuperAdmin={showAdmin} role={role} navCounts={navCounts} />
+        <Sidebar
+          isSuperAdmin={showAdmin}
+          role={role}
+          attention={attention}
+          navCounts={nav.values}
+          unknownCounts={[...nav.unknown]}
+        />
         <main className="app-main">
-          <AreaFrame viewer={viewer} navCounts={navCounts}>
+          <AreaFrame viewer={viewer} navCounts={nav.values}>
             {children}
           </AreaFrame>
         </main>
@@ -187,35 +206,38 @@ export async function AppShell({
 function DefaultRightSlot({
   email,
   unreadNotifications,
-  navCounts,
+  nav,
   myWorkspaces,
 }: Readonly<{
   email: string;
-  unreadNotifications: number;
-  navCounts: NavCountValues;
+  /** null: the number could not be loaded (the bell prints "—"). */
+  unreadNotifications: number | null;
+  nav: ProjectedNavCounts;
   myWorkspaces: React.ComponentProps<typeof WorkspaceSwitcher>['workspaces'];
 }>) {
+  const countOptions = { unknown: nav.unknown };
   // Unread support replies also show on the closed menu, so they are not
   // hidden behind it.
-  const menuCounts = ACCOUNT_MENU.map((id) => resolveNavCount(tabById(id).tab.count, navCounts));
+  const menuCounts = ACCOUNT_MENU.map((id) =>
+    resolveNavCount(tabById(id).tab.count, nav.values, countOptions),
+  );
   const menuCount = menuCounts.find((c) => c !== null) ?? null;
+  let bellText: string | null = null;
+  if (unreadNotifications === null) bellText = '—';
+  else if (unreadNotifications > 99) bellText = '99+';
+  else if (unreadNotifications > 0) bellText = String(unreadNotifications);
+  let bellLabel = 'Notifications';
+  if (unreadNotifications === null) bellLabel = 'Notifications, unread count unavailable';
+  else if (unreadNotifications > 0) bellLabel = `Notifications, ${unreadNotifications} unread`;
   return (
     <>
       <CommandPaletteTrigger />
       {/* The bell counts events; the count is neutral (DS-00 count policy). */}
-      <Link
-        href="/notifications"
-        className={cx('header-bell', styles.bell)}
-        aria-label={
-          unreadNotifications > 0
-            ? `Notifications, ${unreadNotifications} unread`
-            : 'Notifications'
-        }
-      >
+      <Link href="/notifications" className={cx('header-bell', styles.bell)} aria-label={bellLabel}>
         <Bell className="lucide" aria-hidden="true" />
-        {unreadNotifications > 0 ? (
+        {bellText ? (
           <span className={cx('header-bell-count', styles.bellCount)} aria-hidden="true">
-            {unreadNotifications > 99 ? '99+' : unreadNotifications}
+            {bellText}
           </span>
         ) : null}
       </Link>
@@ -235,7 +257,7 @@ function DefaultRightSlot({
           <ul className={cx('header-account-links', styles.accountLinks)}>
             {ACCOUNT_MENU.map((id) => {
               const { tab } = tabById(id);
-              const count = resolveNavCount(tab.count, navCounts);
+              const count = resolveNavCount(tab.count, nav.values, countOptions);
               return (
                 <li key={id}>
                   <Link href={tab.href} data-tab={tab.id}>

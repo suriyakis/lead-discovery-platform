@@ -1,3 +1,9 @@
+// /drafts — outreach drafts. MOB-02: the default view is "Awaiting
+// approval" (status draft or needs_edit): exactly the drafts the attention
+// summary's drafts.approve key counts, so the Outreach badge, Today's
+// "Drafts awaiting approval" tile and this list agree. "All active" keeps
+// the old view (adds approved and rejected).
+
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
@@ -13,6 +19,7 @@ import {
   type OutreachDraftRow,
 } from '@/lib/services/outreach';
 import { hintsForDrafts, type Hint } from '@/lib/services/hints';
+import { DRAFT_APPROVAL_STATUSES } from '@/lib/attention/service';
 import { HintBadgeList } from '@/components/HintBadge';
 import { EmptyState } from '@/components/EmptyState';
 import { BadgeGroup, StatusBadge } from '@/components/Badge';
@@ -20,13 +27,26 @@ import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { labelFor, OUTREACH_DRAFT_STATUS_LABEL } from '@/lib/ui/labels';
 
-const STATUS_FILTERS: ReadonlyArray<{ key: 'all' | OutreachDraftStatus; label: string }> = [
+type DraftFilterKey = 'awaiting' | 'all' | OutreachDraftStatus;
+
+const STATUS_FILTERS: ReadonlyArray<{ key: DraftFilterKey; label: string }> = [
+  { key: 'awaiting', label: 'Awaiting approval' },
   { key: 'all', label: 'All active' },
   ...(['draft', 'needs_edit', 'approved', 'rejected'] as const).map((key) => ({
     key,
     label: OUTREACH_DRAFT_STATUS_LABEL[key],
   })),
 ];
+
+/** The view a plain /drafts opens: drafts.approve's rows. */
+const DEFAULT_DRAFT_FILTER: DraftFilterKey = 'awaiting';
+
+/** The listOutreachDrafts status filter of a view (undefined = all active). */
+function statusesFor(key: DraftFilterKey): OutreachDraftStatus | OutreachDraftStatus[] | undefined {
+  if (key === 'awaiting') return [...DRAFT_APPROVAL_STATUSES];
+  if (key === 'all') return undefined;
+  return key;
+}
 
 export default async function DraftsPage({
   searchParams,
@@ -37,9 +57,9 @@ export default async function DraftsPage({
   if (!session?.user?.id) redirect('/');
 
   const sp = await searchParams;
-  const requested = sp.status ?? 'all';
+  const requested = sp.status ?? DEFAULT_DRAFT_FILTER;
   const isValidStatus = STATUS_FILTERS.some((f) => f.key === requested);
-  const statusKey = isValidStatus ? (requested as 'all' | OutreachDraftStatus) : 'all';
+  const statusKey = isValidStatus ? (requested as DraftFilterKey) : DEFAULT_DRAFT_FILTER;
   const productFilter =
     sp.product && /^\d+$/.test(sp.product) ? BigInt(sp.product) : null;
 
@@ -50,7 +70,7 @@ export default async function DraftsPage({
     const ctx = await getWorkspaceContext();
     products = await listProductProfiles(ctx, { includeArchived: false });
     drafts = await listOutreachDrafts(ctx, {
-      status: statusKey === 'all' ? undefined : (statusKey as OutreachDraftStatus),
+      status: statusesFor(statusKey),
       productProfileId: productFilter ?? undefined,
       limit: 200,
     });

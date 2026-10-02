@@ -11,11 +11,16 @@
 // pending-account wall and the one-time first-run redirect to the setup
 // wizard. Above both views, "Needs fixing" lists the problems the
 // diagnostics engine finds (AP-06), the same list /health shows.
+// Every count on the page (the Needs-you tabs, the Overview's decision
+// tiles) comes from the request's attention summary (MOB-02), the one
+// AppShell projects into the sidebar badges.
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { NoWorkspaceScreen } from '@/components/NoWorkspaceScreen';
+import { getRequestAttentionSummary } from '@/lib/attention/service';
+import type { AttentionSummary } from '@/lib/attention/types';
 import { auth } from '@/lib/auth';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
@@ -111,6 +116,13 @@ export default async function TodayPage({
     active.workspace.onboardingStatus !== 'completed' &&
     canAdminWorkspace(ctx);
   const firstName = session.user.name ? session.user.name.split(' ')[0] : null;
+  // The same summary (and the same request-cached call) as AppShell's.
+  let attention: AttentionSummary | null = null;
+  try {
+    attention = await getRequestAttentionSummary(ctx, { isSuperAdmin });
+  } catch (err) {
+    console.error('[today] attention summary unavailable:', err);
+  }
 
   return (
     <AppShell>
@@ -143,11 +155,12 @@ export default async function TodayPage({
             }}
             active={active}
             signals={await getDashboardSignals(ctx)}
+            attention={attention}
             showSetupLink={showSetupLink}
             viewer={{ role: ctx.role, isSuperAdmin }}
           />
         ) : (
-          <NeedsYou ctx={ctx} tab={parseNeedsYouTab(sp.tab)} />
+          <NeedsYou ctx={ctx} tab={parseNeedsYouTab(sp.tab)} attention={attention} />
         )}
       </div>
     </AppShell>

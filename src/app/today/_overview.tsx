@@ -4,6 +4,10 @@
 // tiles come from the navigation registry, so they can no longer drift
 // from the sidebar the way the old hand-written module list did (I082).
 // /dashboard redirects to /today?view=overview.
+//
+// MOB-02: the decision tiles (Pending review, Drafts awaiting approval)
+// read the attention summary — the object the sidebar badges project and
+// /api/attention returns — so a tile always equals its badge.
 
 import Link from 'next/link';
 import {
@@ -19,6 +23,7 @@ import { Alert } from '@/components/Alert';
 import { StatusBadge } from '@/components/Badge';
 import { FunnelBars } from '@/components/FunnelBars';
 import { NavIcon } from '@/components/NavIcon';
+import type { AttentionSummary } from '@/lib/attention/types';
 import { HOME_PATH } from '@/lib/nav/registry';
 import { areaHref, sidebarAreas, type NavViewer } from '@/lib/nav/resolve';
 import { getDashboardSignals } from '@/lib/services/dashboard-signals';
@@ -31,6 +36,8 @@ export interface TodayOverviewProps {
   user: { name: string | null; email: string | null; role: string };
   active: Awaited<ReturnType<typeof getActiveWorkspaceSummary>>;
   signals: Awaited<ReturnType<typeof getDashboardSignals>>;
+  /** The request's attention summary (null: it could not be computed). */
+  attention: AttentionSummary | null;
   showSetupLink: boolean;
   viewer: NavViewer;
 }
@@ -39,6 +46,7 @@ export function TodayOverview({
   user,
   active,
   signals,
+  attention,
   showSetupLink,
   viewer,
 }: Readonly<TodayOverviewProps>) {
@@ -88,7 +96,7 @@ export function TodayOverview({
         </article>
       </section>
 
-      <CockpitGrid signals={signals} />
+      <CockpitGrid signals={signals} attention={attention} />
 
       <section className="dashboard-modules">
         <div className="section-header">
@@ -118,11 +126,16 @@ export function TodayOverview({
 
 function CockpitGrid({
   signals,
+  attention,
 }: {
   signals: Awaited<ReturnType<typeof getDashboardSignals>>;
+  attention: AttentionSummary | null;
 }) {
   // I070: a failed load shows "—", never a zero that reads as a count.
   const value = (n: number) => (signals.degraded ? null : n);
+  const reviewOpen = attention?.counts['review.open'] ?? null;
+  const draftsApprove = attention?.counts['drafts.approve'] ?? null;
+  const degraded = signals.degraded || !attention || attention.degraded;
   const q = signals.sendQueue;
   return (
     <section className="cockpit-grid">
@@ -130,7 +143,7 @@ function CockpitGrid({
       <p className="section-sub">
         What needs your attention right now.
       </p>
-      {signals.degraded ? (
+      {degraded ? (
         <Alert tone="warning" title="Some numbers could not be loaded">
           The figures below show “—” until the page loads them again.
         </Alert>
@@ -139,18 +152,18 @@ function CockpitGrid({
         <SignalCard
           icon={ListChecks}
           label="Pending review"
-          value={value(signals.reviewPending)}
+          value={reviewOpen}
           href={`${HOME_PATH}?tab=review`}
-          tone={signals.reviewPending > 0 ? 'amber' : 'neutral'}
+          tone={(reviewOpen ?? 0) > 0 ? 'amber' : 'neutral'}
         />
         <SignalCard
           icon={PencilLine}
           label="Drafts awaiting approval"
-          value={value(signals.drafts.total)}
+          value={draftsApprove}
           href={`${HOME_PATH}?tab=drafts`}
-          tone={signals.drafts.total > 0 ? 'amber' : 'neutral'}
+          tone={(draftsApprove ?? 0) > 0 ? 'amber' : 'neutral'}
           sub={
-            signals.degraded
+            signals.degraded || draftsApprove === null
               ? undefined
               : `${signals.drafts.discovery} disc · ${signals.drafts.engagement} eng · ${signals.drafts.pitch} pitch · ${signals.drafts.closing} close`
           }

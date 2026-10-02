@@ -4,6 +4,14 @@
 // list/count functions; the underlying pages (/review, /drafts,
 // /communication, /communication/follow-ups) remain canonical for deep
 // links and bookmarks. /inbox?tab=X redirects to /today?tab=X.
+//
+// MOB-02: the tab counts are the attention summary's keys (review.open,
+// drafts.approve, replies.awaiting, followUps.approve) — the same object
+// the sidebar badges and /api/attention carry — and each tab lists exactly
+// the rows its key counts. The registry's count policy applies here too:
+// Review is amber only while needs_review > 0, and Replies shows no
+// number until reply triage is trusted (I084). A count that failed to load
+// prints "—", never 0.
 
 import Link from 'next/link';
 import {
@@ -12,20 +20,19 @@ import {
   PencilLine,
   Timer,
 } from 'lucide-react';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '@/lib/db/client';
-import { mailMessages } from '@/lib/db/schema/mailing';
-import { outreachThreadState } from '@/lib/db/schema/outreach';
+import { navCountsFromAttention } from '@/lib/attention/project';
+import {
+  DRAFT_APPROVAL_STATUSES,
+  OPEN_REVIEW_STATES,
+  listAwaitingReplies,
+} from '@/lib/attention/service';
+import type { AttentionSummary } from '@/lib/attention/types';
 import { HOME_PATH } from '@/lib/nav/registry';
+import { areaById, resolveNavCount } from '@/lib/nav/resolve';
 import type { WorkspaceContext } from '@/lib/services/context';
 import { listReviewItems } from '@/lib/services/review';
 import { listOutreachDrafts } from '@/lib/services/outreach';
-import {
-  countFollowUpsByStatus,
-  listFollowUps,
-} from '@/lib/services/follow-up';
-import { reviewItems } from '@/lib/db/schema/review';
-import { outreachDrafts } from '@/lib/db/schema/outreach';
+import { listFollowUps } from '@/lib/services/follow-up';
 import { Badge, BadgeGroup, CountBadge, StatusBadge } from '@/components/Badge';
 import { cx } from '@/lib/ui/cx';
 import type { CountTone } from '@/lib/ui/tone';
@@ -46,84 +53,58 @@ export function parseNeedsYouTab(raw: string | undefined): NeedsYouTab {
 
 const ITEMS_PER_TAB = 50;
 
+/** One tab's badge: the number (null = unknown, "—") and its tone; a tab
+ *  whose count the policy hides has none. */
+interface TabCount {
+  value: number | null;
+  tone: CountTone;
+}
+
+/** The four tabs' badges from the attention summary, by the registry's
+ *  count policy. */
+export function needsYouCounts(
+  attention: AttentionSummary | null,
+): Record<NeedsYouTab, TabCount | null> {
+  if (!attention) {
+    const unknown: TabCount = { value: null, tone: 'neutral' };
+    return { review: unknown, drafts: unknown, replies: null, followups: unknown };
+  }
+  const nav = navCountsFromAttention(attention);
+  const policy = (areaId: string): TabCount | null => {
+    const r = resolveNavCount(areaById(areaId).count, nav.values, { unknown: nav.unknown });
+    return r ? { value: r.value, tone: r.tone } : null;
+  };
+  const plain = (value: number | null): TabCount | null =>
+    value === null ? { value: null, tone: 'neutral' } : value > 0 ? { value, tone: 'attention' } : null;
+  return {
+    // Amber only while a needs_review item waits; 'new' alone is neutral.
+    review: policy('review'),
+    drafts: plain(attention.counts['drafts.approve']),
+    // The Conversations count is gated until I084: no number here either.
+    replies: policy('conversations'),
+    followups: plain(attention.counts['followUps.approve']),
+  };
+}
+
 export async function NeedsYou({
   ctx,
   tab,
-}: Readonly<{ ctx: WorkspaceContext; tab: NeedsYouTab }>) {
-  const ws = ctx.workspaceId;
-
-  // Counts for all four tab badges, in parallel — small queries each.
-  const [reviewCountRow, draftsCountRow, replyCountRow, followUpCounts] =
-    await Promise.all([
-      db
-        .select({
-          n: sql<number>`count(*)::int`,
-          needsReview: sql<number>`(count(*) filter (where ${reviewItems.state} = 'needs_review'))::int`,
-        })
-        .from(reviewItems)
-        .where(
-          and(
-            eq(reviewItems.workspaceId, ws),
-            inArray(reviewItems.state, ['new', 'needs_review']),
-          ),
-        ),
-      db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(outreachDrafts)
-        .where(
-          and(
-            eq(outreachDrafts.workspaceId, ws),
-            inArray(outreachDrafts.status, ['draft', 'needs_edit']),
-          ),
-        ),
-      db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(mailMessages)
-        .innerJoin(
-          outreachThreadState,
-          and(
-            eq(outreachThreadState.threadId, mailMessages.threadId),
-            eq(outreachThreadState.workspaceId, mailMessages.workspaceId),
-          ),
-        )
-        .where(
-          and(
-            eq(mailMessages.workspaceId, ws),
-            eq(mailMessages.direction, 'inbound'),
-          ),
-        ),
-      countFollowUpsByStatus(ctx),
-    ]);
-
-  const counts = {
-    review: reviewCountRow[0]?.n ?? 0,
-    drafts: draftsCountRow[0]?.n ?? 0,
-    replies: replyCountRow[0]?.n ?? 0,
-    followups: followUpCounts.awaiting_approval,
-  };
-  // The nav count policy (docs/design/IA.md): amber only while a decision
-  // waits on this user. Untouched 'new' records alone stay neutral, and
-  // replies stay neutral until reply triage can be trusted (I084).
-  const tones: Record<NeedsYouTab, CountTone> = {
-    review: (reviewCountRow[0]?.needsReview ?? 0) > 0 ? 'attention' : 'neutral',
-    drafts: 'attention',
-    replies: 'neutral',
-    followups: 'attention',
-  };
-
+  attention,
+}: Readonly<{ ctx: WorkspaceContext; tab: NeedsYouTab; attention: AttentionSummary | null }>) {
+  const counts = needsYouCounts(attention);
   return (
     <>
       <div className="scope-tabs">
-        <TabLink tab="review" active={tab} count={counts.review} tone={tones.review} icon={ListChecks}>
+        <TabLink tab="review" active={tab} count={counts.review} icon={ListChecks}>
           Review
         </TabLink>
-        <TabLink tab="drafts" active={tab} count={counts.drafts} tone={tones.drafts} icon={PencilLine}>
+        <TabLink tab="drafts" active={tab} count={counts.drafts} icon={PencilLine}>
           Drafts
         </TabLink>
-        <TabLink tab="replies" active={tab} count={counts.replies} tone={tones.replies} icon={MessageSquare}>
+        <TabLink tab="replies" active={tab} count={counts.replies} icon={MessageSquare}>
           Replies
         </TabLink>
-        <TabLink tab="followups" active={tab} count={counts.followups} tone={tones.followups} icon={Timer}>
+        <TabLink tab="followups" active={tab} count={counts.followups} icon={Timer}>
           Follow-ups
         </TabLink>
       </div>
@@ -140,14 +121,12 @@ function TabLink({
   tab,
   active,
   count,
-  tone,
   icon: Icon,
   children,
 }: {
   tab: NeedsYouTab;
   active: NeedsYouTab;
-  count: number;
-  tone: CountTone;
+  count: TabCount | null;
   icon: typeof ListChecks;
   children: React.ReactNode;
 }) {
@@ -156,11 +135,12 @@ function TabLink({
       href={`${HOME_PATH}?tab=${tab}`}
       className={active === tab ? 'active' : ''}
       aria-current={active === tab ? 'page' : undefined}
+      data-needs-tab={tab}
     >
       <span className={styles.tabLabel}>
         <Icon className="lucide" aria-hidden="true" />
         {children}
-        {count > 0 ? <CountBadge count={count} tone={tone} /> : null}
+        {count ? <CountBadge count={count.value} tone={count.tone} /> : null}
       </span>
     </Link>
   );
@@ -168,7 +148,7 @@ function TabLink({
 
 async function ReviewTab({ ctx }: { ctx: WorkspaceContext }) {
   const items = await listReviewItems(ctx, {
-    state: ['new', 'needs_review'],
+    state: [...OPEN_REVIEW_STATES],
     limit: ITEMS_PER_TAB,
   });
   if (items.length === 0) {
@@ -221,7 +201,7 @@ function sourceRecordLabel(s: {
 
 async function DraftsTab({ ctx }: { ctx: WorkspaceContext }) {
   const rows = await listOutreachDrafts(ctx, {
-    status: ['draft', 'needs_edit'],
+    status: [...DRAFT_APPROVAL_STATUSES],
     limit: ITEMS_PER_TAB,
   });
   if (rows.length === 0) {
@@ -257,58 +237,29 @@ async function DraftsTab({ ctx }: { ctx: WorkspaceContext }) {
 }
 
 async function RepliesTab({ ctx }: { ctx: WorkspaceContext }) {
-  // Inbound messages on outreach threads only — non-outreach inbox
-  // mail lives on /mailbox. The join filters by membership in
-  // outreach_thread_state.
-  const rows = await db
-    .select({
-      id: mailMessages.id,
-      threadId: mailMessages.threadId,
-      fromName: mailMessages.fromName,
-      fromAddress: mailMessages.fromAddress,
-      subject: mailMessages.subject,
-      receivedAt: mailMessages.receivedAt,
-      createdAt: mailMessages.createdAt,
-      intent: mailMessages.replyClassification,
-    })
-    .from(mailMessages)
-    .innerJoin(
-      outreachThreadState,
-      and(
-        eq(outreachThreadState.threadId, mailMessages.threadId),
-        eq(outreachThreadState.workspaceId, mailMessages.workspaceId),
-      ),
-    )
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.direction, 'inbound'),
-      ),
-    )
-    .orderBy(desc(mailMessages.id))
-    .limit(ITEMS_PER_TAB);
+  // replies.awaiting: prospect replies nobody has answered yet (trash and
+  // spam left out; newsletters and auto-replies are not prospect replies).
+  const rows = await listAwaitingReplies(ctx, { limit: ITEMS_PER_TAB });
 
   if (rows.length === 0) {
     return (
       <EmptyState
-        label="No recent replies on outreach threads"
-        sub="Inbound messages on tracked outreach threads will appear here. Cold inbox mail goes to /mailbox."
+        label="No prospect replies waiting for an answer"
+        sub="A reply from a prospect shows here until someone answers it from the thread. Other inbox mail stays on /communication."
       />
     );
   }
   return (
     <ul className="profile-list">
       {rows.map((m) => (
-        <li key={m.id.toString()}>
+        <li key={m.threadId.toString()}>
           <div className="lead-row">
-            <Link href={`/communication/${m.threadId ?? ''}`}>
-              {m.subject || '(no subject)'}
-            </Link>
-            {m.intent ? <StatusBadge set="reply_class" value={m.intent} /> : null}
+            <Link href={`/communication/${m.threadId}`}>{m.subject || '(no subject)'}</Link>
+            {m.classification ? <StatusBadge set="reply_class" value={m.classification} /> : null}
           </div>
           <div className="meta">
             <span>from {m.fromName ?? m.fromAddress}</span>
-            <span>{(m.receivedAt ?? m.createdAt).toLocaleString()}</span>
+            <span>{m.receivedAt.toLocaleString()}</span>
           </div>
         </li>
       ))}

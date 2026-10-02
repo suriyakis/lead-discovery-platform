@@ -199,28 +199,44 @@ export function resolveNavLocation(
 // ---- badges -------------------------------------------------------------
 
 export interface ResolvedCount {
-  value: number;
-  /** What the badge prints: the number, capped at 99+. */
+  /** null: the number could not be loaded (the badge prints "—"). */
+  value: number | null;
+  /** What the badge prints: the number, capped at 99+, or "—". */
   text: string;
   tone: NavTone;
   /** Accessible label, e.g. "4 drafts and follow-ups awaiting approval". */
   label: string;
 }
 
+export interface ResolveNavCountOptions {
+  /**
+   * MOB-02: keys whose source failed to load this time (the attention
+   * summary's projection, src/lib/attention/project.ts). Such a badge
+   * prints "—" in the neutral tone instead of vanishing, so a failed load
+   * never reads as "nothing waiting".
+   */
+  unknown?: ReadonlySet<string>;
+}
+
 /**
- * Apply the count policy to one badge: no number for zero, unknown or a
- * hidden gate; the spec's tone only while its gate holds, otherwise
- * neutral.
+ * Apply the count policy to one badge: no number for zero, for a value
+ * that was never computed, or behind a hidden gate; "—" for a value whose
+ * load failed (options.unknown); the spec's tone only while its gate
+ * holds, otherwise neutral.
  */
 export function resolveNavCount(
   spec: NavCountSpec | undefined,
   values: NavCountValues | undefined,
+  options: ResolveNavCountOptions = {},
 ): ResolvedCount | null {
   if (!spec || !values) return null;
   let gateMet = true;
   if (spec.gate?.kind === 'blocked') gateMet = false;
   if (spec.gate?.kind === 'signal') gateMet = (values[spec.gate.signal] ?? 0) > 0;
   if (!gateMet && spec.whenGateUnmet === 'hidden') return null;
+  if (options.unknown?.has(spec.key)) {
+    return { value: null, text: '—', tone: 'neutral', label: `${spec.noun}: number unavailable` };
+  }
   const value = values[spec.key];
   if (value === null || value === undefined || value <= 0) return null;
   return {

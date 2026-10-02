@@ -8,12 +8,18 @@
 // I070: the send-queue tile shows the daily cap exactly as the drain
 // applies it (getSendCapUsage: emails delivered in the trailing 24 hours,
 // whatever path sent them, against outreach_send_settings.daily_email_limit).
+//
+// MOB-02: the decision counts (pending review, drafts awaiting approval)
+// are NOT here: Today's tiles read them from the attention summary
+// (src/lib/attention), the same object the sidebar badges project, so a
+// tile and its badge cannot disagree. This module keeps what only the
+// Overview shows: the drafts' stage mix, inbound volume, the send queue,
+// the funnel and the latest replies.
 
 import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { mailMessages } from '@/lib/db/schema/mailing';
-import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { qualifiedLeads, type PipelineState } from '@/lib/db/schema/pipeline';
 import type { WorkspaceContext } from './context';
@@ -23,9 +29,9 @@ export interface DashboardSignals {
   /** A query failed: every number below is a placeholder, not a count —
    *  render "—" and say so (I070). */
   degraded: boolean;
-  reviewPending: number;
+  /** Drafts awaiting approval by stage (the total is the attention
+   *  summary's drafts.approve). */
   drafts: {
-    total: number;
     discovery: number;
     engagement: number;
     pitch: number;
@@ -67,7 +73,6 @@ const ZERO_FUNNEL: Record<PipelineState, number> = {
 };
 
 const ZERO_DRAFTS = {
-  total: 0,
   discovery: 0,
   engagement: 0,
   pitch: 0,
@@ -77,7 +82,6 @@ const ZERO_DRAFTS = {
 /** What a failed load returns: placeholders, flagged degraded. */
 const DEGRADED: DashboardSignals = {
   degraded: true,
-  reviewPending: 0,
   drafts: ZERO_DRAFTS,
   replies7d: 0,
   recentInbound: [],
@@ -94,7 +98,6 @@ export async function getDashboardSignals(
 
   try {
     const [
-      reviewPendingRow,
       draftRows,
       replies7dRow,
       recentInbound,
@@ -104,15 +107,6 @@ export async function getDashboardSignals(
       leadRows,
       pauseRow,
     ] = await Promise.all([
-      db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(reviewItems)
-        .where(
-          and(
-            eq(reviewItems.workspaceId, ws),
-            inArray(reviewItems.state, ['new', 'needs_review']),
-          ),
-        ),
       db
         .select({
           stage: outreachDrafts.stage,
@@ -191,7 +185,6 @@ export async function getDashboardSignals(
     for (const row of draftRows) {
       const stage = row.stage as keyof typeof drafts;
       if (stage in drafts) (drafts as Record<string, number>)[stage] = row.n;
-      drafts.total += row.n;
     }
 
     const funnel = { ...ZERO_FUNNEL };
@@ -199,7 +192,6 @@ export async function getDashboardSignals(
 
     return {
       degraded: false,
-      reviewPending: reviewPendingRow[0]?.n ?? 0,
       drafts,
       replies7d: replies7dRow[0]?.n ?? 0,
       recentInbound: recentInbound.map((m) => ({

@@ -20,6 +20,7 @@ import {
   suppressionSpikeRule,
 } from './rules/mail';
 import { jobsStaleRule, opsIncidentsRule } from './rules/ops';
+import { recordsUnqualifiedRule, rulesFallbackRule } from './rules/qualification';
 import {
   knowledgeIndexFailedRule,
   learningUnfedRule,
@@ -32,6 +33,7 @@ import {
   tokensEmptyRule,
 } from './rules/setup';
 import {
+  draftsBlockedRule,
   draftsStaleRule,
   followUpsPendingRule,
   reviewBacklogRule,
@@ -56,6 +58,8 @@ export const DIAGNOSTIC_RULES: readonly DiagnosticRule[] = Object.freeze([
   recipesNoCountryRule,
   runsFailedRule,
   runsZeroResultsRule,
+  recordsUnqualifiedRule,
+  rulesFallbackRule,
   reviewNoiseRule,
   knowledgeIndexFailedRule,
   autopilotStateRule,
@@ -64,6 +68,7 @@ export const DIAGNOSTIC_RULES: readonly DiagnosticRule[] = Object.freeze([
   jobsStaleRule,
   // Waiting work and context
   reviewBacklogRule,
+  draftsBlockedRule,
   draftsStaleRule,
   followUpsPendingRule,
   sendCapRule,

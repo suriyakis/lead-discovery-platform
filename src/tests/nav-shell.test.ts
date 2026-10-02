@@ -202,7 +202,7 @@ describe('count policy on a prod-shaped workspace (DS-05 acceptance)', () => {
     const ids = await seedNewRecords(ws, 310);
     await signInAs(user);
 
-    const counts = await getNavCounts({ workspaceId: ws });
+    const counts = (await getNavCounts({ workspaceId: ws, userId: user })).values;
     expect(counts).toMatchObject({ reviewPending: 310, reviewNeedsReview: 0, outreachPending: 0 });
     let $ = await shell('/review');
     let badge = $('aside.sidebar a[data-area="review"] .nav-count');

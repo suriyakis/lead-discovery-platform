@@ -176,8 +176,10 @@ const STEP_SHORT: Readonly<Record<AutopilotStepKey, string>> = {
  * overrides, the last run and its errors in 24 h), or off with steps still
  * armed — production's workspace 2 has auto-approve on while autopilot is
  * off, so switching autopilot on would start approving at once.
- *   warning  armed while off; on without a plan that includes it
- *   info     on, running (the state the assistant needs)
+ *   warning  armed while off; on without a plan that includes it; on with
+ *            step errors in the last 24 h (MOB-02: autopilot_log errors are
+ *            a live problem, not a footnote)
+ *   info     on, running cleanly (the state the assistant needs)
  *   none     off with nothing armed
  */
 export const autopilotStateRule = defineRule({
@@ -257,11 +259,16 @@ export const autopilotStateRule = defineRule({
         ? 'The review items it approves are attributed to the workspace owner.'
         : null,
     ];
+    let title = 'Autopilot is on';
+    if (!ap.planAllows) title = 'Autopilot is on, but the plan does not include it';
+    else if (errors24h > 0) {
+      title = `Autopilot is on, with ${plural(errors24h, 'step error')} in the last 24 hours`;
+    }
     return [
       {
         code: 'autopilot.state',
-        severity: ap.planAllows ? 'info' : 'warning',
-        title: ap.planAllows ? 'Autopilot is on' : 'Autopilot is on, but the plan does not include it',
+        severity: ap.planAllows && errors24h === 0 ? 'info' : 'warning',
+        title,
         detail: sentences.filter((s): s is string => Boolean(s)).join(' '),
         facts,
         href: fixHref.autopilot(),
