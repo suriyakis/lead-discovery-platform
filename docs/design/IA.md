@@ -103,7 +103,7 @@ Outreach · Conversations · More. Pipeline lives in the drawer.
 | Today | The signed-in home | Dashboard, Inbox |
 | Record | A company or page found by discovery (a review item) | "Lead" on Review |
 | Verdict / match | The AI judgement of one record for one product | — |
-| Lead | A record approved for a product, in the pipeline | Qualified lead |
+| Lead | A record promoted to the pipeline for a product (Promote on Review › By product; approving a record does not promote it, I031) | Qualified lead |
 | Search / search source | A recipe / the connector it runs on | Recipe, connector (kept as Cmd-K keywords) |
 | Schedule | When searches run (a crawl plan) | Crawl Engine |
 | Lessons | Rules learned from decisions and replies | Learning memory |

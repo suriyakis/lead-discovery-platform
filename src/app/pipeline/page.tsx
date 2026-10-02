@@ -108,7 +108,8 @@ export default async function PipelinePage({
           <h1 className="page-title">Qualified leads pipeline</h1>
           <p className="page-lede">
             Commercial pipeline on top of discovery and review. A record
-            becomes a lead here once it is approved for a product.
+            becomes a lead here when you promote it from Review › By
+            product; approving it in Review does not add it.
           </p>
         </header>
 
