@@ -47,7 +47,7 @@ the 5-item tab bar come with visual Phase 2.
 | Build | Discovery | `/connectors` | Searches `/connectors` · Schedules `/connectors/engine` | New search source, Search source, New search, Search, Run |
 | Build | Products | `/products` | Products · Knowledge · Documents · Lessons (`/learning`) | New product, Draft a product with AI, product, knowledge, document and lesson pages |
 | Workspace | Settings | `/settings/members` | Grouped sub-nav, below | New mailbox, Mailbox, Edit / Test mailbox, CRM connection pages |
-| Platform | Platform console (super-admins) | `/admin` | Overview · Workspaces · Users · Providers · Support inbox · Platform audit log | Workspace, User, Support thread pages |
+| Platform | Platform console (super-admins) | `/admin` | Overview · Workspaces · Users · Providers · Support inbox · Platform audit log · Operations | Workspace, User, Support thread pages |
 | Account menu | Help & support | `/support` | — | Support thread `/support/[id]` |
 
 **Settings sub-nav** (shown on every Settings page, `/settings/*`,

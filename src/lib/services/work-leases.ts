@@ -34,6 +34,7 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
+import { workspaces } from '@/lib/db/schema/workspaces';
 import {
   WORK_LEASE_KINDS,
   workLeases,
@@ -460,6 +461,8 @@ export function leaseCoversClaim(live: LeaseHolder | null, claimedAt: Date): boo
 
 export interface WorkLeaseView extends LeaseHolder {
   workspaceId: bigint;
+  /** The workspace's name (null: deleted meanwhile). */
+  workspaceName: string | null;
   renewedAt: Date;
   /** False: the holder neither renewed nor released it (it died); the
    *  next acquire takes it over. */
@@ -467,8 +470,9 @@ export interface WorkLeaseView extends LeaseHolder {
 }
 
 /**
- * The ops console's read model: every lease row, live ones first, then
- * the expired ones a dead holder left behind. Platform scope only.
+ * The ops console's read model (Platform console → Operations,
+ * /admin/operations): every lease row, live ones first, then the expired
+ * ones a dead holder left behind. Platform scope only.
  */
 export async function listWorkLeases(ctx: PlatformContext): Promise<WorkLeaseView[]> {
   if (!isPlatformContext(ctx)) {
@@ -478,6 +482,7 @@ export async function listWorkLeases(ctx: PlatformContext): Promise<WorkLeaseVie
   const rows = await db
     .select({
       workspaceId: workLeases.workspaceId,
+      workspaceName: workspaces.name,
       kind: workLeases.kind,
       resourceKey: workLeases.resourceKey,
       holderLabel: workLeases.holderLabel,
@@ -488,6 +493,7 @@ export async function listWorkLeases(ctx: PlatformContext): Promise<WorkLeaseVie
       live,
     })
     .from(workLeases)
+    .leftJoin(workspaces, eq(workspaces.id, workLeases.workspaceId))
     .orderBy(sql`${live} DESC`, asc(workLeases.workspaceId), asc(workLeases.kind), asc(workLeases.resourceKey));
   return rows.map((r) => ({ ...r, kind: r.kind as WorkLeaseKind, live: r.live === true }));
 }

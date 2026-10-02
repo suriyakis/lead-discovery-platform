@@ -285,8 +285,13 @@ action name; see "Rate limits and single-flight" below). A second caller does no
 neither a failure nor an incident. A lease lasts 2 minutes without renewal
 (a discovery run's 15, renewed at its progress checkpoints), so a crashed
 holder blocks its work for that long at most; a holder gives its lease up
-after 10–50 minutes whatever happens. `listWorkLeases(PlatformContext)` is
-the console's read model; until the console page ships, read it with psql:
+after 10–50 minutes whatever happens. **Platform console → Operations**
+(`/admin/operations`, super-admins) lists them: live leases first (work in
+progress), then the expired ones a dead holder left, each with its
+workspace, the work it covers, its purpose, the holder (role, pid, host,
+boot id) and its acquired / renewed / expires times. The page reads
+`listWorkLeases(PlatformContext)`; PC-31 grows it into the full Operations
+page. The same with psql:
 
 ```sql
 SELECT workspace_id, kind, resource_key, purpose, holder_label,

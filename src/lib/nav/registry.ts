@@ -636,6 +636,13 @@ export const NAV_AREAS: ReadonlyArray<NavArea> = [
         purpose: 'Platform events and their effects on tenants.',
         keywords: ['audit'],
       },
+      {
+        id: 'console.operations',
+        label: 'Operations',
+        href: '/admin/operations',
+        purpose: 'Background work in progress: who holds which work lease, and leases a dead holder left.',
+        keywords: ['ops', 'work leases', 'stuck work', 'background jobs'],
+      },
     ],
   },
 ];

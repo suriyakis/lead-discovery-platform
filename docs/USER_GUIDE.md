@@ -493,6 +493,7 @@ Every page of the app, in navigation order (generated from `src/lib/nav/registry
 | Platform › Platform console | Providers | `/admin/providers` | Platform AI and search provider keys, with live checks. | super-admins |
 | Platform › Platform console | Support inbox | `/admin/support` | Support threads from every workspace. | super-admins |
 | Platform › Platform console | Platform audit log | `/admin/audit` | Platform events and their effects on tenants. | super-admins |
+| Platform › Platform console | Operations | `/admin/operations` | Background work in progress: who holds which work lease, and leases a dead holder left. | super-admins |
 | Platform › Platform console | New workspace | `/admin/workspaces/new` | Create a tenant workspace. | super-admins |
 | Platform › Platform console | Workspace | `/admin/workspaces/[id]` | One tenant: plan, wallet, members and its audit trail. | super-admins |
 | Platform › Platform console | User | `/admin/users/[id]` | One user: status, platform role and memberships. | super-admins |
