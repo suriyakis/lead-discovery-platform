@@ -90,6 +90,7 @@ import {
 } from '@/lib/services/health-check';
 import { placeTenantHold, setPlatformOutboundStop } from '@/lib/services/holds';
 import { raiseOpsEvent } from '@/lib/services/ops-events';
+import { raiseMailboxFailingIncident } from '@/lib/services/mailbox-health';
 import { drainQueue, getSendCapUsage, updateSendSettings } from '@/lib/services/outreach-queue';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { setPlatformSecret } from '@/lib/services/secrets';
@@ -1017,6 +1018,28 @@ describe('rules', () => {
     expect(c).not.toContain('ops.run.failed'); // runs.failed reports it
     const f = await finding(t, 'ops.send.interrupted');
     expect(f).toMatchObject({ severity: 'warning', source: 'ops_event', href: '/mailbox/queue' });
+  });
+
+  it('a failing mailbox is one finding, not two: its PC-09 incident is left to mailbox.failing', async () => {
+    const t = await tenant();
+    const id = await mailbox(t, 'failing', {
+      lastError: 'SMTP: 535 5.7.8 Authentication credentials invalid',
+      failureClass: 'auth',
+    });
+    // What markMailboxFailing raises next to the row (PC-09).
+    await raiseMailboxFailingIncident({
+      workspaceId: t.workspaceId,
+      mailboxId: id,
+      failureClass: 'auth',
+      protocol: 'smtp',
+      lastError: 'SMTP: 535 5.7.8 Authentication credentials invalid',
+      nextProbeAt: null,
+    });
+    const report = await diagnose(t);
+    const failing = report.findings.filter((f) => f.code.includes('mailbox.failing'));
+    expect(failing.map((f) => f.code)).toEqual(['mailbox.failing']);
+    // … while another open incident kind still shows as ops.<kind>.
+    expect(report.findings.map((f) => f.code)).not.toContain('ops.mailbox.failing');
   });
 
   it('jobs.stale: a tick that missed its slot; nothing while no heartbeat exists', async () => {

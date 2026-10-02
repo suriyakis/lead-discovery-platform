@@ -7,6 +7,7 @@ import { opsEvents, type OpsEvent } from '@/lib/db/schema/ops';
 import { getBootInfo } from '@/lib/jobs/boot';
 import { OWNER_INCIDENT_KIND } from '@/lib/services/automation-gate';
 import { AUTOPILOT_STEP_FAILED } from '@/lib/services/autopilot-incidents';
+import { MAILBOX_FAILING_KIND } from '@/lib/services/mailbox-health';
 import { getTickStatuses } from '@/lib/services/job-heartbeats';
 import { RUN_FAILED, RUN_STUCK, SEND_INTERRUPTED } from '@/lib/ops/work-incidents';
 import { TICK_WORKSPACE_FAILED } from '@/lib/ops/tick-incidents';
@@ -20,8 +21,15 @@ import { SEVERITY_RANK, type FindingDraft, type FindingSeverity } from '../types
  * same failure is not listed (and scored) twice:
  *   automation.owner_unaccountable  automation.owner (the gate's state)
  *   run.failed                      runs.failed (failed runs in 7 days)
+ *   mailbox.failing                 mailbox.failing (PC-09's incident per
+ *                                   failing mailbox; the rule reads the
+ *                                   mailbox row itself)
  */
-export const OPS_KINDS_COVERED_BY_RULES: readonly string[] = [OWNER_INCIDENT_KIND, RUN_FAILED];
+export const OPS_KINDS_COVERED_BY_RULES: readonly string[] = [
+  OWNER_INCIDENT_KIND,
+  RUN_FAILED,
+  MAILBOX_FAILING_KIND,
+];
 
 /** Severity of an incident kind's finding: the ops scale has four steps,
  *  findings three. An 'error' is a warning here (the work it is about
