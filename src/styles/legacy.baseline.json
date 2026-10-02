@@ -1,6 +1,6 @@
 {
   "file": "src/styles/legacy.css",
-  "lines": 8199,
+  "lines": 8174,
   "selectors": [
     "*",
     "*::after",
@@ -64,9 +64,6 @@
     ".brand-header",
     ".brand-header-right",
     ".brand-link",
-    ".brand-mark",
-    ".brand-mark-inner",
-    ".brand-wordmark",
     ".bulk-select-all",
     ".bulk-select-all input[type='checkbox']",
     ".bulk-select-all:hover",

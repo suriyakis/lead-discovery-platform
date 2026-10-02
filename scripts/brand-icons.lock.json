@@ -1,0 +1,36 @@
+{
+  "files": {
+    "src/app/icon.svg": {
+      "source": "f9765a3f32fbc018c250eb06e75068329c1a8162ad2df350b5c571827f1edcf9",
+      "output": "f9765a3f32fbc018c250eb06e75068329c1a8162ad2df350b5c571827f1edcf9"
+    },
+    "src/app/favicon.ico": {
+      "source": "f9765a3f32fbc018c250eb06e75068329c1a8162ad2df350b5c571827f1edcf9",
+      "output": "ee426e463f55e0c1037d8dfa64dedaff8934145a115103e010eb2cb5b539db93"
+    },
+    "src/app/apple-icon.png": {
+      "source": "c4abd3f94f96e9e7aab9959997a2f6ff20db406917d9d260be594961f0e7c806",
+      "output": "cf221a22d2a10f7e9589f6b03212e6f986bed4ef060f2cd624714896993a72c9"
+    },
+    "src/app/opengraph-image.png": {
+      "source": "d13215f12c732badd4a586897213eb8bcc8cef4f9b4961cecbcc890d13f8148a",
+      "output": "b3bad88c9bb8b2412a60467105ec946844b39af3883e3a39b36b7dd5ebfdaca0"
+    },
+    "public/icons/icon-192.png": {
+      "source": "f9765a3f32fbc018c250eb06e75068329c1a8162ad2df350b5c571827f1edcf9",
+      "output": "71f195849f0f848811101f5bbbbfb3c10b0cd79b6d9f0a307dbda7c809c108d6"
+    },
+    "public/icons/icon-512.png": {
+      "source": "f9765a3f32fbc018c250eb06e75068329c1a8162ad2df350b5c571827f1edcf9",
+      "output": "2697f9694273e38f5b3caf38215ab0ab925b2db8367bea609753bccbca89e570"
+    },
+    "public/icons/icon-maskable-192.png": {
+      "source": "8f53e85480f15c3f484ac5684fef0584355171fcbcdd2e7dc8c0465c4bf867e1",
+      "output": "335a997d040be16bb01253d63c7f18f7d41b1e8fb9064c04a7afb64fc4bed7ff"
+    },
+    "public/icons/icon-maskable-512.png": {
+      "source": "8f53e85480f15c3f484ac5684fef0584355171fcbcdd2e7dc8c0465c4bf867e1",
+      "output": "f2f79ba6c5e03447f18c6c1dd26a97b06e76c6c869c68cf72746f5a4d4b2f052"
+    }
+  }
+}

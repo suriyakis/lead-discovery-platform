@@ -29,6 +29,7 @@ import { users } from '@/lib/db/schema/auth';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { ConfirmTokenAdjustButton } from '@/components/ConfirmTokenAdjustButton';
+import { RoleIcon } from '@/components/RoleIcon';
 import { TableScroll } from '@/components/TableScroll';
 import {
   archiveWorkspaceConfirm,
@@ -540,7 +541,7 @@ export default async function AdminWorkspaceDetail({
                     </Link>
                   </strong>
                   <span className="badge">
-                    {roleIcon(member.role)} {member.role}
+                    <RoleIcon role={member.role} /> {member.role}
                   </span>
                 </div>
                 <div className="meta">
@@ -555,11 +556,11 @@ export default async function AdminWorkspaceDetail({
                     <label>
                       <span>Role</span>
                       <select name="role" defaultValue={member.role}>
-                        <option value="owner">👑 owner</option>
-                        <option value="admin">🛡 admin</option>
-                        <option value="manager">⭐ manager</option>
-                        <option value="member">👤 member</option>
-                        <option value="viewer">👁 viewer</option>
+                        <option value="owner">owner</option>
+                        <option value="admin">admin</option>
+                        <option value="manager">manager</option>
+                        <option value="member">member</option>
+                        <option value="viewer">viewer</option>
                       </select>
                     </label>
                     <button type="submit">Apply</button>
@@ -652,21 +653,4 @@ export default async function AdminWorkspaceDetail({
         </section>
       </div>
   );
-}
-
-function roleIcon(role: string): string {
-  switch (role) {
-    case 'owner':
-      return '👑';
-    case 'admin':
-      return '🛡';
-    case 'manager':
-      return '⭐';
-    case 'member':
-      return '👤';
-    case 'viewer':
-      return '👁';
-    default:
-      return '';
-  }
 }

@@ -1,7 +1,8 @@
 // Route smoke test: every page of the app, at desktop (1440) and phone
 // (390) width, signed in as the seeded super-admin. Each visit must
 //   - answer with HTTP status < 500,
-//   - land on the page itself (proves the session worked), and
+//   - land on the page itself (proves the session worked),
+//   - show the brand once: exactly one lead/sonar wordmark (DS-08), and
 //   - throw no uncaught error in the browser;
 // and the document may not be wider than the viewport (DS-03: no sideways
 // page scroll on any route, at either width). Defects already tracked
@@ -115,6 +116,10 @@ test.describe('every route renders', () => {
       expect(new URL(page.url()).pathname, 'landed on the wrong page (signed out?)').toMatch(
         route.landsOn,
       );
+
+      // DS-08: one wordmark per page, whichever chrome draws it (AppShell's
+      // header, the console topbar, a public page or a backstop).
+      await expect(page.locator('[data-brand-wordmark]'), 'wordmarks on the page').toHaveCount(1);
 
       {
         // DS-03: no sideways page scroll on a phone, and none introduced at

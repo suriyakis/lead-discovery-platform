@@ -9,9 +9,13 @@
 // the viewer's role in the active workspace, so admin-only entries only
 // show to admins. Public pages (signed-out landing, /pending) bypass the
 // shell and render BrandHeader on their own.
+//
+// The chrome draws its icons with Lucide, never emoji (DS-08; the bell,
+// the god-mode crown, the account menu).
 
-import { Bell, UserCircle } from 'lucide-react';
+import { Bell, Crown, UserCircle } from 'lucide-react';
 import Link from 'next/link';
+import styles from './AppShell.module.css';
 import { AreaFrame } from './AreaNav';
 import { AssistantPanel } from './AssistantPanel';
 import { BrandHeader } from './BrandHeader';
@@ -132,30 +136,15 @@ export async function AppShell({
     <div className="app-shell">
       <BrandHeader rightSlot={slot} />
       {godModeRow ? (
-        <div
-          role="alert"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '1rem',
-            padding: '0.5rem 1rem',
-            background: 'oklch(0.45 0.16 25)',
-            color: 'oklch(0.98 0.01 25)',
-            fontWeight: 600,
-          }}
-        >
-          <span>
-            👑 GOD MODE — you are inside workspace “{godModeRow.workspace.name}”.
+        <div role="alert" className={styles.godMode} data-god-mode="">
+          <Crown className={`lucide ${styles.godModeIcon}`} aria-hidden="true" />
+          <span className={styles.godModeText}>
+            GOD MODE — you are inside workspace “{godModeRow.workspace.name}”.
             Every page shows that tenant&apos;s data and your actions apply to it.
           </span>
           {returnHome ? (
             <form action={returnHome}>
-              <button
-                type="submit"
-                className="ghost-btn"
-                style={{ borderColor: 'currentColor', color: 'inherit' }}
-              >
+              <button type="submit" className={`ghost-btn ${styles.godModeExit}`}>
                 Return to my workspace
               </button>
             </form>

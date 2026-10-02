@@ -17,6 +17,7 @@ import { AUTOPILOT_STEPS } from '@/lib/autopilot/steps';
 import { makeWorkspaceContext, type WorkspaceRole } from '@/lib/services/context';
 import { runOnce, updateAutopilotSettings } from '@/lib/services/autopilot';
 import { getNavCounts } from '@/lib/services/nav-counts';
+import { setActiveWorkspace } from '@/lib/services/workspace';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, redirectTarget, renderToHtml } from './helpers/next-render';
 
@@ -117,7 +118,9 @@ describe('AppShell renders the registry for the viewer', () => {
     expect($('aside.sidebar a[data-area]')).toHaveLength(8);
     expect($('aside.sidebar a[data-area]').first().attr('href')).toBe('/today');
     expect($('aside.sidebar a[aria-current="page"]').attr('data-area')).toBe('today');
-    expect($.html().match(/lead\/sonar</g)).toHaveLength(1);
+    expect($('[data-brand-wordmark]')).toHaveLength(1);
+    expect($('[data-brand-wordmark]').text()).toBe('lead/sonar');
+    expect($('svg[data-brand-mark]')).toHaveLength(1);
     expect($('[data-command-palette-trigger]')).toHaveLength(1);
     expect(
       $('.header-account-links a')
@@ -137,6 +140,33 @@ describe('AppShell renders the registry for the viewer', () => {
     expect(items).toHaveLength(9);
     expect(items.last().attr('href')).toBe('/admin');
     expect(items.last().text()).toContain('Platform console');
+    expect(items.last().find('svg.lucide-crown')).toHaveLength(1);
+  });
+
+  it('god mode: the banner and the switcher draw Lucide icons on tokens, no emoji (DS-08)', async () => {
+    const admin = await seedUser({ email: 'root@test.local', role: 'super_admin' });
+    await seedWorkspace({ name: 'Home', ownerUserId: admin });
+    const tenantOwner = await seedUser({ email: 'tenant@test.local' });
+    const tenant = await seedWorkspace({ name: 'Tenant Co', ownerUserId: tenantOwner });
+    await setActiveWorkspace(admin, tenant, { allowAnyAsSuperAdmin: true });
+    await signInAs(admin, 'super_admin');
+    const $ = await shell();
+    const banner = $('[data-god-mode]');
+    expect(banner).toHaveLength(1);
+    expect(banner.attr('role')).toBe('alert');
+    expect(banner.text()).toContain('you are inside workspace “Tenant Co”');
+    expect(banner.find('svg.lucide-crown')).toHaveLength(1);
+    expect(banner.find('button').text()).toBe('Return to my workspace');
+    // Colours come from AppShell.module.css, not inline literals.
+    expect(banner.attr('style')).toBeUndefined();
+    expect(banner.find('[style]')).toHaveLength(0);
+    // The active seat is god mode: the switcher shows the eye, not the building.
+    expect($('.workspace-switcher-god svg[data-icon="god-mode"]')).toHaveLength(1);
+    expect($('.workspace-switcher svg[data-icon="workspace"]')).toHaveLength(0);
+    expect($('header.brand-header').text() + banner.text()).not.toMatch(
+      /\p{Extended_Pictographic}/u,
+    );
+    expect($('[data-brand-wordmark]')).toHaveLength(1);
   });
 
   it('an owner gets the interim Emergency stop; the page sits inside its area frame', async () => {

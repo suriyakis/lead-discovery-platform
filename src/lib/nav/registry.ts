@@ -51,7 +51,7 @@ export type NavIconName =
   | 'Radar'
   | 'BookOpen'
   | 'Settings'
-  | 'ShieldCheck'
+  | 'Crown'
   | 'LifeBuoy'
   | 'OctagonAlert'
   | 'UserPlus'
@@ -578,7 +578,7 @@ export const NAV_AREAS: ReadonlyArray<NavArea> = [
   {
     id: 'console',
     label: 'Platform console',
-    icon: 'ShieldCheck',
+    icon: 'Crown',
     group: 'platform',
     order: 1,
     scope: 'platform',

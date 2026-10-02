@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { BrandHeader } from '@/components/BrandHeader';
 import { auth, signIn } from '@/lib/auth';
+import { BRAND_NAME } from '@/lib/brand';
 import { teamLoginAction } from '@/lib/auth-actions';
 
 interface ModuleTile {
@@ -116,7 +117,7 @@ export default async function Home({
               Find the right opportunities for the products you sell.
             </h1>
             <p className="hero-lede">
-              lead/sonar connects search, directories, tenders, company
+              {BRAND_NAME} connects search, directories, tenders, company
               websites, documents, and team feedback into a single workspace
               for discovering and qualifying B2B leads — with evidence,
               traceability, and a learning layer.

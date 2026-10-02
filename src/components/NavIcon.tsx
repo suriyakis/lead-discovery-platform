@@ -6,6 +6,7 @@
 import {
   BookOpen,
   CirclePlus,
+  Crown,
   House,
   KanbanSquare,
   LifeBuoy,
@@ -17,7 +18,6 @@ import {
   Radar,
   Send,
   Settings,
-  ShieldCheck,
   UserPlus,
 } from 'lucide-react';
 import type { NavIconName } from '@/lib/nav/registry';
@@ -31,7 +31,7 @@ export const NAV_ICONS: Readonly<Record<NavIconName, LucideIcon>> = {
   Radar,
   BookOpen,
   Settings,
-  ShieldCheck,
+  Crown,
   LifeBuoy,
   OctagonAlert,
   UserPlus,

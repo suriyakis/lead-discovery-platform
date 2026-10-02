@@ -16,6 +16,7 @@
 import Link from 'next/link';
 import { BrandHeader } from './BrandHeader';
 import { signOutAction } from '@/lib/auth-actions';
+import { BRAND_NAME } from '@/lib/brand';
 import {
   WORKSPACE_NAME_MAX,
   type WorkspaceStartState,
@@ -105,7 +106,7 @@ export function NoWorkspaceScreen({
             <span className="profile-card-eyebrow">Join your team</span>
             <h2 className="profile-card-title">Ask your admin to invite you</h2>
             <p className="profile-card-meta">
-              If your team already uses lead/sonar, ask one of its admins to
+              If your team already uses {BRAND_NAME}, ask one of its admins to
               add you under Settings › Members. They will need your account
               ID:
             </p>

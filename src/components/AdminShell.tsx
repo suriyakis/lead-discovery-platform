@@ -9,15 +9,19 @@
 // (src/lib/nav/registry.ts) — the same entries, names and badge policy
 // Cmd-K and the workspace sidebar use — and it mounts the Cmd-K palette
 // with its visible Search button, so the console has keyboard jump too
-// (I171).
+// (I171). The topbar opens with the brand lockup (the page's one
+// wordmark, DS-08) and the console's crown, as in the Direction A mockups.
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
+import styles from './AdminShell.module.css';
+import { BrandLockup } from './Brand';
 import { CommandPalette, type CommandPaletteProps } from './CommandPalette';
 import { CommandPaletteTrigger } from './CommandPaletteTrigger';
 import { NavCountBadge } from './NavCountBadge';
 import { NavIcon } from './NavIcon';
+import { BRAND_NAME } from '@/lib/brand';
 import { HOME_PATH } from '@/lib/nav/registry';
 import {
   areaById,
@@ -45,8 +49,13 @@ export function AdminShell({
   return (
     <div className="admin-shell">
       <div className="admin-topbar">
+        <Link href="/" className="brand-link" aria-label={`${BRAND_NAME} home`}>
+          <BrandLockup />
+        </Link>
         <span className="admin-topbar-brand">
-          <NavIcon name={CONSOLE.icon} className="lucide" /> {CONSOLE.label}
+          <NavIcon name={CONSOLE.icon} className="lucide" />
+          <span className={styles.scopeLong}>{CONSOLE.label}</span>
+          <span className={styles.scopeShort}>Console</span>
         </span>
         <nav aria-label={CONSOLE.label}>
           {visibleTabs(CONSOLE, SUPER_ADMIN).map((tab) => {

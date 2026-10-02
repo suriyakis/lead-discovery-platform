@@ -7,6 +7,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { Alert, type AlertTone } from '@/components/Alert';
+import { BrandLockup, BrandMark } from '@/components/Brand';
 import { BRAND_NAME } from '@/lib/brand';
 import { IndeterminateCheckbox } from './_IndeterminateCheckbox';
 import { GallerySection, TokenGroupSamples, ToneSamples } from './_samples';
@@ -20,6 +21,16 @@ export const metadata: Metadata = {
   title: `Component gallery · ${BRAND_NAME}`,
   robots: { index: false, follow: false },
 };
+
+/** Two of the generated app icons (public/icons, listed by app/manifest.ts). */
+const BRAND_ICON_SAMPLES = [
+  { src: '/icons/icon-192.png', alt: 'App icon', use: 'Manifest icon, purpose any' },
+  {
+    src: '/icons/icon-maskable-192.png',
+    alt: 'Maskable app icon',
+    use: 'Manifest icon, purpose maskable: the glyph inside the safe zone',
+  },
+] as const;
 
 /** The cascade layer order every stylesheet declares (src/styles/*.css). */
 const LAYERS = ['reset', 'tokens', 'base', 'legacy', 'components', 'patterns', 'utilities'];
@@ -82,6 +93,7 @@ export default function ComponentGallery() {
     { id: 'tones', title: 'Tones' },
     { id: 'form-controls', title: 'Form controls' },
     { id: 'alerts', title: 'Alert' },
+    { id: 'brand', title: 'Brand' },
     { id: 'layers', title: 'Cascade layers' },
   ];
 
@@ -260,6 +272,41 @@ export default function ComponentGallery() {
           <Alert tone="info">
             <p>An alert with a body only.</p>
           </Alert>
+        </div>
+      </GallerySection>
+
+      <GallerySection
+        id="brand"
+        title="Brand"
+        description="The Leadsonar mark (the market-navigator tile carrying the sonar glyph) and the lead/sonar wordmark, drawn inline on the tokens. The favicon, app icons and link preview are rendered from the same geometry by pnpm brand:icons."
+      >
+        <div className={styles.grid}>
+          <figure className={styles.item} data-brand-sample="lockup">
+            <span className="brand-link">
+              <BrandLockup />
+            </span>
+            <figcaption className={styles.caption}>
+              <code className={styles.name}>BrandLockup</code>
+              <span className={styles.use}>Once per page: header, console, backstops</span>
+            </figcaption>
+          </figure>
+          <figure className={styles.item} data-brand-sample="mark">
+            <BrandMark />
+            <figcaption className={styles.caption}>
+              <code className={styles.name}>BrandMark</code>
+              <span className={styles.use}>role=img, titled Leadsonar</span>
+            </figcaption>
+          </figure>
+          {BRAND_ICON_SAMPLES.map((icon) => (
+            <figure key={icon.src} className={styles.item} data-brand-sample={icon.src}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- the static file itself, at its own pixels */}
+              <img src={icon.src} width={96} height={96} alt={icon.alt} />
+              <figcaption className={styles.caption}>
+                <code className={styles.name}>{icon.src}</code>
+                <span className={styles.use}>{icon.use}</span>
+              </figcaption>
+            </figure>
+          ))}
         </div>
       </GallerySection>
 

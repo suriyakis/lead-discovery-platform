@@ -99,7 +99,7 @@ Outreach · Conversations · More. Pipeline lives in the drawer.
 | Term | Means | Replaces |
 | --- | --- | --- |
 | Leadsonar | The product, in prose (`BRAND_NAME`) | Lead Discovery Platform, signal/works |
-| lead/sonar | The mono wordmark beside the mark, once per page (brand header). The mark (decision D17) is the market-navigator gradient tile carrying the sonar glyph of `src/app/icon.svg`; the visual workstream draws it | The second sidebar wordmark |
+| lead/sonar | The mono wordmark beside the mark, once per page (the brand header, the console topbar or a backstop; on a phone, a header that also carries controls shows the mark alone). The mark (decision D17) is the market-navigator gradient tile carrying the sonar glyph of the old favicon: one geometry in `src/lib/brand-mark.ts`, drawn inline on the tokens by `components/Brand.tsx`, and rendered into the favicon, the app icons and the link preview by `pnpm brand:icons` (DS-08) | The second sidebar wordmark, the dark-square tile |
 | Today | The signed-in home | Dashboard, Inbox |
 | Record | A company or page found by discovery (a review item) | "Lead" on Review |
 | Verdict / match | The AI judgement of one record for one product | — |

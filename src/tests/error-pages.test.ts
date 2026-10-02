@@ -36,7 +36,7 @@ describe('app/error.tsx', () => {
       createElement(AppError, { error: boom('4180871043'), reset: () => {} }),
     );
     expect(html).toContain('brand-header');
-    expect(html).toContain('lead/sonar');
+    expect(html.match(/data-brand-wordmark/g)).toHaveLength(1);
     expect(html).toContain('status-card');
     expect(html).toContain('Something went wrong');
     expect(html).toContain('Try again');
@@ -62,6 +62,9 @@ describe('app/global-error.tsx', () => {
     expect(html).toContain('<body>');
     expect(html).toContain('<title>Something went wrong · Leadsonar</title>');
     expect(html).toContain('brand-header');
+    expect(html.match(/data-brand-wordmark/g)).toHaveLength(1);
+    expect(html).toContain('data-brand-wordmark="always"');
+    expect(html).toContain('aria-label="Leadsonar home"');
     expect(html).toContain('Reload page');
     expect(html).toContain('<code>99</code>');
     expect(html).not.toContain('review_items');

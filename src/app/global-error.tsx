@@ -3,11 +3,15 @@
 // Last-resort backstop: an error in the root layout itself. This replaces
 // the root layout, so it brings its own <html>/<body> and stylesheet and
 // avoids every app component — whatever broke the layout may be shared
-// with them. Links are plain <a> on purpose: a full page load is the most
-// reliable way out of a broken root.
+// with them. The one exception is the brand lockup (components/Brand.tsx):
+// plain SVG and text over pure constants, nothing that could have broken.
+// Links are plain <a> on purpose: a full page load is the most reliable
+// way out of a broken root.
 
 import './globals.css';
 import { useEffect } from 'react';
+import { BrandLockup } from '@/components/Brand';
+import { BRAND_NAME } from '@/lib/brand';
 
 export default function GlobalError({
   error,
@@ -22,22 +26,19 @@ export default function GlobalError({
   return (
     <html lang="en">
       <head>
-        <title>Something went wrong · Leadsonar</title>
+        <title>{`Something went wrong · ${BRAND_NAME}`}</title>
       </head>
       <body>
         <header className="brand-header">
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- a full load is the point: the root layout is broken */}
-          <a href="/" className="brand-link" aria-label="lead/sonar home">
-            <span className="brand-mark" aria-hidden="true">
-              <span className="brand-mark-inner" />
-            </span>
-            <span className="brand-wordmark">lead/sonar</span>
+          <a href="/" className="brand-link" aria-label={`${BRAND_NAME} home`}>
+            <BrandLockup wordmark="always" />
           </a>
         </header>
         <main className="status-page">
           <div className="status-card status-card-error" role="alert">
             <p className="status-eyebrow">Unexpected error</p>
-            <h1>Leadsonar couldn&apos;t load</h1>
+            <h1>{BRAND_NAME} couldn&apos;t load</h1>
             <p className="status-lede">
               Something went wrong before the app could start. Reload the page — if it
               keeps happening, contact support and quote the reference below.

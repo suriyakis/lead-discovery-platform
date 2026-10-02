@@ -1,0 +1,50 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* The Leadsonar mark and the lead/sonar wordmark (DS-08, Brand.tsx).
+ * The svg box is the market-navigator tile: --gradient-mark on a
+ * --control-sm square with --radius-sm corners. The sonar glyph strokes
+ * currentColor, which is the page colour, and the echo is amber in a ring
+ * of page colour so it reads on both ends of the gradient. */
+
+@layer components {
+  .mark {
+    display: block;
+    flex: none;
+    width: var(--control-sm);
+    height: var(--control-sm);
+    border-radius: var(--radius-sm);
+    background: var(--gradient-mark);
+    color: var(--bg);
+  }
+
+  .echo {
+    fill: var(--amber);
+    stroke: currentColor;
+  }
+
+  .wordmark {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    line-height: 1;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+
+  /* In a header that carries controls, phones show the mark alone
+     (ds-guide: below 640px the header gives the room to the controls);
+     the wordmark joins it from 640px up. */
+  .fromSm {
+    display: none;
+  }
+
+  @media (min-width: 640px) {
+    .fromSm {
+      display: inline;
+    }
+  }
+
+  .slash {
+    color: var(--fg-subtle);
+  }
+}

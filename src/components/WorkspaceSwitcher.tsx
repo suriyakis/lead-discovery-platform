@@ -2,6 +2,7 @@
 
 import { useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { Building2, Eye } from 'lucide-react';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 
 export interface WorkspaceSwitcherProps {
@@ -27,6 +28,9 @@ export interface WorkspaceSwitcherProps {
  *
  * Picking another workspace calls the server action and refreshes the
  * route so subsequent server components resolve the new context.
+ *
+ * The icon says which kind of seat the active one is: a building for a
+ * membership, an eye for god mode (Lucide, DS-08).
  */
 export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProps>) {
   const router = useRouter();
@@ -72,7 +76,11 @@ export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProp
       title={active.isGodMode ? 'God-mode: not a member' : 'Switch workspace'}
     >
       <span className="workspace-switcher-icon" aria-hidden="true">
-        {active.isGodMode ? '👁' : '🏢'}
+        {active.isGodMode ? (
+          <Eye className="lucide" data-icon="god-mode" />
+        ) : (
+          <Building2 className="lucide" data-icon="workspace" />
+        )}
       </span>
       <select
         value={active.id}

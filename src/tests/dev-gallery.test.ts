@@ -65,6 +65,7 @@ describe('/dev/gallery with ENABLE_TEST_ROUTES=1', () => {
       'tones',
       'form-controls',
       'alerts',
+      'brand',
       'layers',
     ]) {
       expect($(`section#${id}`), id).toHaveLength(1);
@@ -123,6 +124,17 @@ describe('/dev/gallery with ENABLE_TEST_ROUTES=1', () => {
         .map((_, el) => $(el).attr('data-tone'))
         .get(),
     ).toEqual(['info', 'success', 'warning', 'danger', 'info']);
+  });
+
+  it('shows the brand: the lockup (the page’s one wordmark), the mark and two app icons (DS-08)', () => {
+    const $ = render();
+    expect($('[data-brand-wordmark]')).toHaveLength(1);
+    expect($('#brand svg[data-brand-mark][role="img"]')).toHaveLength(2);
+    expect(
+      $('#brand img')
+        .map((_, el) => $(el).attr('src'))
+        .get(),
+    ).toEqual(['/icons/icon-192.png', '/icons/icon-maskable-192.png']);
   });
 
   it('carries the cascade-layer probe the e2e test measures', () => {

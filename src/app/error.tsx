@@ -14,6 +14,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useTransition } from 'react';
 import { BrandHeader } from '@/components/BrandHeader';
+import { BRAND_NAME } from '@/lib/brand';
 
 export default function AppError({
   error,
@@ -40,7 +41,7 @@ export default function AppError({
 
   return (
     <>
-      <title>Something went wrong · Leadsonar</title>
+      <title>{`Something went wrong · ${BRAND_NAME}`}</title>
       <BrandHeader />
       <main className="status-page">
         <div className="status-card status-card-error" role="alert">

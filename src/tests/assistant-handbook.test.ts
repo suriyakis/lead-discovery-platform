@@ -109,7 +109,7 @@ describe('assistant handbook — content truth', () => {
   it('is titled with the brand name and never uses the old working title', () => {
     expect(HANDBOOK_SOURCE.startsWith(`# ${BRAND_NAME} — how it works`)).toBe(true);
     expect(BRAND_NAME).toBe('Leadsonar');
-    expect(HANDBOOK_SOURCE).not.toContain('Lead Discovery Platform');
+    expect(HANDBOOK_SOURCE).not.toMatch(/Lead\s+Discovery\s+Platform/i);
   });
 
   it('contains none of the retired false claims', () => {

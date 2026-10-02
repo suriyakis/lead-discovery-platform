@@ -380,8 +380,9 @@ describe('Sidebar renders the registry', () => {
         createElement(Sidebar, { key: 's', isSuperAdmin: true, role: 'super_admin' }),
       ]),
     );
-    expect(html.match(/lead\/sonar</g)).toHaveLength(1);
-    expect(renderSidebar(SUPER).html()).not.toMatch(/sonar/);
+    expect(html.match(/data-brand-wordmark/g)).toHaveLength(1);
+    expect(html.match(/data-brand-mark/g)).toHaveLength(1);
+    expect(renderSidebar(SUPER).html()).not.toMatch(/sonar|data-brand-/);
   });
 
   it('pins the interim Emergency stop for owners and admins only, saying what it stops', () => {

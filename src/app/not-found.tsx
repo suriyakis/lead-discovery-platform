@@ -6,9 +6,10 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { BrandHeader } from '@/components/BrandHeader';
+import { BRAND_NAME } from '@/lib/brand';
 
 export const metadata: Metadata = {
-  title: 'Page not found · Leadsonar',
+  title: `Page not found · ${BRAND_NAME}`,
 };
 
 export default function NotFound() {
