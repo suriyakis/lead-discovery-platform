@@ -863,6 +863,8 @@ describe('(2) while paused nothing runs on its own', { timeout: 60_000 }, () => 
       picked: 0,
       sent: 0,
       failed: 0,
+      retrying: 0,
+      blocked: 'paused',
       skipped: 0,
       deferred: 0,
       heldReason: PAUSED_MESSAGE,

@@ -203,12 +203,20 @@ export type OutreachDraftMethod = 'rules' | 'ai' | 'hybrid';
  * them up and dispatches via mail.sendMessage.
  *
  * status flow:
- *   queued    — waiting for scheduled_send_at to elapse
- *   sending   — worker has claimed and started the send
- *   sent      — provider returned a messageId
- *   failed    — provider error; last_error populated
- *   skipped   — domain cooldown / daily cap / suppression blocked send
+ *   queued    — waiting for scheduled_send_at (and next_attempt_at, after
+ *               a failed attempt) to elapse
+ *   sending   — worker has claimed and started the send (claimed_at)
+ *   sent      — provider returned a messageId; written in the same
+ *               transaction as the mail_messages row (PC-10)
+ *   failed    — permanent failure, or retries used up; last_error and
+ *               last_failure_kind populated
+ *   skipped   — domain cooldown / suppression / geography blocked send
  *   cancelled — operator cancelled before send
+ *
+ * PC-10: a row stuck in 'sending' for more than 10 minutes is settled by
+ * the stuck-work reaper (src/lib/services/stuck-work.ts): 'sent' when a
+ * sent copy of its draft exists from after the claim, otherwise 'failed'
+ * with last_failure_kind 'interrupted' ("delivery unknown").
  */
 export const outreachQueueStatus = pgEnum('outreach_queue_status', [
   'queued',
@@ -263,11 +271,22 @@ export const outreachQueue = pgTable(
 
     attemptCount: smallint('attempt_count').notNull().default(0),
     lastError: text('last_error'),
-    /** PC-05: when the drain last claimed the row ('queued' → 'sending'),
-     *  from the database clock. The claim takes a share lock on the
+    /** PC-10: what the last failed attempt was, one of SEND_FAILURE_KINDS
+     *  (src/lib/mail/send-failure.ts): transient | local | unknown |
+     *  sender_auth | recipient_hard | policy | interrupted. Decides whether
+     *  the queue retries it. CHECK constraint in the migration's custom
+     *  block. NULL until an attempt fails; cleared on success / requeue. */
+    lastFailureKind: text('last_failure_kind'),
+    /** When the drain last claimed the row ('queued' → 'sending'), from
+     *  the database clock. PC-05: the claim takes a share lock on the
      *  workspace row and refuses while the workspace is paused, so no
-     *  claim is ever later than automation_paused_at. */
+     *  claim is ever later than automation_paused_at. PC-10: the reaper
+     *  settles rows still 'sending' 10 minutes after it. */
     claimedAt: timestamp('claimed_at', { mode: 'date', withTimezone: true }),
+    /** PC-10: exponential backoff after a retryable failure — the drain
+     *  skips the row until then. NULL = no backoff. Independent of
+     *  scheduled_send_at, which stays the planned send time. */
+    nextAttemptAt: timestamp('next_attempt_at', { mode: 'date', withTimezone: true }),
     /** mail_message id once sent. */
     sentMessageId: bigint('sent_message_id', { mode: 'bigint' }),
 

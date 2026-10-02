@@ -40,6 +40,12 @@ export default defineConfig({
       ANTHROPIC_API_KEY: '',
       PERPLEXITY_API_KEY: '',
       SERPAPI_KEY: '',
+      // PC-08: owner alerts stay off unless a test injects its own config,
+      // even on a machine whose shell exports a real ntfy topic.
+      NTFY_TOPIC: '',
+      NTFY_URL: '',
+      NTFY_TOKEN: '',
+      OPS_ALERT_MIN_SEVERITY: '',
     },
   },
   // tsconfig keeps `jsx: preserve` for Next's own compiler. Tests that

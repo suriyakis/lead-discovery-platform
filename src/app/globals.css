@@ -7171,6 +7171,12 @@ code {
   background: color-mix(in oklab, oklch(0.55 0.18 25) 18%, var(--brand-card));
   border-color: color-mix(in oklab, oklch(0.55 0.18 25) 35%, var(--brand-border));
 }
+/* PC-10 (I074): finished, but some steps (search queries) failed. */
+.runs-status-partial {
+  color: oklch(0.85 0.15 75);
+  background: color-mix(in oklab, oklch(0.6 0.16 75) 18%, var(--brand-card));
+  border-color: color-mix(in oklab, oklch(0.6 0.16 75) 35%, var(--brand-border));
+}
 .runs-status-running,
 .runs-status-pending {
   color: oklch(0.85 0.15 230);

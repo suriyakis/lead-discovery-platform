@@ -8,6 +8,7 @@ import {
   _resetRepeatablesForTests,
   registerRepeatableJobs,
 } from '@/lib/jobs/repeatables';
+import { autopilotSettings } from '@/lib/db/schema/autopilot';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 beforeEach(async () => {
@@ -100,24 +101,42 @@ describe('registerRepeatableJobs', () => {
     }
   });
 
-  it('autopilot.tick fans out: returns workspaces count', async () => {
+  it('autopilot.tick fans out over workspaces with autopilot on: returns workspaces count', async () => {
     const q = new InMemoryJobQueue();
     _setJobQueueForTests(q);
     await registerRepeatableJobs({ skipSchedule: true });
 
     const owner1 = await seedUser({ email: 'o1@test.local' });
     const owner2 = await seedUser({ email: 'o2@test.local' });
-    await seedWorkspace({ name: 'W1', ownerUserId: owner1 });
-    await seedWorkspace({ name: 'W2', ownerUserId: owner2 });
+    const owner3 = await seedUser({ email: 'o3@test.local' });
+    const w1 = await seedWorkspace({ name: 'W1', ownerUserId: owner1 });
+    const w2 = await seedWorkspace({ name: 'W2', ownerUserId: owner2 });
+    // PC-35 / PC-13: autopilot off — the tick skips it silently (no run).
+    const w3 = await seedWorkspace({ name: 'W3', ownerUserId: owner3 });
+    await db.insert(autopilotSettings).values([
+      { workspaceId: w1, autopilotEnabled: true },
+      { workspaceId: w2, autopilotEnabled: true },
+    ]);
 
     const id = await q.enqueue('autopilot.tick', {});
     await q.drain();
     const status = await q.status(id);
     expect(status.state).toBe('succeeded');
     if (status.state === 'succeeded') {
-      const result = status.result as { workspaces: number };
-      expect(result.workspaces).toBe(2);
+      // Every active workspace is looked at (its automation policy decides);
+      // only the two with autopilot on reach runOnce.
+      expect(status.result).toMatchObject({ workspaces: 3, failed: 0, held: 0 });
     }
+    const guards = await db
+      .select({ workspaceId: autopilotSettings.workspaceId, guardState: autopilotSettings.guardState })
+      .from(autopilotSettings);
+    expect(new Map(guards.map((g) => [g.workspaceId.toString(), g.guardState]))).toEqual(
+      new Map([
+        [w1.toString(), 'open'],
+        [w2.toString(), 'open'],
+      ]),
+    );
+    expect(guards.some((g) => g.workspaceId === w3)).toBe(false);
   });
 
   it('drain.tick survives per-tenant errors and reports a failed count', async () => {

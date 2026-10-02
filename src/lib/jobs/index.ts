@@ -36,6 +36,9 @@ export interface RepeatableJobOptions {
 }
 
 export interface IJobQueue {
+  /** Provider id ('memory' | 'bullmq'); heartbeats record it to pick the
+   *  tick slot alignment (PC-07). */
+  readonly id?: string;
   enqueue<P extends JobPayload>(type: string, payload: P, options?: JobOptions): Promise<JobId>;
   status(id: JobId): Promise<JobStatus>;
   cancel(id: JobId): Promise<void>;
@@ -51,6 +54,13 @@ export interface IJobQueue {
    * harness to stop fire-and-forget jobs leaking across test boundaries.
    */
   drain?(): Promise<void>;
+  /**
+   * PC-10: is a job of `type` whose payload has `payload[match.field] ===
+   * match.value` still waiting (or delayed) or running? The stuck-work
+   * reaper asks before it fails a 'pending' connector run as lost: under
+   * BullMQ a run can wait its turn behind long runs for a long time.
+   */
+  hasLiveJob?(type: string, match: { field: string; value: string }): Promise<boolean>;
   enqueueRepeatable<P extends JobPayload>(
     type: string,
     payload: P,
@@ -63,6 +73,7 @@ export interface IJobQueue {
 interface InternalJob {
   id: JobId;
   type: string;
+  payload: JobPayload;
   status: JobStatus;
   cancelled: boolean;
 }
@@ -89,7 +100,13 @@ export class InMemoryJobQueue implements IJobQueue {
   ): Promise<JobId> {
     void options;
     const id = String(this.nextId++);
-    const job: InternalJob = { id, type, status: { state: 'pending' }, cancelled: false };
+    const job: InternalJob = {
+      id,
+      type,
+      payload,
+      status: { state: 'pending' },
+      cancelled: false,
+    };
     this.jobs.set(id, job);
 
     const handler = this.handlers.get(type) as JobHandler<P> | undefined;
@@ -135,6 +152,15 @@ export class InMemoryJobQueue implements IJobQueue {
       current = this.tail;
       await current;
     } while (current !== this.tail);
+  }
+
+  async hasLiveJob(type: string, match: { field: string; value: string }): Promise<boolean> {
+    for (const job of this.jobs.values()) {
+      if (job.type !== type) continue;
+      if (job.status.state !== 'pending' && job.status.state !== 'running') continue;
+      if (job.payload[match.field] === match.value) return true;
+    }
+    return false;
   }
 
   async cancel(id: JobId): Promise<void> {

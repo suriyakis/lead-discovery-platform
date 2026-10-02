@@ -22,12 +22,20 @@ export const connectorTemplateType = pgEnum('connector_template_type', [
   'mock',
 ]);
 
+/**
+ * pending → running → succeeded | partial | failed | cancelled.
+ *
+ * PC-10 (I074): 'partial' = the run finished but some of its steps
+ * (search queries) failed; a run where EVERY query failed is 'failed'.
+ * Appended last so the migration is a plain ADD VALUE.
+ */
 export const connectorRunStatus = pgEnum('connector_run_status', [
   'pending',
   'running',
   'succeeded',
   'failed',
   'cancelled',
+  'partial',
 ]);
 
 /**
@@ -123,6 +131,14 @@ export const connectorRuns = pgTable(
     recordCount: integer('record_count').notNull().default(0),
     startedAt: timestamp('started_at', { mode: 'date', withTimezone: true }),
     completedAt: timestamp('completed_at', { mode: 'date', withTimezone: true }),
+    /** PC-10: the runner's heartbeat — touched on every progress event
+     *  and at least every few seconds while events flow. A running run
+     *  without progress for 15 minutes is failed by the stuck-work reaper. */
+    lastProgressAt: timestamp('last_progress_at', { mode: 'date', withTimezone: true }),
+    /** PC-10: Cancel works across processes — the action sets this, the
+     *  runner (in whichever process runs it) polls it between steps and
+     *  stops with status 'cancelled'. A pending run is cancelled at once. */
+    cancelRequestedAt: timestamp('cancel_requested_at', { mode: 'date', withTimezone: true }),
     errorPayload: jsonb('error_payload'),
     recipeSnapshot: jsonb('recipe_snapshot'),
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })

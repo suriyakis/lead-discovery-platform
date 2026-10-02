@@ -1,24 +1,39 @@
-// Phase 34: scheduled background work. Four tick handlers fan out across
-// every active workspace / mailbox so the platform actually does its job
-// without anyone clicking buttons.
+// Phase 34: scheduled background work. The tick handlers fan out across
+// the active workspaces / mailboxes so the platform actually does its job
+// without anyone clicking buttons. Names, cadences and labels are in
+// tick-catalog.ts.
 //
-//   autopilot.tick         every 5 min  → for each ws with autopilot
-//                                          enabled, call autopilot.runOnce(ctx)
-//   outreach.drain.tick    every 30 sec → for each active workspace, drain
-//                                          the send queue
-//   mail.imap.tick         every 2 min  → for each active mailbox with IMAP,
-//                                          mail.safeSyncOne(ctx, mb); failing
-//                                          mailboxes get a slow re-check
-//                                          instead (flow:F-04, runImapTick)
+//   autopilot.tick          every 5 min  → for each active workspace whose
+//                                           policy runs autopilot and the
+//                                           gate lets it (PC-13 / PC-35:
+//                                           autopilot off is skipped
+//                                           silently, no log row),
+//                                           autopilot.runOnce(ctx)
+//   outreach.drain.tick     every 30 s   → for each active workspace, drain
+//                                           the send queue
+//   mail.imap.tick          every 2 min  → for each active mailbox with IMAP,
+//                                           mail.safeSyncOne(ctx, mb); failing
+//                                           mailboxes get a slow re-check
+//                                           instead (flow:F-04, runImapTick)
 //   outreach.follow_up.tick every 1 h    → Phase 58: for each active
-//                                          workspace with followUpEnabled,
-//                                          process pending follow-ups whose
-//                                          scheduled_for has passed.
+//                                           workspace with follow-ups on,
+//                                           send follow-ups that are due
+//   knowledge.compact.tick  every 7 d    → compaction + learning synthesis
+//   mail.trash.purge.tick   every 24 h   → per-workspace trash retention
+//   crawl.engine.tick       every 5 min  → due crawl plans
+//   health.check.tick       every 6 h    → due AI workspace health checks
+//   ops.reaper.tick         every 5 min  → PC-10: settle stuck sends and
+//                                           stuck discovery runs
+//                                           (services/stuck-work.ts)
+//   ops.retention.tick      every 24 h   → PC-35: platform housekeeping —
+//                                           delete log rows past their
+//                                           retention window
+//                                           (services/retention.ts)
 //
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
 //
-// PC-06: every tick iterates the gate's tick list (activeWorkspacesForTicks) — active
+// PC-06: every automation tick iterates the gate's tick list — active
 // workspaces, selected from the workspace_automation_state view, each with
 // its automation state and a context that acts as the accountable owner —
 // and skips a workspace the automation gate holds for the tick's
@@ -26,20 +41,35 @@
 // accountable owner). A skip is not an error: it is counted as `held` in
 // the tick's summary.
 //
-// PC-05: the workspace pause holds every tick except the IMAP one (replies
-// keep arriving while paused), and each tick's service re-checks the gate
-// before every item it works on (a queue row, a follow-up, a recipe, a
-// mailbox), so a pause committed mid-tick stops it at the next item.
+// PC-05: the workspace pause holds every automation tick except the IMAP
+// one (replies keep arriving while paused), and each tick's service
+// re-checks the gate before every item it works on (a queue row, a
+// follow-up, a recipe, a mailbox), so a pause committed mid-tick stops it
+// at the next item. The two ops ticks (reaper, retention) are platform
+// maintenance: they send, spend and start nothing, so no pause or hold
+// gates them.
 //
-// PC-13: every tick iterates workspacesForTick() — the same workspaces,
-// each with its resolved automation policy (services/automation-policy.ts,
-// loaded in one batch) — and asks tickVerdict(policy, tick): held by the
-// gate (counted as `held`), off by configuration (autopilot off, auto-sync
-// off, follow-ups off, no crawl plan, trash kept, health check off:
-// skipped silently, no work and no log rows), or run.
+// PC-13: every automation tick iterates workspacesForTick() — the same
+// workspaces, each with its resolved automation policy
+// (services/automation-policy.ts, loaded in one batch) — and asks
+// tickVerdict(policy, tick): held by the gate (counted as `held`), off by
+// configuration (autopilot off, auto-sync off, follow-ups off, no crawl
+// plan, trash kept, health check off: skipped silently, no work and no log
+// rows), or run.
+//
+// PC-07 (I021/I022): every handler is registered through instrumented(),
+// which writes the job_heartbeats row (start, finish, duration, status,
+// consecutive failures, the structured summary each handler returns) and
+// hands the handler a TickIncidents: a per-workspace error becomes an
+// ops_event (one open incident per workspace + step, occurrences counted)
+// and that workspace's next success resolves it. A held workspace is
+// neither: the gate's refusal is not a tick failure. Cadences and labels
+// live in tick-catalog.ts; the schedule registration stamps registered_at
+// and boot_id on each tick's heartbeat.
 
 import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
 import {
   AutomationGateError,
@@ -60,29 +90,37 @@ import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
 import { processDueHealthChecks } from '@/lib/services/health-check';
+import {
+  listWorkspacesWithStuckWork,
+  reapStuckWork,
+  resolveOrphanedRunIncidents,
+} from '@/lib/services/stuck-work';
+import { runRetentionTick } from '@/lib/services/retention';
 import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
-import { getJobQueue, type JobHandler } from './index';
+import { recordTickRegistration } from '@/lib/services/job-heartbeats';
+import {
+  opsEventFingerprint,
+  raiseOpsEvent,
+  resolveOpsEvent,
+} from '@/lib/services/ops-events';
+import { NOOP_TICK_INCIDENTS, type TickIncidents } from '@/lib/ops/tick-incidents';
+import { getBootInfo } from './boot';
+import { getJobQueue } from './index';
+import { instrumented, type InstrumentedHandler } from './instrumented';
+import { TICK_CATALOG, type TickName } from './tick-catalog';
 
-export const AUTOPILOT_TICK_MS = 5 * 60 * 1000;
-export const DRAIN_TICK_MS = 30 * 1000;
-export const IMAP_TICK_MS = 2 * 60 * 1000;
-export const FOLLOW_UP_TICK_MS = 60 * 60 * 1000;
-/** P60-05: knowledge compaction is heavy (AI per cluster). Weekly is enough
- *  — lessons accumulate slowly and the platform can absorb a few days of
- *  duplicates before the dilution matters. */
-export const KNOWLEDGE_COMPACT_TICK_MS = 7 * 24 * 60 * 60 * 1000;
-/** P61-09: daily mail trash purge. The actual retention window is
- *  per-workspace (workspaces.trash_retention_days, default 30); this is
- *  just how often we check. */
-export const MAIL_TRASH_PURGE_TICK_MS = 24 * 60 * 60 * 1000;
-/** P62-02: Crawl Engine cadence. 5 min is the finest granularity any
- *  plan can ever fire at (validated by MIN_INTERVAL_MINUTES). Plans
- *  with longer intervals just get checked-and-skipped until due. */
-export const CRAWL_ENGINE_TICK_MS = 5 * 60 * 1000;
-/** AI workspace health check: per-workspace interval (default 7 days)
- *  lives on the workspace row; this is just how often we look for due
- *  ones. The service claims each due workspace atomically. */
-export const HEALTH_CHECK_TICK_MS = 6 * 60 * 60 * 1000;
+export {
+  AUTOPILOT_TICK_MS,
+  CRAWL_ENGINE_TICK_MS,
+  DRAIN_TICK_MS,
+  FOLLOW_UP_TICK_MS,
+  HEALTH_CHECK_TICK_MS,
+  IMAP_TICK_MS,
+  KNOWLEDGE_COMPACT_TICK_MS,
+  MAIL_TRASH_PURGE_TICK_MS,
+  RETENTION_TICK_MS,
+  STUCK_WORK_TICK_MS,
+} from './tick-catalog';
 
 /**
  * PC-13: should `tick` work on this workspace? A workspace the gate holds
@@ -99,13 +137,16 @@ function shouldRun(ws: TickWorkspacePolicy, tick: AutomationTick, onHeld: () => 
   return false;
 }
 
-/** Autopilot tick body. Exported for tests (deterministic). */
-export async function runAutopilotTick(): Promise<{
-  workspaces: number;
-  stepsRun: number;
-  failed: number;
-  held: number;
-}> {
+/**
+ * autopilot.tick body. PC-13 / PC-35 (I066): only workspaces whose policy
+ * runs autopilot and that the gate lets through are run, so a workspace
+ * with autopilot off writes nothing (it used to log a 'guard skipped' row
+ * every 5 minutes). Exported for tests (deterministic, unlike
+ * enqueue-and-wait).
+ */
+export async function runAutopilotTick(
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{ workspaces: number; stepsRun: number; failed: number; held: number }> {
   const wss = await workspacesForTick();
   let ran = 0;
   let failed = 0;
@@ -123,15 +164,21 @@ export async function runAutopilotTick(): Promise<{
         `[autopilot.tick] workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed({ workspaceId: ws.workspaceId }, err);
+      continue;
     }
+    await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
   return { workspaces: wss.length, stepsRun: ran, failed, held };
 }
 
-const handleAutopilotTick: JobHandler = () => runAutopilotTick();
+const handleAutopilotTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runAutopilotTick(incidents);
 
 /** Drain tick body. Exported for tests (deterministic). */
-export async function runDrainTick(): Promise<{
+export async function runDrainTick(
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{
   workspaces: number;
   totalSent: number;
   totalSkipped: number;
@@ -156,12 +203,16 @@ export async function runDrainTick(): Promise<{
         `[drain.tick] workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed({ workspaceId: ws.workspaceId }, err);
+      continue;
     }
+    await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
   return { workspaces: wss.length, totalSent, totalSkipped, failed, held };
 }
 
-const handleDrainTick: JobHandler = () => runDrainTick();
+const handleDrainTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runDrainTick(incidents);
 
 /**
  * mail.imap.tick. flow:F-04 makes it two passes:
@@ -179,9 +230,17 @@ const handleDrainTick: JobHandler = () => runDrainTick();
  *     PC-06: a workspace the automation gate holds for Inbox sync is
  *     skipped whole (X6: 0 messages synced under an Inbox-sync hold).
  *
+ * PC-07: a workspace whose adoption pass throws, or a mailbox whose sync
+ * crashes (a DB error, not a mailbox one), is an incident; its next clean
+ * pass resolves it. Mailbox auth / connection failures are mailbox health,
+ * not tick crashes — they stay with safeSyncOne (flow:F-04).
+ *
  * Exported for tests (deterministic, unlike enqueue-and-wait).
  */
-export async function runImapTick(now: Date = new Date()): Promise<{
+export async function runImapTick(
+  now: Date = new Date(),
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{
   mailboxesSynced: number;
   failed: number;
   skipped: number;
@@ -190,19 +249,27 @@ export async function runImapTick(now: Date = new Date()): Promise<{
   recovered: number;
   adopted: number;
   held: number;
+  /** Workspaces whose adoption pass threw. */
+  workspacesFailed: number;
 }> {
   const tickWss = await workspacesForTick(now);
 
   let adopted = 0;
+  let workspacesFailed = 0;
   for (const ws of tickWss) {
+    const subject = { workspaceId: ws.workspaceId, part: 'adopt' };
     try {
       adopted += await adoptUntrackedFailingMailboxes(ws.ctx);
     } catch (err) {
+      workspacesFailed++;
       console.error(
         `[imap.tick] workspace=${ws.workspaceId} adopting failing mailboxes failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed(subject, err);
+      continue;
     }
+    await incidents.succeeded(subject);
   }
 
   let synced = 0;
@@ -245,6 +312,7 @@ export async function runImapTick(now: Date = new Date()): Promise<{
         break;
       }
       if (mb.status === 'failing') rechecked++;
+      const subject = { workspaceId: ws.workspaceId, part: `mailbox:${mb.id}` };
       let outcome: Awaited<ReturnType<typeof safeSyncOne>>;
       try {
         outcome = await safeSyncOne(ctx, mb);
@@ -261,8 +329,10 @@ export async function runImapTick(now: Date = new Date()): Promise<{
           `[imap.tick] workspace=${ws.workspaceId} mailbox=${mb.id} sync crashed:`,
           err instanceof Error ? err.message : err,
         );
+        await incidents.failed(subject, err);
         continue;
       }
+      await incidents.succeeded(subject);
       if (outcome.kind === 'synced') {
         synced++;
         if (outcome.recovered) recovered++;
@@ -289,29 +359,34 @@ export async function runImapTick(now: Date = new Date()): Promise<{
     recovered,
     adopted,
     held,
+    workspacesFailed,
   };
 }
 
-const handleImapTick: JobHandler = () => runImapTick();
+const handleImapTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runImapTick(new Date(), incidents);
 
 /** Follow-up tick body. Exported for tests (deterministic). */
-export async function runFollowUpTick(): Promise<{
+export async function runFollowUpTick(
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{
+  workspaces: number;
   checked: number;
   sent: number;
   skipped: number;
   failed: number;
   held: number;
+  workspacesFailed: number;
 }> {
-  // Phase 58: every active workspace with follow-ups enabled. The
-  // service-level loadSettings() is the source of truth — we just
-  // iterate the workspace list and let processDueFollowUps no-op
-  // for any that have follow-ups disabled.
+  // Phase 58 / PC-13: every active workspace whose policy has follow-ups
+  // on (tickVerdict); processDueFollowUps re-checks the gate per item.
   const wss = await workspacesForTick();
   let sent = 0;
   let skipped = 0;
   let failed = 0;
   let checked = 0;
   let held = 0;
+  let workspacesFailed = 0;
   for (const ws of wss) {
     if (!shouldRun(ws, 'outreach.follow_up.tick', () => held++)) continue;
     try {
@@ -322,19 +397,27 @@ export async function runFollowUpTick(): Promise<{
       failed += result.failed;
       if (result.heldReason) held++;
     } catch (err) {
+      workspacesFailed++;
       console.error(
         `[follow_up.tick] workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed({ workspaceId: ws.workspaceId }, err);
+      continue;
     }
+    await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
-  return { checked, sent, skipped, failed, held };
+  return { workspaces: wss.length, checked, sent, skipped, failed, held, workspacesFailed };
 }
 
-const handleFollowUpTick: JobHandler = () => runFollowUpTick();
+const handleFollowUpTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runFollowUpTick(incidents);
 
 /** Crawl-engine tick body. Exported for tests (deterministic). */
-export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
+export async function runCrawlEngineTick(
+  now: Date = new Date(),
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{
   workspaces: number;
   processed: number;
   inQuietHours: number;
@@ -343,6 +426,7 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
   held: number;
   /** PC-05: due plans skipped (and moved on) for an empty wallet. */
   walletEmptySkipped: number;
+  workspacesFailed: number;
 }> {
   const wss = await workspacesForTick(now);
   let processed = 0;
@@ -351,6 +435,7 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
   let totalFailed = 0;
   let held = 0;
   let walletEmptySkipped = 0;
+  let workspacesFailed = 0;
   for (const ws of wss) {
     if (!shouldRun(ws, 'crawl.engine.tick', () => held++)) continue;
     try {
@@ -362,11 +447,15 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
       walletEmptySkipped += result.walletEmptySkipped ?? 0;
       if (result.heldReason) held++;
     } catch (err) {
+      workspacesFailed++;
       console.error(
         `[crawl.engine.tick] workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed({ workspaceId: ws.workspaceId }, err);
+      continue;
     }
+    await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
   return {
     workspaces: wss.length,
@@ -376,15 +465,19 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
     totalFailedRecipes: totalFailed,
     held,
     walletEmptySkipped,
+    workspacesFailed,
   };
 }
 
-const handleCrawlEngineTick: JobHandler = () => runCrawlEngineTick();
+const handleCrawlEngineTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runCrawlEngineTick(new Date(), incidents);
 
 /** Trash purge tick body. Exported for tests. PC-05: the purge is
  *  automatic work — held while the workspace is paused (and under a
  *  Trash purge hold, or without an accountable owner). */
-export async function runMailTrashPurgeTick(): Promise<{
+export async function runMailTrashPurgeTick(
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{
   workspaces: number;
   deleted: number;
   failed: number;
@@ -406,21 +499,29 @@ export async function runMailTrashPurgeTick(): Promise<{
         `[mail.trash.purge.tick] workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed({ workspaceId: ws.workspaceId }, err);
+      continue;
     }
+    await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
   return { workspaces: wss.length, deleted: totalDeleted, failed, held };
 }
 
-const handleMailTrashPurgeTick: JobHandler = () => runMailTrashPurgeTick();
+const handleMailTrashPurgeTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runMailTrashPurgeTick(incidents);
 
 /** Knowledge-compaction (+ synthesis) tick body. Exported for tests. */
-export async function runKnowledgeCompactTick(): Promise<{
+export async function runKnowledgeCompactTick(
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{
   workspaces: number;
   processed: number;
   merged: number;
   retired: number;
   synthesized: number;
   failed: number;
+  clusterFailures: number;
+  synthesisFailed: number;
   held: number;
 }> {
   const wss = await workspacesForTick();
@@ -429,53 +530,223 @@ export async function runKnowledgeCompactTick(): Promise<{
   let retired = 0;
   let synthesized = 0;
   let failed = 0;
+  let clusterFailures = 0;
+  let synthesisFailed = 0;
   let held = 0;
   for (const ws of wss) {
     // PC-06: compaction and synthesis are both Background AI. PC-05: both
     // call the AI, so an empty wallet skips them too (I110).
     if (!shouldRun(ws, 'knowledge.compact.tick', () => held++)) continue;
+    const compaction = { workspaceId: ws.workspaceId, part: 'compaction' };
     try {
       const summary = await compactWorkspaceKnowledgeUnattended(ws.workspaceId);
       processed += 1;
       merged += summary.mergedClusters;
       retired += summary.retiredMergedCount + summary.retiredStaleCount;
+      // The unattended pass swallows a failed cluster merge so the other
+      // clusters still run (I021: that failure only reached the console).
+      // Any failed merge makes the workspace's compaction an incident.
+      if (summary.failedClusters > 0) {
+        clusterFailures += summary.failedClusters;
+        await incidents.failed(
+          compaction,
+          new Error(
+            `${summary.failedClusters} cluster merge(s) failed: ${summary.lastClusterError ?? 'unknown error'}`,
+          ),
+        );
+      } else {
+        await incidents.succeeded(compaction);
+      }
     } catch (err) {
       failed++;
       console.error(
         `[knowledge.compact.tick] workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed(compaction, err);
     }
     // Self-learning synthesis rides the same weekly cadence, AFTER
     // compaction so it mines a deduplicated rule base. Its own failure
-    // must not count against compaction (and vice versa).
+    // must not count against compaction (and vice versa): a separate
+    // incident subject.
+    const synthesis = {
+      workspaceId: ws.workspaceId,
+      part: 'synthesis',
+      label: 'Learning synthesis',
+    };
     try {
       const s = await synthesizeWorkspaceLearningUnattended(ws.workspaceId);
       synthesized += s.lessonsCreated;
     } catch (err) {
+      synthesisFailed++;
       console.error(
         `[knowledge.compact.tick] synthesis workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
+      await incidents.failed(synthesis, err);
+      continue;
     }
+    await incidents.succeeded(synthesis);
   }
-  return { workspaces: wss.length, processed, merged, retired, synthesized, failed, held };
+  return {
+    workspaces: wss.length,
+    processed,
+    merged,
+    retired,
+    synthesized,
+    failed,
+    clusterFailures,
+    synthesisFailed,
+    held,
+  };
 }
 
-const handleKnowledgeCompactTick: JobHandler = () => runKnowledgeCompactTick();
+const handleKnowledgeCompactTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runKnowledgeCompactTick(incidents);
 
 /** Health-check tick body. Exported for tests. PC-13: only workspaces
  *  whose policy runs the health check are considered; processDueHealthChecks
- *  claims each due one atomically, and its AI review asks the gate itself. */
-export async function runHealthCheckTick(): Promise<{ checked: number; failed: number }> {
+ *  claims each due one atomically, and its AI review asks the gate itself.
+ *  PC-07: a workspace whose check throws is an incident until its next
+ *  clean check. */
+export async function runHealthCheckTick(
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<Awaited<ReturnType<typeof processDueHealthChecks>>> {
   const wss = await workspacesForTick();
   const workspaceIds = wss
     .filter((ws) => shouldRun(ws, 'health.check.tick', () => undefined))
     .map((ws) => ws.workspaceId);
-  return processDueHealthChecks({ workspaceIds });
+  return processDueHealthChecks({
+    workspaceIds,
+    onWorkspaceFailed: (workspaceId, err) => incidents.failed({ workspaceId }, err),
+    onWorkspaceSucceeded: (workspaceId) => incidents.succeeded({ workspaceId }),
+  });
 }
 
-const handleHealthCheckTick: JobHandler = () => runHealthCheckTick();
+const handleHealthCheckTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runHealthCheckTick(incidents);
+
+/**
+ * PC-10: settle stuck work — sends stuck in 'sending' for more than 10
+ * minutes, runs without progress for 15 (or pending for 60 with their job
+ * gone from the queue). Every active workspace, plus any other workspace
+ * with stuck work (an archived one's stuck rows are settled too).
+ * Platform maintenance, not automation: it sends nothing and starts
+ * nothing, so it runs whatever the workspace's pause or holds say.
+ */
+const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents }) => {
+  const now = new Date();
+  const active = await db
+    .select({ id: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.status, 'active'));
+  const wss = new Map(active.map((ws) => [ws.id.toString(), ws.id]));
+  for (const id of await listWorkspacesWithStuckWork(now)) wss.set(id.toString(), id);
+  let sendsSettledSent = 0;
+  let sendsFailed = 0;
+  let runsFailed = 0;
+  let runsCancelled = 0;
+  let workspacesFailed = 0;
+  for (const workspaceId of wss.values()) {
+    try {
+      const r = await reapStuckWork({ workspaceId }, now);
+      sendsSettledSent += r.sendsSettledSent;
+      sendsFailed += r.sendsFailed;
+      runsFailed += r.runsFailed;
+      runsCancelled += r.runsCancelled;
+    } catch (err) {
+      workspacesFailed++;
+      console.error(
+        `[ops.reaper.tick] workspace=${workspaceId} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+      await incidents.failed({ workspaceId }, err);
+      continue;
+    }
+    await incidents.succeeded({ workspaceId });
+  }
+  // Run incidents whose recipe / connector is gone or switched off: no
+  // next run can resolve them. Best-effort, platform-wide.
+  let runIncidentsClosed = 0;
+  try {
+    runIncidentsClosed = await resolveOrphanedRunIncidents();
+  } catch (err) {
+    console.error(
+      '[ops.reaper.tick] orphaned run incidents not resolved:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+  return {
+    workspaces: wss.size,
+    sendsSettledSent,
+    sendsFailed,
+    runsFailed,
+    runsCancelled,
+    workspacesFailed,
+    runIncidentsClosed,
+  };
+};
+
+/**
+ * PC-35 (I066): delete log rows past their retention window
+ * (services/retention.ts). Platform housekeeping, not automation: it
+ * sends, spends and starts nothing, so no workspace pause, hold or the
+ * platform outbound stop gates it. Not per workspace: one pass per table
+ * across every workspace (suspended ones too). A failed policy fails the
+ * tick (after the other policies ran), which opens its tick.failed
+ * incident.
+ */
+const handleRetentionTick: InstrumentedHandler = () => runRetentionTick();
+
+const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
+  'autopilot.tick': handleAutopilotTick,
+  'outreach.drain.tick': handleDrainTick,
+  'mail.imap.tick': handleImapTick,
+  'outreach.follow_up.tick': handleFollowUpTick,
+  'knowledge.compact.tick': handleKnowledgeCompactTick,
+  'mail.trash.purge.tick': handleMailTrashPurgeTick,
+  'crawl.engine.tick': handleCrawlEngineTick,
+  'health.check.tick': handleHealthCheckTick,
+  'ops.reaper.tick': handleStuckWorkTick,
+  'ops.retention.tick': handleRetentionTick,
+};
+
+/** Platform incident raised when startup could not schedule the ticks. */
+export const SCHEDULE_REGISTRATION_FAILED = 'jobs.schedule_registration_failed';
+const SCHEDULE_REGISTRATION_SOURCE = 'startup';
+
+export function scheduleRegistrationFingerprint(): string {
+  return opsEventFingerprint({
+    scope: 'platform',
+    kind: SCHEDULE_REGISTRATION_FAILED,
+    dedupeKey: SCHEDULE_REGISTRATION_SOURCE,
+  });
+}
+
+/**
+ * Startup could not schedule the ticks (Redis down at boot, …): nothing
+ * runs until the next boot, so it is a critical platform incident, not
+ * just a console line (I022). The next successful registration resolves
+ * it. Best-effort; never throws.
+ */
+export async function reportScheduleRegistrationFailure(err: unknown): Promise<void> {
+  try {
+    await raiseOpsEvent({
+      scope: 'platform',
+      kind: SCHEDULE_REGISTRATION_FAILED,
+      severity: 'critical',
+      source: SCHEDULE_REGISTRATION_SOURCE,
+      dedupeKey: SCHEDULE_REGISTRATION_SOURCE,
+      title: 'Background ticks could not be scheduled at startup',
+      error: err,
+    });
+  } catch (recordErr) {
+    console.error(
+      '[startup] schedule registration incident not recorded:',
+      recordErr instanceof Error ? recordErr.message : recordErr,
+    );
+  }
+}
 
 let registered = false;
 
@@ -483,53 +754,54 @@ let registered = false;
  * Register the tick handlers + their cron schedules. Idempotent — call once
  * at boot. Tests pass `skipSchedule: true` to register the handlers without
  * starting timers.
+ *
+ * Scheduling stamps each tick's heartbeat with registered_at, boot_id,
+ * interval and queue provider (best-effort — a failed write is logged and
+ * does not stop the schedule) and resolves an open "could not be
+ * scheduled" incident from an earlier boot.
  */
 export async function registerRepeatableJobs(
   options: { skipSchedule?: boolean } = {},
 ): Promise<void> {
   if (registered) return;
   const q = getJobQueue();
-  q.on('autopilot.tick', handleAutopilotTick);
-  q.on('outreach.drain.tick', handleDrainTick);
-  q.on('mail.imap.tick', handleImapTick);
-  q.on('outreach.follow_up.tick', handleFollowUpTick);
-  q.on('knowledge.compact.tick', handleKnowledgeCompactTick);
-  q.on('mail.trash.purge.tick', handleMailTrashPurgeTick);
-  q.on('crawl.engine.tick', handleCrawlEngineTick);
-  q.on('health.check.tick', handleHealthCheckTick);
+  for (const tick of TICK_CATALOG) {
+    q.on(
+      tick.name,
+      instrumented(tick.name, TICK_HANDLERS[tick.name], { kind: 'tick', label: tick.label }),
+    );
+  }
   if (!options.skipSchedule) {
-    await q.enqueueRepeatable('autopilot.tick', {}, {
-      everyMs: AUTOPILOT_TICK_MS,
-      jobId: 'autopilot-tick',
-    });
-    await q.enqueueRepeatable('outreach.drain.tick', {}, {
-      everyMs: DRAIN_TICK_MS,
-      jobId: 'outreach-drain-tick',
-    });
-    await q.enqueueRepeatable('mail.imap.tick', {}, {
-      everyMs: IMAP_TICK_MS,
-      jobId: 'mail-imap-tick',
-    });
-    await q.enqueueRepeatable('outreach.follow_up.tick', {}, {
-      everyMs: FOLLOW_UP_TICK_MS,
-      jobId: 'outreach-follow-up-tick',
-    });
-    await q.enqueueRepeatable('knowledge.compact.tick', {}, {
-      everyMs: KNOWLEDGE_COMPACT_TICK_MS,
-      jobId: 'knowledge-compact-tick',
-    });
-    await q.enqueueRepeatable('mail.trash.purge.tick', {}, {
-      everyMs: MAIL_TRASH_PURGE_TICK_MS,
-      jobId: 'mail-trash-purge-tick',
-    });
-    await q.enqueueRepeatable('crawl.engine.tick', {}, {
-      everyMs: CRAWL_ENGINE_TICK_MS,
-      jobId: 'crawl-engine-tick',
-    });
-    await q.enqueueRepeatable('health.check.tick', {}, {
-      everyMs: HEALTH_CHECK_TICK_MS,
-      jobId: 'health-check-tick',
-    });
+    const boot = getBootInfo();
+    const queueProvider = q.id ?? process.env.JOB_QUEUE_PROVIDER ?? 'memory';
+    for (const tick of TICK_CATALOG) {
+      // Captured before scheduling: the memory queue's setInterval counts
+      // its slots from this moment (PC-07 expected-slot rule).
+      const registeredAt = new Date();
+      await q.enqueueRepeatable(tick.name, {}, { everyMs: tick.everyMs, jobId: tick.jobId });
+      try {
+        await recordTickRegistration({
+          name: tick.name,
+          intervalMs: tick.everyMs,
+          queueProvider,
+          bootId: boot.id,
+          registeredAt,
+        });
+      } catch (err) {
+        console.error(
+          `[jobs] ${tick.name}: schedule registration heartbeat not recorded:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    try {
+      await resolveOpsEvent(scheduleRegistrationFingerprint(), { resolution: 'auto' });
+    } catch (err) {
+      console.error(
+        '[jobs] schedule registration incident not resolved:',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   registered = true;
 }

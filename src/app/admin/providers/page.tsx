@@ -29,6 +29,8 @@ import {
   setPlatformSettings,
 } from '@/lib/services/platform-settings';
 import { TableScroll } from '@/components/TableScroll';
+import { OwnerAlertsPanel } from '@/components/OwnerAlertsPanel';
+import { OpsAlertError, getOwnerAlertStatus, sendTestAlert } from '@/lib/services/ops-alerts';
 // The catalogue of platform keys the console manages
 // (src/lib/platform-provider-keys.ts, re-exported by the live checks of
 // PC-02). Each secretKey doubles as the workspace BYOK key name, so the
@@ -82,6 +84,9 @@ export default async function AdminProvidersPage({
 
   const stored = await listPlatformSecretKeys(pctx);
   const storedByKey = new Map(stored.map((s) => [s.key, s]));
+  // PC-08: the ntfy sink is configured in the server env; this is its
+  // topic- and token-free status.
+  const alertStatus = await getOwnerAlertStatus(pctx);
   const defaults = await getPlatformSettings();
 
   // What each capability EFFECTIVELY runs on platform-wide (before any
@@ -244,6 +249,23 @@ export default async function AdminProvidersPage({
     } catch (err) {
       const m = err instanceof Error ? err.message : 'test failed';
       target = `/admin/providers?err=${encodeURIComponent(`${parsed.data}: ${m.slice(0, 300)}`)}`;
+    }
+    redirect(target);
+  }
+
+  // PC-08: one message to the owner-alert topic. The result names the
+  // server host only; the topic and the token never reach the page.
+  async function sendTestOwnerAlert() {
+    'use server';
+    const c = await requirePlatformAdmin();
+    let target: string;
+    try {
+      const r = await sendTestAlert(c);
+      target = `/admin/providers?${r.ok ? 'msg' : 'err'}=${encodeURIComponent(r.message)}`;
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = err instanceof OpsAlertError ? err.message : 'test alert failed';
+      target = `/admin/providers?err=${encodeURIComponent(m)}`;
     }
     redirect(target);
   }
@@ -585,6 +607,8 @@ export default async function AdminProvidersPage({
           server env vars → auto-detect (first vendor with a key).
         </p>
       </section>
+
+      <OwnerAlertsPanel status={alertStatus} sendTestAction={sendTestOwnerAlert} />
     </div>
   );
 }

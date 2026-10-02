@@ -8,19 +8,33 @@ import {
   NoWorkspaceError,
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
+import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { canAdminWorkspace, canWrite } from '@/lib/services/context';
-import { getSendSettings, listQueueEntries } from '@/lib/services/outreach-queue';
+import {
+  getSendSettings,
+  isRecoverableQueueStatus,
+  listQueueEntries,
+} from '@/lib/services/outreach-queue';
 import { getAutomationPauseOverview } from '@/lib/services/automation-pause';
 import { AutomationPauseControl } from '@/components/AutomationPauseControl';
+import { SEND_STUCK_AFTER_MS } from '@/lib/services/stuck-work';
+import { TRANSIENT_MAX_ATTEMPTS, LOCAL_MAX_ATTEMPTS } from '@/lib/mail/send-failure';
 import {
   cancelQueuedEmailAction,
   drainSendQueueAction,
+  markQueuedEmailDeliveredAction,
+  requeueQueuedEmailAction,
   rescheduleQueuedEmailAction,
+  retryQueuedEmailAction,
   saveSendSettingsAction,
 } from './actions';
 import {
+  INTERRUPTED_RESEND_CONFIRM,
+  MARK_DELIVERED_CONFIRM,
   SEND_SETTINGS_LIMITS,
+  describeBackoff,
   describeSendSettings,
+  failureKindBadge,
   formatUtc,
   parseQueueView,
   toUtcInputValue,
@@ -67,6 +81,8 @@ export default async function QueuePage({
   // viewers only read.
   const isAdmin = canAdminWorkspace(ctx);
   const canAct = canWrite(ctx);
+  // Rendered per request; the page is dynamic (auth), so "now" is fresh.
+  const stuckBefore = Date.now() - SEND_STUCK_AFTER_MS;
 
   return (
     <AppShell>
@@ -199,66 +215,156 @@ export default async function QueuePage({
         </div>
         <h2>{statusKey === 'all' ? 'All entries' : `${statusKey} entries`} ({entries.length})</h2>
         <p className="muted small">All times are in UTC.</p>
+        {statusKey === 'failed' || statusKey === 'skipped' || statusKey === 'all' ? (
+          <p className="muted small">
+            A send that fails for a temporary reason is retried automatically (up to{' '}
+            {TRANSIENT_MAX_ATTEMPTS} attempts; {LOCAL_MAX_ATTEMPTS} for an error before
+            sending), waiting longer each time.
+            {canAct
+              ? ' Retry now sends a failed, skipped or cancelled email again at once; Requeue puts it back for the background sender. Both go through the same checks again: suppression, limits and the domain cooldown. An email cut off mid-send can instead be marked as delivered once you find it in the Sent folder. An email that has already gone out is never sent twice.'
+              : null}
+          </p>
+        ) : null}
         {entries.length === 0 ? (
           <p className="muted">Nothing in this view.</p>
         ) : (
           <ul className="lead-list">
-            {entries.map((e) => (
-              <li key={e.id.toString()}>
-                <div className="lead-row">
-                  <strong>{e.subject}</strong>
-                  <span className="badge">{e.status}</span>
-                  <span className="muted">{e.toAddresses.join(', ')}</span>
-                </div>
-                <div className="lead-meta">
-                  <span>scheduled {formatUtc(e.scheduledSendAt)}</span>
-                  <span>delay: {e.delayMode}</span>
-                  <span>attempts: {e.attemptCount}</span>
-                </div>
-                {e.lastError ? (
-                  <p
-                    className={
-                      e.status === 'queued'
-                        ? 'queue-reason queue-reason-info'
-                        : 'queue-reason queue-reason-warn'
-                    }
-                  >
-                    {e.status === 'queued' ? (
-                      <>
-                        <strong>Why scheduled here:</strong> {e.lastError}
-                      </>
-                    ) : (
-                      e.lastError.slice(0, 400)
-                    )}
-                  </p>
-                ) : null}
-                {canAct && e.status === 'queued' ? (
-                  <div className="action-row" style={{ marginTop: '0.5rem' }}>
-                    <form action={cancelQueuedEmailAction}>
-                      <input type="hidden" name="status" value={statusKey} />
-                      <input type="hidden" name="id" value={e.id.toString()} />
-                      <button type="submit" className="ghost-btn">
-                        Cancel
-                      </button>
-                    </form>
-                    <form action={rescheduleQueuedEmailAction} className="inline-form">
-                      <input type="hidden" name="status" value={statusKey} />
-                      <input type="hidden" name="id" value={e.id.toString()} />
-                      <label>
-                        <span>Reschedule (UTC)</span>
-                        <input
-                          type="datetime-local"
-                          name="scheduledSendAt"
-                          defaultValue={toUtcInputValue(e.scheduledSendAt)}
-                          required
-                        />
-                      </label>
-                      <button type="submit">Update</button>
-                    </form>
+            {entries.map((e) => {
+              const kind = failureKindBadge(e.lastFailureKind);
+              const backoff = e.status === 'queued' ? describeBackoff(e) : null;
+              const interrupted = e.lastFailureKind === 'interrupted';
+              const stuck =
+                e.status === 'sending' &&
+                (e.claimedAt ?? e.updatedAt).getTime() < stuckBefore;
+              return (
+                <li key={e.id.toString()}>
+                  <div className="lead-row">
+                    <strong>{e.subject}</strong>
+                    <span className="badge">{e.status}</span>
+                    {kind ? (
+                      <span
+                        className={e.status === 'failed' ? 'badge badge-bad' : 'badge badge-warn'}
+                        title={kind.title}
+                      >
+                        {kind.label}
+                      </span>
+                    ) : null}
+                    <span className="muted">{e.toAddresses.join(', ')}</span>
                   </div>
-                ) : null}
-              </li>
-            ))}
+                  <div className="lead-meta">
+                    <span>scheduled {formatUtc(e.scheduledSendAt)}</span>
+                    <span>delay: {e.delayMode}</span>
+                    <span>attempts: {e.attemptCount}</span>
+                    {backoff ? <span>{backoff}</span> : null}
+                    {e.status === 'sending' && e.claimedAt ? (
+                      <span>picked up {formatUtc(e.claimedAt)}</span>
+                    ) : null}
+                  </div>
+                  {stuck ? (
+                    <p className="queue-reason queue-reason-warn">
+                      This send has not finished for more than 10 minutes. It is checked
+                      automatically within a few minutes: marked sent if a sent copy is found,
+                      otherwise failed as &ldquo;delivery unknown&rdquo;.
+                    </p>
+                  ) : null}
+                  {e.lastError ? (
+                    <p
+                      className={
+                        e.status === 'queued'
+                          ? 'queue-reason queue-reason-info'
+                          : 'queue-reason queue-reason-warn'
+                      }
+                    >
+                      {e.status === 'queued' ? (
+                        <>
+                          <strong>Why scheduled here:</strong> {e.lastError}
+                        </>
+                      ) : (
+                        e.lastError.slice(0, 400)
+                      )}
+                    </p>
+                  ) : null}
+                  {canAct && e.status === 'queued' ? (
+                    <div className="action-row" style={{ marginTop: '0.5rem' }}>
+                      <form action={cancelQueuedEmailAction}>
+                        <input type="hidden" name="status" value={statusKey} />
+                        <input type="hidden" name="id" value={e.id.toString()} />
+                        <button type="submit" className="ghost-btn">
+                          Cancel
+                        </button>
+                      </form>
+                      <form action={rescheduleQueuedEmailAction} className="inline-form">
+                        <input type="hidden" name="status" value={statusKey} />
+                        <input type="hidden" name="id" value={e.id.toString()} />
+                        <label>
+                          <span>Reschedule (UTC)</span>
+                          <input
+                            type="datetime-local"
+                            name="scheduledSendAt"
+                            defaultValue={toUtcInputValue(e.scheduledSendAt)}
+                            required
+                          />
+                        </label>
+                        <button type="submit">Update</button>
+                      </form>
+                    </div>
+                  ) : null}
+                  {canAct && isRecoverableQueueStatus(e.status) ? (
+                    <div className="action-row" style={{ marginTop: '0.5rem' }}>
+                      <form action={retryQueuedEmailAction}>
+                        <input type="hidden" name="status" value={statusKey} />
+                        <input type="hidden" name="id" value={e.id.toString()} />
+                        {/* PC-05: Retry now is a manual send; while automation
+                            is paused it goes out only with an explicit "send
+                            anyway" (audited as outbound.override). Requeue
+                            needs none: it sends nothing. */}
+                        {pauseOverview.pause ? (
+                          <label className="checkbox-row">
+                            <input type="checkbox" name="confirmPaused" value="on" required />
+                            <span>
+                              Automation is paused. Send this email anyway (recorded in the
+                              audit log).
+                            </span>
+                          </label>
+                        ) : null}
+                        {interrupted ? (
+                          <ConfirmFormButton message={INTERRUPTED_RESEND_CONFIRM}>
+                            Retry now
+                          </ConfirmFormButton>
+                        ) : (
+                          <button type="submit">Retry now</button>
+                        )}
+                      </form>
+                      <form action={requeueQueuedEmailAction}>
+                        <input type="hidden" name="status" value={statusKey} />
+                        <input type="hidden" name="id" value={e.id.toString()} />
+                        {interrupted ? (
+                          <ConfirmFormButton
+                            message={INTERRUPTED_RESEND_CONFIRM}
+                            className="ghost-btn"
+                          >
+                            Requeue
+                          </ConfirmFormButton>
+                        ) : (
+                          <button type="submit" className="ghost-btn">
+                            Requeue
+                          </button>
+                        )}
+                      </form>
+                      {interrupted ? (
+                        <form action={markQueuedEmailDeliveredAction}>
+                          <input type="hidden" name="status" value={statusKey} />
+                          <input type="hidden" name="id" value={e.id.toString()} />
+                          <ConfirmFormButton message={MARK_DELIVERED_CONFIRM} className="ghost-btn">
+                            Mark as delivered
+                          </ConfirmFormButton>
+                        </form>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

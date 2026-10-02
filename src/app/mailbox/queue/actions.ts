@@ -1,7 +1,8 @@
 'use server';
 
 // Server actions for /mailbox/queue: save send settings, cancel or
-// reschedule a queued email, and drain the queue now.
+// reschedule a queued email, retry or requeue a failed / skipped /
+// cancelled one (PC-10), and drain the queue now.
 //
 // They used to be inline actions in page.tsx with no error handling, and
 // the settings form was shown to everyone because the page checked
@@ -20,11 +21,18 @@ import {
   OutreachQueueError,
   cancelQueueEntry,
   drainQueue,
+  markQueueEntryDelivered,
+  requeueQueueEntry,
   rescheduleQueueEntry,
+  retryQueueEntry,
   updateSendSettings,
 } from '@/lib/services/outreach-queue';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
+  MARKED_DELIVERED_MESSAGE,
+  REQUEUED_MESSAGE,
+  describeDrainBlocked,
+  describeRetryOutcome,
   formatUtc,
   parseEntryId,
   parseQueueView,
@@ -65,6 +73,49 @@ export async function rescheduleQueuedEmailAction(formData: FormData): Promise<v
   backToQueue(view, 'message', `Rescheduled for ${formatUtc(when)}.`);
 }
 
+/**
+ * PC-10: Retry now — put a failed / skipped / cancelled email back and
+ * attempt it at once, through the same checks as the drain. Any write
+ * role (the same as Cancel); the service enforces it. PC-05: while
+ * automation is paused the form carries the operator's "send anyway"
+ * (confirmPaused); without it the email is only put back.
+ */
+export async function retryQueuedEmailAction(formData: FormData): Promise<void> {
+  const view = parseQueueView(formData.get('status'));
+  const ctx = await requireActionContext();
+  const id = parseEntryId(formData.get('id'));
+  if (id === null) backToQueue(view, 'error', 'That email is no longer in the queue.');
+  const confirmPaused = formData.get('confirmPaused') === 'on';
+  const result = await runOrFlash(view, 'retry', () =>
+    retryQueueEntry(ctx, id, { confirmPaused }),
+  );
+  const flash = describeRetryOutcome(result);
+  backToQueue(view, flash.kind, flash.text);
+}
+
+/** PC-10: Requeue — put it back for the background send pass. */
+export async function requeueQueuedEmailAction(formData: FormData): Promise<void> {
+  const view = parseQueueView(formData.get('status'));
+  const ctx = await requireActionContext();
+  const id = parseEntryId(formData.get('id'));
+  if (id === null) backToQueue(view, 'error', 'That email is no longer in the queue.');
+  await runOrFlash(view, 'requeue', () => requeueQueueEntry(ctx, id));
+  backToQueue(view, 'message', REQUEUED_MESSAGE);
+}
+
+/**
+ * PC-10: Mark as delivered — an email cut off mid-send that the operator
+ * found in the Sent folder. Any write role; the service enforces it.
+ */
+export async function markQueuedEmailDeliveredAction(formData: FormData): Promise<void> {
+  const view = parseQueueView(formData.get('status'));
+  const ctx = await requireActionContext();
+  const id = parseEntryId(formData.get('id'));
+  if (id === null) backToQueue(view, 'error', 'That email is no longer in the queue.');
+  await runOrFlash(view, 'mark_delivered', () => markQueueEntryDelivered(ctx, id));
+  backToQueue(view, 'message', MARKED_DELIVERED_MESSAGE);
+}
+
 export async function drainSendQueueAction(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
@@ -76,13 +127,16 @@ export async function drainSendQueueAction(formData: FormData): Promise<void> {
     if (r.picked > 0) {
       const deferred =
         r.deferred > 0 ? ` (${r.deferred} held — each shows why)` : '';
-      return `Sent ${r.sent}, skipped ${r.skipped}${deferred}, failed ${r.failed} of ${r.picked} due ${
+      const retrying = r.retrying > 0 ? `, ${r.retrying} will be retried` : '';
+      return `Sent ${r.sent}, skipped ${r.skipped}${deferred}, failed ${r.failed}${retrying} of ${r.picked} due ${
         r.picked === 1 ? 'email' : 'emails'
       }.${held}`;
     }
-    return r.heldReason
-      ? `Nothing was sent. ${r.heldReason}`
-      : "Nothing was sent: no emails are due yet, or today's limit has been reached.";
+    // PC-10: when the send gate kept the pass from sending, say why rather
+    // than implying the queue is simply empty.
+    return r.blocked
+      ? describeDrainBlocked(r.blocked, r.heldReason)
+      : 'Nothing was sent: no emails are due yet.';
   });
   backToQueue(view, 'message', message);
 }

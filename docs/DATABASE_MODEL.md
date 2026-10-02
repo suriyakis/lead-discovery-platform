@@ -91,6 +91,12 @@ Append-only. No update path.
 
 Index on `(workspaceId, createdAt desc)` and `(kind, createdAt desc)`.
 
+Retention (PC-35): every kind is kept indefinitely except `mail.sync_inbound`
+(written only when a sync stored new messages), deleted after 30 days by the
+daily `ops.retention.tick`; each retention run that deleted anything writes a
+platform `ops.retention.run` row. `usage_log` has no retention (it backs token
+debits).
+
 ### `usage_log`
 Append-only. Used for cost dashboards.
 
@@ -147,7 +153,7 @@ Sketch only — full shape decided when the module is built.
 
 `connector_recipes`: id, workspaceId, connectorId, name, templateType, seedUrls, searchQueries, selectors (jsonb), paginationRules (jsonb), enrichmentRules (jsonb), normalizationMapping (jsonb), evidenceRules (jsonb), active.
 
-`connector_runs`: id, workspaceId, connectorId, recipeId nullable, productProfileIds (bigint[]), status, progress, startedAt, completedAt, errorPayload (jsonb).
+`connector_runs`: id, workspaceId, connectorId, recipeId nullable, productProfileIds (bigint[]), status (`pending` / `running` / `succeeded` / `partial` / `failed` / `cancelled`), progress, startedAt, completedAt, errorPayload (jsonb). PC-10: `partial` = finished but some steps (search queries) failed, a run where every query failed is `failed`; `last_progress_at` is the runner's heartbeat (a running run without progress for 15 min is failed by the stuck-work reaper); `cancel_requested_at` is set by Cancel and polled by the runner between steps, so Cancel works from any process.
 
 `connector_run_logs`: id, runId, level, message, payload (jsonb), createdAt.
 
@@ -165,6 +171,9 @@ The review queue. State, assigned user, comments (separate `review_comments` tab
 
 ### `outreach_drafts` (Phase 8)
 Linked to a workspace, product profile, and target entity (company/contact/opportunity).
+
+### `outreach_queue` (Phase 19; PC-10)
+The send queue: status (`queued` / `sending` / `sent` / `failed` / `skipped` / `cancelled`), scheduled_send_at, attempt_count, last_error, sent_message_id. PC-10 adds `claimed_at` (set when the drain claims the row; a row still `sending` 10 minutes later is settled by the stuck-work reaper: `sent` when a sent copy of its draft exists from the claim on, else `failed` as interrupted), `next_attempt_at` (exponential backoff after a retryable failure; the drain skips the row until then) and `last_failure_kind` (`transient` / `local` / `unknown` / `sender_auth` / `recipient_hard` / `policy` / `interrupted`, CHECK in the migration's custom block; see `src/lib/mail/send-failure.ts`). A delivered send turns `sent` in the same transaction as its `mail_messages` row.
 
 ### `learning_events`, `learning_lessons` (Phase 5)
 `learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12. An event recorded for an autopilot decision has `user_id` NULL (PC-11); a review item autopilot approved has `approved_by_user_id` NULL and `approval_reason` 'autopilot'.
@@ -194,6 +203,22 @@ View `workspace_automation_state` (plain, not materialized): one row per workspa
 `autopilot_product_settings` is narrow-only: each override switch (`autopilot_enabled`, `enable_auto_approve_projects`, `enable_auto_enqueue_outreach`, `enable_auto_crm_contact_sync`, `enable_auto_crm_deal_on_qualified`) is NULL (inherit) or false (off) — CHECK `autopilot_product_settings_narrow_only_check`; `auto_approve_threshold` only ever raises the workspace's (the resolver takes the higher). `paused_at` / `paused_by_user_id` (FK users, set null): the product pause. `emergency_pause` is legacy (never applied, carried into `paused_at` by migration `p1_automation_control_policy`, cleared, read by nothing, dropped one release later). `services/automation-policy.ts` is the only reader.
 
 `autopilot_settings.enable_auto_drain_queue`, `autopilot_settings.enable_auto_sync_inbound` and `workspaces.auto_send_replies` are legacy: read and written by nothing, set to false by the migration, dropped one release later.
+### `job_heartbeats`, `ops_events` (Phase 1, PC-07)
+Operational visibility (I021/I022). Not tenant-owned bookkeeping, written by background jobs (no user acts). See `docs/OPS_MONITORING.md`.
+
+`job_heartbeats`: one row per job name (every repeatable tick in `src/lib/jobs/tick-catalog.ts`, incl. PC-10's `ops.reaper.tick` and PC-35's `ops.retention.tick`, and the on-demand `connector.run`). name (pk), kind (`tick` / `job`), interval_ms, queue_provider, boot_id + registered_at (written by the schedule registration at boot), last_started_at / last_finished_at / last_ok_at, last_status (`running` / `ok` / `degraded` / `failed`), last_duration_ms, last_error (masked) + last_error_at, last_summary (jsonb, the handler's structured summary), next_due_at (informational), run_count, consecutive_failures. Staleness is computed on read, never stored. A row whose name is no longer a catalogued tick and that was not written for 90 days is deleted by the retention tick (PC-35).
+
+`ops_events`: the incident stream. scope (`platform` / `workspace`; a CHECK ties `workspace_id` to it), workspace_id (cascade), kind, severity (`info` / `warning` / `error` / `critical`), source (job or subsystem), dedupe_key, fingerprint (sha256 over scope + workspace + kind + dedupe key), title, message (masked), payload (jsonb, masked), occurrences, first_seen_at / last_seen_at, acknowledged_at / acknowledged_by, resolved_at / resolved_by / resolution (`auto` / `manual`). A partial unique index keeps one open row per fingerprint, so repeats bump `occurrences`. Resolved rows are kept 90 days after `resolved_at` (`OPS_EVENTS_RETENTION_DAYS`), then deleted by the retention tick (PC-35); open rows are never deleted.
+
+### `ops_alert_state`, `ops_alert_deliveries` (Phase 1, PC-08)
+Owner alerting to ntfy (see `docs/OPS_MONITORING.md`, "Owner alerts"). Not tenant-owned; written by the in-process watchdog, the control-change hook and the console's test alert.
+
+`ops_alert_state`: one row per alert key: an incident fingerprint, a control-change key (`control:<control>:<workspace>:<hold>:<action>`) or `digest:daily`. alert_key (pk), last_alerted_at, last_event_id (the `ops_events` row last alerted, set null on delete), alert_count (CHECK >= 1). Claiming a key is an upsert guarded by `last_alerted_at <= cutoff`, so an alert goes out once across processes; the key outlives the incident row so a flapping incident does not page again within 6 h. A key not alerted for 90 days is deleted by the retention tick (PC-35).
+
+`ops_alert_deliveries`: every message sent or attempted. kind (`incident` / `digest` / `daily_digest` / `control` / `test`), sink (`ntfy`), status (`sent` / `failed`), title (masked), priority (1-5), event_count, payload (jsonb: alert keys and event ids, bounded), http_status, error (masked, scrubbed of the topic and token), created_at. The hourly budget counts `sent` incident and digest rows. Same 90-day retention as `ops_events`, by created_at (the retention tick, PC-35).
+
+### Autopilot guard state and log retention (Phase 1, PC-35)
+`autopilot_settings.guard_state` (text, NULL = never evaluated) + `guard_state_at`: the guard state the last autopilot run recorded, `open` or the reason it stopped the run (`autopilot_disabled`, or the automation gate's refusal: `paused`, `hold:<id>`, `no_accountable_owner`, `plan_no_autopilot`, …). A `guard` row reaches `autopilot_log` only when it changes (payload `{state, previous}`; back to `open` logs `guard · success — resumed`). The migration seeds it for workspaces with autopilot off (`autopilot_disabled`) or a paused workspace (`paused`, from `workspaces.automation_paused_at`). `autopilot_log` rows are kept 30 days (index `autopilot_log_created_idx`), read `notifications` 90 days by created_at (partial index `notifications_read_created_idx`). The policies are in `src/lib/services/retention.ts`; see `docs/OPS_MONITORING.md`, "Log retention". CHECKs on kind, status, priority and event_count live in the migration's custom block.
 
 ## Reserved fields and tables (no migration needed for future phases)
 

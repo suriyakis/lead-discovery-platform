@@ -266,6 +266,8 @@ describe('drainQueue', () => {
       failed: 0,
       skipped: 0,
       deferred: 0,
+      retrying: 0,
+      blocked: 'paused',
       heldReason: PAUSED_MESSAGE,
     });
     const all = await listQueueEntries(ctx(s.workspaceA, s.ownerA));

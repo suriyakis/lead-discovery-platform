@@ -34,6 +34,14 @@
 // All steps lean on existing services so the autopilot stays a thin
 // orchestrator: it never reaches into the DB to do work that already has
 // a service entry point.
+//
+// PC-35 (I066): the guard (the master switch, then the automation gate:
+// the workspace pause, holds, the accountable owner, the plan) is logged
+// only when its state changes — autopilot_settings.guard_state — instead of
+// a 'guard skipped' row on every run (288 a day per workspace from the
+// 5-minute tick alone). The tick itself only runs workspaces whose policy
+// runs autopilot and that the gate lets through (jobs/repeatables.ts,
+// tickVerdict), so a switched-off workspace writes nothing at all.
 
 import {
   and,
@@ -45,6 +53,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   ne,
   notExists,
   notInArray,
@@ -72,7 +81,12 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import type { ICRMConnector } from '@/lib/crm';
 import { recordAuditEvent } from './audit';
-import { checkGate, checkGates, type AutomationCapability } from './automation-gate';
+import {
+  checkGate,
+  checkGates,
+  type AutomationCapability,
+  type GateRefusal,
+} from './automation-gate';
 import {
   AUTOPILOT_STEP_CAPABILITY,
   AUTOPILOT_STEP_FIELDS,
@@ -552,14 +566,18 @@ export async function runOnce(
   options: RunOptions = {},
 ): Promise<AutopilotRunResult> {
   if (!canWrite(ctx)) throw denied('autopilot.run');
-  await getAutopilotSettings(ctx); // the settings row exists from the first run on
+  // The settings row exists from the first run on; its guard_state is the
+  // guard's last recorded verdict (PC-35).
+  const settings = await getAutopilotSettings(ctx);
   const policy = await resolveAutomationPolicy(ctx);
   const runId = randomUUID();
   const ranAt = new Date();
   const steps: AutopilotRunResult['steps'] = [];
 
+  // The guard's verdict is always in the returned steps; it reaches
+  // autopilot_log only when it differs from the last recorded state.
   if (!policy.autopilot.enabled) {
-    await recordStep(ctx, runId, 'guard', 'skipped', 'autopilot_disabled');
+    await recordGuardState(ctx, runId, settings.guardState, 'autopilot_disabled');
     steps.push({ step: 'guard', outcome: 'skipped', detail: 'autopilot_disabled' });
     return { runId, ranAt, steps };
   }
@@ -576,11 +594,12 @@ export async function runOnce(
         gate.reason === 'plan_no_autopilot'
           ? 'plan_no_autopilot'
           : `held: ${gate.message}`.slice(0, 500);
-      await recordStep(ctx, runId, 'guard', 'skipped', detail);
+      await recordGuardState(ctx, runId, settings.guardState, guardStateOf(gate), { detail });
       steps.push({ step: 'guard', outcome: 'skipped', detail });
       return { runId, ranAt, steps };
     }
   }
+  await recordGuardState(ctx, runId, settings.guardState, AUTOPILOT_GUARD_OPEN);
 
   // PC-06 + PC-05: before each step the gate is asked again — Autopilot
   // (a pause or hold placed mid-run stops the remaining steps) and the
@@ -1267,6 +1286,72 @@ async function recordStep(
     entityId: entityId ?? null,
     ...(payload ? { payload } : {}),
   });
+}
+
+/** PC-35: the guard state of a run the guard let through. */
+export const AUTOPILOT_GUARD_OPEN = 'open';
+
+/**
+ * PC-35 (I066): record the guard's state for this run — AUTOPILOT_GUARD_OPEN
+ * or the reason it stopped the run — and write a `guard` row to
+ * autopilot_log only when the state changed since the last recorded one:
+ *
+ *   - into a stopping reason:      guard · skipped — <reason>
+ *   - from a stopping reason back to open: guard · success — resumed
+ *   - never recorded → open (a workspace's first run, or its first since
+ *     PC-35): stored silently, nothing changed for the operator.
+ *
+ * `previous` is the guard_state the run read with its settings. The flip
+ * is an UPDATE conditional on it, in the same transaction as the log row,
+ * so when the tick and Run now race on one change it is logged once.
+ * Returns whether a log row was written.
+ */
+export async function recordGuardState(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  runId: string,
+  previous: string | null,
+  state: string,
+  options: { detail?: string; now?: Date } = {},
+): Promise<boolean> {
+  if (previous === state) return false;
+  const now = options.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const flipped = await tx
+      .update(autopilotSettings)
+      .set({ guardState: state, guardStateAt: now })
+      .where(
+        and(
+          eq(autopilotSettings.workspaceId, ctx.workspaceId),
+          previous === null
+            ? isNull(autopilotSettings.guardState)
+            : eq(autopilotSettings.guardState, previous),
+        ),
+      )
+      .returning({ workspaceId: autopilotSettings.workspaceId });
+    // Another run recorded this change first (or the row is gone).
+    if (flipped.length === 0) return false;
+    const opened = state === AUTOPILOT_GUARD_OPEN;
+    if (opened && previous === null) return false;
+    await tx.insert(autopilotLog).values({
+      workspaceId: ctx.workspaceId,
+      runId,
+      step: 'guard',
+      outcome: opened ? 'success' : 'skipped',
+      detail: opened ? 'resumed' : (options.detail ?? state),
+      payload: { state, previous },
+    });
+    return true;
+  });
+}
+
+/**
+ * PC-35 × PC-06: the guard state recorded for a run the automation gate
+ * stopped — the gate's reason ('paused', 'no_accountable_owner',
+ * 'plan_no_autopilot', …), and for a hold the hold itself ('hold:<id>'),
+ * so a different hold replacing the first is logged as a change.
+ */
+export function guardStateOf(refusal: Pick<GateRefusal, 'reason' | 'hold'>): string {
+  return refusal.reason === 'hold' && refusal.hold ? `hold:${refusal.hold.id}` : refusal.reason;
 }
 
 export async function listAutopilotLog(

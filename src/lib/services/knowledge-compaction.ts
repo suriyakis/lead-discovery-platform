@@ -78,6 +78,12 @@ export interface CompactionSummary {
   /** Chunks skipped without an AI call: stored embeddings show no pair
    *  anywhere near merge similarity. */
   skippedDistinctClusters: number;
+  /** Unattended runs only: cluster merges that threw and were skipped so
+   *  the rest of the pass could run (the attended run throws instead).
+   *  The weekly tick turns a non-zero count into an ops incident (PC-07). */
+  failedClusters: number;
+  /** Message of the last failed merge, for that incident; never audited. */
+  lastClusterError: string | null;
 }
 
 // ---- entry point -------------------------------------------------------
@@ -109,12 +115,13 @@ export async function compactWorkspaceKnowledge(
     ...pass,
   };
 
+  const { lastClusterError: _attendedError, ...audited } = summary;
   await recordAuditEvent(ctx, {
     kind: 'knowledge.compaction.run',
     entityType: 'workspace',
     entityId: ctx.workspaceId,
     payload: {
-      ...summary,
+      ...audited,
       workspaceId: summary.workspaceId.toString(),
       startedAt: summary.startedAt.toISOString(),
       finishedAt: summary.finishedAt.toISOString(),
@@ -154,12 +161,15 @@ export async function compactWorkspaceKnowledgeUnattended(
     ...pass,
   };
 
+  // The failure text stays out of the audit trail (it can quote provider
+  // responses); the count is enough there.
+  const { lastClusterError: _unattendedError, ...audited } = summary;
   await recordPlatformAuditEvent(null, {
     kind: 'knowledge.compaction.run',
     entityType: 'workspace',
     entityId: workspaceId,
     payload: {
-      ...summary,
+      ...audited,
       workspaceId: summary.workspaceId.toString(),
       startedAt: summary.startedAt.toISOString(),
       finishedAt: summary.finishedAt.toISOString(),
@@ -201,6 +211,8 @@ async function runClusterPass(
     skippedSingletons: 0,
     skippedUnchangedClusters: 0,
     skippedDistinctClusters: 0,
+    failedClusters: 0,
+    lastClusterError: null,
   };
 
   for (const cluster of clusters) {
@@ -233,6 +245,8 @@ async function runClusterPass(
         }
       } catch (err) {
         if (!options.swallowErrors) throw err;
+        result.failedClusters += 1;
+        result.lastClusterError = err instanceof Error ? err.message : String(err);
         console.error(
           `[knowledge-compaction] cluster merge failed for workspace ${ctx.workspaceId}:`,
           err,

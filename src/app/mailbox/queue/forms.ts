@@ -13,9 +13,13 @@ import {
 } from '@/lib/db/schema/outreach';
 import {
   OutreachQueueError,
+  type RetryQueueEntryResult,
+  type SendGateRefusal,
   type UpdateSendSettingsInput,
 } from '@/lib/services/outreach-queue';
 import { withFlash } from '@/lib/action-errors';
+import { SEND_FAILURE_POLICY, isSendFailureKind } from '@/lib/mail/send-failure';
+import { formatUtc as formatUtcDate } from '@/lib/format-utc';
 
 // ---- views ----------------------------------------------------------
 
@@ -159,13 +163,23 @@ export { formatUtc, toUtcInputValue } from '@/lib/format-utc';
 
 // ---- errors ---------------------------------------------------------
 
-export type QueueOperation = 'settings' | 'cancel' | 'reschedule' | 'drain';
+export type QueueOperation =
+  | 'settings'
+  | 'cancel'
+  | 'reschedule'
+  | 'drain'
+  | 'retry'
+  | 'requeue'
+  | 'mark_delivered';
 
 const FALLBACK: Record<QueueOperation, string> = {
   settings: 'Could not save the send settings. Please try again.',
   cancel: 'Could not cancel that email. Please try again.',
   reschedule: 'Could not reschedule that email. Please try again.',
   drain: 'Could not send the queue right now. Please try again.',
+  retry: 'Could not retry that email. Please try again.',
+  requeue: 'Could not put that email back in the queue. Please try again.',
+  mark_delivered: 'Could not mark that email as delivered. Please try again.',
 };
 
 /**
@@ -184,10 +198,114 @@ export function queueErrorMessage(err: unknown, op: QueueOperation): string {
       case 'not_found':
         return 'That email is no longer in the queue.';
       case 'conflict':
+        // PC-10: Retry / Requeue / Mark as delivered refusals are written
+        // for the operator.
+        if (op === 'retry' || op === 'requeue' || op === 'mark_delivered') return err.message;
         return 'That email is no longer waiting to be sent: it has already been sent, cancelled or picked up for sending.';
       case 'invalid_input':
         return err.message;
     }
   }
   return FALLBACK[op];
+}
+
+// ---- retry / requeue (PC-10) ------------------------------------------
+
+/** The flash after Retry now: what the attempt came to. */
+export function describeRetryOutcome(result: RetryQueueEntryResult): {
+  kind: 'message' | 'error';
+  text: string;
+} {
+  const reason = result.entry.lastError ? ` ${result.entry.lastError.slice(0, 220)}` : '';
+  switch (result.outcome) {
+    case 'sent':
+      return { kind: 'message', text: 'Sent.' };
+    case 'queued':
+      return {
+        kind: 'message',
+        text: `Put back in the queue. ${heldBecause(result.reason, result.message)}`,
+      };
+    case 'retrying':
+      return {
+        kind: 'error',
+        text: `It failed again for a temporary reason and will be retried automatically.${reason}`,
+      };
+    case 'deferred':
+      return { kind: 'message', text: `Held, not sent now.${reason}` };
+    case 'skipped':
+      return { kind: 'message', text: `Not sent now.${reason}` };
+    case 'failed':
+      return { kind: 'error', text: `It failed again.${reason}` };
+  }
+}
+
+/**
+ * Why Retry now put an email back without sending it: the send gate's
+ * refusal (services/outreach-queue.ts evaluateSendGate) and, for the
+ * automation gate's refusals, its own sentence (the hold's reason, who
+ * stopped outbound). Exhaustive on purpose: a refusal added to the gate
+ * does not compile until it is worded here.
+ */
+function heldBecause(reason: SendGateRefusal | undefined, message: string | undefined): string {
+  switch (reason) {
+    case 'paused':
+      return 'Automation is paused, so it goes out once an owner or admin resumes it — or tick "Send anyway" and retry to send it by hand now.';
+    case 'hold':
+    case 'platform_outbound_stop':
+    case 'no_accountable_owner':
+    case 'workspace_archived':
+      return message ?? 'Sending is on hold, so it goes out once the hold is released.';
+    case 'daily_limit':
+      return "Today's email limit is used up, so it goes out when there is room again.";
+    case undefined:
+      return 'It goes out with the next send pass.';
+  }
+}
+
+/** The Send now flash when the send gate kept the whole pass from sending:
+ *  the automation gate's sentence for its refusals (PC-05 / PC-06), our
+ *  own for the daily limit (PC-10). */
+export function describeDrainBlocked(reason: SendGateRefusal, message?: string): string {
+  switch (reason) {
+    case 'paused':
+    case 'hold':
+    case 'platform_outbound_stop':
+    case 'no_accountable_owner':
+    case 'workspace_archived':
+      return `Nothing was sent. ${message ?? 'Sending is on hold in this workspace.'}`;
+    case 'daily_limit':
+      return "Nothing was sent: today's email limit has been reached.";
+  }
+}
+
+export const REQUEUED_MESSAGE =
+  'Put back in the queue. It goes out with the next send pass, after the usual checks (suppression, limits, cooldown).';
+
+/** The confirmation Retry / Requeue ask for on an entry whose delivery is
+ *  unknown (cut off mid-send). */
+export const INTERRUPTED_RESEND_CONFIRM =
+  'This email was cut off while it was being sent and no sent copy was found, so it may already have been delivered. Check the mailbox’s Sent folder first. Send it again?';
+
+/** PC-10: Mark as delivered on an interrupted entry — confirmation and flash. */
+export const MARK_DELIVERED_CONFIRM =
+  'Only if you found this email in the mailbox’s Sent folder: it is then recorded as sent, its failed copies leave Errors and it is never sent again. Mark it as delivered?';
+export const MARKED_DELIVERED_MESSAGE =
+  'Marked as delivered. It will not be sent again, and its failed copies left the Errors folder.';
+
+/** "next attempt … (after 2 of 5)" for a queued entry backing off. */
+export function describeBackoff(entry: {
+  attemptCount: number;
+  nextAttemptAt: Date | null;
+  lastFailureKind: string | null;
+}): string | null {
+  if (!entry.nextAttemptAt || !isSendFailureKind(entry.lastFailureKind)) return null;
+  const max = SEND_FAILURE_POLICY[entry.lastFailureKind].maxAttempts;
+  return `next attempt ${formatUtcDate(entry.nextAttemptAt)} (after ${entry.attemptCount} of ${max})`;
+}
+
+/** Label + explanation of a stored failure kind, or null. */
+export function failureKindBadge(kind: string | null): { label: string; title: string } | null {
+  if (!isSendFailureKind(kind)) return null;
+  const policy = SEND_FAILURE_POLICY[kind];
+  return { label: policy.label, title: policy.explanation };
 }

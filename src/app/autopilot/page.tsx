@@ -233,15 +233,17 @@ export default async function AutopilotPage({
     'use server';
     const c = await getWorkspaceContext();
     const r = await runOnce(c);
-    // PC-06: a held run stops at the guard step — say why.
-    const guard = r.steps.length === 1 && r.steps[0]?.step === 'guard' ? r.steps[0] : null;
-    redirect(
-      `/autopilot?message=${encodeURIComponent(
-        guard?.detail?.startsWith('held: ')
-          ? `Nothing ran. ${guard.detail.slice('held: '.length)}`
-          : `runOnce — ${r.steps.length} steps`,
-      )}`,
-    );
+    // PC-06: a held run stops at the guard step — say why. PC-35: the guard
+    // is logged only when its state changes, so a run it stopped may add
+    // no activity row; the message says why instead.
+    const first = r.steps[0];
+    const guard = first?.step === 'guard' && first.outcome === 'skipped' ? first : null;
+    const message = guard?.detail?.startsWith('held: ')
+      ? `Nothing ran. ${guard.detail.slice('held: '.length)}`
+      : guard
+        ? `Autopilot did not run: ${guard.detail ?? 'guard'}`
+        : `runOnce — ${r.steps.length} steps`;
+    redirect(`/autopilot?message=${encodeURIComponent(message)}`);
   }
 
   return (

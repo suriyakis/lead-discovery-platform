@@ -68,6 +68,13 @@ Then add a recipe (`/connectors/<id>/recipes/new`) with `searchQueries` like
 Click **Run now** on the recipe. Within a few seconds the run completes,
 records land in `/review`, qualifications are auto-computed.
 
+The run page refreshes itself while the run is pending or running and
+has a **Cancel run** button (any role that can edit): the run stops
+after the search query it is on and keeps the records found so far.
+A run ends `failed` (with a notification) when every query failed,
+`partial` when only some did. A run with no progress for 15 minutes
+(or still pending after an hour) is failed automatically.
+
 ### 3.4 Configure a mailbox
 
 `/mailbox/new`. SMTP host/port/user/password + IMAP host/port/user/password.
@@ -230,7 +237,10 @@ change them on `/autopilot`.
 - `/admin/users`, `/admin/users/<id>` — account status, pre-authorisation,
   password users, platform role, memberships.
 - `/admin/support` — the support inbox across every workspace.
-- `/admin/providers` — platform API keys and default providers/models.
+- `/admin/providers` — platform API keys and default providers/models,
+  and **Owner alerts**: whether alerts to the owner's ntfy topic are on
+  (configured in the server environment; the topic is never shown), the
+  last alerts sent, and **Send test alert**.
 - `/admin/audit` — the audit log across every workspace. Pick
   **Platform events** to see platform-level events (filed in no
   workspace on purpose), or **Deleted workspaces** to see rows whose
@@ -296,6 +306,18 @@ CRM connection.
   by design — vectors are deterministic but synthetic.
 - "Push to CRM failed" → open `/settings/crm/<id>`; the recent-syncs
   timeline shows HTTP code + error body.
+- "An email failed in the send queue" → `/mailbox/queue`, Failed tab.
+  The badge says why (temporary failure, mailbox login refused,
+  address does not exist, refused, interrupted). Temporary failures
+  are retried automatically (5 attempts, 3 for errors before sending).
+  **Retry now** sends it again at once, **Requeue** puts it back for
+  the background sender; both re-check suppression, limits and the
+  domain cooldown. "Interrupted: delivery unknown" means the send was
+  cut off and may have gone out: check the mailbox's Sent folder
+  first; if it is there, **Mark as delivered** records it as sent.
+  Entries stuck in `sending` are settled after 10 minutes. An email
+  that has already gone out is never sent again, from the queue or
+  from the Errors folder (extra copies there are moved to Trash).
 
 Anything outside this guide is either in `docs/ARCHITECTURE.md`,
 `docs/MODULES.md`, or `docs/ROADMAP.md`.

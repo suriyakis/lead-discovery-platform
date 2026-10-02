@@ -24,6 +24,11 @@ import { workspaces } from './workspaces';
  * same (workspace, dedupeKey) exists, further inserts are dropped (partial
  * unique index — the row leaves the index once read, so the next
  * occurrence notifies again).
+ *
+ * Retention (PC-35): READ notifications older than
+ * READ_NOTIFICATION_RETENTION_DAYS (90, by created_at) are deleted by the
+ * daily retention tick (src/lib/services/retention.ts). Unread ones are
+ * never deleted, whatever their age.
  */
 export const notifications = pgTable(
   'notifications',
@@ -63,6 +68,10 @@ export const notifications = pgTable(
     dedupeKeyUnread: uniqueIndex('notifications_dedupe_unread_idx')
       .on(table.workspaceId, table.dedupeKey)
       .where(sql`dedupe_key IS NOT NULL AND read_at IS NULL`),
+    /** PC-35: the retention tick deletes read rows by age, across workspaces. */
+    readCreatedIdx: index('notifications_read_created_idx')
+      .on(table.createdAt)
+      .where(sql`read_at IS NOT NULL`),
   }),
 );
 

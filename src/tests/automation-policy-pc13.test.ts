@@ -69,6 +69,7 @@ import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import type { AutomationState, EnforcedHold } from '@/lib/services/automation-gate';
+import { MAINTENANCE_TICKS } from '@/lib/jobs/tick-catalog';
 import { pauseAutomation } from '@/lib/services/automation-pause';
 import {
   AUTOMATION_TICKS,
@@ -1607,8 +1608,13 @@ describe('getAutomationState: states and precedence (ia:F-17)', () => {
     expect(q.types.length).toBeGreaterThan(0);
     const paths = describeAutomationState(buildAutomationPolicy(inputs())).paths;
     const covered = new Set(paths.flatMap((p) => [...p.ticks]));
-    expect(q.types.filter((type) => !covered.has(type as (typeof AUTOMATION_TICKS)[number]))).toEqual([]);
-    expect([...q.types].sort()).toEqual([...AUTOMATION_TICKS].sort());
+    // Integration (PC-10 / PC-35): the platform maintenance ticks are no
+    // workspace automation and have no line; every other one does.
+    const maintenance = new Set<string>(MAINTENANCE_TICKS);
+    const automation = q.types.filter((type) => !maintenance.has(type));
+    expect(automation.filter((type) => !covered.has(type as (typeof AUTOMATION_TICKS)[number]))).toEqual([]);
+    expect([...automation].sort()).toEqual([...AUTOMATION_TICKS].sort());
+    expect(q.types.filter((type) => maintenance.has(type)).sort()).toEqual([...MAINTENANCE_TICKS].sort());
     for (const p of paths) expect(p.detail.length).toBeGreaterThan(0);
   });
 

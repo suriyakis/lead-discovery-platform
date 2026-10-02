@@ -15,6 +15,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   or,
   sql,
   type SQL,
@@ -63,6 +64,16 @@ import {
   hardRejectedFromPartial,
   isRecipientHardBounceText,
 } from '@/lib/mail/smtp-errors';
+import { isAfterDelivery, tagAfterDelivery, tagTransportFailure } from '@/lib/mail/send-failure';
+import { outreachQueue } from '@/lib/db/schema/outreach';
+import { resolveSendInterrupted } from '@/lib/ops/work-incidents';
+import {
+  DELIVERED_MESSAGE_STATUSES,
+  draftIsBeingSent,
+  findDeliveredCopyOfDraft,
+  markDraftQueueEntriesSent,
+  trashEarlierFailedCopies,
+} from './outreach-queue-sent';
 import {
   defaultSignature,
   renderSignatureHtml,
@@ -171,13 +182,53 @@ export interface SendMailInput {
    *  Only manual sends can be confirmed; each confirmed send is audited
    *  (outbound.override) before it goes out. */
   confirmPaused?: boolean;
+  /**
+   * PC-10 (I013): runs inside the transaction that inserts the sent
+   * message's mail_messages row, so the caller's own record of the send
+   * (the queue row turning 'sent') commits together with it. If the hook
+   * fails, the message is recorded on its own (it WAS delivered) and the
+   * caller's record is reconciled later (the stuck-work reaper finds the
+   * sent copy).
+   */
+  onPersisted?: (tx: SendTx, message: MailMessage) => Promise<void>;
   /** Test-only override; production passes undefined. */
   providerOverride?: IMailProvider;
 }
 
+/** The transaction handed to SendMailInput.onPersisted. */
+export type SendTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Send one email and record it.
+ *
+ * PC-10: errors are tagged for the queue's failure model
+ * (src/lib/mail/send-failure.ts) without changing them: a provider.send
+ * failure carries its SMTP classification, and anything thrown after the
+ * server accepted the message is marked "after delivery" — the email went
+ * out, so no caller may treat it as unsent and send it again.
+ */
 export async function sendMessage(
   ctx: WorkspaceContext,
   input: SendMailInput,
+): Promise<MailMessage> {
+  const phase: SendPhase = { delivered: false };
+  try {
+    return await sendAndRecord(ctx, input, phase);
+  } catch (err) {
+    if (phase.delivered) tagAfterDelivery(err);
+    throw err;
+  }
+}
+
+interface SendPhase {
+  /** Set once provider.send has returned: the server took the message. */
+  delivered: boolean;
+}
+
+async function sendAndRecord(
+  ctx: WorkspaceContext,
+  input: SendMailInput,
+  phase: SendPhase,
 ): Promise<MailMessage> {
   if (!canWrite(ctx)) throw permissionDenied('mail.send');
   if (input.to.length === 0) throw invalid('at least one recipient required');
@@ -365,7 +416,9 @@ export async function sendMessage(
       const primaryAddress = input.to[0]?.address ?? null;
       const isLoop =
         primaryAddress !== null &&
-        (await detectBounceLoop(ctx, mailbox.id, primaryAddress));
+        (await detectBounceLoop(ctx, mailbox.id, primaryAddress, {
+          excludeDraftId: input.sourceDraftId ?? null,
+        }));
       const failedThread = await ensureThread(ctx, mailbox.id, {
         subject,
         inReplyTo: input.inReplyTo ?? null,
@@ -447,8 +500,11 @@ export async function sendMessage(
         console.error('[mail.send] could not mark the mailbox failing:', markErr);
       }
     }
+    // PC-10: the queue reads this to decide retry / hold / fail.
+    tagTransportFailure(err, failure);
     throw err;
   }
+  phase.delivered = true;
 
   // flow:F-05: the server accepted the message but refused some
   // recipients. A refusal that says the address does not exist suppresses
@@ -514,9 +570,12 @@ export async function sendMessage(
     createdBy: ctx.userId,
   };
 
-  const [created] = await db.insert(mailMessages).values(row).returning();
-  if (!created) throw invariant('mail_message insert returned no row');
+  const created = await persistSentMessage(row, input.onPersisted);
 
+  // PC-10 (I013): from here on the email is delivered AND recorded. The
+  // bookkeeping below is best-effort: a failure in it must not reach the
+  // caller, which would read it as a failed send (and the queue would
+  // mark a delivered email failed, or send it again).
   if (contactId) {
     try {
       await attachContact(ctx, contactId, {
@@ -545,33 +604,51 @@ export async function sendMessage(
     }
   }
 
-  await recordAuditEvent(ctx, {
-    kind: 'mail.send',
-    entityType: 'mail_message',
-    entityId: created.id,
-    payload: {
-      mailboxId: mailbox.id.toString(),
-      mode: input.mode,
-      to: input.to.map((a) => a.address),
-      threadId: thread.id.toString(),
-      sourceDraftId: input.sourceDraftId?.toString() ?? null,
-      ...(sendResult.rejected && sendResult.rejected.length > 0
-        ? {
-            rejected: sendResult.rejected.map((r) => ({
-              address: r.address,
-              response: r.response,
-              suppressed: partialHard.includes(r.address.trim().toLowerCase()),
-            })),
-          }
-        : {}),
-    },
-  });
+  try {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.send',
+      entityType: 'mail_message',
+      entityId: created.id,
+      payload: {
+        mailboxId: mailbox.id.toString(),
+        mode: input.mode,
+        to: input.to.map((a) => a.address),
+        threadId: thread.id.toString(),
+        sourceDraftId: input.sourceDraftId?.toString() ?? null,
+        ...(sendResult.rejected && sendResult.rejected.length > 0
+          ? {
+              rejected: sendResult.rejected.map((r) => ({
+                address: r.address,
+                response: r.response,
+                suppressed: partialHard.includes(r.address.trim().toLowerCase()),
+              })),
+            }
+          : {}),
+      },
+    });
+  } catch (err) {
+    console.error(
+      `[mail.send] audit row for sent message ${created.id} not written:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
-  await touchThread(thread.id);
+  try {
+    await touchThread(thread.id);
+  } catch (err) {
+    console.error(
+      `[mail.send] thread ${thread.id} counters not updated:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   // Phase 58: schedule auto follow-ups when this is the FIRST outbound
   // on a thread linked to a qualified lead. Best-effort — failures log
   // but never break the send.
+  // PC-10: the first DELIVERED outbound. A failed attempt reached nobody
+  // (as for the caps and the cooldown): a first touch that went out on an
+  // automatic retry shares the thread with its failed attempts and still
+  // gets its follow-ups.
   try {
     const outboundCount = await db
       .select({ id: mailMessages.id })
@@ -581,6 +658,7 @@ export async function sendMessage(
           eq(mailMessages.workspaceId, ctx.workspaceId),
           eq(mailMessages.threadId, thread.id),
           eq(mailMessages.direction, 'outbound'),
+          inArray(mailMessages.status, [...DELIVERED_MESSAGE_STATUSES]),
         ),
       );
     if (outboundCount.length === 1) {
@@ -608,6 +686,37 @@ export async function sendMessage(
   }
 
   return created;
+}
+
+/**
+ * PC-10: insert the delivered message's row and run the caller's
+ * onPersisted hook in one transaction. When the transaction fails with a
+ * hook, the row is inserted on its own: the email went out and must be
+ * on record; the caller's state (a queue row still 'sending') is settled
+ * by the stuck-work reaper, which matches it to this row. Without a hook
+ * an insert failure propagates as before.
+ */
+async function persistSentMessage(
+  row: NewMailMessage,
+  onPersisted: SendMailInput['onPersisted'],
+): Promise<MailMessage> {
+  try {
+    return await db.transaction(async (tx) => {
+      const [inserted] = await tx.insert(mailMessages).values(row).returning();
+      if (!inserted) throw invariant('mail_message insert returned no row');
+      if (onPersisted) await onPersisted(tx, inserted);
+      return inserted;
+    });
+  } catch (err) {
+    if (!onPersisted) throw err;
+    console.error(
+      '[mail.send] recording the send with its caller hook failed; recording the message alone:',
+      err instanceof Error ? err.message : err,
+    );
+    const [inserted] = await db.insert(mailMessages).values(row).returning();
+    if (!inserted) throw invariant('mail_message insert returned no row');
+    return inserted;
+  }
 }
 
 // ---- test email (Phase 52) -----------------------------------------
@@ -796,12 +905,19 @@ export async function syncInbound(
       ),
     );
 
-  await recordAuditEvent(ctx, {
-    kind: 'mail.sync_inbound',
-    entityType: 'mailbox',
-    entityId: mailbox.id,
-    payload: { fetched: messages.length, inserted, duplicates, relevance },
-  });
+  // PC-35 (I066): audited only when the sync stored something. An empty
+  // (or all-duplicate) sync changed nothing, and the 2-minute IMAP tick
+  // used to fill the audit log with them. The mailbox's last_synced_at
+  // above still says when it last synced. These rows are kept
+  // SYNC_AUDIT_RETENTION_DAYS (services/retention.ts).
+  if (inserted > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.sync_inbound',
+      entityType: 'mailbox',
+      entityId: mailbox.id,
+      payload: { fetched: messages.length, inserted, duplicates, relevance },
+    });
+  }
 
   return { fetched: messages.length, inserted, duplicates };
 }
@@ -1808,15 +1924,27 @@ export const BOUNCE_LOOP_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  *
  *  Workspace-scoped, mailbox-scoped, recipient-exact-match. The address
  *  is checked against the `to_addresses[]` array, not against from /
- *  cc / bcc — bounce loops only make sense for the primary recipient. */
+ *  cc / bcc — bounce loops only make sense for the primary recipient.
+ *
+ *  PC-10: a loop is different EMAILS failing, not one email retried. The
+ *  queue retries a temporary failure up to 5 times and every attempt
+ *  leaves a failed copy, so copies are counted per email: the failed
+ *  copies of one draft count once, and those of `excludeDraftId` (the
+ *  email being sent now) not at all. Mail without a draft counts per row. */
 export async function detectBounceLoop(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   mailboxId: bigint,
   recipient: string,
+  options: { excludeDraftId?: bigint | null } = {},
 ): Promise<boolean> {
   const cutoff = new Date(Date.now() - BOUNCE_LOOP_WINDOW_MS);
+  const excludeDraftId = options.excludeDraftId ?? null;
   const rows = await db
-    .select({ c: sql<number>`COUNT(*)::int` })
+    .select({
+      // Raw SQL: one key per email — the draft when there is one, else
+      // the row itself.
+      c: sql<number>`COUNT(DISTINCT COALESCE('d' || ${mailMessages.sourceDraftId}::text, 'm' || ${mailMessages.id}::text))::int`,
+    })
     .from(mailMessages)
     .where(
       and(
@@ -1826,6 +1954,9 @@ export async function detectBounceLoop(
         inArray(mailMessages.status, ['failed', 'bounced']),
         sql`${recipient} = ANY (${mailMessages.toAddresses})`,
         gt(mailMessages.createdAt, cutoff),
+        excludeDraftId !== null
+          ? or(isNull(mailMessages.sourceDraftId), ne(mailMessages.sourceDraftId, excludeDraftId))
+          : undefined,
       ),
     );
   const count = rows[0]?.c ?? 0;
@@ -1881,15 +2012,41 @@ export interface RetryResult {
   retried: bigint[];
   skippedHardBounce: bigint[];
   skippedIneligible: bigint[];
+  /** PC-10: copies of a draft whose email has already gone out (a sent
+   *  copy exists, or a queue row of the draft is 'sent'). Not re-sent:
+   *  moved to Trash with the draft's other failed copies. */
+  skippedAlreadySent: bigint[];
+  /** PC-10: further copies of a draft already tried earlier in the same
+   *  batch. Automatic retries leave one failed copy per attempt; one
+   *  email is tried once per Retry. */
+  skippedDuplicate: bigint[];
   errors: Array<{ id: bigint; error: string }>;
+  /** PC-10: outreach queue rows settled as 'sent' by a successful retry
+   *  of their draft's email (failed ones, and waiting ones that would
+   *  otherwise have sent it a second time). */
+  queueEntriesSent: bigint[];
 }
+
+/** Why a retry of a draft-backed copy waits: the queue has it in flight. */
+export const RETRY_DRAFT_IN_FLIGHT_ERROR =
+  'The send queue is sending this email right now. Check Sent in a few minutes before retrying it.';
 
 /** Re-send a batch of failed messages. For each id we look up the
  *  original row, skip ineligible ones (not outbound, not in
  *  failed/bounced), skip hard bounces, and otherwise call sendMessage
  *  with the original payload. On success we trash the original so the
  *  Errors folder stays clean — the new send gets its own row + its own
- *  messageId and threads onto the same conversation. */
+ *  messageId and threads onto the same conversation.
+ *
+ *  PC-10: a draft's email goes out once. Automatic queue retries leave a
+ *  failed copy per attempt, so Errors can hold several copies of one
+ *  email. Before each draft-backed copy the database is asked again (not
+ *  the batch read) whether the draft's email has gone out — by an earlier
+ *  copy in this batch, by the queue, or by another operator — and if so
+ *  the copy is trashed, not sent. A draft is tried once per batch, and
+ *  not while the queue is sending it. A delivered retry trashes every
+ *  failed copy of its draft and settles the draft's queue rows in the same
+ *  transaction as its mail row. */
 export async function retrySend(
   ctx: WorkspaceContext,
   ids: ReadonlyArray<bigint>,
@@ -1900,7 +2057,10 @@ export async function retrySend(
     retried: [],
     skippedHardBounce: [],
     skippedIneligible: [],
+    skippedAlreadySent: [],
+    skippedDuplicate: [],
     errors: [],
+    queueEntriesSent: [],
   };
   if (ids.length === 0) return result;
   // PC-06: refuse the whole batch up front under a Sending hold instead of
@@ -1930,8 +2090,11 @@ export async function retrySend(
         eq(mailMessages.workspaceId, ctx.workspaceId),
         inArray(mailMessages.id, [...ids]),
       ),
-    );
+    )
+    .orderBy(asc(mailMessages.id));
 
+  /** Drafts already tried in this batch (sent or not). */
+  const draftsTried = new Set<string>();
   for (const original of originals) {
     if (
       original.direction !== 'outbound' ||
@@ -1944,8 +2107,32 @@ export async function retrySend(
       result.skippedHardBounce.push(original.id);
       continue;
     }
+    const draftId = original.sourceDraftId;
+    if (draftId !== null) {
+      const delivered = await findDeliveredCopyOfDraft(db, {
+        workspaceId: ctx.workspaceId,
+        draftId,
+      });
+      if (delivered) {
+        await trashStaleCopies(ctx, original.id, draftId, delivered.messageId);
+        result.skippedAlreadySent.push(original.id);
+        continue;
+      }
+      if (draftsTried.has(draftId.toString())) {
+        result.skippedDuplicate.push(original.id);
+        continue;
+      }
+      if (await draftIsBeingSent(db, { workspaceId: ctx.workspaceId, draftId })) {
+        result.errors.push({ id: original.id, error: RETRY_DRAFT_IN_FLIGHT_ERROR });
+        continue;
+      }
+      draftsTried.add(draftId.toString());
+    }
+    /** Queue rows of the draft the reaper had failed as interrupted. */
+    let interruptedSettled: bigint[] = [];
+    let sent: MailMessage | null = null;
     try {
-      await sendMessage(ctx, {
+      sent = await sendMessage(ctx, {
         // flow:F-05: a retry keeps the original's kind of mail.
         mode: sendModeFromHeaders(original.headers),
         mailboxId: original.mailboxId,
@@ -1957,33 +2144,101 @@ export async function retrySend(
         html: original.bodyHtml ?? undefined,
         inReplyTo: original.inReplyTo ?? undefined,
         references: original.references,
-        sourceDraftId: original.sourceDraftId ?? undefined,
+        sourceDraftId: draftId ?? undefined,
         // flow:F-07: a retry is the original email again, so it keeps the
         // original's origin (a retried cold email waits for go-live too).
         origin: await originOfSentMessage(ctx, original),
+        // PC-10 (I013): the queue rows behind this draft are settled in the
+        // same transaction — they no longer stay 'failed' after the email
+        // went out, and a requeued copy cannot send it again. Every other
+        // failed copy of the draft leaves Errors in the same step.
+        onPersisted: draftId
+          ? async (tx, message) => {
+              const settled = await markDraftQueueEntriesSent(tx, {
+                workspaceId: ctx.workspaceId,
+                draftId,
+                messageId: message.id,
+              });
+              interruptedSettled = settled.interrupted;
+              await trashEarlierFailedCopies(tx, {
+                workspaceId: ctx.workspaceId,
+                draftId,
+                deliveredMessageId: message.id,
+              });
+            }
+          : undefined,
         providerOverride,
       });
-      // Trash the original so a successful retry actually clears the
-      // Errors folder. The full history stays in audit_log + the row
-      // is recoverable from Trash if the operator needs to inspect it.
+    } catch (err) {
+      // PC-10: an error after the server took the message is not a failed
+      // retry — the email went out. Treat it as retried, or the original
+      // stays in Errors and the next Retry sends it a second time.
+      if (!isAfterDelivery(err)) {
+        result.errors.push({
+          id: original.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      console.error(
+        `[mail.retry_send] message ${original.id} was re-sent but not fully recorded:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    // Trash the original so a successful retry actually clears the
+    // Errors folder. The full history stays in audit_log + the row
+    // is recoverable from Trash if the operator needs to inspect it.
+    try {
       const now = new Date();
       await db
         .update(mailMessages)
         .set({ trashedAt: now, updatedAt: now })
         .where(eq(mailMessages.id, original.id));
-      result.retried.push(original.id);
     } catch (err) {
-      result.errors.push({
-        id: original.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.error(
+        `[mail.retry_send] re-sent message ${original.id} not moved to Trash:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    result.retried.push(original.id);
+    if (sent && draftId) {
+      // Read back what the hook settled (it may have been rolled back if
+      // the message had to be recorded on its own).
+      try {
+        const settled = await db
+          .select({ id: outreachQueue.id })
+          .from(outreachQueue)
+          .where(
+            and(
+              eq(outreachQueue.workspaceId, ctx.workspaceId),
+              eq(outreachQueue.draftId, draftId),
+              eq(outreachQueue.sentMessageId, sent.id),
+            ),
+          );
+        result.queueEntriesSent.push(...settled.map((r) => r.id));
+        // The email went out: an interrupted row of the draft no longer
+        // needs anyone — close its incident (only rows the hook settled).
+        const settledIds = new Set(settled.map((r) => r.id.toString()));
+        for (const entryId of interruptedSettled) {
+          if (settledIds.has(entryId.toString())) {
+            await resolveSendInterrupted(ctx.workspaceId, entryId, null);
+          }
+        }
+      } catch (err) {
+        console.error(
+          `[mail.retry_send] settled queue rows for message ${sent.id} not read:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
 
   if (
     result.retried.length > 0 ||
     result.errors.length > 0 ||
-    result.skippedHardBounce.length > 0
+    result.skippedHardBounce.length > 0 ||
+    result.skippedAlreadySent.length > 0 ||
+    result.skippedDuplicate.length > 0
   ) {
     await recordAuditEvent(ctx, {
       kind: 'mail.retry_send',
@@ -1992,15 +2247,53 @@ export async function retrySend(
         retried: result.retried.map(String),
         skippedHardBounce: result.skippedHardBounce.map(String),
         skippedIneligible: result.skippedIneligible.map(String),
+        skippedAlreadySent: result.skippedAlreadySent.map(String),
+        skippedDuplicate: result.skippedDuplicate.map(String),
         errors: result.errors.map((e) => ({
           id: e.id.toString(),
           error: e.error,
         })),
+        queueEntriesSent: result.queueEntriesSent.map(String),
       },
     });
   }
 
   return result;
+}
+
+/** A failed copy of a draft whose email has gone out: it and the draft's
+ *  other failed copies leave Errors (best-effort — skipping the send is
+ *  what matters). */
+async function trashStaleCopies(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  originalId: bigint,
+  draftId: bigint,
+  deliveredMessageId: bigint | null,
+): Promise<void> {
+  try {
+    const now = new Date();
+    await db
+      .update(mailMessages)
+      .set({ trashedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.id, originalId),
+          isNull(mailMessages.trashedAt),
+        ),
+      );
+    await trashEarlierFailedCopies(db, {
+      workspaceId: ctx.workspaceId,
+      draftId,
+      deliveredMessageId,
+      now,
+    });
+  } catch (err) {
+    console.error(
+      `[mail.retry_send] stale copies of draft ${draftId} not moved to Trash:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 // ---- threading -----------------------------------------------------

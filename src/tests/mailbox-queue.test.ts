@@ -533,7 +533,7 @@ describe('/mailbox/queue actions', () => {
     const target = await expectRedirect(() => drainSendQueueAction(entryForm({})));
 
     expect(parseTarget(target).query.message).toBe(
-      "Nothing was sent: no emails are due yet, or today's limit has been reached.",
+      "Nothing was sent: no emails are due yet.",
     );
     expect((await loadEntry(f.entryId)).status).toBe('queued');
   });

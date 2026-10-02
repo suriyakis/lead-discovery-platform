@@ -1,7 +1,7 @@
 // Connector / Run service. Workspace-scoped CRUD on connectors + recipes,
 // plus run lifecycle (start, status, list).
 
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   connectorRecipes,
@@ -16,7 +16,7 @@ import {
   type NewConnectorRecipe,
   type NewConnectorRun,
 } from '@/lib/db/schema/connectors';
-import { type RunResult } from '@/lib/connectors/runner';
+import { isTerminalRunStatus, type RunResult } from '@/lib/connectors/runner';
 import { getJobQueue } from '@/lib/jobs';
 import { registerJobHandlers, type ConnectorRunJobPayload } from '@/lib/jobs/bootstrap';
 import { recordAuditEvent } from './audit';
@@ -706,7 +706,7 @@ export interface AwaitRunOptions {
 
 /**
  * Block until a connector run reaches a terminal state (succeeded /
- * failed / cancelled). Polls connector_runs.status with backoff.
+ * partial / failed / cancelled). Polls connector_runs.status with backoff.
  */
 export async function awaitRun(
   ctx: WorkspaceContext,
@@ -719,7 +719,12 @@ export async function awaitRun(
 
   while (Date.now() - start < timeoutMs) {
     const run = await getRun(ctx, runId);
-    if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') {
+    if (
+      run.status === 'succeeded' ||
+      run.status === 'partial' ||
+      run.status === 'failed' ||
+      run.status === 'cancelled'
+    ) {
       const result: RunResult = {
         status: run.status,
         recordCount: run.recordCount,
@@ -740,6 +745,105 @@ export async function awaitRun(
     `awaitRun: timed out after ${timeoutMs}ms (run ${runId} did not reach terminal state)`,
     'timeout',
   );
+}
+
+export interface CancelRunResult {
+  run: ConnectorRun;
+  /** true: the run had not started and is cancelled now; false: a running
+   *  run was asked to stop and ends 'cancelled' at its next step. */
+  immediate: boolean;
+}
+
+/**
+ * PC-10 (I074): Cancel a discovery run, across processes. A pending run
+ * is cancelled at once (the runner only starts pending runs). For a
+ * running run this sets cancel_requested_at; the runner — in whichever
+ * process executes it — reads it at its next step (one search query at
+ * most) and ends the run 'cancelled'. If that runner has died, the
+ * stuck-work reaper cancels the run 2 minutes later. Records already
+ * found are kept. Any write role may cancel.
+ */
+export async function requestRunCancel(
+  ctx: WorkspaceContext,
+  runId: bigint,
+): Promise<CancelRunResult> {
+  if (!canWrite(ctx)) throw permissionDenied('cancel connector run');
+  // Two passes: a pending run may be claimed between our read and write.
+  for (let pass = 0; pass < 2; pass++) {
+    const run = await getRun(ctx, runId);
+    const now = new Date();
+    if (run.status === 'pending') {
+      const [cancelled] = await db
+        .update(connectorRuns)
+        .set({
+          status: 'cancelled',
+          cancelRequestedAt: now,
+          completedAt: now,
+          errorPayload: { message: 'Cancelled before it started.', reason: 'cancelled' },
+          updatedAt: now,
+        })
+        .where(and(eq(connectorRuns.id, runId), eq(connectorRuns.status, 'pending')))
+        .returning();
+      if (!cancelled) continue;
+      await db.insert(connectorRunLogs).values({
+        runId,
+        level: 'warn',
+        message: 'Cancelled before it started.',
+        payload: {},
+      });
+      await recordAuditEvent(ctx, {
+        kind: 'connector_run.cancel',
+        entityType: 'connector_run',
+        entityId: runId,
+        payload: { from: 'pending', immediate: true },
+      });
+      return { run: cancelled, immediate: true };
+    }
+    if (run.status === 'running') {
+      if (run.cancelRequestedAt) return { run, immediate: false };
+      const [requested] = await db
+        .update(connectorRuns)
+        .set({ cancelRequestedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(connectorRuns.id, runId),
+            eq(connectorRuns.status, 'running'),
+            isNull(connectorRuns.cancelRequestedAt),
+          ),
+        )
+        .returning();
+      if (!requested) continue;
+      await recordAuditEvent(ctx, {
+        kind: 'connector_run.cancel',
+        entityType: 'connector_run',
+        entityId: runId,
+        payload: { from: 'running', immediate: false },
+      });
+      return { run: requested, immediate: false };
+    }
+    throw new ConnectorServiceError(`the run has already ${describeEnd(run.status)}`, 'conflict');
+  }
+  // Raced twice; report what it is now.
+  const run = await getRun(ctx, runId);
+  if (isTerminalRunStatus(run.status)) {
+    throw new ConnectorServiceError(`the run has already ${describeEnd(run.status)}`, 'conflict');
+  }
+  return { run, immediate: false };
+}
+
+function describeEnd(status: ConnectorRun['status']): string {
+  switch (status) {
+    case 'succeeded':
+      return 'finished';
+    case 'partial':
+      return 'finished (some steps failed)';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'been cancelled';
+    default:
+      return status;
+  }
 }
 
 export async function getRun(

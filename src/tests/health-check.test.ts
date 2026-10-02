@@ -151,7 +151,7 @@ describe('collectRuleFindings', () => {
     );
   });
 
-  describe('mailboxes by status (failing holds its queue; paused fails it)', () => {
+  describe('mailboxes by status (failing holds its queue; paused holds it, fails due follow-ups)', () => {
     async function addMailbox(s: Setup, address: string, status: MailboxStatus): Promise<bigint> {
       const [row] = await db
         .insert(mailboxes)

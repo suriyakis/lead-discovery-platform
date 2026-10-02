@@ -61,6 +61,7 @@ import {
   type GateRefusal,
   type TickWorkspace,
 } from './automation-gate';
+import type { TickName } from '@/lib/jobs/tick-catalog';
 import type { WorkspaceContext } from './context';
 
 // ---- autopilot steps ----------------------------------------------------
@@ -195,7 +196,9 @@ export interface PausedProduct {
   pause: ProductPause;
 }
 
-/** Background ticks (registered by lib/jobs/repeatables.ts). */
+/** Background automation ticks (registered by lib/jobs/repeatables.ts):
+ *  every catalogued tick but the platform maintenance ones
+ *  (jobs/tick-catalog.ts MAINTENANCE_TICKS). */
 export const AUTOMATION_TICKS = [
   'autopilot.tick',
   'outreach.drain.tick',
@@ -205,7 +208,7 @@ export const AUTOMATION_TICKS = [
   'mail.trash.purge.tick',
   'crawl.engine.tick',
   'health.check.tick',
-] as const;
+] as const satisfies readonly TickName[];
 export type AutomationTick = (typeof AUTOMATION_TICKS)[number];
 
 export type AutomationPathKey =

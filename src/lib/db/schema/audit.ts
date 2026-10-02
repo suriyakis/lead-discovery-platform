@@ -14,6 +14,11 @@ import { workspaces } from './workspaces';
 
 // Append-only audit history. Significant user-visible actions write here.
 // Stored even when workspaceId/userId are null (platform-level events).
+// Retention (PC-35): kept indefinitely, except the routine inbox-sync rows
+// (`mail.sync_inbound`, written only when a sync stored new messages),
+// which the daily retention tick deletes after SYNC_AUDIT_RETENTION_DAYS
+// (30). Each retention run that deletes anything records itself as a
+// platform `ops.retention.run` row (src/lib/services/retention.ts).
 export const auditLog = pgTable(
   'audit_log',
   {

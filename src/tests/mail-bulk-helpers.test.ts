@@ -46,6 +46,21 @@ describe('retrySummary', () => {
     ).toBe('1 message resent.');
   });
 
+  it('reports copies of an email that already went out and extra copies in the batch (PC-10)', () => {
+    expect(
+      retrySummary({
+        retried: [1],
+        skippedHardBounce: [],
+        skippedIneligible: [],
+        skippedAlreadySent: [2, 3],
+        skippedDuplicate: [4],
+        errors: [],
+      }),
+    ).toBe(
+      '1 message resent, 2 already sent earlier (not sent again, moved to Trash), 1 extra copy of the same email skipped.',
+    );
+  });
+
   it('says so when there was nothing to retry', () => {
     expect(
       retrySummary({ retried: [], skippedHardBounce: [], skippedIneligible: [], errors: [] }),

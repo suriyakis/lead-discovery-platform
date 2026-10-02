@@ -737,9 +737,10 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     await withJobQueue(q, () => registerRepeatableJobs());
     expect(q.schedules).toContainEqual({ type: 'autopilot.tick', everyMs: AUTOPILOT_TICK_MS });
 
-    // The post-crawl hook (skipped under Vitest, so pinned at source).
+    // The post-crawl hook (skipped under Vitest, so pinned at source). PC-10:
+    // a 'partial' run (some queries failed) that found records counts too.
     expect(readSrc('lib/connectors/runner.ts')).toMatch(
-      /finalStatus === 'succeeded' && recordCount > 0[\s\S]{0,400}await runOnce\(ctx\)/,
+      /\(finalStatus === 'succeeded' \|\| finalStatus === 'partial'\) &&\s+recordCount > 0[\s\S]{0,400}await runOnce\(ctx\)/,
     );
 
     const s = await setup();
