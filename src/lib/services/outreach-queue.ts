@@ -1156,6 +1156,7 @@ async function settleFailedAttempt(
     await settleClaimed(entry.id, {
       status: 'queued',
       attemptCount: entry.attemptCount,
+      claimedAt: null,
       lastError: clip(message),
     });
     return { kind: 'stopped', refusal: sendGateRefusalOf(err.reason), message };
@@ -1298,7 +1299,13 @@ async function settleClaimed(
   set: Partial<
     Pick<
       OutreachQueueEntry,
-      'status' | 'lastError' | 'lastFailureKind' | 'nextAttemptAt' | 'attemptCount' | 'scheduledSendAt'
+      | 'status'
+      | 'lastError'
+      | 'lastFailureKind'
+      | 'nextAttemptAt'
+      | 'attemptCount'
+      | 'scheduledSendAt'
+      | 'claimedAt'
     >
   >,
 ): Promise<void> {
@@ -1711,11 +1718,13 @@ async function holdClaimedEntry(
     .set({
       status: 'queued',
       attemptCount: entry.attemptCount,
+      claimedAt: null,
       scheduledSendAt: deferUntil(now),
       lastError: reason.slice(0, 2000),
       ...(failureKind ? { lastFailureKind: failureKind } : {}),
       updatedAt: new Date(),
     })
+    // Only our own claim: never overwrite a row another writer moved on.
     .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'sending')));
 }
 
