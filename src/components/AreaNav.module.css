@@ -1,0 +1,182 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* AreaNav (DS-05, ia:F-10; moved out of legacy.css in the DS-06 review):
+ * the current area's own pages as a tab strip above the page, or the
+ * grouped Settings sub-nav. Tokens only, mobile first.
+ *
+ * The Settings sub-nav is one scrolling strip above the page (headings
+ * hidden) below the lg breakpoint, and a sticky column beside the page
+ * from 1200px: beside a 16rem sidebar, a narrower window would squeeze the
+ * page itself (the legacy rule switched at 1024px, which is not one of
+ * the design system's breakpoints).
+ *
+ * Interim breakpoint: the frame's content drops the .dashboard-wrap gutter
+ * at (max-width: 800px), together with the legacy .app-main rule it
+ * mirrors; the visual Phase 2 shell replaces both (INTERIM_BREAKPOINTS in
+ * src/tests/helpers/css-budget.ts). */
+
+@layer components {
+  /* ---- The tab strip ---- */
+  .tabs {
+    display: flex;
+    gap: var(--space-1);
+    margin: 0 0 var(--space-5);
+    /* The baseline is an inset shadow, so the scroller cannot clip it. */
+    box-shadow: inset 0 -1px 0 var(--border);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  .tab {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1_5);
+    padding: var(--space-2) calc(var(--space-3) + var(--space-0_5));
+    border-bottom: 2px solid transparent;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .tab:hover {
+    color: var(--fg);
+    text-decoration: none;
+  }
+
+  .tab[aria-current='page'] {
+    border-bottom-color: var(--primary);
+    color: var(--fg);
+  }
+
+  /* The strips clip anything outside them, so the focus ring is drawn inside. */
+  .tab:focus-visible,
+  .subnavLink:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+  }
+
+  /* ---- The Settings frame and sub-nav: a strip above the page ---- */
+  .frame[data-layout='subnav'] {
+    display: block;
+  }
+
+  /* Wider than other pages by the sub-nav column, so the page keeps its width. */
+  :global(.app-main) > .frame[data-layout='subnav'] {
+    max-width: 87rem;
+  }
+
+  .content {
+    min-width: 0;
+  }
+
+  .subnav {
+    display: flex;
+    flex-direction: row;
+    gap: var(--space-1);
+    margin: 0 0 var(--space-5);
+    box-shadow: inset 0 -1px 0 var(--border);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  .section,
+  .list {
+    display: flex;
+    flex-direction: row;
+    flex: 0 0 auto;
+    gap: var(--space-1);
+  }
+
+  .list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .heading {
+    display: none;
+    margin: 0 0 var(--space-1);
+    padding: 0 calc(var(--space-2) + var(--space-0_5));
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .subnavLink {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1_5) calc(var(--space-2) + var(--space-0_5));
+    border-bottom: 2px solid transparent;
+    color: var(--fg);
+    font-size: var(--text-sm);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .subnavLink:hover {
+    background: var(--surface-raised);
+    text-decoration: none;
+  }
+
+  .subnavLink[aria-current='page'] {
+    border-bottom-color: var(--primary);
+  }
+
+  /* ---- lg: a sticky column beside the page ---- */
+  @media (min-width: 1200px) {
+    .frame[data-layout='subnav'] {
+      display: grid;
+      grid-template-columns: 13rem minmax(0, 1fr);
+      gap: var(--space-8);
+      align-items: start;
+    }
+
+    .subnav {
+      position: sticky;
+      top: calc(var(--header-h) + var(--space-4));
+      flex-direction: column;
+      gap: var(--space-3);
+      margin: 0;
+      box-shadow: none;
+      overflow-x: visible;
+    }
+
+    .section {
+      display: block;
+    }
+
+    .list {
+      flex-direction: column;
+      gap: var(--space-0_5);
+    }
+
+    .heading {
+      display: block;
+    }
+
+    .subnavLink {
+      border-bottom: none;
+      border-radius: var(--radius-md);
+      white-space: normal;
+    }
+
+    .subnavLink[aria-current='page'] {
+      background: color-mix(in oklab, var(--primary) 18%, transparent);
+      color: var(--primary);
+      font-weight: var(--weight-medium);
+    }
+  }
+
+  @media (max-width: 800px) {
+    .content > :global(.dashboard-wrap) {
+      padding-right: 0;
+      padding-left: 0;
+    }
+  }
+}

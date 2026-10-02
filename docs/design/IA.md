@@ -32,9 +32,10 @@ table (every page, its area, its purpose and who sees it) is at the end of
 Home is **Today** (`/today`). The sidebar shows Today, then three groups
 under static headings (not accordions), then the Platform console for
 super-admins: 8 items for a workspace user, 9 for a super-admin. My account
-and Help & support live in the account menu at the top right. Below 800px
-the same items form one horizontally scrolling strip above the page; the
-drawer and the 5-item tab bar come with visual Phase 2.
+and Help & support live in the account menu at the top right. At 800px and
+below (an interim width, where the legacy app shell collapses) the same
+items form one horizontally scrolling strip above the page; the drawer and
+the 5-item tab bar come with visual Phase 2.
 
 | Group | Area | Click target | Tabs (on today's URLs) | Also in the area |
 | --- | --- | --- | --- | --- |
@@ -51,7 +52,8 @@ drawer and the 5-item tab bar come with visual Phase 2.
 
 **Settings sub-nav** (shown on every Settings page, `/settings/*`,
 `/mailbox` and its mailbox pages, `/autopilot`, `/health`; a column beside
-the page on desktop, a strip above it below 1024px):
+the page from 1200px, the design system's lg breakpoint, and a strip above
+it below that):
 
 | Section | Items |
 | --- | --- |

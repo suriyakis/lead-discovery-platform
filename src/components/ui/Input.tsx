@@ -10,6 +10,7 @@
 // date picker: <Input type="date"> is the native one, styled.
 
 import type { ComponentPropsWithRef } from 'react';
+import { cx } from '@/lib/ui/cx';
 import styles from './controls.module.css';
 
 export type ControlSize = 'sm' | 'md' | 'lg';
@@ -31,9 +32,7 @@ export const INPUT_TYPES = [
 ] as const;
 export type InputType = (typeof INPUT_TYPES)[number];
 
-/** Joins class names, dropping empties. */
-export const cx = (...names: ReadonlyArray<string | undefined | false>) =>
-  names.filter(Boolean).join(' ');
+export { cx };
 
 export interface InputProps extends Omit<ComponentPropsWithRef<'input'>, 'type' | 'size'> {
   type?: InputType;

@@ -1,12 +1,14 @@
 // DS-03: mobile overflow containment (I059, I144, I145, I146).
 //
-// The real app stylesheets (globals.css and the layers it imports) run
-// through the test cascade (helpers/css-cascade.ts) at two viewport widths — 1440 (desktop) and 390 (the
-// phone the audit measured) — so each check reads "at this width, this
-// element ends up with that value", the way the browser decides it. The
-// source scans keep the fixes from regressing: no new unwrapped table,
-// no inline grid a media query can't reach. The end-to-end proof
-// (scrollWidth <= 392 on every route) is e2e/smoke.spec.ts.
+// The real app stylesheets (globals.css and the layers it imports, plus
+// the CSS modules of the shell's chrome) run through the test cascade
+// (helpers/css-cascade.ts) at two viewport widths — 1440 (desktop) and
+// 390 (the phone the audit measured) — so each check reads "at this
+// width, this element ends up with that value", the way the browser
+// decides it. The source scans keep the fixes from regressing: no new
+// unwrapped table, no inline grid a media query can't reach. The
+// end-to-end proof (scrollWidth <= 392 on every route) is
+// e2e/smoke.spec.ts.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -15,7 +17,18 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { load } from 'cheerio';
 import { describe, expect, it, vi } from 'vitest';
 import { TableScroll } from '@/components/TableScroll';
-import { cascade, type CascadeOptions, loadAppRules } from './helpers/css-cascade';
+import shellStyles from '@/components/AppShell.module.css';
+import areaStyles from '@/components/AreaNav.module.css';
+import paletteStyles from '@/components/CommandPalette.module.css';
+import countStyles from '@/components/NavCountBadge.module.css';
+import sidebarStyles from '@/components/Sidebar.module.css';
+import {
+  cascade,
+  type CascadeOptions,
+  loadAppRulesWith,
+  loadModuleRules,
+} from './helpers/css-cascade';
+import { INTERIM_BREAKPOINTS } from './helpers/css-budget';
 
 const navigation = vi.hoisted(() => ({ pathname: '/review' }));
 vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname }));
@@ -24,7 +37,13 @@ const { Sidebar, COMPACT_SIDEBAR_QUERY } = await import('@/components/Sidebar');
 const { AreaFrameView } = await import('@/components/AreaNav');
 
 const css = readFileSync(path.resolve(process.cwd(), 'src/styles/legacy.css'), 'utf8');
-const rules = loadAppRules();
+const rules = loadAppRulesWith([
+  ['src/components/AppShell.module.css', shellStyles],
+  ['src/components/AreaNav.module.css', areaStyles],
+  ['src/components/CommandPalette.module.css', paletteStyles],
+  ['src/components/NavCountBadge.module.css', countStyles],
+  ['src/components/Sidebar.module.css', sidebarStyles],
+]);
 
 /** Which @media preludes hold at a viewport `width` (screen, no motion prefs). */
 function atWidth(width: number): CascadeOptions {
@@ -276,7 +295,7 @@ describe('area navigation never widens a phone (DS-03 item 3, DS-05)', () => {
       expect(valueAt(html, '#a', 'white-space', at)).toBe('nowrap');
     }
     // The baseline is an inset shadow, so the scroller cannot clip it.
-    expect(valueAt(html, '#nav', 'box-shadow', DESKTOP)).toBe('inset 0 -1px 0 var(--brand-border)');
+    expect(valueAt(html, '#nav', 'box-shadow', DESKTOP)).toBe('inset 0 -1px 0 var(--border)');
   });
 
   it('the Settings sub-nav is a column beside the page on desktop, a strip above it on a phone', () => {
@@ -294,30 +313,37 @@ describe('area navigation never widens a phone (DS-03 item 3, DS-05)', () => {
     expect(valueAt(html, '#sub', 'overflow-x', PHONE)).toBe('auto');
     expect(valueAt(html, '#head', 'display', PHONE)).toBe('none');
     expect(valueAt(html, '#link', 'white-space', PHONE)).toBe('nowrap');
+    // The column needs the lg breakpoint: beside the sidebar, a 1100px
+    // window keeps the strip so the page itself is not squeezed.
+    expect(valueAt(html, '#frame', 'display', atWidth(1100))).toBe('block');
+    expect(valueAt(html, '#frame', 'display', atWidth(1200))).toBe('grid');
   });
 
   it("a badge's screen-reader text stays inside its scrolling strip", () => {
     // .sr-only is position: absolute; without a positioned badge its box
     // escapes the strip's clipping and widened every console page to 470px.
-    const html = `<nav class="admin-topbar"><a class="admin-nav-link"><span class="nav-count" id="c"><span class="sr-only" id="sr">2 unread</span></span></a></nav>`;
+    const html = `<nav class="admin-topbar"><a class="admin-nav-link"><span class="nav-count ${countStyles.count}" id="c"><span class="sr-only" id="sr">2 unread</span></span></a></nav>`;
     expect(valueAt(html, '#c', 'position', PHONE)).toBe('relative');
     expect(valueAt(html, '#sr', 'position', PHONE)).toBe('absolute');
   });
 
   it('draws the focus ring inside the strips', () => {
-    const focus = rules.find((r) => r.selectorText.includes('.area-tab:focus-visible'));
+    const tab = `.${areaStyles.tab}:focus-visible`;
+    const focus = loadModuleRules('src/components/AreaNav.module.css', areaStyles).find((r) =>
+      r.selectors.includes(tab),
+    );
     expect(focus?.decls.find((d) => d.prop === 'outline-offset')?.value).toBe('-2px');
-    expect(focus?.selectorText).toContain('.area-subnav-link:focus-visible');
+    expect(focus?.selectors).toContain(`.${areaStyles.subnavLink}:focus-visible`);
   });
 });
 
 describe('header fits a phone (DS-03 item 4, I144)', () => {
   const header = `<header class="brand-header" id="h"><a class="brand-link" id="brand" href="/">lead/sonar</a>
     <div class="brand-header-right" id="right">
-      <button class="ghost-btn cmdk-trigger" id="search"><span class="cmdk-trigger-label" id="slabel">Search</span><kbd class="cmdk-trigger-kbd" id="skbd">⌘K</kbd></button>
+      <button class="ghost-btn ${paletteStyles.trigger}" id="search"><span class="${paletteStyles.triggerLabel}" id="slabel">Search</span><kbd class="${paletteStyles.triggerKbd}" id="skbd">⌘K</kbd></button>
       <label class="workspace-switcher" id="ws"><span class="workspace-switcher-icon">🏢</span><select id="sel"><option>Northwind Insulation Ltd • default — owner</option></select></label>
-      <details class="header-account-menu" id="menu"><summary class="ghost-btn" id="sum">Account</summary>
-        <div class="header-account-menu-panel" id="panel"><span class="who" id="pemail">demo-admin@example.com</span></div></details>
+      <details class="header-account-menu ${shellStyles.accountMenu}" id="menu"><summary class="ghost-btn" id="sum">Account</summary>
+        <div class="header-account-menu-panel ${shellStyles.accountPanel}" id="panel"><span class="who ${shellStyles.accountWho}" id="pemail">demo-admin@example.com</span></div></details>
     </div></header>`;
 
   it('one account menu at every width (ia §4); the select is uncapped on desktop', () => {
@@ -339,7 +365,8 @@ describe('header fits a phone (DS-03 item 4, I144)', () => {
     expect(valueAt(header, '#h', 'padding', PHONE)).toBe('0 1rem');
     expect(valueAt(header, '#slabel', 'display', PHONE)).toBe('none');
     expect(valueAt(header, '#skbd', 'display', PHONE)).toBe('none');
-    expect(valueAt(header, '#slabel', 'display', DESKTOP)).toBeUndefined();
+    expect(valueAt(header, '#slabel', 'display', DESKTOP)).toBe('inline');
+    expect(valueAt(header, '#skbd', 'display', DESKTOP)).toBe('inline');
   });
 
   it('the right slot may shrink, the brand may not', () => {
@@ -350,7 +377,9 @@ describe('header fits a phone (DS-03 item 4, I144)', () => {
   it('AppShell renders the account menu (with sign-out) and no inline copy of it', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/components/AppShell.tsx'), 'utf8');
     expect(src).not.toContain('header-account-inline');
-    expect(src).toMatch(/<details className="header-account-menu">[\s\S]*ACCOUNT_MENU[\s\S]*signOutAction[\s\S]*<\/details>/);
+    expect(src).toMatch(
+      /<details className=\{cx\('header-account-menu', styles\.accountMenu\)\}>[\s\S]*ACCOUNT_MENU[\s\S]*signOutAction[\s\S]*<\/details>/,
+    );
     expect(src).toContain('<CommandPaletteTrigger />');
   });
 });
@@ -457,6 +486,10 @@ describe('the sidebar is one strip on a phone (DS-05, I058)', () => {
   it('the media query matches the CSS breakpoint that stacks the sidebar', () => {
     expect(COMPACT_SIDEBAR_QUERY).toBe('(max-width: 800px)');
     expect(css).toMatch(/@media \(max-width: 800px\) \{\s*\.sidebar \{\s*position: static;/);
+    // The strip's own (interim) query in Sidebar.module.css is the same one.
+    expect(
+      INTERIM_BREAKPOINTS.find((b) => b.file === 'src/components/Sidebar.module.css')?.query,
+    ).toBe(COMPACT_SIDEBAR_QUERY);
   });
 
   it('desktop: a column of items under static group headings', () => {

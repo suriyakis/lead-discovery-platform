@@ -99,6 +99,48 @@ export function loadCssFile(file: string): CssRule[] {
   return parseCss(readRepoFile(file), file);
 }
 
+/** A CSS module's class map, as the component imports it (`import styles from …`). */
+export type ModuleClasses = Readonly<Record<string, string>>;
+
+/**
+ * Rules of a CSS module as they apply to markup the components render in
+ * Vitest: each local `.name` becomes the class Vitest gives it
+ * (`styles.name`, e.g. `_tabs_1a2b3c`), and `:global(x)` unwraps to `x`.
+ */
+export function loadModuleRules(file: string, classes: ModuleClasses): CssRule[] {
+  const localise = (selector: string): string => {
+    const held: string[] = [];
+    const hidden = selector.replace(/:global\(((?:[^()]|\([^()]*\))*)\)/g, (_, inner: string) => {
+      held.push(inner);
+      return `\u0000${held.length - 1}\u0000`;
+    });
+    const renamed = hidden.replace(/\.(-?[_a-zA-Z][\w-]*)/g, (_, name: string) => {
+      const mapped = classes[name];
+      if (!mapped) throw new Error(`${file}: no class map entry for .${name}`);
+      return `.${mapped}`;
+    });
+    return renamed.replace(/\u0000(\d+)\u0000/g, (_, i: string) => held[Number(i)]!);
+  };
+  return loadCssFile(file).map((rule) => {
+    const selectors = rule.selectors.map(localise);
+    return { ...rule, selectors, selectorText: selectors.join(', ') };
+  });
+}
+
+/**
+ * The app's global rules plus CSS modules (each with its class map), in
+ * one cascade order: what a page that renders those components gets.
+ */
+export function loadAppRulesWith(
+  modules: ReadonlyArray<readonly [file: string, classes: ModuleClasses]>,
+): CssRule[] {
+  const rules = loadAppRules();
+  for (const [file, classes] of modules) {
+    for (const rule of loadModuleRules(file, classes)) rules.push({ ...rule, order: rules.length });
+  }
+  return rules;
+}
+
 // ---- parsing ----------------------------------------------------------
 
 /** Split on `sep` at depth 0, ignoring separators inside (), [] and strings. */

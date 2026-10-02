@@ -14,15 +14,20 @@
 // Admins get the interim Emergency stop pinned at the foot until the one
 // Pause ships (ia:F-18).
 //
-// Below 800px globals.css turns the sidebar into one horizontally
-// scrolling strip above the page; the item for the current page is
-// scrolled into view. The drawer comes with the visual Phase 2 shell.
+// At 800px and below Sidebar.module.css turns the sidebar into one
+// horizontally scrolling strip above the page; the item for the current
+// page is scrolled into view. The drawer comes with the visual Phase 2
+// shell. The plain class names (sidebar-nav, sidebar-heading, …) stay on
+// the elements as stable hooks for tests and the legacy link styles; the
+// new styles are the module's.
 
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { NavCountBadge } from './NavCountBadge';
 import { NavIcon } from './NavIcon';
+import styles from './Sidebar.module.css';
+import { cx } from '@/lib/ui/cx';
 import {
   INTERIM_EMERGENCY_STOP,
   NAV_GROUPS,
@@ -48,14 +53,13 @@ export interface SidebarProps {
   navCounts?: NavCountValues;
 }
 
-/** Matches the breakpoint where globals.css turns the sidebar into a strip. */
+/**
+ * Matches the breakpoint where Sidebar.module.css turns the sidebar into a
+ * strip (an interim width: the legacy app shell collapses there too).
+ */
 export const COMPACT_SIDEBAR_QUERY = '(max-width: 800px)';
 
-export function Sidebar({
-  isSuperAdmin = false,
-  role = null,
-  navCounts,
-}: Readonly<SidebarProps>) {
+export function Sidebar({ isSuperAdmin = false, role = null, navCounts }: Readonly<SidebarProps>) {
   const pathname = usePathname() ?? '';
   const viewer: NavViewer = { role, isSuperAdmin };
   const areas = sidebarAreas(viewer);
@@ -71,15 +75,17 @@ export function Sidebar({
   }, [activeArea]);
 
   return (
-    <aside className="sidebar">
-      <nav className="sidebar-nav" aria-label="Main">
+    <aside className={cx('sidebar', styles.sidebar)}>
+      <nav className={cx('sidebar-nav', styles.nav)} aria-label="Main">
         {NAV_GROUPS.map((group) => {
           const items = areas.filter((a) => a.group === group.id);
           if (items.length === 0) return null;
           return (
-            <div key={group.id} className="sidebar-group" data-group={group.id}>
-              {group.heading ? <p className="sidebar-heading">{group.heading}</p> : null}
-              <ul className="sidebar-list">
+            <div key={group.id} className={cx('sidebar-group', styles.group)} data-group={group.id}>
+              {group.heading ? (
+                <p className={cx('sidebar-heading', styles.heading)}>{group.heading}</p>
+              ) : null}
+              <ul className={cx('sidebar-list', styles.list)}>
                 {items.map((area) => (
                   <li key={area.id}>
                     <SidebarLink
@@ -96,16 +102,21 @@ export function Sidebar({
         })}
       </nav>
       {showStop ? (
-        <div className="sidebar-foot">
+        <div className={cx('sidebar-foot', styles.foot)}>
           <Link
             href={INTERIM_EMERGENCY_STOP.href}
-            className="sidebar-stop"
+            className={cx('sidebar-stop', styles.stop)}
             data-interim={INTERIM_EMERGENCY_STOP.removedBy}
           >
-            <NavIcon name={INTERIM_EMERGENCY_STOP.icon} className="sidebar-link-icon" />
-            <span className="sidebar-stop-text">
+            <NavIcon
+              name={INTERIM_EMERGENCY_STOP.icon}
+              className={cx('sidebar-link-icon', styles.stopIcon)}
+            />
+            <span className={cx('sidebar-stop-text', styles.stopText)}>
               <span className="sidebar-stop-label">{INTERIM_EMERGENCY_STOP.label}</span>
-              <span className="sidebar-stop-note">Stops queued sending only</span>
+              <span className={cx('sidebar-stop-note', styles.stopNote)}>
+                Stops queued sending only
+              </span>
             </span>
           </Link>
         </div>
@@ -130,13 +141,13 @@ function SidebarLink({
     <Link
       ref={activeRef}
       href={areaHref(area)}
-      className={active ? 'sidebar-link active' : 'sidebar-link'}
+      className={cx('sidebar-link', active && 'active', styles.link)}
       aria-current={active ? 'page' : undefined}
       data-area={area.id}
     >
       <NavIcon name={area.icon} className="sidebar-link-icon" />
       <span className="sidebar-link-label">{area.label}</span>
-      {count ? <NavCountBadge count={count} /> : null}
+      {count ? <NavCountBadge count={count} className={styles.count} /> : null}
     </Link>
   );
 }

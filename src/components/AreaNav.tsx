@@ -11,6 +11,11 @@
 //
 // AppShell wraps every page in <AreaFrame>. Pages outside any area, or
 // in an area with a single page, render untouched.
+//
+// Styles in AreaNav.module.css (the Settings sub-nav is a strip above the
+// page below 1200px, a column beside it from there). The plain class
+// names (area-tabs, area-subnav, …) stay on the elements as stable hooks
+// for tests.
 
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
@@ -21,6 +26,8 @@ import {
   visibleTabs,
   type NavViewer,
 } from '@/lib/nav/resolve';
+import { cx } from '@/lib/ui/cx';
+import styles from './AreaNav.module.css';
 import { NavCountBadge } from './NavCountBadge';
 
 export interface AreaFrameProps {
@@ -66,7 +73,11 @@ export function AreaFrameView({
   const layout = location.area.navStyle === 'subnav' ? 'subnav' : tabs.length >= 2 ? 'tabs' : null;
   if (!layout) return <>{children}</>;
   return (
-    <div className="area-frame" data-layout={layout} data-area={location.area.id}>
+    <div
+      className={cx('area-frame', styles.frame)}
+      data-layout={layout}
+      data-area={location.area.id}
+    >
       <AreaNavLinks
         area={location.area}
         tabs={tabs}
@@ -74,7 +85,7 @@ export function AreaFrameView({
         navCounts={navCounts}
         search={search}
       />
-      <div className="area-frame-content">{children}</div>
+      <div className={cx('area-frame-content', styles.content)}>{children}</div>
     </div>
   );
 }
@@ -91,13 +102,13 @@ function AreaNavLinks({
     return <SubNav area={area} tabs={tabs} current={current} navCounts={navCounts} />;
   }
   return (
-    <nav className="area-tabs" aria-label={`${area.label} pages`}>
+    <nav className={cx('area-tabs', styles.tabs)} aria-label={`${area.label} pages`}>
       {tabs.map((tab) => (
         <AreaLink
           key={tab.id}
           tab={tab}
           current={tab.id === current}
-          className="area-tab"
+          className={cx('area-tab', styles.tab)}
           navCounts={navCounts}
         />
       ))}
@@ -124,17 +135,17 @@ function SubNav({
     else sections.push({ heading, tabs: [tab] });
   }
   return (
-    <nav className="area-subnav" aria-label={area.label}>
+    <nav className={cx('area-subnav', styles.subnav)} aria-label={area.label}>
       {sections.map((section) => (
-        <div key={section.heading} className="area-subnav-section">
-          <p className="area-subnav-heading">{section.heading}</p>
-          <ul className="area-subnav-list">
+        <div key={section.heading} className={cx('area-subnav-section', styles.section)}>
+          <p className={cx('area-subnav-heading', styles.heading)}>{section.heading}</p>
+          <ul className={cx('area-subnav-list', styles.list)}>
             {section.tabs.map((tab) => (
               <li key={tab.id}>
                 <AreaLink
                   tab={tab}
                   current={tab.id === current}
-                  className="area-subnav-link"
+                  className={cx('area-subnav-link', styles.subnavLink)}
                   navCounts={navCounts}
                 />
               </li>
@@ -156,7 +167,7 @@ function AreaLink({
   return (
     <Link
       href={tab.href}
-      className={current ? `${className} active` : className}
+      className={cx(className, current && 'active')}
       aria-current={current ? 'page' : undefined}
       data-tab={tab.id}
     >

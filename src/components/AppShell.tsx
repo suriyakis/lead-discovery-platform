@@ -29,6 +29,7 @@ import { auth } from '@/lib/auth';
 import { signOutAction } from '@/lib/auth-actions';
 import { ACCOUNT_MENU, type NavCountValues } from '@/lib/nav/registry';
 import { resolveNavCount, tabById, type NavViewer } from '@/lib/nav/resolve';
+import { cx } from '@/lib/ui/cx';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
 import { listMyWorkspaces } from '@/lib/services/workspace';
 import { getNavCounts, ZERO_NAV_COUNTS } from '@/lib/services/nav-counts';
@@ -194,7 +195,7 @@ function DefaultRightSlot({
       {/* The bell counts events; the count is neutral (DS-00 count policy). */}
       <Link
         href="/notifications"
-        className="header-bell"
+        className={cx('header-bell', styles.bell)}
         aria-label={
           unreadNotifications > 0
             ? `Notifications, ${unreadNotifications} unread`
@@ -203,7 +204,7 @@ function DefaultRightSlot({
       >
         <Bell className="lucide" aria-hidden="true" />
         {unreadNotifications > 0 ? (
-          <span className="header-bell-count" aria-hidden="true">
+          <span className={cx('header-bell-count', styles.bellCount)} aria-hidden="true">
             {unreadNotifications > 99 ? '99+' : unreadNotifications}
           </span>
         ) : null}
@@ -214,14 +215,14 @@ function DefaultRightSlot({
       {/* The account menu (ia §4): who you are, My account, Help &
           support, Sign out — at every width. Plain <details>, so it
           works before hydration and without JS (I144). */}
-      <details className="header-account-menu">
+      <details className={cx('header-account-menu', styles.accountMenu)}>
         <summary className="ghost-btn" aria-label="Account menu" title={email}>
           <UserCircle className="lucide" aria-hidden="true" />
           {menuCount ? <NavCountBadge count={menuCount} /> : null}
         </summary>
-        <div className="header-account-menu-panel">
-          <span className="who">{email}</span>
-          <ul className="header-account-links">
+        <div className={cx('header-account-menu-panel', styles.accountPanel)}>
+          <span className={cx('who', styles.accountWho)}>{email}</span>
+          <ul className={cx('header-account-links', styles.accountLinks)}>
             {ACCOUNT_MENU.map((id) => {
               const { tab } = tabById(id);
               const count = resolveNavCount(tab.count, navCounts);

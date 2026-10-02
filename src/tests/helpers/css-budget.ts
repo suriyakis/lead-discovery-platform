@@ -179,6 +179,38 @@ export function badBreakpoints(prelude: string): string[] {
   return bad;
 }
 
+/**
+ * Width queries new CSS may use for now, each tied to the legacy layout it
+ * must line up with, and removed with it. Every entry names its file, the
+ * exact query and what retires it; the budget test fails on an entry no
+ * file uses any more.
+ */
+export const INTERIM_BREAKPOINTS: ReadonlyArray<{
+  file: string;
+  query: string;
+  reason: string;
+}> = [
+  {
+    file: 'src/components/Sidebar.module.css',
+    query: '(max-width: 800px)',
+    reason:
+      'The phone strip turns on where the legacy app shell (.app-body, .sidebar) collapses; ' +
+      'the visual Phase 2 drawer replaces both.',
+  },
+  {
+    file: 'src/components/AreaNav.module.css',
+    query: '(max-width: 800px)',
+    reason:
+      'The frame drops the .dashboard-wrap gutter with the legacy .app-main rule it mirrors; ' +
+      'the visual Phase 2 shell replaces both.',
+  },
+];
+
+/** True when `query` in `file` is one of the INTERIM_BREAKPOINTS. */
+export function isInterimBreakpoint(file: string, query: string): boolean {
+  return INTERIM_BREAKPOINTS.some((b) => b.file === file && b.query === query.trim());
+}
+
 // ---- the legacy freeze ----------------------------------------------------
 
 export interface LegacyBaseline {

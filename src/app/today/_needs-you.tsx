@@ -27,7 +27,9 @@ import {
 import { reviewItems } from '@/lib/db/schema/review';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { Badge, BadgeGroup, CountBadge, StatusBadge } from '@/components/Badge';
+import { cx } from '@/lib/ui/cx';
 import type { CountTone } from '@/lib/ui/tone';
+import styles from './today.module.css';
 
 export type NeedsYouTab = 'review' | 'drafts' | 'replies' | 'followups';
 const VALID_TABS: ReadonlySet<NeedsYouTab> = new Set([
@@ -155,7 +157,7 @@ function TabLink({
       className={active === tab ? 'active' : ''}
       aria-current={active === tab ? 'page' : undefined}
     >
-      <span className="today-tab-label">
+      <span className={styles.tabLabel}>
         <Icon className="lucide" aria-hidden="true" />
         {children}
         {count > 0 ? <CountBadge count={count} tone={tone} /> : null}
@@ -364,11 +366,11 @@ function EmptyState({
   cta?: { href: string; label: string };
 }) {
   return (
-    <div className="today-empty">
-      <p className="today-empty-title">{label}</p>
-      <p className="muted today-empty-sub">{sub}</p>
+    <div className={styles.empty}>
+      <p className={styles.emptyTitle}>{label}</p>
+      <p className={cx('muted', styles.emptySub)}>{sub}</p>
       {cta ? (
-        <p className="today-empty-cta">
+        <p className={styles.emptyCta}>
           <Link href={cta.href} className="ghost-btn">
             {cta.label}
           </Link>

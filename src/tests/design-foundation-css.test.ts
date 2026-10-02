@@ -9,7 +9,8 @@
 // - No !important anywhere: inside a layer it would beat every later one.
 // - The new-code budget (tokens, base, utilities, modules): no colour
 //   literals outside tokens.css, token-only sizes, min-width breakpoints
-//   at 640/900/1200 only.
+//   at 640/900/1200 only (plus the INTERIM_BREAKPOINTS that line up with
+//   the legacy shell until Phase 2 replaces it).
 // - legacy.css is frozen against src/styles/legacy.baseline.json.
 // - No var() reads a custom property nothing defines (I140).
 // - The --brand-* names alias the new tokens and keep their values.
@@ -32,6 +33,8 @@ import {
   countLines,
   currentLegacyBaseline,
   firstStatement,
+  INTERIM_BREAKPOINTS,
+  isInterimBreakpoint,
   isNewScope,
   LAYER_ORDER,
   LAYER_STATEMENT,
@@ -197,10 +200,27 @@ describe('design budget for new CSS (tokens, base, utilities, modules)', () => {
   it('uses min-width breakpoints at 640, 900 and 1200px only', () => {
     const found = NEW_SCOPE.flatMap((f) =>
       rulesOf(f).flatMap((r) =>
-        r.conditions.flatMap(badBreakpoints).map((b) => `${f}:${r.line} ${b}`),
+        r.conditions
+          .flatMap(badBreakpoints)
+          .filter((b) => !isInterimBreakpoint(f, b))
+          .map((b) => `${f}:${r.line} ${b}`),
       ),
     );
     expect([...new Set(found)]).toEqual([]);
+  });
+
+  it('every interim breakpoint is still used in its file and names what retires it', () => {
+    for (const b of INTERIM_BREAKPOINTS) {
+      const used = rulesOf(b.file).some((r) =>
+        r.conditions.some((c) => c.replace(/^@media\s*/i, '').trim() === b.query),
+      );
+      expect(used, `${b.file} ${b.query}`).toBe(true);
+      expect(b.reason, b.file).toMatch(/Phase 2/);
+    }
+    // Only in the file it is listed for.
+    expect(isInterimBreakpoint('src/components/Badge.module.css', '(max-width: 800px)')).toBe(
+      false,
+    );
   });
 
   it('the budget checks catch what they are meant to', () => {

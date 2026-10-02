@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { paletteRoutes, paletteScore, type NavViewer } from '@/lib/nav/resolve';
 import type { WorkspaceRole } from '@/lib/services/context';
+import styles from './CommandPalette.module.css';
 
 /** Window event the visible trigger dispatches to open the palette. */
 export const OPEN_COMMAND_PALETTE_EVENT = 'leadsonar:open-command-palette';
@@ -267,10 +268,10 @@ export function CommandPalette({
                       navigate(r.href);
                     }}
                   >
-                    <span className="cmdk-item-text">
+                    <span className={styles.itemText}>
                       <span className="cmdk-item-label">{r.label}</span>
                       {r.description ? (
-                        <span className="cmdk-item-desc">{r.description}</span>
+                        <span className={styles.itemDesc}>{r.description}</span>
                       ) : null}
                     </span>
                     {r.sub ? (
@@ -293,7 +294,7 @@ export function CommandPalette({
           <span>
             <kbd>Esc</kbd> close
           </span>
-          <span className="cmdk-footer-end">
+          <span className={styles.footerEnd}>
             <kbd>⌘K</kbd> / <kbd>Ctrl-K</kbd> toggle
           </span>
         </div>
