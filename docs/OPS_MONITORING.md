@@ -92,6 +92,7 @@ so a dead worker that writes nothing still turns stale.
 |---|---|---|
 | `outreach.drain.tick` | 30 s | 1 min (about 90 s after the last start) |
 | `mail.imap.tick` | 2 min | 4 min |
+| `mail.probe.tick` | 5 min | 10 min |
 | `autopilot.tick` | 5 min | 10 min |
 | `crawl.engine.tick` | 5 min | 10 min |
 | `outreach.follow_up.tick` | 1 h | 1 h |
@@ -130,6 +131,7 @@ incidents:
 | `send.interrupted` | workspace (error) | the stuck-work reaper failed a queued send cut off mid-flight with no sent copy (PC-10); one per queue row | an operator retries, requeues or marks that row delivered (manual); or the row turns out sent: a late drain or an Errors-folder retry settles it (auto) |
 | `run.failed` | workspace (warning) | a discovery run ended `failed`, incl. every search query failing (PC-10); one per recipe, occurrences counted | the recipe's next run that succeeds or partly succeeds |
 | `run.stuck` | workspace (error) | the reaper failed a run with no progress for 15 min, or pending for 60 min with its job gone from the queue (PC-10); one per recipe | as `run.failed`, and the recipe's next run that ends by itself (failed, cancelled). Both run kinds also resolve once the recipe or connector is deleted or switched off (the reaper tick checks) |
+| `mailbox.failing` | workspace (error) | a mailbox turned failing — an IMAP sync, Test connection, a refused login at send time or a health probe (PC-09); one per mailbox, `payload.failureClass` = auth / connection / ambiguous, a repeat counts an occurrence | a check passes (auto), or a person reactivates, pauses or archives the mailbox (manual) |
 | `alerts.delivery_failed` | platform (warning) | the ntfy server refuses an owner alert or does not answer (PC-08); never alerted itself | the next delivered alert |
 
 - **Fingerprinted and deduplicated.** The fingerprint covers scope,
@@ -215,6 +217,53 @@ PC-12: a send or follow-up claim is settled only when no pass that is
 alive may own it — the workspace's `outreach.drain` / `outreach.follow_up`
 lease is not held, or was taken after the claim (by a later pass).
 
+### Mailbox health (PC-09)
+
+`mail.probe.tick` (every 5 min, `src/lib/services/mailbox-probes.ts`, rules
+in `mailbox-health.ts`) watches every active and failing mailbox, under
+the mailbox's `mailbox.sync` lease (a sync or Test running → `busy`):
+
+- **Active.** A credential-free SMTP probe every 30 min (`lib/mail/probe.ts`:
+  TCP, TLS on connect for 465, the 220 greeting, EHLO, STARTTLS when a plain
+  port offers it, QUIT — never AUTH), and one authenticated SMTP verify a day
+  (`smtp_verified_at`). A failed probe is retried 5 min later; two in a row
+  mark the mailbox failing (`connection`). A verify the server refuses marks
+  it failing (`auth`) after that one attempt.
+- **Failing, by `failure_class`.** `auth`: never retried automatically
+  (`next_probe_at` NULL) — saving new connection settings schedules ONE
+  check, Test again and Reactivate are the person's. `connection`:
+  credential-free probes of every configured server, 30 min → 1 h → 2 h →
+  4 h → 6 h; once all answer, one authenticated SMTP + IMAP check.
+  `ambiguous`: one authenticated check per 6 h, four in all
+  (`probe_attempts`), then nothing until a person acts.
+- **Not probed:** paused and archived mailboxes, and failing mailboxes with
+  no class (failing since before PC-09) until the reviewed backfill.
+- The IMAP tick only syncs active mailboxes; it never logs in to a failing
+  one.
+
+Find what the probes are doing:
+
+```sql
+SELECT workspace_id, id, status, failure_class, probe_attempts, next_probe_at,
+       smtp_verified_at, failing_since, left(last_error, 80) AS last_error
+FROM mailboxes WHERE status IN ('active', 'failing') ORDER BY status, next_probe_at;
+```
+
+**Backfill (once, after the deploy).** Mailboxes already failing before
+PC-09 are neither announced nor probed until the owner has reviewed them:
+
+```sh
+# dry run, read only: ids, failing since, side, class, host:port
+DATABASE_URL=... pnpm exec tsx scripts/remediation/mailbox-health-backfill.ts
+# after sign-off of exactly that list
+DATABASE_URL=... pnpm exec tsx scripts/remediation/mailbox-health-backfill.ts --apply --expect <fingerprint>
+```
+
+`--apply` gives each listed mailbox its class, opens its `mailbox.failing`
+incident (the ntfy alert follows) and notifies its owners and admins; the
+mailboxes stay unprobed until someone fixes their settings or clicks Test
+again.
+
 ### Work leases (PC-12)
 
 Work that must not overlap in a workspace holds a row in `work_leases`
@@ -222,7 +271,8 @@ Work that must not overlap in a workspace holds a row in `work_leases`
 `outreach.follow_up`, `mailbox.sync` (per mailbox) and `connector.recipe`
 (per recipe). A second caller does nothing and the ticks count it as
 `busy` in their heartbeat summary (`autopilot.tick`,
-`outreach.drain.tick`, `outreach.follow_up.tick`, `mail.imap.tick`); it is
+`outreach.drain.tick`, `outreach.follow_up.tick`, `mail.imap.tick`,
+`mail.probe.tick`); it is
 neither a failure nor an incident. A lease lasts 2 minutes without renewal
 (a discovery run's 15, renewed at its progress checkpoints), so a crashed
 holder blocks its work for that long at most; a holder gives its lease up

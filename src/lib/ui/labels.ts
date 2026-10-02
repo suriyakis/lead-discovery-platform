@@ -28,6 +28,7 @@ import type {
 } from '@/lib/db/schema/documents';
 import type { FollowUpSkipReason, FollowUpStatus } from '@/lib/db/schema/follow-ups';
 import type {
+  MailboxFailureClassValue,
   MailboxStatus,
   MailDirection,
   MailOutreachRelevance,
@@ -226,6 +227,13 @@ export const MAILBOX_STATUS_LABEL = {
   archived: 'Archived',
 } as const satisfies Record<MailboxStatus, string>;
 
+/** PC-09: why a failing mailbox fails (and so how it may recover). */
+export const MAILBOX_FAILURE_CLASS_LABEL = {
+  auth: 'Login refused',
+  connection: 'Server unreachable',
+  ambiguous: 'Unclear error',
+} as const satisfies Record<MailboxFailureClassValue, string>;
+
 /** Which inbound mail answers our outreach (the X1 relevance gate). */
 export const OUTREACH_RELEVANCE_LABEL = {
   prospect_reply: 'Prospect reply',
@@ -355,6 +363,7 @@ export const NOTIFICATION_KIND_LABEL = {
   'support.reply': 'Support reply',
   'run.failed': 'Search failed',
   'mailbox.failing': 'Mailbox failing',
+  'mailbox.recovered': 'Mailbox back online',
   'learning.synthesis': 'New lessons',
   'tokens.low': 'Tokens low',
   'tokens.empty': 'Out of tokens',
@@ -517,6 +526,7 @@ export const LABEL_MAPS = {
   mail_direction: MAIL_DIRECTION_LABEL,
   mail_status: MAIL_STATUS_LABEL,
   mailbox_status: MAILBOX_STATUS_LABEL,
+  mailbox_failure_class: MAILBOX_FAILURE_CLASS_LABEL,
   outreach_relevance: OUTREACH_RELEVANCE_LABEL,
   suppression_kind: SUPPRESSION_KIND_LABEL,
   suppression_reason: SUPPRESSION_REASON_LABEL,

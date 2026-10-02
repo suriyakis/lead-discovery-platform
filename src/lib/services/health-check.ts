@@ -146,6 +146,9 @@ export async function collectRuleFindings(
       lastError: mailboxes.lastError,
       lastErrorAt: mailboxes.lastErrorAt,
       failingSince: mailboxes.failingSince,
+      failureClass: mailboxes.failureClass,
+      nextProbeAt: mailboxes.nextProbeAt,
+      probeAttempts: mailboxes.probeAttempts,
       smtpHost: mailboxes.smtpHost,
       smtpPort: mailboxes.smtpPort,
       imapHost: mailboxes.imapHost,
@@ -262,6 +265,9 @@ export type MailboxFindingRow = Pick<
   | 'lastError'
   | 'lastErrorAt'
   | 'failingSince'
+  | 'failureClass'
+  | 'nextProbeAt'
+  | 'probeAttempts'
   | 'smtpHost'
   | 'smtpPort'
   | 'imapHost'
@@ -295,7 +301,7 @@ export function mailboxFindings(rows: ReadonlyArray<MailboxFindingRow>): HealthF
       severity: 'warning',
       code: 'mailbox.failing',
       message:
-        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice}` +
+        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice} ${summary.recovery}` +
         ` Last error${when}: ${(mb.lastError ?? 'unknown').slice(0, 300)}`,
       href: `/mailbox/${mb.id}`,
     });

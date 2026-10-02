@@ -616,14 +616,16 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
     const mb = await mailboxRow(s.mailboxId);
     expect(mb.status).toBe('failing');
     expect(mb.lastError).toMatch(/^SMTP: .*535/);
-    expect(mb.imapNextSyncAfter).not.toBeNull();
+    // PC-09: a refused login is class 'auth' — nothing retries it automatically.
+    expect(mb.failureClass).toBe('auth');
+    expect(mb.nextProbeAt).toBeNull();
 
     const notes = await db
       .select()
       .from(notifications)
       .where(and(eq(notifications.workspaceId, s.workspaceA), eq(notifications.kind, 'mailbox.failing')));
     expect(notes).toHaveLength(1);
-    expect(notes[0]!.href).toBe(`/mailbox/${s.mailboxId}`);
+    expect(notes[0]!.href).toBe(`/mailbox/${s.mailboxId}#fix`);
     expect(notes[0]!.body).toContain('No recipient was suppressed');
 
     // The failure rows are ordinary failures — retryable once fixed.

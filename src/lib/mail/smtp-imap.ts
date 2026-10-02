@@ -20,45 +20,14 @@ import {
   extractRelevanceSignals,
   unfoldHeaderValue,
 } from './relevance';
-import { describeConnectionError, isAuthFailure } from './connection-errors';
+import { classifyMailboxFailure, describeConnectionError, isAuthFailure } from './connection-errors';
+import { resolveImapSecure, resolveSmtpSecure } from './ports';
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-/**
- * Port-aware override for the SMTP `secure` flag. nodemailer's `secure:true`
- * means *implicit* TLS-on-connect; on a STARTTLS port (587 / 25) that produces
- * `tls_validate_record_header: wrong version number` because the server replies
- * with a plain text `220` greeting and the TLS layer can't parse it.
- *
- * Operators routinely mis-set this in the UI (set "SSL/TLS on" for a 587
- * mailbox because they think "on means encrypted"). We auto-correct for the
- * well-known ports so the toggle is forgiving; for non-standard ports the
- * operator's choice still wins.
- *
- *   465 / 25 / 587 → SMTP submission ports (RFC 6409)
- *   465: implicit SSL
- *   587: STARTTLS
- *   25:  STARTTLS (no auth, mostly legacy)
- */
-export function resolveSmtpSecure(port: number, operatorChoice: boolean): boolean {
-  if (port === 465) return true;
-  if (port === 587 || port === 25) return false;
-  return operatorChoice;
-}
-
-/**
- * Port-aware override for the IMAP `secure` flag. imapflow uses the same
- * `secure:true = implicit TLS` semantics as nodemailer; pointing it at port
- * 143 with secure=true causes the same plain-greeting parse failure.
- *
- *   993: implicit SSL
- *   143: STARTTLS
- */
-export function resolveImapSecure(port: number, operatorChoice: boolean): boolean {
-  if (port === 993) return true;
-  if (port === 143) return false;
-  return operatorChoice;
-}
+// Port-aware TLS mode: ./ports.ts (pure, shared with the PC-09
+// credential-free probe, which must not load nodemailer / imapflow).
+export { resolveImapSecure, resolveSmtpSecure } from './ports';
 
 /**
  * The nodemailer transport options for a mailbox. Port 465 always gets
@@ -169,6 +138,11 @@ export class SmtpImapMailProvider implements IMailProvider {
     return { smtp, imap };
   }
 
+  /** PC-09: the daily verify — one authenticated SMTP check, no IMAP. */
+  async verifySmtp(): Promise<ConnectionCheck> {
+    return this.testSmtp();
+  }
+
   // ---- helpers --------------------------------------------------------
 
   private buildTransporter(): Transporter {
@@ -181,7 +155,7 @@ export class SmtpImapMailProvider implements IMailProvider {
       await transporter.verify();
       return { ok: true };
     } catch (err) {
-      return { ok: false, detail: explain(err), authFailed: isAuthFailure(err) };
+      return failedCheck(err);
     } finally {
       transporter.close();
     }
@@ -203,7 +177,7 @@ export class SmtpImapMailProvider implements IMailProvider {
       await client.mailboxOpen(this.config.imap.folder);
       return { ok: true };
     } catch (err) {
-      return { ok: false, detail: explain(err), authFailed: isAuthFailure(err) };
+      return failedCheck(err);
     } finally {
       await client.logout().catch(() => undefined);
     }
@@ -382,4 +356,15 @@ function partialRejections(info: unknown): SendResult['rejected'] {
  *  LOGIN is a bare "Command failed" otherwise). */
 function explain(err: unknown): string {
   return describeConnectionError(err);
+}
+
+/** A failed check with its recovery class read from the thrown error
+ *  (PC-09: nodemailer / imapflow codes are more precise than the text). */
+function failedCheck(err: unknown): ConnectionCheck {
+  return {
+    ok: false,
+    detail: explain(err),
+    authFailed: isAuthFailure(err),
+    failureClass: classifyMailboxFailure({ error: err }),
+  };
 }

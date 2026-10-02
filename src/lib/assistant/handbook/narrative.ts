@@ -264,18 +264,24 @@ Pausing all automation — one switch for the whole workspace:
 ## Mailboxes (/mailbox)
 Add one on [/mailbox/new]: SMTP for sending, IMAP for receiving. You need
 an active mailbox to send and receive. A mailbox is active, paused (see
-above), archived, or failing. It is marked failing when its mail server
-refuses the login or its sync keeps failing, and the workspace's owners
+above), archived, or failing. Every mailbox's mail server is checked
+every 30 minutes without logging in, and its login once a day. It is
+marked failing when its server refuses the login, cannot be reached
+twice in a row, or its sync keeps failing, and the workspace's owners
 and admins get one "mailbox failing" notification. While it is failing,
 its queued emails and follow-ups are HELD — not sent and not failed —
-and replies, bounces and unsubscribes sent to it are not read. While
-"Mailbox auto-sync" is on, background sync re-checks it after a delay
-that grows from an hour (six after a refused login) to at most a day,
-and makes it active again once the connection works. {H-16} To fix it
-now: the mailbox's page says what broke and what to change (a server
-that refuses SMTP port 587 usually wants port 465, TLS on connect);
-change it on its Edit page, then click Test again on the mailbox's
-page. Send a test email from the
+and replies, bounces and unsubscribes sent to it are not read. What
+happens next depends on the cause: a refused login is never retried on
+its own (repeated failed logins get our server blocked); a server that
+cannot be reached is checked without logging in, every 30 minutes at
+first and backing off to every 6 hours, and one login is tried once it
+answers; an unclear error gets at most four login attempts, six hours
+apart. When a check passes it is active again and the owners and admins
+are told it is back online. {H-16} To fix it now: the mailbox's page
+says what broke and what to change (a server that refuses SMTP port 587
+usually wants port 465, TLS on connect); change it on its Edit page —
+saving new connection settings runs one check within minutes — or click
+Test again on the mailbox's page. Send a test email from the
 mailbox's page; signatures live on [/mailbox/signatures]; the
 suppression list (addresses that are never emailed, checked before
 every send) on [/mailbox/suppression].

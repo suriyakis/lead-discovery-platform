@@ -10,6 +10,11 @@
 export const AUTOPILOT_TICK_MS = 5 * 60 * 1000;
 export const DRAIN_TICK_MS = 30 * 1000;
 export const IMAP_TICK_MS = 2 * 60 * 1000;
+/** PC-09: how often the mailbox-health probes look for due work. Each
+ *  mailbox's own cadence (a credential-free probe every 30 min, the login
+ *  once a day, the recovery backoff) lives in services/mailbox-health.ts;
+ *  this is only the granularity. */
+export const MAIL_PROBE_TICK_MS = 5 * 60 * 1000;
 export const FOLLOW_UP_TICK_MS = 60 * 60 * 1000;
 /** P60-05: knowledge compaction is heavy (AI per cluster). Weekly is enough
  *  — lessons accumulate slowly and the platform can absorb a few days of
@@ -44,6 +49,7 @@ export type TickName =
   | 'autopilot.tick'
   | 'outreach.drain.tick'
   | 'mail.imap.tick'
+  | 'mail.probe.tick'
   | 'outreach.follow_up.tick'
   | 'knowledge.compact.tick'
   | 'mail.trash.purge.tick'
@@ -77,6 +83,12 @@ export const TICK_CATALOG: readonly TickDefinition[] = [
     label: 'Send queue',
   },
   { name: 'mail.imap.tick', everyMs: IMAP_TICK_MS, jobId: 'mail-imap-tick', label: 'Inbox sync' },
+  {
+    name: 'mail.probe.tick',
+    everyMs: MAIL_PROBE_TICK_MS,
+    jobId: 'mail-probe-tick',
+    label: 'Mailbox health',
+  },
   {
     name: 'outreach.follow_up.tick',
     everyMs: FOLLOW_UP_TICK_MS,

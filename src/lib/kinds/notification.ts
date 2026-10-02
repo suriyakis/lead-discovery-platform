@@ -34,6 +34,8 @@ export const NOTIFICATION_KINDS = [
   'run.failed',
   /** mailbox.ts: a mailbox's connection keeps failing (flow:F-04). */
   'mailbox.failing',
+  /** mailbox.ts: a failing mailbox passed a check and is active again (PC-09). */
+  'mailbox.recovered',
   // Learning
   /** learning-synthesis.ts: weekly self-learning proposed lessons. */
   'learning.synthesis',

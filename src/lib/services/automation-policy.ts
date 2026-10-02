@@ -203,6 +203,7 @@ export const AUTOMATION_TICKS = [
   'autopilot.tick',
   'outreach.drain.tick',
   'mail.imap.tick',
+  'mail.probe.tick',
   'outreach.follow_up.tick',
   'knowledge.compact.tick',
   'mail.trash.purge.tick',
@@ -217,6 +218,7 @@ export type AutomationPathKey =
   | 'sending'
   | 'follow_ups'
   | 'inbox_sync'
+  | 'mailbox_health'
   | 'reply_actions'
   | 'reply_drafts'
   | 'knowledge'
@@ -266,6 +268,9 @@ export interface AutomationPolicy {
     autoSync: boolean;
     imapMailboxes: number;
     failingMailboxes: number;
+    /** PC-09: active mailboxes (with or without IMAP) — what the health
+     *  probes watch, with the failing ones. */
+    activeMailboxes: number;
   };
   replies: {
     autoDraft: boolean;
@@ -306,6 +311,7 @@ export interface AutomationPolicyInputs {
   enabledCrawlPlans: number;
   imapMailboxes: number;
   failingMailboxes: number;
+  activeMailboxes: number;
 }
 
 // ---- pure resolution ------------------------------------------------------
@@ -591,10 +597,42 @@ function buildPaths(p: Omit<AutomationPolicy, 'paths'>): AutomationPath[] {
         paths.push({
           ...base,
           status: 'partial',
-          detail: `Replies are read every 2 minutes; ${plural(p.inbox.failingMailboxes, 'failing mailbox', 'failing mailboxes')} ${p.inbox.failingMailboxes === 1 ? 'is' : 'are'} only re-checked, with a growing delay.`,
+          detail: `Replies are read every 2 minutes; ${plural(p.inbox.failingMailboxes, 'failing mailbox', 'failing mailboxes')} ${p.inbox.failingMailboxes === 1 ? 'is' : 'are'} not read until ${p.inbox.failingMailboxes === 1 ? 'it works' : 'they work'} again.`,
         });
       } else {
         paths.push({ ...base, status: 'runs', detail: 'Replies are read every 2 minutes.' });
+      }
+    }
+  }
+
+  // Mailbox health (PC-09).
+  {
+    const base = {
+      key: 'mailbox_health' as const,
+      label: 'Mailbox health',
+      ticks: ['mail.probe.tick'] as const,
+      cadence: 'every 30 minutes without logging in; the login once a day',
+      capability: 'inbox_sync' as const,
+    };
+    const watched = p.inbox.activeMailboxes + p.inbox.failingMailboxes;
+    if (watched === 0) {
+      paths.push({ ...base, status: 'off', detail: 'No mailbox to watch yet.' });
+    } else {
+      const refusal = gate(state, 'inbox_sync');
+      if (refusal) {
+        paths.push({ ...base, status: 'held', detail: heldDetail(refusal) });
+      } else if (p.inbox.failingMailboxes > 0) {
+        paths.push({
+          ...base,
+          status: 'partial',
+          detail: `Each mail server is checked every 30 minutes without logging in, and the login once a day; ${plural(p.inbox.failingMailboxes, 'failing mailbox', 'failing mailboxes')} ${p.inbox.failingMailboxes === 1 ? 'is' : 'are'} re-checked by cause (a refused login waits for you).`,
+        });
+      } else {
+        paths.push({
+          ...base,
+          status: 'runs',
+          detail: 'Each mail server is checked every 30 minutes without logging in, and the login once a day.',
+        });
       }
     }
   }
@@ -798,6 +836,7 @@ export function buildAutomationPolicy(input: AutomationPolicyInputs): Automation
       autoSync: input.workspace.imapAutoSyncEnabled,
       imapMailboxes: input.imapMailboxes,
       failingMailboxes: input.failingMailboxes,
+      activeMailboxes: input.activeMailboxes,
     },
     replies: { autoDraft: input.workspace.autoDraftReplies, ...input.replyActions },
     discovery: { enabledPlans: input.enabledCrawlPlans },
@@ -852,6 +891,16 @@ export function tickVerdict(policy: AutomationPolicy, tick: AutomationTick): Tic
       return (
         held('inbox_sync') ??
         (policy.inbox.autoSync ? { run: true } : { run: false, off: 'mailbox auto-sync is off' })
+      );
+    case 'mail.probe.tick':
+      // PC-09: talks to the tenant's mail servers like inbox sync (so the
+      // same holds stop it, and the pause does not), whatever auto-sync
+      // says: a send-only mailbox needs watching too.
+      return (
+        held('inbox_sync') ??
+        (policy.inbox.activeMailboxes + policy.inbox.failingMailboxes > 0
+          ? { run: true }
+          : { run: false, off: 'no mailbox to watch' })
       );
     case 'outreach.follow_up.tick':
       return (
@@ -959,9 +1008,11 @@ async function loadInputs(
   }
   const imapBy = new Map<string, number>();
   const failingBy = new Map<string, number>();
+  const activeBy = new Map<string, number>();
   for (const m of mailboxRows) {
     const k = key(m.workspaceId);
     if (m.status === 'active' && m.imapHost) imapBy.set(k, (imapBy.get(k) ?? 0) + 1);
+    if (m.status === 'active') activeBy.set(k, (activeBy.get(k) ?? 0) + 1);
     if (m.status === 'failing') failingBy.set(k, (failingBy.get(k) ?? 0) + 1);
   }
 
@@ -1014,6 +1065,7 @@ async function loadInputs(
       enabledCrawlPlans: plansBy.get(k) ?? 0,
       imapMailboxes: imapBy.get(k) ?? 0,
       failingMailboxes: failingBy.get(k) ?? 0,
+      activeMailboxes: activeBy.get(k) ?? 0,
     });
   }
   return out;

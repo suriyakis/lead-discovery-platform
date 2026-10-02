@@ -31,6 +31,19 @@ export const mailboxStatus = pgEnum('mailbox_status', [
   'archived',
 ]);
 
+/**
+ * PC-09: why a 'failing' mailbox fails, which decides how it may recover
+ * (src/lib/mail/connection-errors.ts MAILBOX_FAILURE_CLASSES, the same
+ * values): 'auth' is never retried automatically, 'connection' is probed
+ * without credentials, 'ambiguous' gets at most four authenticated
+ * attempts, 6 h apart.
+ */
+export const mailboxFailureClass = pgEnum('mailbox_failure_class', [
+  'auth',
+  'connection',
+  'ambiguous',
+]);
+
 export const mailboxes = pgTable(
   'mailboxes',
   {
@@ -76,20 +89,43 @@ export const mailboxes = pgTable(
     lastErrorAt: timestamp('last_error_at', { mode: 'date', withTimezone: true }),
     /** flow:F-04: when the current 'failing' episode began. Set on the
      *  transition into 'failing', kept while it stays failing, cleared on
-     *  recovery / reactivation. Drives the re-check backoff (the longer a
-     *  mailbox has been failing, the longer the wait, capped) and the
-     *  "failing since" copy. Meaningless unless status = 'failing'. */
+     *  recovery / reactivation. Drives the "failing since" copy.
+     *  Meaningless unless status = 'failing'. */
     failingSince: timestamp('failing_since', { mode: 'date', withTimezone: true }),
+    /** PC-09: the class of the current failure (auth / connection /
+     *  ambiguous), which decides how the mailbox-health probes may try to
+     *  recover it (services/mailbox-health.ts). NULL unless failing (a
+     *  CHECK in the migration); NULL on a failing row means it failed
+     *  before PC-09 and waits for the reviewed backfill
+     *  (scripts/remediation/mailbox-health-backfill.ts) — never probed
+     *  until then. */
+    failureClass: mailboxFailureClass('failure_class'),
+    /** PC-09: when the mail.probe.tick next looks at this mailbox. Active:
+     *  the next credential-free SMTP probe (every 30 min). Failing: the
+     *  next recovery probe for its class; NULL = nothing retries it
+     *  automatically (auth, ambiguous attempts used up, backfilled). An
+     *  owner's settings edit sets it to now (one recovery check). */
+    nextProbeAt: timestamp('next_probe_at', { mode: 'date', withTimezone: true }),
+    /** PC-09: automatic probes counted for the schedule. Active: failed
+     *  credential-free probes in a row (two mark it failing). Failing
+     *  'connection': failed probes in a row (the 30 min → 6 h backoff);
+     *  'ambiguous': authenticated attempts made (at most 4). Reset by a
+     *  recovery and by a settings edit. */
+    probeAttempts: integer('probe_attempts').notNull().default(0),
+    /** PC-09: the last successful authenticated SMTP check (the daily
+     *  verify, Test again, a recovery check). The daily verify is due 24 h
+     *  after it; NULL = due now (a new mailbox, edited credentials). */
+    smtpVerifiedAt: timestamp('smtp_verified_at', { mode: 'date', withTimezone: true }),
     /** Phase 51: consecutive IMAP tick failures since the last success.
      *  Drives exponential backoff so a stale-password mailbox doesn't
      *  pound the upstream server every 2 minutes (fail2ban bait). */
     imapConsecutiveFailures: integer('imap_consecutive_failures')
       .notNull()
       .default(0),
-    /** Phase 51: when the next IMAP tick is allowed. Set to now + 2^n*2min
-     *  on transient failure (cap 60 min); cleared on success. flow:F-04:
-     *  never NULL while 'failing' — it is when the tick may re-check the
-     *  connection (1 h, or 6 h after a refused login, growing to 24 h). */
+    /** Phase 51: when the next IMAP tick is allowed for an ACTIVE mailbox.
+     *  Set to now + 2^n*2min on transient failure (cap 60 min) and to the
+     *  15-minute quiet cadence; cleared on success. PC-09: the IMAP tick
+     *  never touches a failing mailbox — its recovery is next_probe_at. */
     imapNextSyncAfter: timestamp('imap_next_sync_after', {
       mode: 'date',
       withTimezone: true,
@@ -121,6 +157,7 @@ export const mailboxes = pgTable(
 export type Mailbox = typeof mailboxes.$inferSelect;
 export type NewMailbox = typeof mailboxes.$inferInsert;
 export type MailboxStatus = (typeof mailboxStatus.enumValues)[number];
+export type MailboxFailureClassValue = (typeof mailboxFailureClass.enumValues)[number];
 
 /**
  * `mail_threads` — server-assigned conversation grouping. We compute a
