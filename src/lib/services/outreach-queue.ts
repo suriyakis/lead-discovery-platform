@@ -857,10 +857,12 @@ async function processEntry(
         .set({
           status: 'queued',
           attemptCount: entry.attemptCount,
+          claimedAt: null,
           lastError: message.slice(0, 2000),
           updatedAt: new Date(),
         })
-        .where(eq(outreachQueue.id, entry.id));
+        // Only our own claim: never overwrite a row another writer moved on.
+        .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'sending')));
       return { kind: 'stopped', reason: message };
     }
     // flow:F-05: a refused SMTP login is the mailbox's problem (sendMessage
@@ -984,11 +986,13 @@ async function deferClaimedEntry(
     .set({
       status: 'queued',
       attemptCount: entry.attemptCount,
+      claimedAt: null,
       scheduledSendAt: deferUntil(now),
       lastError: reason.slice(0, 2000),
       updatedAt: new Date(),
     })
-    .where(eq(outreachQueue.id, entry.id));
+    // Only our own claim: never overwrite a row another writer moved on.
+    .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'sending')));
 }
 
 // ---- internals ----------------------------------------------------
