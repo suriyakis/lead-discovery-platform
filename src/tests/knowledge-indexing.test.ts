@@ -686,6 +686,52 @@ describe('acceptance 4 — the sweeper', () => {
     expect(resolved!.readAt).toBeInstanceOf(Date);
   });
 
+  it('a hung run that finishes after the sweeper closed it leaves the source to the run holding it now', async () => {
+    const s = await setup();
+    const ks = await createKnowledgeSource(s.a, {
+      kind: 'text',
+      title: 'Hung',
+      textExcerpt: 'Install in two coats.',
+      scope: { kind: 'workspace' },
+    });
+    const [job] = await jobsOf(ks.id);
+    let release!: () => void;
+    embedder.gate = new Promise<void>((r) => (release = r));
+    const hung = runKnowledgeIndexJob(s.a, job!.id);
+    for (let i = 0; i < 100 && (await sourceRow(ks.id)).indexStatus !== 'indexing'; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    // 16 minutes on, the sweeper times the run out ...
+    const later = new Date(Date.now() + minutes(16));
+    expect((await runKnowledgeIndexSweep(later, new RecordingQueue())).timedOut).toBe(1);
+    expect((await jobsOf(ks.id))[0]).toMatchObject({ status: 'failed', note: 'timed_out' });
+    // ... and a newer run claims the source.
+    const [newer] = await db
+      .insert(indexingJobs)
+      .values({
+        workspaceId: s.a.workspaceId,
+        knowledgeSourceId: ks.id,
+        status: 'running',
+        attempts: 1,
+        startedAt: new Date(),
+        reason: 'reindex',
+      })
+      .returning();
+    await db
+      .update(knowledgeSources)
+      .set({ indexStatus: 'indexing' })
+      .where(eq(knowledgeSources.id, ks.id));
+
+    embedder.gate = null;
+    release();
+    expect(await hung).toEqual({ kind: 'skipped', reason: 'closed' });
+    const rows = await jobsOf(ks.id);
+    expect(rows.find((r) => r.id === job!.id)).toMatchObject({ status: 'failed', note: 'timed_out' });
+    expect(rows.find((r) => r.id === newer!.id)).toMatchObject({ status: 'running' });
+    // Not flipped to 'indexed' while the newer run still works.
+    expect((await sourceRow(ks.id)).indexStatus).toBe('indexing');
+  });
+
   it('re-enqueues lost and due rows only', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(s.a, {

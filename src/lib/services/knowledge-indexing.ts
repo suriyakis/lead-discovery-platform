@@ -429,7 +429,9 @@ export type IndexRunOutcome =
   | { kind: 'succeeded'; job: IndexingJob; chunkCount: number; reembedded: boolean }
   | { kind: 'retrying'; job: IndexingJob; error: unknown; message: string }
   | { kind: 'failed'; job: IndexingJob; error: unknown; message: string }
-  | { kind: 'skipped'; reason: 'not_found' | 'not_queued' | 'not_due' | 'busy' };
+  /** closed: the work finished after the sweeper had timed the run out —
+   *  its row stays failed and the source is not touched. */
+  | { kind: 'skipped'; reason: 'not_found' | 'not_queued' | 'not_due' | 'busy' | 'closed' };
 
 /** A JSON-safe summary (BullMQ stores the handler's return value). */
 export function summarizeIndexOutcome(outcome: IndexRunOutcome): Record<string, unknown> {
@@ -466,6 +468,8 @@ export async function runKnowledgeIndexJob(
   try {
     const work = await performIndex(ctx, job, source, deps);
     const finished = await finishSucceeded(ctx, job, source, work, now());
+    // The sweeper closed this run while it worked (it hung past 15 min).
+    if (!finished) return { kind: 'skipped', reason: 'closed' };
     return {
       kind: 'succeeded',
       job: finished,
@@ -769,14 +773,22 @@ function statusWhilePending(current: KnowledgeIndexStatus | null): KnowledgeInde
   return current === 'stale' ? 'stale' : 'queued';
 }
 
+/**
+ * Close a run that did its work. Only a run still 'running' may: when the
+ * sweeper already timed it out (a hung run that finished after 15
+ * minutes), its row stays 'failed' and the source is left to whichever run
+ * holds it now — never flipped to 'indexed' under a newer run (the partial
+ * unique index allows one 'running' row per source, so with ours still
+ * running no other can be). Returns null in that case.
+ */
 async function finishSucceeded(
   ctx: WorkspaceContext,
   job: IndexingJob,
   source: KnowledgeSource,
   work: IndexWork,
   now: Date,
-): Promise<IndexingJob> {
-  const { finished, pending } = await db.transaction(async (tx) => {
+): Promise<IndexingJob | null> {
+  const closed = await db.transaction(async (tx) => {
     const current = await lockSourceStatus(tx, ctx, source.id);
     const pendingJob = await otherQueuedJob(tx, ctx, source.id, job.id);
     const [row] = await tx
@@ -790,9 +802,15 @@ async function finishSucceeded(
         nextAttemptAt: null,
         finishedAt: now,
       })
-      .where(and(eq(indexingJobs.workspaceId, ctx.workspaceId), eq(indexingJobs.id, job.id)))
+      .where(
+        and(
+          eq(indexingJobs.workspaceId, ctx.workspaceId),
+          eq(indexingJobs.id, job.id),
+          eq(indexingJobs.status, 'running'),
+        ),
+      )
       .returning();
-    if (!row) throw new Error('indexing_jobs finish lost its row');
+    if (!row) return null;
     await tx
       .update(knowledgeSources)
       .set({
@@ -810,6 +828,19 @@ async function finishSucceeded(
       );
     return { finished: row, pending: pendingJob !== null };
   });
+  if (!closed) {
+    console.error(
+      `[knowledge-indexing] workspace=${ctx.workspaceId} source=${source.id} job=${job.id} finished after the sweeper closed it; source status left alone`,
+    );
+    await recordAuditEvent(ctx, {
+      kind: 'rag.index_knowledge_source_late',
+      entityType: 'knowledge_source',
+      entityId: source.id,
+      payload: { jobId: job.id.toString(), chunkCount: work.chunkCount, attempts: job.attempts },
+    });
+    return null;
+  }
+  const { finished, pending } = closed;
   if (!pending) await resolveNotifications(ctx.workspaceId, knowledgeIndexFailedKey(source.id));
   await recordAuditEvent(ctx, {
     kind: 'rag.index_knowledge_source',
