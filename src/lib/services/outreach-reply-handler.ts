@@ -199,18 +199,8 @@ export async function handleClassifiedReply(
     if (!enabled) {
       return { action, draftIds: [], forkedThreadStateId: null };
     }
-    // PC-06: a Reply auto-actions hold leaves the reply for the operator,
-    // exactly as with the switch off (audited, so the skip is explained).
-    const gate = await checkGate(ctx, 'inbound_actions', { manual: false });
-    if (!gate.allowed) {
-      await recordAuditEvent(ctx, {
-        kind: 'reply.auto_actions_held',
-        entityType: 'mail_message',
-        entityId: msg.id,
-        payload: { trigger: action.reason, path: 'outreach_reply_handler', gate: gate.reason, reason: gate.message },
-      });
-      return { action, draftIds: [], forkedThreadStateId: null };
-    }
+    // The guard first: a refused reply would trigger nothing, so it is
+    // never counted as held below.
     const refusal =
       action.reason === 'decline'
         ? msg.outreachRelevance === 'prospect_reply'
@@ -225,6 +215,19 @@ export async function handleClassifiedReply(
           path: 'outreach_reply_handler',
         });
       }
+      return { action, draftIds: [], forkedThreadStateId: null };
+    }
+    // PC-06 + PC-05: the workspace pause or a Reply auto-actions hold
+    // leaves the reply for the operator, exactly as with the switch off
+    // (audited, so the skip is explained and counted on Resume).
+    const gate = await checkGate(ctx, 'inbound_actions', { manual: false });
+    if (!gate.allowed) {
+      await recordAuditEvent(ctx, {
+        kind: 'reply.auto_actions_held',
+        entityType: 'mail_message',
+        entityId: msg.id,
+        payload: { trigger: action.reason, path: 'outreach_reply_handler', gate: gate.reason, reason: gate.message },
+      });
       return { action, draftIds: [], forkedThreadStateId: null };
     }
     if (action.reason === 'unsubscribe' || action.reason === 'bounce') {

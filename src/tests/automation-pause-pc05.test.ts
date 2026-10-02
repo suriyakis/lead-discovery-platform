@@ -988,6 +988,58 @@ describe('(2) while paused nothing runs on its own', { timeout: 60_000 }, () => 
     expect(resumed).toMatchObject({ wasPaused: true, heldInboundActions: 1 });
   });
 
+  it('only a reply that would trigger an auto-action counts as held: positive and out-of-office replies write no held row', async () => {
+    const t = await tenant();
+    await updateReplyAutoActions(t.owner, {
+      autoSuppressUnsubscribe: true,
+      autoSuppressBounce: true,
+      autoCloseNegative: true,
+      autoExtractRedirects: true,
+    });
+    await pauseAutomation(t.member, { source: 'api' });
+    const positive = await replyFixture(t, 'Sounds good, happy to talk next week.');
+    const away = await replyFixture(t, 'I am out of the office until Monday.', 'bob@other.example');
+    expect((await analyseReply(t.owner, positive.messageId)).type).toBe('positive');
+    expect((await analyseReply(t.owner, away.messageId)).type).toBe('out_of_office');
+    expect(await auditRows(t.workspaceId, 'reply.auto_actions_held')).toHaveLength(0);
+    expect((await getAutomationPauseOverview(t.admin)).impact.heldInboundActions).toBe(0);
+    expect(await resumeAutomation(t.admin, { source: 'api' })).toMatchObject({
+      wasPaused: true,
+      heldInboundActions: 0,
+    });
+  });
+
+  it('redirect extraction is an inbound auto-action: while paused it creates no contact and counts as one held action', async () => {
+    const body = 'I am not the right person. Please contact john@buyer.example about this.';
+    const contactsNamed = async (t: Tenant, email: string) =>
+      db
+        .select({ id: contacts.id })
+        .from(contacts)
+        .where(and(eq(contacts.workspaceId, t.workspaceId), eq(contacts.email, email)));
+
+    // Counterfactual: not paused, the same reply creates the contact.
+    const free = await tenant();
+    const freeReply = await replyFixture(free, body);
+    const verdict = await analyseReply(free.owner, freeReply.messageId);
+    expect(verdict).toMatchObject({ type: 'redirect', extractedEmails: ['john@buyer.example'] });
+    expect(await contactsNamed(free, 'john@buyer.example')).toHaveLength(1);
+
+    // The defaults (only redirect extraction on): paused, no contact.
+    const t = await tenant({ name: 'paused' });
+    await pauseAutomation(t.member, { source: 'api' });
+    const reply = await replyFixture(t, body);
+    expect((await analyseReply(t.owner, reply.messageId)).type).toBe('redirect');
+    expect(await contactsNamed(t, 'john@buyer.example')).toHaveLength(0);
+    const held = await auditRows(t.workspaceId, 'reply.auto_actions_held');
+    expect(held).toHaveLength(1);
+    expect(held[0]!.payload).toMatchObject({
+      classification: 'redirect',
+      action: 'extract_redirects',
+      gate: 'paused',
+    });
+    expect((await getAutomationPauseOverview(t.admin)).impact.heldInboundActions).toBe(1);
+  });
+
   it('the trash purge deletes 0 rows (tick and direct)', async () => {
     const t = await tenant();
     const mb = await makeMailbox(t);
