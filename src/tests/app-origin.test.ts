@@ -72,6 +72,12 @@ describe('appUrl (I155)', () => {
     // In production a lone loopback value is ignored: the request's origin is used.
     const lone = { NODE_ENV: 'production', APP_URL: 'http://localhost:3000' };
     expect(configuredAppOrigin(lone)).toBeNull();
+    // With no request to ask (metadataBase, sent mail) the lone loopback
+    // value still beats the hard-coded default: a local production build on
+    // another port links its own port.
+    expect(appOrigin({ NODE_ENV: 'production', APP_URL: 'http://localhost:3300' }).href).toBe(
+      'http://localhost:3300/',
+    );
     expect(
       appUrl('/onboarding', {
         env: lone,

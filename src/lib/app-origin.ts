@@ -51,18 +51,30 @@ export function isLoopbackOrigin(u: URL): boolean {
  * first loopback one.
  */
 export function configuredAppOrigin(env: Env = process.env): URL | null {
-  const origins: URL[] = [];
-  for (const name of ['APP_URL', 'AUTH_URL', 'NEXTAUTH_URL'] as const) {
-    const parsed = HttpUrl.safeParse(env[name]);
-    if (parsed.success) origins.push(new URL(new URL(parsed.data).origin));
-  }
+  const origins = configuredOrigins(env);
   const real = origins.find((u) => !isLoopbackOrigin(u));
   if (real) return real;
   return env.NODE_ENV === 'production' ? null : (origins[0] ?? null);
 }
 
+/** Every parseable APP_URL, AUTH_URL, NEXTAUTH_URL origin, in that order. */
+function configuredOrigins(env: Env): URL[] {
+  const origins: URL[] = [];
+  for (const name of ['APP_URL', 'AUTH_URL', 'NEXTAUTH_URL'] as const) {
+    const parsed = HttpUrl.safeParse(env[name]);
+    if (parsed.success) origins.push(new URL(new URL(parsed.data).origin));
+  }
+  return origins;
+}
+
+/**
+ * The origin for links built with no request at hand (metadataBase, sent
+ * mail): the configured one; when production has only a loopback value,
+ * that value still beats the hard-coded default, since there is nothing
+ * better to ask (a local production build on :3300 links :3300, not :3000).
+ */
 export function appOrigin(env: Env = process.env): URL {
-  return configuredAppOrigin(env) ?? new URL(DEFAULT_APP_ORIGIN);
+  return configuredAppOrigin(env) ?? configuredOrigins(env)[0] ?? new URL(DEFAULT_APP_ORIGIN);
 }
 
 /** Request headers: next/headers' headers(), or a Request's headers. */
