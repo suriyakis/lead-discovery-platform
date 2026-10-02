@@ -187,6 +187,24 @@ describe(`${DEPLOY_SCRIPT} (PC-36)`, () => {
     expect(migrate).toBeLessThan(up);
   });
 
+  it('--migrate checks for pnpm on the server before the pull and the build', () => {
+    const commands = dryRun('--migrate').filter((l) => !l.startsWith('echo') && !l.startsWith('#'));
+    const preflight = commands.findIndex((l) => l.startsWith('command -v pnpm >/dev/null || {'));
+    const pull = commands.findIndex((l) => l.startsWith('git pull'));
+    const build = commands.findIndex((l) => l.includes('build app'));
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(preflight).toBeLessThan(pull);
+    expect(pull).toBeLessThan(build);
+    expect(commands[preflight]).toMatch(/exit 1; }$/);
+    // Without --migrate there is no pnpm on the path of the deploy at all.
+    expect(dryRun().some((l) => /pnpm/.test(l))).toBe(false);
+  });
+
+  it('runs the remote script in a login shell, so a profile-installed pnpm is found', () => {
+    expect(dryRun()[0]).toBe("# ssh root@195.201.16.169 'bash -l -s' <<REMOTE");
+    expect(readFileSync(script, 'utf8')).toMatch(/"\$HOST" 'bash -l -s' <<<"\$\(remote_script\)"/);
+  });
+
   it('refuses unknown options and unsafe overrides', () => {
     expect(spawnSync('bash', [script, '--force'], { encoding: 'utf8' }).status).toBe(2);
     const unsafe = spawnSync('bash', [script, '--dry-run'], {

@@ -132,6 +132,7 @@ scripts/deploy/deploy-agregat.sh --dry-run    # print the remote command sequenc
 
 The script is versioned (PC-00 / PC-36), so every deploy change is reviewed in a PR. Over one SSH session to `root@195.201.16.169` it runs, each step on its own line under `set -euo pipefail` (the first failure stops the deploy with the old containers still running):
 
+0. with `--migrate`: `command -v pnpm`, so a server without pnpm on its PATH fails the deploy before the pull and the image build (the remote shell is a login shell, `bash -l -s`, so a pnpm from the profile, such as corepack or nvm, is found);
 1. `git pull origin main` in `/opt/lead-discovery-platform`, and `BUILD_SHA=$(git rev-parse --short HEAD)` for `/api/ready`;
 2. `docker-compose … --profile app config -q`: the server's own docker-compose validates the merged files before anything is built or stopped;
 3. `docker-compose … build app`: one image, tagged `lead-discovery-platform-app:latest`, which the worker runs too;

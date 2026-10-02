@@ -7,6 +7,8 @@
 #
 # What it does, over one SSH session (docker-compose v1 syntax — agregat has
 # the hyphenated binary only — and always both compose files):
+#   0. with --migrate: pnpm must be on the server's PATH (checked first,
+#      so a missing pnpm fails the deploy before the image build)
 #   1. git pull of the deployed branch in /opt/lead-discovery-platform
 #   2. `config -q`: the compose files must validate under the server's
 #      docker-compose before anything is built or stopped
@@ -28,7 +30,9 @@
 #
 # Every step is its own line in the remote script (no wrapped && chains),
 # and the remote shell runs with `set -euo pipefail`, so the first failing
-# step stops the deploy with the old containers still running.
+# step stops the deploy with the old containers still running. The remote
+# shell is a login shell (`bash -l -s`), so a pnpm installed through the
+# profile (corepack, nvm, ~/.local/bin) is found as in an interactive SSH.
 set -euo pipefail
 
 HOST="${DEPLOY_HOST:-root@195.201.16.169}"
@@ -38,7 +42,7 @@ DRY_RUN=0
 MIGRATE=0
 
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -62,6 +66,15 @@ remote_script() {
 set -euo pipefail
 cd ${APP_DIR}
 COMPOSE="docker-compose -f docker-compose.yml -f docker-compose.prod.yml"
+REMOTE
+  if [ "$MIGRATE" = 1 ]; then
+    cat <<'REMOTE'
+echo "=== preflight: pnpm (for --migrate) ==="
+command -v pnpm >/dev/null || { echo "pnpm is not on the server PATH, so --migrate cannot run pnpm db:migrate; nothing was built or stopped. Install it (corepack enable pnpm) or deploy without --migrate." >&2; exit 1; }
+pnpm --version
+REMOTE
+  fi
+  cat <<REMOTE
 echo "=== git pull ==="
 git pull origin ${BRANCH}
 export BUILD_SHA=\$(git rev-parse --short HEAD)
@@ -92,7 +105,7 @@ REMOTE
 }
 
 if [ "$DRY_RUN" = 1 ]; then
-  echo "# ssh ${HOST} 'bash -s' <<REMOTE"
+  echo "# ssh ${HOST} 'bash -l -s' <<REMOTE"
   remote_script
   exit 0
 fi
@@ -100,4 +113,4 @@ fi
 ssh -o StrictHostKeyChecking=accept-new \
     -o ServerAliveInterval=20 \
     -o ServerAliveCountMax=30 \
-    "$HOST" 'bash -s' <<<"$(remote_script)"
+    "$HOST" 'bash -l -s' <<<"$(remote_script)"
