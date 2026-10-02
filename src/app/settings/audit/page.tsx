@@ -24,6 +24,7 @@ import { listAuditEvents } from '@/lib/services/audit';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { users } from '@/lib/db/schema/auth';
+import { auditKindLabel, auditKindOptions } from '@/lib/ui/labels';
 import {
   formatDateTimeInZone,
   parseDateTimeLocal,
@@ -125,9 +126,9 @@ export default async function WorkspaceAuditPage({
           Kind
           <select name="kind" defaultValue={kindFilter ?? ''}>
             <option value="">All</option>
-            {kinds.map((k) => (
-              <option key={k.kind} value={k.kind}>
-                {k.kind}
+            {auditKindOptions(kinds.map((k) => k.kind)).map((o) => (
+              <option key={o.kind} value={o.kind}>
+                {o.label}
               </option>
             ))}
           </select>
@@ -178,7 +179,7 @@ export default async function WorkspaceAuditPage({
                     <span className="muted">
                       {formatDateTimeInZone(e.createdAt, timeZone)}
                     </span>{' '}
-                    <strong>{e.kind}</strong>
+                    <strong title={e.kind}>{auditKindLabel(e.kind)}</strong>
                     {e.entityType ? (
                       <span className="muted">
                         {' '}

@@ -15,6 +15,8 @@ import {
   type OutreachDraft,
 } from '@/lib/db/schema/outreach';
 import { mailMessages, mailThreads, type MailThread } from '@/lib/db/schema/mailing';
+import { labelFor, signalFor } from '@/lib/ui/labels';
+import { REPLY_TRIAGE_TRUSTED } from '@/lib/ui/tone';
 import type { WorkspaceContext } from './context';
 
 /**
@@ -23,9 +25,13 @@ import type { WorkspaceContext } from './context';
  * warning  — worth a look, nothing is broken (forbidden phrases stripped)
  * critical — something failed (send failed, bounced)
  * success  — done / good outcome
- * HintBadge maps these to badge tones; keep that map exhaustive.
+ * note     — a plain fact with no call to action (an unverified automatic
+ *            reply classification, DS-09)
+ * HintBadge takes each one's tone from HINT_SEVERITY_TONE
+ * (src/lib/ui/tone.ts, DS-09), a map typecheck keeps exhaustive.
  */
-export type HintSeverity = 'info' | 'warning' | 'critical' | 'action' | 'success';
+export const HINT_SEVERITIES = ['info', 'warning', 'critical', 'action', 'success', 'note'] as const;
+export type HintSeverity = (typeof HINT_SEVERITIES)[number];
 
 export interface Hint {
   type: string;
@@ -249,7 +255,10 @@ function nextActionHintsForLead(lead: QualifiedLead): Hint[] {
         {
           type: 'next_action',
           severity: 'info',
-          text: lead.closeReason ? `closed (${lead.closeReason})` : 'closed',
+          // The close reason in words (DS-09), never the raw code.
+          text: lead.closeReason
+            ? `closed: ${labelFor('close_reason', lead.closeReason).toLowerCase()}`
+            : 'closed',
           icon: 'archive',
         },
       ];
@@ -299,7 +308,27 @@ export async function hintsForThread(
   return out;
 }
 
-function replyClassificationHint(type: string, conf: number | null): Hint {
+/**
+ * The hint for a thread's last reply class. DS-09: the class is keyword
+ * heuristics until reply triage is trusted (I088), so until then it reads
+ * as a neutral note marked 'auto', never as a red bounce or an amber
+ * unsubscribe the classifier may have made up. Exported for tests.
+ */
+export function replyClassificationHint(
+  type: string,
+  conf: number | null,
+  trusted: boolean = REPLY_TRIAGE_TRUSTED,
+): Hint {
+  if (!trusted) {
+    const signal = signalFor('reply_class', type);
+    return {
+      type: 'reply_classification',
+      severity: 'note',
+      text: signal.label,
+      detail: [signal.description, conf ? `confidence ${conf}` : null].filter(Boolean).join(' '),
+      icon: 'tag',
+    };
+  }
   const severity: HintSeverity = (() => {
     switch (type) {
       case 'positive':
@@ -322,7 +351,7 @@ function replyClassificationHint(type: string, conf: number | null): Hint {
   return {
     type: 'reply_classification',
     severity,
-    text: type.replace(/_/g, ' '),
+    text: labelFor('reply_class', type),
     detail: conf ? `confidence ${conf}` : undefined,
     icon: 'tag',
   };

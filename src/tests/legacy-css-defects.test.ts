@@ -267,19 +267,22 @@ describe('badge tones (DS-02 item 3, I151)', () => {
     expect(offenders).toEqual([]);
   });
 
+  // DS-09 moved HintBadge onto the Badge primitive: the tone is a
+  // data-tone from the meaning map (src/lib/ui/tone.ts), not a class.
   const sample: Record<HintSeverity, string> = {
-    info: 'badge badge-info',
-    action: 'badge badge-warn',
-    warning: 'badge badge-warn',
-    critical: 'badge badge-bad',
-    success: 'badge badge-good',
+    info: 'info',
+    action: 'attention',
+    warning: 'attention',
+    critical: 'danger',
+    success: 'success',
+    note: 'neutral',
   };
-  for (const [severity, cls] of Object.entries(sample) as Array<[HintSeverity, string]>) {
-    it(`HintBadge maps ${severity} to "${cls}"`, () => {
+  for (const [severity, tone] of Object.entries(sample) as Array<[HintSeverity, string]>) {
+    it(`HintBadge renders ${severity} in the ${tone} tone`, () => {
       const html = renderToStaticMarkup(
         createElement(HintBadge, { hint: { type: 't', severity, text: 'x' } }),
       );
-      expect(load(html)('span').first().attr('class')).toBe(cls);
+      expect(load(html)('[data-tone]').first().attr('data-tone')).toBe(tone);
     });
   }
 });

@@ -15,12 +15,16 @@ import {
   Send,
   TrendingUp,
 } from 'lucide-react';
+import { StatusBadge } from '@/components/Badge';
+import { FunnelBars } from '@/components/FunnelBars';
 import { NavIcon } from '@/components/NavIcon';
 import { HOME_PATH } from '@/lib/nav/registry';
 import { areaHref, sidebarAreas, type NavViewer } from '@/lib/nav/resolve';
 import { getDashboardSignals } from '@/lib/services/dashboard-signals';
 import type { getActiveWorkspaceSummary } from '@/lib/services/workspace';
 import type { PipelineState } from '@/lib/db/schema/pipeline';
+import { labelFor, PIPELINE_STATE_LABEL } from '@/lib/ui/labels';
+import { PIPELINE_PROGRESS } from '@/lib/ui/tone';
 
 export interface TodayOverviewProps {
   user: { name: string | null; email: string | null; role: string };
@@ -46,7 +50,7 @@ export function TodayOverview({
           <div className="profile-card-header">
             <span className="profile-card-eyebrow">You</span>
             <span className={`role-pill role-pill-${user.role}`}>
-              {user.role.replace('_', ' ')}
+              {labelFor('user_role', user.role)}
             </span>
           </div>
           <h2 className="profile-card-title">{user.name ?? '—'}</h2>
@@ -60,7 +64,7 @@ export function TodayOverview({
               <span className="role-pill role-pill-super_admin">god mode</span>
             ) : (
               <span className={`role-pill role-pill-${active.memberRole}`}>
-                {active.memberRole}
+                {active.memberRole ? labelFor('workspace_member_role', active.memberRole) : null}
               </span>
             )}
           </div>
@@ -199,16 +203,9 @@ function SignalCard({
   );
 }
 
+/** The same funnel as /pipeline (FunnelBars, one hue, the same labels);
+ *  the card itself is the link, so the rows are not. */
 function FunnelCard({ funnel }: { funnel: Record<PipelineState, number> }) {
-  const stages: Array<{ key: PipelineState; label: string }> = [
-    { key: 'relevant', label: 'Relevant' },
-    { key: 'contacted', label: 'Contacted' },
-    { key: 'replied', label: 'Replied' },
-    { key: 'contact_identified', label: 'Identified' },
-    { key: 'qualified', label: 'Qualified' },
-    { key: 'handed_over', label: 'Handed over' },
-  ];
-  const max = Math.max(1, ...stages.map((s) => funnel[s.key]));
   return (
     <Link
       href="/pipeline"
@@ -218,27 +215,14 @@ function FunnelCard({ funnel }: { funnel: Record<PipelineState, number> }) {
         <TrendingUp className="cockpit-card-icon" aria-hidden="true" />
         <span className="cockpit-card-label">Pipeline funnel</span>
       </div>
-      <div className="cockpit-funnel">
-        {stages.map(({ key, label }) => {
-          const n = funnel[key];
-          const pct = Math.round((n / max) * 100);
-          return (
-            <div className="cockpit-funnel-row" key={key}>
-              <span className="cockpit-funnel-row-label">{label}</span>
-              <div className="cockpit-funnel-track">
-                {/* The stage colour comes from globals.css by data-stage;
-                    only the bar length is data. */}
-                <div
-                  className="cockpit-funnel-fill"
-                  data-stage={key}
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <span className="cockpit-funnel-row-count">{n}</span>
-            </div>
-          );
-        })}
-      </div>
+      <FunnelBars
+        label="Pipeline funnel"
+        rows={PIPELINE_PROGRESS.map((key) => ({
+          key,
+          label: PIPELINE_STATE_LABEL[key],
+          count: funnel[key],
+        }))}
+      />
     </Link>
   );
 }
@@ -281,7 +265,7 @@ function RecentRepliesCard({
               </span>
             </div>
             <div className="cockpit-reply-subject">
-              {m.intent ? <span className="badge">{m.intent}</span> : null}
+              {m.intent ? <StatusBadge set="reply_class" value={m.intent} size="sm" /> : null}
               {m.subject || '(no subject)'}
             </div>
           </li>

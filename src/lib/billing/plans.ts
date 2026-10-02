@@ -18,7 +18,15 @@
 // usage is cost-based and unlimited promises on a metered product are
 // how you lose money one whale at a time.
 
-export type PlanId = 'starter' | 'pro';
+export const PLAN_IDS = ['starter', 'pro'] as const;
+export type PlanId = (typeof PLAN_IDS)[number];
+
+/**
+ * workspaces.plan (text): 'trial' until a subscription starts, then the
+ * paid plan's id. DS-09 labels each one (src/lib/ui/labels.ts).
+ */
+export const WORKSPACE_PLANS = ['trial', ...PLAN_IDS] as const;
+export type WorkspacePlan = (typeof WORKSPACE_PLANS)[number];
 
 /** Feature ceilings enforced in code (see services/plan-limits.ts).
  *  `null` means no ceiling on that axis for the tier. */

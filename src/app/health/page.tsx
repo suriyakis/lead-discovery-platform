@@ -19,12 +19,8 @@ import {
 import { canAdminWorkspace } from '@/lib/services/context';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { TableScroll } from '@/components/TableScroll';
-
-function scoreBadge(score: number): string {
-  if (score >= 80) return 'badge badge-good';
-  if (score >= 50) return 'badge badge-warn';
-  return 'badge badge-bad';
-}
+import { ScoreChip, StatusBadge } from '@/components/Badge';
+import { healthScoreTone } from '@/lib/ui/tone';
 
 export default async function HealthPage({
   searchParams,
@@ -103,7 +99,12 @@ export default async function HealthPage({
           <section>
             <h2>
               Latest report{' '}
-              <span className={scoreBadge(latest.score)}>score {latest.score}/100</span>{' '}
+              <ScoreChip
+                value={latest.score}
+                max={100}
+                label="Score"
+                tone={healthScoreTone(latest.score)}
+              />{' '}
               <span className="muted" style={{ fontWeight: 'normal', fontSize: '0.85rem' }}>
                 {latest.createdAt.toLocaleString()}
               </span>
@@ -115,9 +116,7 @@ export default async function HealthPage({
                 <ul className="profile-list">
                   {(latest.findings as HealthFinding[]).map((f, i) => (
                     <li key={i}>
-                      <span className={f.severity === 'warning' ? 'badge badge-bad' : 'badge'}>
-                        {f.severity}
-                      </span>{' '}
+                      <StatusBadge set="health_finding_severity" value={f.severity} />{' '}
                       {f.message}{' '}
                       {f.href ? <Link href={f.href}>fix →</Link> : null}
                     </li>
@@ -136,9 +135,12 @@ export default async function HealthPage({
                     <li key={r.threadId}>
                       <div className="lead-row">
                         <Link href={`/communication/${r.threadId}`}>{r.subject}</Link>{' '}
-                        <span className={scoreBadge(r.naturalness)}>
-                          naturalness {r.naturalness}/100
-                        </span>
+                        <ScoreChip
+                          value={r.naturalness}
+                          max={100}
+                          label="Naturalness"
+                          tone={healthScoreTone(r.naturalness)}
+                        />
                       </div>
                       {r.issues.length > 0 ? (
                         <ul style={{ margin: '0.25rem 0 0 1rem' }}>
@@ -180,7 +182,9 @@ export default async function HealthPage({
                   {reports.slice(1).map((r) => (
                     <tr key={r.id.toString()}>
                       <td>{r.createdAt.toLocaleString()}</td>
-                      <td><span className={scoreBadge(r.score)}>{r.score}</span></td>
+                      <td>
+                        <ScoreChip value={r.score} tone={healthScoreTone(r.score)} />
+                      </td>
                       <td>
                         {(r.findings as HealthFinding[]).filter((f) => f.severity === 'warning').length}
                       </td>

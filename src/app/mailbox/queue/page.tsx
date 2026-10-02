@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { StatusBadge } from '@/components/Badge';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -24,14 +25,12 @@ import {
   toUtcInputValue,
   type QueueView,
 } from './forms';
+import { outreachQueueStatus } from '@/lib/db/schema/outreach';
+import { labelFor, OUTREACH_QUEUE_STATUS_LABEL } from '@/lib/ui/labels';
 
+/** One tab per queue status, labelled from the one vocabulary (DS-09). */
 const STATUS_TABS: ReadonlyArray<{ key: QueueView; label: string }> = [
-  { key: 'queued', label: 'Queued' },
-  { key: 'sending', label: 'Sending' },
-  { key: 'sent', label: 'Sent' },
-  { key: 'failed', label: 'Failed' },
-  { key: 'skipped', label: 'Skipped' },
-  { key: 'cancelled', label: 'Cancelled' },
+  ...outreachQueueStatus.enumValues.map((key) => ({ key, label: OUTREACH_QUEUE_STATUS_LABEL[key] })),
   { key: 'all', label: 'All' },
 ];
 
@@ -203,7 +202,10 @@ export default async function QueuePage({
             </Link>
           ))}
         </div>
-        <h2>{statusKey === 'all' ? 'All entries' : `${statusKey} entries`} ({entries.length})</h2>
+        <h2>
+          {statusKey === 'all' ? 'All entries' : OUTREACH_QUEUE_STATUS_LABEL[statusKey]}{' '}
+          ({entries.length})
+        </h2>
         <p className="muted small">All times are in UTC.</p>
         {entries.length === 0 ? (
           <p className="muted">Nothing in this view.</p>
@@ -213,12 +215,12 @@ export default async function QueuePage({
               <li key={e.id.toString()}>
                 <div className="lead-row">
                   <strong>{e.subject}</strong>
-                  <span className="badge">{e.status}</span>
+                  <StatusBadge set="outreach_queue_status" value={e.status} />
                   <span className="muted">{e.toAddresses.join(', ')}</span>
                 </div>
                 <div className="lead-meta">
                   <span>scheduled {formatUtc(e.scheduledSendAt)}</span>
-                  <span>delay: {e.delayMode}</span>
+                  <span>delay: {labelFor('send_delay_mode', e.delayMode).toLowerCase()}</span>
                   <span>attempts: {e.attemptCount}</span>
                 </div>
                 {e.lastError ? (

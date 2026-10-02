@@ -93,12 +93,17 @@
     --danger-soft: color-mix(in oklab, var(--tone-danger) 12%, transparent);
     --danger-line: color-mix(in oklab, var(--tone-danger) 35%, transparent);
 
-    /* Ordered progressions (funnel, stages): one hue, stepped opacity. */
+    /* Ordered progressions (the pipeline funnel): one hue, stepped
+       opacity from 100% to 40% in seven even steps, one per pipeline
+       progress state (src/lib/ui/tone.ts sequenceStep spreads shorter
+       progressions over the same range). */
     --seq-1: var(--primary);
-    --seq-2: color-mix(in oklab, var(--primary) 82%, transparent);
-    --seq-3: color-mix(in oklab, var(--primary) 66%, transparent);
-    --seq-4: color-mix(in oklab, var(--primary) 52%, transparent);
-    --seq-5: color-mix(in oklab, var(--primary) 40%, transparent);
+    --seq-2: color-mix(in oklab, var(--primary) 90%, transparent);
+    --seq-3: color-mix(in oklab, var(--primary) 80%, transparent);
+    --seq-4: color-mix(in oklab, var(--primary) 70%, transparent);
+    --seq-5: color-mix(in oklab, var(--primary) 60%, transparent);
+    --seq-6: color-mix(in oklab, var(--primary) 50%, transparent);
+    --seq-7: color-mix(in oklab, var(--primary) 40%, transparent);
 
     /* User tags: six fixed low-chroma hues. Never hashed, never a signal. */
     --tag-1: oklch(0.8 0.07 250);

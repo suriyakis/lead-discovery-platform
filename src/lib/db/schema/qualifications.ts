@@ -102,4 +102,10 @@ export const qualifications = pgTable(
 
 export type Qualification = typeof qualifications.$inferSelect;
 export type NewQualification = typeof qualifications.$inferInsert;
-export type QualificationMethod = 'rules' | 'ai' | 'hybrid';
+/**
+ * qualifications.method values (DS-09 registry; the column is text).
+ * 'rules_fallback' = AI was attempted but unavailable, so the rules
+ * decided (qualification.ts); 'hybrid' is kept for older rows.
+ */
+export const qualificationMethods = ['rules', 'ai', 'rules_fallback', 'hybrid'] as const;
+export type QualificationMethod = (typeof qualificationMethods)[number];

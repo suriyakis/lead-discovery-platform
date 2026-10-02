@@ -26,6 +26,8 @@ import {
 } from '@/lib/services/follow-up';
 import { reviewItems } from '@/lib/db/schema/review';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
+import { Badge, BadgeGroup, CountBadge, StatusBadge } from '@/components/Badge';
+import type { CountTone } from '@/lib/ui/tone';
 
 export type NeedsYouTab = 'review' | 'drafts' | 'replies' | 'followups';
 const VALID_TABS: ReadonlySet<NeedsYouTab> = new Set([
@@ -52,7 +54,10 @@ export async function NeedsYou({
   const [reviewCountRow, draftsCountRow, replyCountRow, followUpCounts] =
     await Promise.all([
       db
-        .select({ n: sql<number>`count(*)::int` })
+        .select({
+          n: sql<number>`count(*)::int`,
+          needsReview: sql<number>`(count(*) filter (where ${reviewItems.state} = 'needs_review'))::int`,
+        })
         .from(reviewItems)
         .where(
           and(
@@ -94,20 +99,29 @@ export async function NeedsYou({
     replies: replyCountRow[0]?.n ?? 0,
     followups: followUpCounts.awaiting_approval,
   };
+  // The nav count policy (docs/design/IA.md): amber only while a decision
+  // waits on this user. Untouched 'new' records alone stay neutral, and
+  // replies stay neutral until reply triage can be trusted (I084).
+  const tones: Record<NeedsYouTab, CountTone> = {
+    review: (reviewCountRow[0]?.needsReview ?? 0) > 0 ? 'attention' : 'neutral',
+    drafts: 'attention',
+    replies: 'neutral',
+    followups: 'attention',
+  };
 
   return (
     <>
       <div className="scope-tabs">
-        <TabLink tab="review" active={tab} count={counts.review} icon={ListChecks}>
+        <TabLink tab="review" active={tab} count={counts.review} tone={tones.review} icon={ListChecks}>
           Review
         </TabLink>
-        <TabLink tab="drafts" active={tab} count={counts.drafts} icon={PencilLine}>
+        <TabLink tab="drafts" active={tab} count={counts.drafts} tone={tones.drafts} icon={PencilLine}>
           Drafts
         </TabLink>
-        <TabLink tab="replies" active={tab} count={counts.replies} icon={MessageSquare}>
+        <TabLink tab="replies" active={tab} count={counts.replies} tone={tones.replies} icon={MessageSquare}>
           Replies
         </TabLink>
-        <TabLink tab="followups" active={tab} count={counts.followups} icon={Timer}>
+        <TabLink tab="followups" active={tab} count={counts.followups} tone={tones.followups} icon={Timer}>
           Follow-ups
         </TabLink>
       </div>
@@ -124,12 +138,14 @@ function TabLink({
   tab,
   active,
   count,
+  tone,
   icon: Icon,
   children,
 }: {
   tab: NeedsYouTab;
   active: NeedsYouTab;
   count: number;
+  tone: CountTone;
   icon: typeof ListChecks;
   children: React.ReactNode;
 }) {
@@ -142,9 +158,7 @@ function TabLink({
       <span className="today-tab-label">
         <Icon className="lucide" aria-hidden="true" />
         {children}
-        {count > 0 ? (
-          <span className="today-tab-count">{count > 99 ? '99+' : count}</span>
-        ) : null}
+        {count > 0 ? <CountBadge count={count} tone={tone} /> : null}
       </span>
     </Link>
   );
@@ -171,10 +185,9 @@ async function ReviewTab({ ctx }: { ctx: WorkspaceContext }) {
           <li key={item.id.toString()}>
             <div className="lead-row">
               <Link href={`/review/${item.id}`}>{title}</Link>
-              <span className="badge">{item.state}</span>
+              <StatusBadge set="review_item_state" value={item.state} />
             </div>
             <div className="meta">
-              <span>{sourceRecord.sourceSystem}</span>
               {sourceRecord.sourceUrl ? (
                 <span>{sourceRecord.sourceUrl}</span>
               ) : null}
@@ -225,8 +238,10 @@ async function DraftsTab({ ctx }: { ctx: WorkspaceContext }) {
             <Link href={`/drafts/${draft.id}`}>
               {draft.subject || '(no subject)'}
             </Link>
-            <span className="badge">{draft.stage}</span>
-            <span className="badge">{draft.status}</span>
+            <BadgeGroup>
+              <StatusBadge set="outreach_draft_status" value={draft.status} />
+              <StatusBadge set="outreach_stage" value={draft.stage} />
+            </BadgeGroup>
           </div>
           <div className="meta">
             <span>{product.name}</span>
@@ -287,7 +302,7 @@ async function RepliesTab({ ctx }: { ctx: WorkspaceContext }) {
             <Link href={`/communication/${m.threadId ?? ''}`}>
               {m.subject || '(no subject)'}
             </Link>
-            {m.intent ? <span className="badge">{m.intent}</span> : null}
+            {m.intent ? <StatusBadge set="reply_class" value={m.intent} /> : null}
           </div>
           <div className="meta">
             <span>from {m.fromName ?? m.fromAddress}</span>
@@ -321,8 +336,12 @@ async function FollowUpsTab({ ctx }: { ctx: WorkspaceContext }) {
             <Link href={`/communication/${r.threadId.toString()}`}>
               {r.threadSubject || '(no subject)'}
             </Link>
-            <span className="badge">step {r.stepNumber}/{r.totalSteps}</span>
-            <span className="badge">{r.status}</span>
+            <BadgeGroup>
+              <Badge>
+                Step {r.stepNumber} of {r.totalSteps}
+              </Badge>
+              <StatusBadge set="follow_up_status" value={r.status} />
+            </BadgeGroup>
           </div>
           <div className="meta">
             <span>{r.productName ?? '—'}</span>

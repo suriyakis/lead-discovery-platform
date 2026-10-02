@@ -5,6 +5,7 @@
 // entry, so the gallery stays the complete review surface.
 
 import type { CssVarName } from '@/lib/ui/css-vars';
+import { TONES as TONE_LIST, TONE_MEANING, type Tone } from '@/lib/ui/tone';
 
 /** How the gallery draws a token. */
 export type SampleKind =
@@ -103,6 +104,8 @@ export const TOKEN_GROUPS: ReadonlyArray<TokenGroup> = [
       t('--seq-3', 'Step 3'),
       t('--seq-4', 'Step 4'),
       t('--seq-5', 'Step 5'),
+      t('--seq-6', 'Step 6'),
+      t('--seq-7', 'Step 7'),
     ],
   },
   {
@@ -302,19 +305,14 @@ export const TOKEN_GROUPS: ReadonlyArray<TokenGroup> = [
   },
 ];
 
-/** The eight tones and what each one means (the meaning map). */
-export const TONES = [
-  { tone: 'neutral', use: 'The default: counts, new records, roles, tags' },
-  { tone: 'muted', use: 'Ignored, archived, superseded' },
-  { tone: 'info', use: 'Act, you, links, progress' },
-  { tone: 'live', use: 'Live, indexed, evidence' },
-  { tone: 'ai', use: 'AI-written, AI verdicts, learned rules' },
-  { tone: 'attention', use: 'A decision waiting for this user' },
-  { tone: 'success', use: 'Approved, sent, won' },
-  { tone: 'danger', use: 'Rejected, failed, destructive' },
-] as const;
+/** The eight tones and what each one means: the meaning map of
+ *  src/lib/ui/tone.ts (DS-09), the one source. */
+export const TONES: ReadonlyArray<{ tone: Tone; use: string }> = TONE_LIST.map((tone) => ({
+  tone,
+  use: TONE_MEANING[tone],
+}));
 
-export type Tone = (typeof TONES)[number]['tone'];
+export type { Tone };
 
 /** Tone tokens: the tone colour, plus a chip fill and border for all but muted. */
 export function toneTokens(tone: Tone): CssVarName[] {

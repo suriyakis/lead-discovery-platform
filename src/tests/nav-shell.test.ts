@@ -282,10 +282,12 @@ describe('Today and the retired URLs', () => {
       'Settings',
     ]);
     expect($.html()).not.toMatch(/God mode/);
-    // The funnel's colours come from CSS by stage, not inline styles.
-    expect($('.cockpit-funnel-fill[data-stage="relevant"]').attr('style')).toMatch(
-      /^width:\s*\d+%;?$/,
-    );
+    // The funnel is the shared FunnelBars (DS-09): its colour is a ramp
+    // step chosen by CSS, and the only inline style is the bar length as a
+    // custom property.
+    const fill = $('[data-funnel-row="relevant"] [data-step]');
+    expect(fill.attr('data-step')).toBe('1');
+    expect(fill.attr('style')).toMatch(/^--v:\s*\d+;?$/);
   });
 });
 

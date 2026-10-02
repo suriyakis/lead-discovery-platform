@@ -5,11 +5,14 @@ import { tokenTransactions } from '@/lib/db/schema/tokens';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { costCentsToTokens } from '@/lib/billing/tokens';
 import { debitTokens } from './token-ledger';
+import type { UsageKind } from '@/lib/kinds/usage';
 import type { WorkspaceContext } from './context';
 
 export interface UsageEventInput {
-  /** Domain kind, e.g. `ai.generate_text`, `search.query`, `connector.run`. */
-  kind: string;
+  /** A registered kind (src/lib/kinds/usage.ts), e.g. `ai.qualification`,
+   *  `search.query`: the Usage page labels it, so an unregistered kind
+   *  fails typecheck (DS-09). */
+  kind: UsageKind;
   /** Provider id, e.g. `mock`, `serpapi`, `anthropic`. */
   provider: string;
   /** Kind-specific count: tokens, queries, bytes, etc. */

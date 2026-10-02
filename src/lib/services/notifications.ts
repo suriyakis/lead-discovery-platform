@@ -13,10 +13,14 @@ import {
   type Notification,
 } from '@/lib/db/schema/notifications';
 import { workspaceMembers } from '@/lib/db/schema/workspaces';
+import type { NotificationKind } from '@/lib/kinds/notification';
 import type { WorkspaceContext } from './context';
 
 export interface NotifyInput {
-  kind: string;
+  /** A registered kind (src/lib/kinds/notification.ts): an unregistered
+   *  one fails typecheck, so every kind the bell shows has a label and a
+   *  tone (DS-09). */
+  kind: NotificationKind;
   title: string;
   body?: string | null;
   href?: string | null;

@@ -18,7 +18,12 @@
 // list append-only: rows of a kind the code no longer writes still exist
 // and must keep reading as platform events.
 //
+// Every kind here is also a registered audit kind (src/lib/kinds/audit.ts,
+// DS-09), so it has a label in the logs.
+//
 // Pure module (no DB), so pages, services and tests can share it.
+
+import type { AuditKind } from '@/lib/kinds/audit';
 
 export const PLATFORM_AUDIT_KINDS = [
   // Users, pre-authorisations, platform roles (services/users.ts, admin.ts)
@@ -51,7 +56,7 @@ export const PLATFORM_AUDIT_KINDS = [
   // kinds carry a workspace and read as workspace rows.
   'remediation.apply',
   'remediation.revert',
-] as const;
+] as const satisfies ReadonlyArray<AuditKind>;
 
 export type PlatformAuditKind = (typeof PLATFORM_AUDIT_KINDS)[number];
 

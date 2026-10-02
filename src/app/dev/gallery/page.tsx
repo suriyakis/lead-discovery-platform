@@ -10,6 +10,7 @@ import { Alert, type AlertTone } from '@/components/Alert';
 import { BrandLockup, BrandMark } from '@/components/Brand';
 import { BRAND_NAME } from '@/lib/brand';
 import { IndeterminateCheckbox } from './_IndeterminateCheckbox';
+import { SignalSamples } from './_signals';
 import { GallerySection, TokenGroupSamples, ToneSamples } from './_samples';
 import { TOKEN_GROUPS } from './_catalog';
 import styles from './gallery.module.css';
@@ -93,6 +94,7 @@ export default function ComponentGallery() {
     { id: 'tones', title: 'Tones' },
     { id: 'form-controls', title: 'Form controls' },
     { id: 'alerts', title: 'Alert' },
+    { id: 'badges', title: 'Badges' },
     { id: 'brand', title: 'Brand' },
     { id: 'layers', title: 'Cascade layers' },
   ];
@@ -273,6 +275,14 @@ export default function ComponentGallery() {
             <p>An alert with a body only.</p>
           </Alert>
         </div>
+      </GallerySection>
+
+      <GallerySection
+        id="badges"
+        title="Badges"
+        description="Badge, StatusBadge, CountBadge, ScoreChip, Tag and FunnelBars (DS-09). Pages render a value through StatusBadge, so its label and tone come from src/lib/ui/labels.ts and tone.ts; a bare badge is neutral."
+      >
+        <SignalSamples />
       </GallerySection>
 
       <GallerySection

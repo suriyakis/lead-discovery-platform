@@ -14,6 +14,9 @@ import { UNLISTED_ROUTES } from '@/lib/nav/registry';
 import ComponentGallery, { dynamic, metadata } from '@/app/dev/gallery/page';
 import { galleryTokenNames, TOKEN_GROUPS, TONES } from '@/app/dev/gallery/_catalog';
 import { loadCssFile, rootTokens } from './helpers/css-cascade';
+import { closeReason } from '@/lib/db/schema/pipeline';
+import { reviewItemState } from '@/lib/db/schema/review';
+import { NOTIFICATION_KINDS } from '@/lib/kinds/notification';
 
 afterEach(() => {
   delete process.env.ENABLE_TEST_ROUTES;
@@ -65,6 +68,7 @@ describe('/dev/gallery with ENABLE_TEST_ROUTES=1', () => {
       'tones',
       'form-controls',
       'alerts',
+      'badges',
       'brand',
       'layers',
     ]) {
@@ -93,6 +97,34 @@ describe('/dev/gallery with ENABLE_TEST_ROUTES=1', () => {
       expect(chips.length, tone).toBe(6);
       expect(chips.first().text(), tone).toBe(tone);
     }
+  });
+
+  it('shows the badge family: every tone, real value sets, counts, scores, tags, the funnel (DS-09)', () => {
+    const $ = render();
+    const badges = $('#badges');
+    const tones = badges
+      .find('[data-signal-sample="Badge tone"] [data-tone]')
+      .toArray()
+      .map((el) => $(el).attr('data-tone'));
+    expect(tones).toEqual(TONES.map((t) => t.tone));
+    for (const [set, values] of [
+      ['review_item_state', reviewItemState.enumValues],
+      ['close_reason', closeReason.enumValues],
+      ['notification_kind', NOTIFICATION_KINDS],
+    ] as const) {
+      const shown = badges
+        .find(`[data-signal="${set}"]`)
+        .toArray()
+        .map((el) => $(el).attr('data-value'));
+      expect(shown, set).toEqual([...values]);
+    }
+    expect(badges.find('[data-signal-sample="Tag"] [data-hue]')).toHaveLength(6);
+    expect(
+      badges
+        .find('[data-funnel-row] [data-step]')
+        .toArray()
+        .map((el) => $(el).attr('data-step')),
+    ).toEqual(['1', '2', '3', '4', '5', '6', '7']);
   });
 
   it('renders each base control in its states, each with a label', () => {

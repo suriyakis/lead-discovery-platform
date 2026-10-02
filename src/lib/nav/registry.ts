@@ -19,6 +19,8 @@
 // Icons are Lucide names; src/components/NavIcon.tsx maps them.
 // Behaviour over this data lives in ./resolve.ts.
 
+import type { CountTone } from '@/lib/ui/tone';
+
 /** The signed-in home. Every "go home" producer uses this, not a literal. */
 export const HOME_PATH = '/today';
 
@@ -80,7 +82,8 @@ export type NavSignalKey = 'reviewNeedsReview';
 
 export type NavCountValues = Partial<Record<NavCountKey | NavSignalKey, number | null>>;
 
-export type NavTone = 'neutral' | 'attention';
+/** A count's tone: neutral, or attention when a decision waits (src/lib/ui/tone.ts). */
+export type NavTone = CountTone;
 
 /**
  * A gate decides whether a count earns its tone. `signal`: holds while

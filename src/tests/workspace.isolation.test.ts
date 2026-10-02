@@ -162,11 +162,11 @@ describe('read isolation', () => {
     const m = await setupRoleMatrix();
     await recordAuditEvent(
       { workspaceId: m.workspaceA, userId: m.ownerA },
-      { kind: 'test.event', payload: { which: 'A' } },
+      { kind: 'contact.create', payload: { which: 'A' } },
     );
     await recordAuditEvent(
       { workspaceId: m.workspaceB, userId: m.ownerB },
-      { kind: 'test.event', payload: { which: 'B' } },
+      { kind: 'contact.create', payload: { which: 'B' } },
     );
     const aEvents = await listAuditEvents(ctx(m.workspaceA, m.ownerA, 'owner'));
     const bEvents = await listAuditEvents(ctx(m.workspaceB, m.ownerB, 'owner'));
@@ -181,28 +181,28 @@ describe('read isolation', () => {
   it('listAuditEvents respects kind filter', async () => {
     const m = await setupRoleMatrix();
     const at = { workspaceId: m.workspaceA, userId: m.ownerA };
-    await recordAuditEvent(at, { kind: 'a.create' });
-    await recordAuditEvent(at, { kind: 'a.update' });
-    await recordAuditEvent(at, { kind: 'b.create' });
+    await recordAuditEvent(at, { kind: 'contact.create' });
+    await recordAuditEvent(at, { kind: 'contact.update' });
+    await recordAuditEvent(at, { kind: 'crm.push' });
     const created = await listAuditEvents(ctx(m.workspaceA, m.ownerA, 'owner'), {
-      kind: ['a.create', 'b.create'],
+      kind: ['contact.create', 'crm.push'],
     });
-    expect(created.map((e) => e.kind).sort()).toEqual(['a.create', 'b.create']);
+    expect(created.map((e) => e.kind).sort()).toEqual(['contact.create', 'crm.push']);
   });
 
   it('summarizeUsage only sums the requested workspace', async () => {
     const m = await setupRoleMatrix();
     await recordUsage(
       { workspaceId: m.workspaceA },
-      { kind: 'ai.generate_text', provider: 'mock', units: 100, costEstimateCents: 5 },
+      { kind: 'ai.generate', provider: 'mock', units: 100, costEstimateCents: 5 },
     );
     await recordUsage(
       { workspaceId: m.workspaceA },
-      { kind: 'ai.generate_text', provider: 'mock', units: 200, costEstimateCents: 10 },
+      { kind: 'ai.generate', provider: 'mock', units: 200, costEstimateCents: 10 },
     );
     await recordUsage(
       { workspaceId: m.workspaceB },
-      { kind: 'ai.generate_text', provider: 'mock', units: 999, costEstimateCents: 99 },
+      { kind: 'ai.generate', provider: 'mock', units: 999, costEstimateCents: 99 },
     );
     const aSummary = await summarizeUsage({ workspaceId: m.workspaceA });
     expect(aSummary).toHaveLength(1);

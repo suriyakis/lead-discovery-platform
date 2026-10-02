@@ -1639,17 +1639,6 @@ code {
   gap: 0.4rem;
 }
 
-.today-tab-count {
-  min-width: 1.5rem;
-  padding: 0.05rem 0.45rem;
-  border-radius: 999px;
-  background: var(--brand-accent-amber);
-  color: var(--brand-primary-foreground);
-  font-size: 0.78rem;
-  font-weight: 700;
-  text-align: center;
-}
-
 .today-empty {
   margin-top: 0.5rem;
   padding: 1.75rem 1.5rem;
@@ -1940,75 +1929,6 @@ code {
   }
 }
 
-/* Funnel card */
-.cockpit-funnel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-top: 0.2rem;
-}
-
-.cockpit-funnel-row {
-  display: grid;
-  grid-template-columns: 7em 1fr 2.5em;
-  gap: 0.6rem;
-  align-items: center;
-  font-size: 0.82rem;
-}
-
-.cockpit-funnel-row-label {
-  color: var(--brand-muted);
-  font-size: 0.78rem;
-}
-
-.cockpit-funnel-row-count {
-  text-align: right;
-  font-weight: 700;
-  font-feature-settings: 'tnum';
-  color: var(--brand-fg);
-}
-
-.cockpit-funnel-track {
-  position: relative;
-  height: 0.5rem;
-  background: oklch(0.3 0.025 250);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.cockpit-funnel-fill[data-stage='relevant'] {
-  --cockpit-stage-color: oklch(0.72 0.16 245);
-}
-
-.cockpit-funnel-fill[data-stage='contacted'] {
-  --cockpit-stage-color: oklch(0.74 0.14 210);
-}
-
-.cockpit-funnel-fill[data-stage='replied'] {
-  --cockpit-stage-color: oklch(0.76 0.14 185);
-}
-
-.cockpit-funnel-fill[data-stage='contact_identified'] {
-  --cockpit-stage-color: oklch(0.78 0.15 160);
-}
-
-.cockpit-funnel-fill[data-stage='qualified'] {
-  --cockpit-stage-color: oklch(0.78 0.17 140);
-}
-
-.cockpit-funnel-fill[data-stage='handed_over'] {
-  --cockpit-stage-color: oklch(0.8 0.18 120);
-}
-
-.cockpit-funnel-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 999px;
-  background: var(--cockpit-stage-color, var(--brand-accent-teal));
-  transition: width 0.3s ease;
-  box-shadow: 0 0 12px -4px var(--cockpit-stage-color, var(--brand-accent-teal));
-}
-
 /* Recent replies card */
 .cockpit-replies-list {
   list-style: none;
@@ -2055,12 +1975,6 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.cockpit-reply-subject .badge {
-  margin-right: 0.4rem;
-  font-size: 0.8rem;
-  padding: 0.05rem 0.4rem;
 }
 
 /* Amber info box */
@@ -3450,7 +3364,7 @@ code {
   font-size: 0.8rem;
 }
 
-/* ---- Pipeline funnel + stage badges ---- */
+/* ---- Pipeline funnel card (its rows: components/FunnelBars) ---- */
 .pipeline-funnel-card {
   margin: 0 0 1.25rem;
   padding: 0.95rem 1.1rem;
@@ -3475,92 +3389,6 @@ code {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--brand-muted);
-}
-
-.pipeline-funnel-rows {
-  display: grid;
-  gap: 0.4rem;
-}
-
-.pipeline-funnel-row {
-  display: grid;
-  grid-template-columns: 7em 1fr 3em;
-  gap: 0.6rem;
-  align-items: center;
-  padding: 0.2rem 0.3rem;
-  border-radius: 0.4rem;
-  text-decoration: none;
-  color: var(--brand-fg);
-  transition: background 0.12s ease, transform 0.12s ease;
-}
-
-.pipeline-funnel-row:hover {
-  background: oklch(0.3 0.03 250 / 0.4);
-  transform: translateX(2px);
-}
-
-.pipeline-funnel-row-label {
-  font-size: 0.82rem;
-  color: var(--brand-muted);
-}
-
-.pipeline-funnel-row-count {
-  text-align: right;
-  font-weight: 700;
-  font-feature-settings: 'tnum';
-  color: var(--brand-fg);
-}
-
-.pipeline-funnel-track {
-  position: relative;
-  height: 0.65rem;
-  background: oklch(0.3 0.025 250);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.pipeline-funnel-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 999px;
-  background: var(--pipeline-stage-color, var(--brand-accent-teal));
-  transition: width 0.3s ease;
-  box-shadow: 0 0 12px -3px var(--pipeline-stage-color, var(--brand-accent-teal));
-}
-
-/* Stage badges on lead rows. Replace the old light-pastel-on-dark
- * inline backgrounds with proper tinted dark-theme chips. */
-.badge-stage-discovery {
-  background: oklch(0.45 0.13 240 / 0.28);
-  border: 1px solid oklch(0.68 0.16 240 / 0.55);
-  color: oklch(0.85 0.13 240);
-}
-.badge-stage-engagement {
-  background: oklch(0.45 0.13 195 / 0.28);
-  border: 1px solid oklch(0.68 0.15 195 / 0.55);
-  color: oklch(0.85 0.13 195);
-}
-.badge-stage-pitch {
-  background: oklch(0.45 0.15 145 / 0.28);
-  border: 1px solid oklch(0.68 0.17 145 / 0.55);
-  color: oklch(0.85 0.16 145);
-}
-.badge-stage-closing {
-  background: oklch(0.45 0.18 25 / 0.28);
-  border: 1px solid oklch(0.68 0.19 25 / 0.55);
-  color: oklch(0.85 0.17 25);
-}
-.badge-stage-discovery,
-.badge-stage-engagement,
-.badge-stage-pitch,
-.badge-stage-closing {
-  font-family: var(--brand-mono);
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  padding: 0.1rem 0.5rem;
-  border-radius: 999px;
 }
 
 /* ---- Timeline ---- */

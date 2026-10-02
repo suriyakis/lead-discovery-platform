@@ -15,15 +15,17 @@ import {
 import { hintsForDrafts, type Hint } from '@/lib/services/hints';
 import { HintBadgeList } from '@/components/HintBadge';
 import { EmptyState } from '@/components/EmptyState';
+import { BadgeGroup, StatusBadge } from '@/components/Badge';
 import type { OutreachDraftStatus } from '@/lib/db/schema/outreach';
 import type { ProductProfile } from '@/lib/db/schema/products';
+import { labelFor, OUTREACH_DRAFT_STATUS_LABEL } from '@/lib/ui/labels';
 
 const STATUS_FILTERS: ReadonlyArray<{ key: 'all' | OutreachDraftStatus; label: string }> = [
   { key: 'all', label: 'All active' },
-  { key: 'draft', label: 'Draft' },
-  { key: 'needs_edit', label: 'Needs edit' },
-  { key: 'approved', label: 'Approved' },
-  { key: 'rejected', label: 'Rejected' },
+  ...(['draft', 'needs_edit', 'approved', 'rejected'] as const).map((key) => ({
+    key,
+    label: OUTREACH_DRAFT_STATUS_LABEL[key],
+  })),
 ];
 
 export default async function DraftsPage({
@@ -131,25 +133,17 @@ export default async function DraftsPage({
                       <Link href={`/drafts/${draft.id}`}>
                         {draft.subject ?? `Draft ${draft.id}`}
                       </Link>
-                      <span className={statusBadgeClass(draft.status)}>
-                        {draft.status.replace('_', ' ')}
-                      </span>
-                      <span
-                        className="badge"
-                        style={{
-                          background: stageBg(draft.stage),
-                          color: 'oklch(0.2 0 0)',
-                        }}
-                      >
-                        {draft.stage}
-                      </span>
+                      <BadgeGroup>
+                        <StatusBadge set="outreach_draft_status" value={draft.status} />
+                        <StatusBadge set="outreach_stage" value={draft.stage} />
+                      </BadgeGroup>
                       <span className="muted">→ {product.name}</span>
                     </div>
                     <p className="muted">
                       Lead: <Link href={`/review/${reviewItem.id}`}>{recordTitle}</Link>
                     </p>
                     <div className="lead-meta">
-                      <span>via {draft.method}</span>
+                      <span>via {labelFor('outreach_draft_method', draft.method)}</span>
                       {draft.model ? (
                         <span title={`Model: ${draft.model}`}>
                           {shortModel(draft.model)}
@@ -175,23 +169,6 @@ export default async function DraftsPage({
   );
 }
 
-function statusBadgeClass(status: OutreachDraftStatus): string {
-  switch (status) {
-    case 'approved':
-      return 'badge badge-good';
-    case 'rejected':
-      return 'badge badge-bad';
-    case 'needs_edit':
-      // Waiting on the operator. A bare .badge is neutral now (I151).
-      return 'badge badge-warn';
-    case 'superseded':
-      return 'badge';
-    case 'draft':
-    default:
-      return 'badge';
-  }
-}
-
 function shortModel(model: string): string {
   // Display compact model names: "claude-opus-4-7..." → "opus-4.7",
   // "gpt-5-nano" → "gpt-5-nano", "gpt-4o-mini" → "gpt-4o-mini".
@@ -204,22 +181,4 @@ function shortModel(model: string): string {
   if (m.startsWith('gpt-4o-mini')) return 'gpt-4o-mini';
   if (m.startsWith('gpt-4o')) return 'gpt-4o';
   return model.length > 16 ? `${model.slice(0, 15)}…` : model;
-}
-
-// Sequential color scale for outreach stages — cold (discovery) →
-// warm (pitch) → terminal (closing). Mirrors stage progression so
-// visual scanning is immediate.
-function stageBg(stage: string): string {
-  switch (stage) {
-    case 'discovery':
-      return 'oklch(0.85 0.13 240)'; // cold blue
-    case 'engagement':
-      return 'oklch(0.85 0.12 195)'; // teal
-    case 'pitch':
-      return 'oklch(0.85 0.14 145)'; // green-warm
-    case 'closing':
-      return 'oklch(0.86 0 0)'; // gray terminal
-    default:
-      return 'oklch(0.88 0 0)';
-  }
 }

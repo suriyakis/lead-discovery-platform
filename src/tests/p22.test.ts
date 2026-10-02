@@ -18,6 +18,7 @@ import {
   hintsForLead,
   hintsForThread,
   leadStateSummary,
+  replyClassificationHint,
 } from '@/lib/services/hints';
 import { createKnowledgeSource } from '@/lib/services/knowledge-sources';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
@@ -200,12 +201,29 @@ describe('hintsForThread', () => {
     const hints = await hintsForThread(ctx(s.workspaceA, s.ownerA), thread!.id);
     const cls = hints.find((h) => h.type === 'reply_classification');
     expect(cls).toBeDefined();
-    expect(cls?.severity).toBe('success');
-    expect(cls?.text).toBe('interest');
+    // DS-09: until reply triage is trusted (I088) the class is a neutral
+    // note marked auto; the trusted mapping is pinned below.
+    expect(cls?.severity).toBe('note');
+    expect(cls?.text).toBe('Interested · auto');
+    expect(cls?.detail).toMatch(/not verified.*confidence 90/);
   });
 
-  // DS-02 / I151: a bounce is a delivery failure (red), not a warning.
-  it('classifies a bounce reply as critical', async () => {
+  it('once triage is trusted, a positive class is good news and a bounce is critical (DS-02 / I151)', () => {
+    expect(replyClassificationHint('interest', 90, true)).toMatchObject({
+      severity: 'success',
+      text: 'Interested',
+    });
+    expect(replyClassificationHint('bounce', 95, true).severity).toBe('critical');
+    expect(replyClassificationHint('unsubscribe', null, true).severity).toBe('warning');
+    expect(replyClassificationHint('doc_request', null, true)).toMatchObject({
+      severity: 'action',
+      text: 'Wants documents',
+    });
+  });
+
+  // DS-02 / I151 made a bounce red; DS-09 holds every class neutral until
+  // reply triage is trusted (74 of 77 'bounces' in prod were not, I088).
+  it('shows a bounce reply as a neutral auto note while triage is untrusted', async () => {
     const s = await setup();
     const mb = await seedMailbox(s.workspaceA);
     const [thread] = await db
@@ -233,7 +251,9 @@ describe('hintsForThread', () => {
       replyClassificationConfidence: 95,
     });
     const hints = await hintsForThread(ctx(s.workspaceA, s.ownerA), thread!.id);
-    expect(hints.find((h) => h.type === 'reply_classification')?.severity).toBe('critical');
+    const bounce = hints.find((h) => h.type === 'reply_classification');
+    expect(bounce?.severity).toBe('note');
+    expect(bounce?.text).toBe('Bounce · auto');
   });
 
   it('returns empty for non-existent thread', async () => {

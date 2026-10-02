@@ -1604,7 +1604,7 @@ describe('assistant (Ask the platform)', { timeout: DB_TEST_TIMEOUT_MS }, () => 
     // …and support usage is never debited, while the same usage is.
     const before = (await getTokenWallet(ctx(s))).balance;
     const usage = {
-      kind: 'ai.assistant',
+      kind: 'ai.assistant' as const,
       provider: 'anthropic',
       units: 100,
       costEstimateCents: 2,

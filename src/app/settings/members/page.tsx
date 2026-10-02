@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
+import { StatusBadge } from '@/components/Badge';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -18,6 +19,7 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 import { addMemberAction, changeMemberRoleAction, removeMemberAction } from './actions';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { removeMemberConfirm } from '@/lib/confirm-copy';
+import { WORKSPACE_MEMBER_ROLE_DESCRIPTION, WORKSPACE_MEMBER_ROLE_LABEL } from '@/lib/ui/labels';
 
 export default async function MembersPage({
   searchParams,
@@ -90,8 +92,8 @@ export default async function MembersPage({
             <span>Role</span>
             <select name="role" defaultValue="member">
               {roles.map((r) => (
-                <option key={r} value={r}>
-                  {r}
+                <option key={r} value={r} title={WORKSPACE_MEMBER_ROLE_DESCRIPTION[r]}>
+                  {WORKSPACE_MEMBER_ROLE_LABEL[r]}
                 </option>
               ))}
             </select>
@@ -110,7 +112,7 @@ export default async function MembersPage({
               <div className="lead-row">
                 <strong>{user.name ?? user.email}</strong>
                 <span className="muted">{user.email}</span>
-                <span className="badge">{member.role}</span>
+                <StatusBadge set="workspace_member_role" value={member.role} />
               </div>
               {user.id === session.user.id ? (
                 <p className="muted">— this is you</p>
@@ -124,8 +126,8 @@ export default async function MembersPage({
                       <span>Role</span>
                       <select name="role" defaultValue={member.role}>
                         {roles.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
+                          <option key={r} value={r} title={WORKSPACE_MEMBER_ROLE_DESCRIPTION[r]}>
+                            {WORKSPACE_MEMBER_ROLE_LABEL[r]}
                           </option>
                         ))}
                       </select>

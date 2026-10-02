@@ -110,7 +110,7 @@ async function setup(): Promise<Fixture> {
     payload: { keySource: 'workspace' },
   });
   // Mock provider: never debited.
-  await recordUsage(ctx, { kind: 'ai.generate_text', provider: 'mock', units: 10 });
+  await recordUsage(ctx, { kind: 'ai.generate', provider: 'mock', units: 10 });
 
   return {
     workspaceId,
@@ -210,6 +210,9 @@ describe('/settings/usage', () => {
       const html = await renderUsage();
 
       expect(html).toContain('ai.qualification');
+      // DS-09 / ia:F-11: the kind reads as its label; the code is only a tooltip.
+      expect(html).toContain('>Record qualification<');
+      expect(html).not.toContain('<code>ai.qualification</code>');
       expect(html).toContain('Total events');
       expect(html).not.toMatch(DOLLARS);
       expect(html).not.toContain('Est. provider cost');

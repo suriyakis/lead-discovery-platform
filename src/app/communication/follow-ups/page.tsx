@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Timer, SlidersHorizontal } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { Badge, CountBadge, StatusBadge } from '@/components/Badge';
 import { CommunicationTabs } from '@/components/CommunicationTabs';
 import { auth } from '@/lib/auth';
 import {
@@ -25,27 +26,26 @@ import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
 import { FollowUpApprovalRow } from '@/components/FollowUpApprovalRow';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { followUpStatus, type FollowUpStatus } from '@/lib/db/schema/follow-ups';
+import {
+  FOLLOW_UP_STATUS_DESCRIPTION,
+  FOLLOW_UP_STATUS_LABEL,
+  labelFor,
+} from '@/lib/ui/labels';
 
-type FollowUpFilter = 'all' | 'pending' | 'awaiting_approval' | 'sent' | 'skipped' | 'failed';
+type FollowUpFilter = 'all' | FollowUpStatus;
 
+/** One tab per status, labelled and explained from the one vocabulary (DS-09). */
 const STATUS_TABS: ReadonlyArray<{
   id: FollowUpFilter;
   label: string;
   hint: string;
 }> = [
-  { id: 'pending', label: 'Pending', hint: 'Scheduled, waiting for their send time.' },
-  {
-    id: 'awaiting_approval',
-    label: 'Awaiting approval',
-    hint: 'Composed by AI, waiting for the operator to approve or reject.',
-  },
-  { id: 'sent', label: 'Sent', hint: 'Follow-up email delivered.' },
-  {
-    id: 'skipped',
-    label: 'Skipped',
-    hint: 'Cancelled — reply arrived, lead closed, or operator override.',
-  },
-  { id: 'failed', label: 'Failed', hint: 'Compose or send error; retry needed.' },
+  ...followUpStatus.map((id) => ({
+    id,
+    label: FOLLOW_UP_STATUS_LABEL[id],
+    hint: FOLLOW_UP_STATUS_DESCRIPTION[id],
+  })),
   { id: 'all', label: 'All', hint: 'Every follow-up row in the workspace.' },
 ];
 
@@ -266,7 +266,11 @@ export default async function FollowUpsPage({
               className={`window-tab${isActive ? ' window-tab-active' : ''}`}
               title={t.hint}
             >
-              {t.label} <span className="badge">{counts[t.id]}</span>
+              {t.label}{' '}
+              <CountBadge
+                count={counts[t.id]}
+                tone={t.id === 'awaiting_approval' && counts[t.id] > 0 ? 'attention' : 'neutral'}
+              />
             </Link>
           );
         })}
@@ -275,7 +279,9 @@ export default async function FollowUpsPage({
       {rows.length === 0 ? (
         <div className="empty-state">
           <p style={{ margin: 0, fontWeight: 600 }}>
-            No {activeStatus === 'all' ? '' : activeStatus} follow-ups.
+            {activeStatus === 'all'
+              ? 'No follow-ups yet.'
+              : `No follow-ups are ${FOLLOW_UP_STATUS_LABEL[activeStatus].toLowerCase()}.`}
           </p>
           <p className="muted" style={{ margin: '0.5rem 0 0' }}>
             When the platform sends the first outbound on a thread linked
@@ -288,16 +294,6 @@ export default async function FollowUpsPage({
           style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}
         >
           {rows.map((r) => {
-            const statusBadge =
-              r.status === 'pending'
-                ? 'badge'
-                : r.status === 'awaiting_approval'
-                  ? 'badge badge-warn'
-                  : r.status === 'sent'
-                    ? 'badge badge-good'
-                    : r.status === 'failed'
-                      ? 'badge badge-bad'
-                      : 'badge';
             const stepLabel = `${r.stepNumber}/${r.totalSteps}`;
             const isFinal = r.stepNumber === r.totalSteps;
             return (
@@ -312,20 +308,17 @@ export default async function FollowUpsPage({
                         flexWrap: 'wrap',
                       }}
                     >
-                      <span className="badge">Step {stepLabel}</span>
-                      <span className={statusBadge}>{r.status}</span>
+                      <Badge>Step {stepLabel}</Badge>
+                      <StatusBadge set="follow_up_status" value={r.status} />
                       {r.skipReason ? (
                         <span className="muted" style={{ fontSize: '0.78em' }}>
-                          ({r.skipReason})
+                          ({labelFor('follow_up_skip_reason', r.skipReason)})
                         </span>
                       ) : null}
                       {isFinal ? (
-                        <span
-                          className="badge"
-                          title="The AI prompt explicitly tells the recipient this is the last follow-up."
-                        >
-                          final
-                        </span>
+                        <Badge title="The AI prompt explicitly tells the recipient this is the last follow-up.">
+                          Final
+                        </Badge>
                       ) : null}
                       <Link
                         href={`/communication/${r.threadId}`}

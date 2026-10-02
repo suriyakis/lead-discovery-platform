@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Bell, Check } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { StatusBadge } from '@/components/Badge';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -15,16 +16,6 @@ import {
   markNotificationsRead,
 } from '@/lib/services/notifications';
 import { isNextRedirectError } from '@/lib/server-redirect';
-
-const KIND_LABELS: Record<string, string> = {
-  'lead.replied': '💬 Reply',
-  'follow_up.awaiting_approval': '⏳ Approval',
-  'review.needs_review': '🌍 Geo review',
-  'run.failed': '❌ Run failed',
-  'tokens.low': '🪙 Tokens',
-  mention: '👤 Mention',
-  assignment: '📌 Assigned',
-};
 
 export default async function NotificationsPage() {
   const session = await auth();
@@ -97,7 +88,9 @@ export default async function NotificationsPage() {
                 style={n.readAt ? { opacity: 0.6 } : undefined}
               >
                 <div className="lead-row" style={{ display: 'flex', gap: '0.6rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
-                  <span className="badge">{KIND_LABELS[n.kind] ?? n.kind}</span>
+                  {/* Every kind is registered (src/lib/kinds/notification.ts):
+                      its label and tone come from labels.ts / tone.ts. */}
+                  <StatusBadge set="notification_kind" value={n.kind} />
                   {n.href ? (
                     <Link href={n.href}>
                       <strong>{n.title}</strong>

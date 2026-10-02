@@ -112,6 +112,26 @@ Outreach · Conversations · More. Pipeline lives in the drawer.
 | Platform console | The super-admin area | God mode, Admin, Overview |
 | Workspace audit log / Platform audit log | The two logs | Two entries both called "Audit log" |
 
+## Labels and tones
+
+Every value the UI shows has one label and one tone, from one place:
+`src/lib/ui/labels.ts` (words, in the vocabulary above) and
+`src/lib/ui/tone.ts` (meaning). Both cover every pgEnum and every
+text-column registry (reply classes, follow-up statuses, notification,
+audit and usage kinds in `src/lib/kinds/`, …), checked by typecheck and by
+`src/tests/signals.test.ts`. Pages render values with `<StatusBadge>`
+(`src/components/Badge.tsx`), never the raw code. Highlights:
+
+| Value | Label | Tone |
+| --- | --- | --- |
+| Review state `needs_review` | Needs review | attention (the only amber state) |
+| Outreach stage `discovery` … `closing` | First contact, Engagement, Pitch, Closing | neutral: a stage is a kind of message |
+| Close reason | Won … Other | success for Won only, otherwise neutral; never red |
+| Pipeline progress `relevant` … `synced_to_crm` | Relevant … Synced to CRM (funnel, kanban and filter alike) | info; position and the one-hue ramp carry progress |
+| Follow-up `pending` | Scheduled | neutral |
+| Reply class | e.g. "Question · auto" | neutral until reply triage is trusted (I088) |
+| Usage `ai.assistant` | Assistant questions | neutral |
+
 ## Count policy
 
 Counts are data: each badge in the registry has a count key, a tone and an

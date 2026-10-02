@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { Archive, Trash2 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { CountBadge, StatusBadge } from '@/components/Badge';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { Pagination } from '@/components/Pagination';
 import { SelectAllVisible } from '@/components/SelectAllVisible';
@@ -13,16 +14,15 @@ import {
 } from '@/lib/services/auth-context';
 import { countReviewItems, getStateCounts, listReviewItems } from '@/lib/services/review';
 import type { ReviewItemState } from '@/lib/db/schema/review';
+import { REVIEW_ITEM_STATE_LABEL } from '@/lib/ui/labels';
 import { bulkArchiveAction, bulkDeleteAction } from './actions';
 
+/** The state tabs, labelled from the one vocabulary (DS-09). */
 const STATE_FILTERS: ReadonlyArray<{ key: 'all' | ReviewItemState; label: string }> = [
   { key: 'all', label: 'All' },
-  { key: 'new', label: 'New' },
-  { key: 'needs_review', label: 'Needs review' },
-  { key: 'approved', label: 'Approved' },
-  { key: 'rejected', label: 'Rejected' },
-  { key: 'ignored', label: 'Ignored' },
-  { key: 'archived', label: 'Archived' },
+  ...(['new', 'needs_review', 'approved', 'rejected', 'ignored', 'archived'] as const).map(
+    (key) => ({ key, label: REVIEW_ITEM_STATE_LABEL[key] }),
+  ),
 ];
 
 const BULK_FORM_ID = 'review-bulk-form';
@@ -127,7 +127,11 @@ export default async function ReviewPage({
                 className={active ? 'tab active' : 'tab'}
               >
                 {f.label}
-                <span className="tab-count">{count ?? 0}</span>
+                {/* Amber only where a decision waits (the nav count policy). */}
+                <CountBadge
+                  count={count ?? 0}
+                  tone={f.key === 'needs_review' && (count ?? 0) > 0 ? 'attention' : 'neutral'}
+                />
               </Link>
             );
           })}
@@ -193,7 +197,9 @@ export default async function ReviewPage({
               {total === 0
                 ? stateKey === 'new'
                   ? 'No new items. Run a connector from the Connectors module to populate the queue.'
-                  : `No items in state "${stateKey}".`
+                  : stateKey === 'all'
+                    ? 'No records yet.'
+                    : `No records are ${REVIEW_ITEM_STATE_LABEL[stateKey].toLowerCase()}.`
                 : `Page ${page} is past the end of the result set (${total} total). Use Prev to go back.`}
             </p>
           ) : (
@@ -217,8 +223,8 @@ export default async function ReviewPage({
                     <Link href={`/review/${item.id}`}>{title}</Link>
                     {snippet ? <p className="muted">{snippet}</p> : null}
                     <div className="meta">
+                      <StatusBadge set="review_item_state" value={item.state} />
                       {domain ? <span>{domain}</span> : null}
-                      <span>state: {item.state}</span>
                       <span>system: {sourceRecord.sourceSystem}</span>
                       <span>conf {sourceRecord.confidence}</span>
                     </div>
