@@ -14,7 +14,7 @@ The platform helps users find companies, contacts, projects, tenders, and other 
 - **Framework:** Next.js 15 (App Router) — UI + API route handlers
 - **Database:** PostgreSQL via Drizzle ORM
 - **Auth:** Auth.js (next-auth v5) with Google OAuth
-- **Background jobs:** abstraction layer; in-memory in dev, BullMQ + Redis in production (later phases)
+- **Background jobs:** abstraction layer; in-memory in dev, BullMQ + Redis in production, run by a dedicated `worker` service on two lanes (ticks / runs; `docs/DEPLOYMENT.md`)
 - **File storage:** abstraction layer; local filesystem in dev, S3-compatible later
 - **Tests:** Vitest
 - **Deploy:** Docker Compose on Hetzner; Nginx reverse proxy + Let's Encrypt

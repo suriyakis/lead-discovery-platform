@@ -22,12 +22,13 @@
 //          'cancelled' (the operator wanted it stopped anyway);
 //          'pending' for 60 minutes and its job no longer in the job queue
 //          → 'failed' (never started: the job was lost). Under BullMQ a
-//          run can wait its turn behind long runs (the worker's
-//          concurrency 4 is shared with every tick until PC-36 splits the
-//          queues), so a run whose job is still waiting or active is left
-//          alone however long it waits; when the queue cannot tell (Redis
-//          down) the run waits for the next pass. The runner only starts a
-//          run that is still 'pending', so a reaped run never starts late.
+//          run can wait its turn behind other long runs (the runs lane,
+//          concurrency 2, PC-36), so a run whose job is still waiting,
+//          delayed for a retry or active is left alone however long it
+//          waits; when the queue cannot tell (Redis down) the run waits for
+//          the next pass. The runner only starts a run that is still
+//          'pending', so a reaped run never starts late — not even as a
+//          queue retry of its connector.run job (PC-36).
 //
 // Every write is conditional on the state the reaper read, so a runner or
 // drain that wakes up meanwhile is never overwritten (and a runner that

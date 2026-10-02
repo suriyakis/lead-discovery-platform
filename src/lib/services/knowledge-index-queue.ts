@@ -193,7 +193,9 @@ export async function enqueueKnowledgeIndexJobs(
         userId: ctx.userId,
         role: ctx.role,
       };
-      await queue.enqueue(KNOWLEDGE_INDEX_JOB, payload, { tag: `knowledge-index:${jobId}` });
+      // PC-36: deduplicated while the row's job still waits or runs.
+      const key = `knowledge-index:${jobId}`;
+      await queue.enqueue(KNOWLEDGE_INDEX_JOB, payload, { tag: key, dedupeKey: key });
     }
   } catch (err) {
     console.error(

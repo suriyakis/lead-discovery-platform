@@ -52,7 +52,7 @@ learning.sweep (repeatable, every 2 min, every active workspace)
     (lost job) or whose backoff has passed
 ```
 
-The sweeper only enqueues, so it behaves the same on the memory queue (dev, tests) and on BullMQ (prod). Processing is idempotent: claims stop two workers from holding the same event, a job killed before its commit leaves nothing behind, an event already linked to a rule is never extracted again, and the ledger's `UNIQUE(event_id, lesson_id)` stops a rule moving twice for one decision.
+The sweeper only enqueues, so it behaves the same on the memory queue (dev, tests) and on BullMQ (prod). Each `learning.process` job carries the dedupe key `learning:<decisionId>` (PC-36): while one for the decision still waits on the runs lane (behind long discovery runs, say), a sweep adds no second one. Processing is idempotent: claims stop two workers from holding the same event, a job killed before its commit leaves nothing behind, an event already linked to a rule is never extracted again, and the ledger's `UNIQUE(event_id, lesson_id)` stops a rule moving twice for one decision.
 
 ## When a decision teaches a rule
 

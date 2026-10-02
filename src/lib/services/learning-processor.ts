@@ -1420,7 +1420,10 @@ async function sweepWorkspace(
       userId: ctx.userId,
       role: ctx.role,
     };
-    await queue.enqueue(LEARNING_PROCESS_JOB, payload, { tag: `learning:${d.decisionId}` });
+    // PC-36: a decision whose job still waits its turn on the runs lane is
+    // not queued again on every sweep.
+    const key = `learning:${d.decisionId}`;
+    await queue.enqueue(LEARNING_PROCESS_JOB, payload, { tag: key, dedupeKey: key });
     result.enqueued += 1;
   }
 }

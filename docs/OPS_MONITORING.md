@@ -48,9 +48,10 @@ the detail is never shown. Never put the token in a monitor URL.
 - Alert after **2 consecutive failures**. A single 503 can be the edge of a
   deploy or one slow check.
 - Run it **off agregat** (UptimeRobot, Better Stack, Uptime Kuma on another
-  host). It is the only check that does not depend on the app process: the
-  in-app watchdog (below) runs inside that process and dies with it. Until
-  the dedicated worker (PC-36) it stays the independent check.
+  host). It is the only check that does not depend on the web process: the
+  in-app watchdog (below) runs inside that process and dies with it. The
+  dedicated worker (PC-36) does not change that: the watchdog watches the
+  worker (stale ticks), and this monitor watches the web process.
 - Alert destination: the owner's ntfy topic, the same one the in-app
   alerts use (see "Owner alerts" below), so everything lands in one place.
 
@@ -63,7 +64,7 @@ Read the detail with the curl above, then:
 | `database` | Postgres container down or unreachable | `docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps`, then the postgres logs |
 | `redis` | Redis container down; nothing is scheduled or run | the same `ps`, then the redis logs |
 | `migrations` (`pending` lists tags) | the deploy skipped the migration step | host-side `pnpm db:migrate` |
-| `ticks` (`stale` lists names) | the worker is not running ticks: crashed, blocked, or Redis lost | app logs (`grep -E '\[jobs\]|\[startup\]|\[ops\]'`), then the open incidents below |
+| `ticks` (`stale` lists names) | the worker is not running ticks: the `worker` container stopped or crash-loops, its ticks lane is blocked, or Redis is lost | `docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps worker`, then its logs (`… logs --tail=200 worker`, `grep -E '\[worker\]|\[jobs\]|\[startup\]'`), then the open incidents below |
 
 ## Tick staleness: the expected-slot rule
 
@@ -100,10 +101,14 @@ so a dead worker that writes nothing still turns stale.
 | `ops.retention.tick` | 24 h | 1 h |
 | `knowledge.compact.tick` | 7 days | 1 h |
 
-Until PC-36 splits the queues, ticks share the BullMQ worker (concurrency 4)
-with discovery runs. If four long runs occupy it, the 30 s drain tick can
-start late enough to show as stale. That is a true signal that sending is
-delayed.
+Since PC-36 the ticks have their own BullMQ queue and worker slots (the
+ticks lane, concurrency 4, in the `worker` service); discovery runs,
+knowledge indexing and learning run on the runs lane (concurrency 2). Long
+runs therefore no longer delay the 30 s drain tick. A stale drain tick now
+means the worker itself is down or its ticks lane is blocked (four ticks
+running long at once), which is a true signal that sending is delayed.
+Under the in-memory queue (dev) each lane runs one job at a time and a
+tick is never stacked: while one waits, its interval adds no other.
 
 A tick whose runs keep throwing is not stale (it still starts). It shows
 `failing` with its `consecutiveFailures`, and it has an open `tick.failed`
@@ -202,7 +207,7 @@ reaper's own changes are audited as system events (`user_id` NULL,
 | `outreach_queue` row in `sending` | 10 min after `claimed_at` | `sent` when a sent / delivered copy of its draft exists from the claim on; otherwise `failed`, kind `interrupted`, "Interrupted: delivery unknown" + `send.interrupted`. Never re-sent automatically. |
 | `connector_runs` `running`, no `last_progress_at` | 15 min | `failed` + `run.stuck` + the tenant's `run.failed` notification |
 | `connector_runs` `running` with an unanswered cancel request | 2 min | `cancelled` |
-| `connector_runs` `pending` | 60 min, and its `connector.run` job no longer waiting or active in the job queue | `failed` (never started). Under BullMQ a run can wait behind long runs (the worker's concurrency is shared with every tick until PC-36), so a run whose job is still queued is left alone; when the queue cannot answer (Redis down) it waits for the next pass. The runner only starts `pending` runs, so a reaped run never starts late. |
+| `connector_runs` `pending` | 60 min, and its `connector.run` job no longer waiting, delayed (a retry) or active in the job queue | `failed` (never started). Under BullMQ a run can wait behind other long runs on the runs lane (concurrency 2, PC-36), so a run whose job is still queued is left alone; when the queue cannot answer (Redis down) it waits for the next pass. The runner only starts `pending` runs, so a reaped run never starts late, and a queue retry of a run (3 attempts, PC-36) that was claimed or reaped meanwhile is skipped. |
 
 Send failures are classified before the queue acts
 (`src/lib/mail/send-failure.ts`): transient (SMTP 4xx, no reply) 5
@@ -321,12 +326,15 @@ alert**. The test is audited (`ops.alert.test`).
 
 ### The watchdog
 
-A timer in the app process, started at boot by the Next.js startup hook
+A timer in the web process (the `app` container, `ROLE=web`; or the single
+process with `ROLE=all`), started at boot by the Next.js startup hook
 (`src/lib/ops/watchdog.ts`), first check 30 s after boot, then every 60 s.
-It is not a queued job, so it keeps working when Redis or the BullMQ worker
-is what broke. It does **not** survive the app process: if the process dies
-or hangs, so does the watchdog, which is why the external monitor above is
-still required. It does not start with `SCHEDULE_BACKGROUND_JOBS=0`.
+It is not a queued job, and since PC-36 it does not run in the worker: it
+keeps working when Redis, the `worker` container or one of its lanes is what
+broke, and reports that as stale ticks. It does **not** survive the web
+process: if that process dies or hangs, so does the watchdog, which is why
+the external monitor above is still required. It does not start with
+`SCHEDULE_BACKGROUND_JOBS=0`.
 
 ### Reading the alert log
 

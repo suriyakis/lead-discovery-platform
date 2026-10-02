@@ -1156,7 +1156,10 @@ async function sweepWorkspace(
       userId: ctx.userId,
       role: ctx.role,
     };
-    await queue.enqueue(KNOWLEDGE_INDEX_JOB, payload, { tag: `knowledge-index:${d.id}` });
+    // PC-36: a row whose job still waits its turn on the runs lane is not
+    // queued again on every sweep.
+    const key = `knowledge-index:${d.id}`;
+    await queue.enqueue(KNOWLEDGE_INDEX_JOB, payload, { tag: key, dedupeKey: key });
     result.enqueued += 1;
   }
 }
