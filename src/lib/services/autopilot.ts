@@ -1182,7 +1182,7 @@ async function crmConnectionFor(ctx: WorkspaceContext, policy: AutomationPolicy)
   const conns = await listCrmConnections(ctx);
   const chosen = policy.autopilot.defaultCrmConnectionId;
   return chosen
-    ? conns.find((c) => c.id === chosen && c.status !== 'archived')
+    ? conns.find((c) => c.id === chosen && c.status === 'active')
     : conns.find((c) => c.status === 'active' && c.system === 'hubspot');
 }
 

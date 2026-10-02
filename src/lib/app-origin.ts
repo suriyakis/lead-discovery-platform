@@ -10,6 +10,14 @@
 // APP_URL is the deployment's public URL (.env.example); AUTH_URL /
 // NEXTAUTH_URL, which every deployment sets for sign-in, back it up. When
 // none is set, appUrl falls back to the origin the request came in on.
+//
+// A loopback value (localhost, 127.0.0.1, [::1]) never beats a real one:
+// the base docker-compose.yml sets APP_URL=http://localhost:3000 for the
+// app service and compose merges that into the prod container's
+// environment (environment beats env_file), so in prod APP_URL is likely
+// localhost while AUTH_URL names the public host. In production a
+// loopback value is ignored; elsewhere it is used only when nothing
+// better is known.
 
 import { z } from 'zod';
 
@@ -29,13 +37,27 @@ export const DEFAULT_APP_ORIGIN = 'http://localhost:3000';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-/** The origin the deployment configures (APP_URL, AUTH_URL, NEXTAUTH_URL), if any. */
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])$/i;
+
+/** True for http(s)://localhost, 127.0.0.1 or [::1], on any port. */
+export function isLoopbackOrigin(u: URL): boolean {
+  return LOOPBACK_HOST.test(u.hostname);
+}
+
+/**
+ * The origin the deployment configures (APP_URL, AUTH_URL, NEXTAUTH_URL), if
+ * any: the first one that is not loopback, else (outside production) the
+ * first loopback one.
+ */
 export function configuredAppOrigin(env: Env = process.env): URL | null {
+  const origins: URL[] = [];
   for (const name of ['APP_URL', 'AUTH_URL', 'NEXTAUTH_URL'] as const) {
     const parsed = HttpUrl.safeParse(env[name]);
-    if (parsed.success) return new URL(new URL(parsed.data).origin);
+    if (parsed.success) origins.push(new URL(new URL(parsed.data).origin));
   }
-  return null;
+  const real = origins.find((u) => !isLoopbackOrigin(u));
+  if (real) return real;
+  return env.NODE_ENV === 'production' ? null : (origins[0] ?? null);
 }
 
 export function appOrigin(env: Env = process.env): URL {
@@ -66,15 +88,21 @@ export function requestOrigin(headers: HeaderSource): URL | null {
 /**
  * An absolute URL of this app, for a link that leaves the app and comes
  * back (a Stripe return URL): the configured origin, else the request's,
- * else localhost.
+ * else localhost. A loopback configured origin gives way to a request
+ * that came in on a real host.
  */
 export function appUrl(
   pathAndQuery: string,
   opts: { env?: Env; headers?: HeaderSource } = {},
 ): string {
+  const configured = configuredAppOrigin(opts.env ?? process.env);
+  const fromRequest = opts.headers ? requestOrigin(opts.headers) : null;
+  const requestIsReal = fromRequest !== null && !isLoopbackOrigin(fromRequest);
+  const configuredWins = configured !== null && !(isLoopbackOrigin(configured) && requestIsReal);
   const origin =
-    configuredAppOrigin(opts.env ?? process.env) ??
-    (opts.headers ? requestOrigin(opts.headers) : null) ??
+    (configuredWins ? configured : null) ??
+    fromRequest ??
+    configured ??
     new URL(DEFAULT_APP_ORIGIN);
   return new URL(pathAndQuery, origin).href;
 }
