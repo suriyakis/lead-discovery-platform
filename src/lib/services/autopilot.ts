@@ -26,6 +26,7 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { mailboxes } from '@/lib/db/schema/mailing';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { recordAuditEvent } from './audit';
+import { checkGate, type AutomationCapability } from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
@@ -414,6 +415,19 @@ export async function runOnce(
     return { runId, ranAt, steps };
   }
 
+  // PC-06: autopilot is automatic work whoever presses Run now: an
+  // Autopilot hold (or scope 'all'), or a workspace with no accountable
+  // owner, runs nothing.
+  {
+    const gate = await checkGate(ctx, 'autopilot', { manual: false });
+    if (!gate.allowed) {
+      const detail = `held: ${gate.message}`.slice(0, 500);
+      await recordStep(ctx, runId, 'guard', 'skipped', detail);
+      steps.push({ step: 'guard', outcome: 'skipped', detail });
+      return { runId, ranAt, steps };
+    }
+  }
+
   // Plan guard: autopilot is a subscription feature. The toggle gate in
   // updateAutopilotSettings stops NEW enables, but a workspace that
   // enabled autopilot while subscribed and then lapsed would keep
@@ -428,8 +442,12 @@ export async function runOnce(
     }
   }
 
+  // PC-06: each step also needs its own capability (an Inbox-sync,
+  // Sending or CRM-sync hold skips just that step, recorded with why).
   if (settings.enableAutoSyncInbound) {
-    const r = await stepAutoSyncInbound(ctx, runId, options.mailProviderOverride);
+    const r =
+      (await heldStep(ctx, runId, 'auto_sync_inbound', 'inbox_sync')) ??
+      (await stepAutoSyncInbound(ctx, runId, options.mailProviderOverride));
     steps.push(r);
   }
 
@@ -439,22 +457,32 @@ export async function runOnce(
   }
 
   if (settings.enableAutoEnqueueOutreach) {
-    const r = await stepAutoEnqueueOutreach(ctx, runId, settings);
+    // Drafting outreach that cannot go out only spends tokens: under a
+    // Sending hold the step waits too.
+    const r =
+      (await heldStep(ctx, runId, 'auto_enqueue_outreach', 'sending')) ??
+      (await stepAutoEnqueueOutreach(ctx, runId, settings));
     steps.push(r);
   }
 
   if (settings.enableAutoDrainQueue) {
-    const r = await stepAutoDrainQueue(ctx, runId, options.mailProviderOverride);
+    const r =
+      (await heldStep(ctx, runId, 'auto_drain_queue', 'sending')) ??
+      (await stepAutoDrainQueue(ctx, runId, options.mailProviderOverride));
     steps.push(r);
   }
 
   if (settings.enableAutoCrmContactSync) {
-    const r = await stepAutoCrmContactSync(ctx, runId, settings);
+    const r =
+      (await heldStep(ctx, runId, 'auto_crm_contact_sync', 'crm_sync')) ??
+      (await stepAutoCrmContactSync(ctx, runId, settings));
     steps.push(r);
   }
 
   if (settings.enableAutoCrmDealOnQualified) {
-    const r = await stepAutoCrmDealOnQualified(ctx, runId, settings);
+    const r =
+      (await heldStep(ctx, runId, 'auto_crm_deal_on_qualified', 'crm_sync')) ??
+      (await stepAutoCrmDealOnQualified(ctx, runId, settings));
     steps.push(r);
   }
 
@@ -462,6 +490,21 @@ export async function runOnce(
 }
 
 // ---- steps -------------------------------------------------------
+
+/** PC-06: null when the gate allows `capability`; otherwise the step is
+ *  recorded as skipped with the gate's reason and returned. */
+async function heldStep(
+  ctx: WorkspaceContext,
+  runId: string,
+  step: string,
+  capability: AutomationCapability,
+): Promise<AutopilotRunResult['steps'][number] | null> {
+  const gate = await checkGate(ctx, capability, { manual: false });
+  if (gate.allowed) return null;
+  const detail = `held: ${gate.message}`.slice(0, 500);
+  await recordStep(ctx, runId, step, 'skipped', detail);
+  return { step, outcome: 'skipped', detail };
+}
 
 async function stepAutoSyncInbound(
   ctx: WorkspaceContext,

@@ -51,6 +51,13 @@ export const PLATFORM_AUDIT_KINDS = [
   // kinds carry a workspace and read as workspace rows.
   'remediation.apply',
   'remediation.revert',
+  // PC-06: the platform-wide outbound stop (services/holds.ts) and the
+  // summary row of the legacy feature_flags import
+  // (src/lib/remediation/legacy-feature-flags.ts; its per-workspace
+  // workspace.hold.import rows carry their workspace).
+  'platform.outbound_stop.set',
+  'platform.outbound_stop.clear',
+  'admin.legacy_flags.import',
 ] as const;
 
 export type PlatformAuditKind = (typeof PLATFORM_AUDIT_KINDS)[number];

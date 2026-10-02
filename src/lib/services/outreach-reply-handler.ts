@@ -29,6 +29,7 @@ import { getStageProvider } from './outreach-stage-models';
 import { buildProductKnowledgeBlock } from './outreach-knowledge';
 import { canWrite, type WorkspaceContext } from './context';
 import { recordAuditEvent } from './audit';
+import { checkGate } from './automation-gate';
 import {
   composeClosingDraft,
   composeEngagementDraft,
@@ -197,6 +198,18 @@ export async function handleClassifiedReply(
     if (!enabled) {
       return { action, draftIds: [], forkedThreadStateId: null };
     }
+    // PC-06: a Reply auto-actions hold leaves the reply for the operator,
+    // exactly as with the switch off (audited, so the skip is explained).
+    const gate = await checkGate(ctx, 'inbound_actions', { manual: false });
+    if (!gate.allowed) {
+      await recordAuditEvent(ctx, {
+        kind: 'reply.auto_actions_held',
+        entityType: 'mail_message',
+        entityId: msg.id,
+        payload: { trigger: action.reason, path: 'outreach_reply_handler', gate: gate.reason, reason: gate.message },
+      });
+      return { action, draftIds: [], forkedThreadStateId: null };
+    }
     const refusal =
       action.reason === 'decline'
         ? msg.outreachRelevance === 'prospect_reply'
@@ -256,6 +269,15 @@ export async function handleClassifiedReply(
   // decision and stop here. Operator handles the reply by hand.
   if (!ws.autoDraftReplies) {
     return { action, draftIds: [], forkedThreadStateId: null };
+  }
+
+  // PC-06: auto-drafting is Background AI — a hold (or no accountable
+  // owner) means no draft; the decision above is still recorded.
+  {
+    const gate = await checkGate(ctx, 'background_ai', { manual: false });
+    if (!gate.allowed) {
+      return { action, draftIds: [], forkedThreadStateId: null };
+    }
   }
 
   // referral: fork. Two drafts written: closing thank-you in the

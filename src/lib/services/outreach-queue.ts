@@ -26,6 +26,7 @@ import { classifySmtpError } from '@/lib/mail/smtp-errors';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
+import { AutomationGateError, checkGate } from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
@@ -383,6 +384,10 @@ export interface DrainResult {
   sent: number;
   failed: number;
   skipped: number;
+  /** PC-06: set when the automation gate stopped the drain (a Sending
+   *  hold, the platform outbound stop, no accountable owner). The rows
+   *  it did not reach stay queued, untouched. */
+  heldReason?: string;
 }
 
 export interface DrainOptions {
@@ -399,6 +404,12 @@ export async function drainQueue(
   options: DrainOptions = {},
 ): Promise<DrainResult> {
   if (!canWrite(ctx)) throw denied('outreach.queue.drain');
+  // PC-06: draining is automatic work whoever triggers it, so the
+  // accountable-owner rule applies as well as holds and the platform stop.
+  const gate = await checkGate(ctx, 'sending', { manual: false });
+  if (!gate.allowed) {
+    return { picked: 0, sent: 0, failed: 0, skipped: 0, heldReason: gate.message };
+  }
   const settings = await getSendSettings(ctx);
   if (settings.emergencyPause) {
     return { picked: 0, sent: 0, failed: 0, skipped: 0 };
@@ -443,13 +454,29 @@ export async function drainQueue(
   let sent = 0;
   let failed = 0;
   let skipped = 0;
-  for (const entry of due) {
+  let heldReason: string | undefined;
+  for (const [i, entry] of due.entries()) {
+    // PC-06: re-check before every claim. A hold placed while the drain
+    // runs stops the loop here; the rows after it stay queued untouched.
+    if (i > 0) {
+      const recheck = await checkGate(ctx, 'sending', { manual: false });
+      if (!recheck.allowed) {
+        heldReason = recheck.message;
+        break;
+      }
+    }
     const result = await processEntry(ctx, entry, settings, options.providerOverride, now);
     if (result === 'sent') sent++;
     else if (result === 'failed') failed++;
     else skipped++;
   }
-  return { picked: due.length, sent, failed, skipped };
+  return {
+    picked: due.length,
+    sent,
+    failed,
+    skipped,
+    ...(heldReason ? { heldReason } : {}),
+  };
 }
 
 async function processEntry(
@@ -649,6 +676,8 @@ async function processEntry(
       bodyTextNative,
       nativeLanguage,
       targetLanguage,
+      // PC-06: the drain sends on its own — the accountable-owner rule applies.
+      automatic: true,
       providerOverride,
     };
     if (entry.inReplyTo) sendInput.inReplyTo = entry.inReplyTo;
@@ -677,6 +706,21 @@ async function processEntry(
     return 'sent';
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // PC-06: the automation gate refused the send (a hold placed after the
+    // claim). Not this entry's failure: hand it back to the queue as it
+    // was, due at the same time, with the reason on it.
+    if (err instanceof AutomationGateError) {
+      await db
+        .update(outreachQueue)
+        .set({
+          status: 'queued',
+          attemptCount: entry.attemptCount,
+          lastError: message.slice(0, 2000),
+          updatedAt: new Date(),
+        })
+        .where(eq(outreachQueue.id, entry.id));
+      return 'skipped';
+    }
     // flow:F-05: a refused SMTP login is the mailbox's problem (sendMessage
     // has marked it failing), not this entry's — keep it queued behind the
     // failing-mailbox hold instead of failing it.

@@ -33,7 +33,7 @@ If anything is wrong, ping Sancho — VPS-side ops are his job.
 | Settings → CRM  | `/settings/crm`                | CRM connections + bulk CSV export. |
 | Settings → Usage| `/settings/usage`              | Per-provider cost view, BYOK vs platform key breakdown. |
 | Learning        | `/learning`                    | Workspace lessons distilled from review feedback. Embedding-aware. |
-| Admin (god mode)| `/admin`                       | Super-admin only. Workspaces, users, billing, support inbox, providers, platform audit log, feature flags. |
+| Admin (god mode)| `/admin`                       | Super-admin only. Workspaces, users, billing, support inbox, providers, platform audit log, holds. |
 
 ## 3. First-day setup (one product, one mailbox, one connector)
 
@@ -161,7 +161,17 @@ MinIO, R2 all need path style). For native AWS, leave it false.
 - `/admin` — platform totals, workspace metrics, billing and token grants
   per workspace, recent audit feed across the platform.
 - `/admin/workspaces/<id>` — profile, billing and tokens, lifecycle
-  (archive / restore / delete), members and roles, feature flag matrix.
+  (archive / restore / delete), members and roles, and **Holds**: place a
+  hold on all work or on chosen capabilities (Sending, Inbox sync,
+  Discovery, Autopilot, CRM sync, Background AI, Reply auto-actions, Auto
+  top-up) with a reason and an optional duration, or release one with a
+  reason. A hold stops that work for automatic and manual use alike; the
+  tenant sees it on a banner, its owners and admins are notified, and they
+  cannot release it. **Legacy flags to review** lists the old feature
+  flags (never enforced) imported as pending holds: Confirm enforces one,
+  Discard drops it. Automatic work also stops by itself while the
+  workspace owner is not active or no longer a member (a suspended owner
+  stops their workspace's automation; members can still work by hand).
 - `/admin/users`, `/admin/users/<id>` — account status, pre-authorisation,
   password users, platform role, memberships.
 - `/admin/support` — the support inbox across every workspace.
@@ -181,11 +191,11 @@ on which workspace your switcher points at:
 - **Platform level** (`workspace_id` empty, visible only in `/admin/audit`):
   account status, pre-authorisations, password users and resets, platform
   roles, user profile edits, user deletion, workspace deletion, provider
-  keys and platform settings. These rows name people, so no tenant sees
+  keys and platform settings, and the platform-wide outbound stop. These rows name people, so no tenant sees
   them.
 - **The affected workspace** (also visible to its admins in Settings →
   Audit): billing exemption, token grants, workspace profile and lifecycle,
-  members and roles, feature flags, support replies and status changes.
+  members and roles, holds, support replies and status changes.
 
 **There is no impersonation.** The old "Impersonate" button recorded a
 session but never changed who you were acting as, so it was removed. To see

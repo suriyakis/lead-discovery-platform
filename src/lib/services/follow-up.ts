@@ -27,6 +27,7 @@ import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { canWrite, type WorkspaceContext } from './context';
 import { recordAuditEvent } from './audit';
+import { AutomationGateError, assertGate, checkGate } from './automation-gate';
 import { getAIProviderForCtx } from '@/lib/ai';
 import {
   composeFollowUpDraft,
@@ -367,9 +368,19 @@ export async function processDueFollowUps(
   sent: number;
   skipped: number;
   failed: number;
+  /** PC-06: the automation gate stopped the tick (a Sending hold, the
+   *  platform outbound stop, no accountable owner); due rows stay pending. */
+  heldReason?: string;
 }> {
   const settings = await loadSettings(ctx.workspaceId);
   if (!settings.enabled) return { checked: 0, sent: 0, skipped: 0, failed: 0 };
+
+  // PC-06: follow-ups are automatic Sending work. Checked before the AI
+  // composes anything, so a hold costs no tokens.
+  const gate = await checkGate(ctx, 'sending', { manual: false });
+  if (!gate.allowed) {
+    return { checked: 0, sent: 0, skipped: 0, failed: 0, heldReason: gate.message };
+  }
 
   // Prepaid gate: follow-up composition is AI-metered. Empty wallet →
   // leave the rows pending (they fire on a later tick once topped up)
@@ -395,13 +406,33 @@ export async function processDueFollowUps(
   let sent = 0;
   let skipped = 0;
   let failed = 0;
-  for (const row of due) {
+  let heldReason: string | undefined;
+  for (const [i, row] of due.entries()) {
+    // PC-06: re-check before each composition (AI spend) and send.
+    if (i > 0) {
+      const recheck = await checkGate(ctx, 'sending', { manual: false });
+      if (!recheck.allowed) {
+        heldReason = recheck.message;
+        break;
+      }
+    }
     try {
       const verdict = await processOne(ctx, row, deps);
       if (verdict === 'sent') sent++;
       else if (verdict === 'skipped') skipped++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // PC-06: the gate refused the send after composition (a hold placed
+      // mid-tick). Not this step's failure: it stays pending with the reason.
+      if (err instanceof AutomationGateError) {
+        skipped++;
+        heldReason = msg;
+        await db
+          .update(outreachFollowUps)
+          .set({ lastError: msg.slice(0, 2000), updatedAt: new Date() })
+          .where(eq(outreachFollowUps.id, row.id));
+        break;
+      }
       // flow:F-05: a refused SMTP login is the mailbox's problem
       // (sendMessage marked it failing). Leave the step pending; the
       // failing-mailbox hold in processOne keeps it from retrying until
@@ -426,7 +457,7 @@ export async function processDueFollowUps(
         .where(eq(outreachFollowUps.id, row.id));
     }
   }
-  return { checked: due.length, sent, skipped, failed };
+  return { checked: due.length, sent, skipped, failed, ...(heldReason ? { heldReason } : {}) };
 }
 
 /**
@@ -700,6 +731,8 @@ async function processOne(
     targetLanguage: dual.targetLanguage,
     inReplyTo: lastMessage.messageId ?? undefined,
     references: lastMessage.references ?? [],
+    // PC-06: sent by the tick without a person approving it.
+    automatic: true,
     providerOverride: deps.mailProviderOverride,
   });
 
@@ -751,6 +784,9 @@ export async function approveFollowUp(
   deps: ProcessDueFollowUpsDeps = {},
 ): Promise<OutreachFollowUp> {
   if (!canWrite(ctx)) throw denied('follow_up.approve');
+  // PC-06: refuse before translating (AI) under a Sending hold or the
+  // platform outbound stop; the step stays awaiting approval.
+  await assertGate(ctx, 'sending');
   const [row] = await db
     .select()
     .from(outreachFollowUps)

@@ -38,6 +38,17 @@ export default async function AdminUsersPage({
     db.select().from(workspaces).orderBy(workspaces.name),
   ]);
   const workspaceById = new Map(allWorkspaces.map((w) => [w.id.toString(), w]));
+  // PC-06: the active workspaces each user is the accountable owner of —
+  // suspending them stops those workspaces' automatic work.
+  const ownedByUser = new Map<string, { name: string; slug: string }[]>();
+  for (const w of allWorkspaces) {
+    if (w.status !== 'active') continue;
+    const list = ownedByUser.get(w.ownerUserId) ?? [];
+    list.push({ name: w.name, slug: w.slug });
+    ownedByUser.set(w.ownerUserId, list);
+  }
+  const withOwned = <T extends { id: string }>(list: T[]) =>
+    list.map((u) => ({ ...u, ownedWorkspaces: ownedByUser.get(u.id) ?? [] }));
 
   async function setStatus(formData: FormData) {
     'use server';
@@ -115,6 +126,14 @@ export default async function AdminUsersPage({
       <h1>Users</h1>
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
+      <p className="muted">
+        Suspending, rejecting or un-approving a user stops their sign-in. If
+        they own a workspace, it also stops all of that workspace&apos;s
+        automatic work (sending, inbox sync, discovery, autopilot, CRM sync
+        and background AI): automation only ever acts as an active owner,
+        and there is no fallback to another member. Members can still work
+        by hand. Set the owner back to active, or move ownership, to resume.
+      </p>
 
       <section>
         <h2>Create user with password</h2>
@@ -255,7 +274,7 @@ export default async function AdminUsersPage({
       <UserSection
         title="Pending review"
         emphasize
-        users={allUsers.filter((u) => u.accountStatus === 'pending')}
+        users={withOwned(allUsers.filter((u) => u.accountStatus === 'pending'))}
         sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No pending users."
@@ -263,7 +282,7 @@ export default async function AdminUsersPage({
 
       <UserSection
         title="Active"
-        users={allUsers.filter((u) => u.accountStatus === 'active')}
+        users={withOwned(allUsers.filter((u) => u.accountStatus === 'active'))}
         sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
         emptyText="No active users."
@@ -271,8 +290,10 @@ export default async function AdminUsersPage({
 
       <UserSection
         title="Suspended / rejected"
-        users={allUsers.filter(
-          (u) => u.accountStatus === 'suspended' || u.accountStatus === 'rejected',
+        users={withOwned(
+          allUsers.filter(
+            (u) => u.accountStatus === 'suspended' || u.accountStatus === 'rejected',
+          ),
         )}
         sessionUserId={pctx.actorUserId}
         setStatus={setStatus}
@@ -300,6 +321,8 @@ function UserSection({
     accountStatusReason: string | null;
     passwordHash: string | null;
     lastSignedInAt: Date | null;
+    /** PC-06: active workspaces they are the accountable owner of. */
+    ownedWorkspaces: ReadonlyArray<{ name: string; slug: string }>;
   }>;
   sessionUserId: string;
   setStatus: (formData: FormData) => Promise<void>;
@@ -350,6 +373,14 @@ function UserSection({
               {u.accountStatusReason ? (
                 <p className="muted">Reason: {u.accountStatusReason}</p>
               ) : null}
+              {u.ownedWorkspaces.length > 0 ? (
+                <p className="muted">
+                  Owner of {u.ownedWorkspaces.map((w) => w.name).join(', ')}
+                  {u.accountStatus === 'active'
+                    ? ''
+                    : ' — automatic work there is stopped while this account is not active.'}
+                </p>
+              ) : null}
               {u.id === sessionUserId ? (
                 <p className="muted">— this is you</p>
               ) : (
@@ -373,7 +404,10 @@ function UserSection({
                     <input type="text" name="reason" maxLength={200} />
                   </label>
                   <ConfirmFormButton
-                    messageByValue={{ field: 'status', messages: accountStatusConfirms(u) }}
+                    messageByValue={{
+                      field: 'status',
+                      messages: accountStatusConfirms(u, u.ownedWorkspaces),
+                    }}
                   >
                     Apply
                   </ConfirmFormButton>

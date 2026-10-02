@@ -28,6 +28,7 @@ import {
 } from '@/lib/db/schema/mailing';
 import { contactAssociations } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
+import { assertGate } from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
@@ -302,6 +303,8 @@ export async function pushLeadToCrm(
   input: PushLeadInput,
 ): Promise<{ entry: CrmSyncEntry; result: SyncResult }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.push');
+  // PC-06: manual pushes and autopilot's CRM steps alike.
+  await assertGate(ctx, 'crm_sync');
   const conn = await loadConnection(ctx, input.connectionId);
   if (conn.status === 'archived') throw invalid('connection is archived');
 
@@ -428,6 +431,7 @@ export async function pushThreadAsNotes(
   input: PushThreadAsNotesInput,
 ): Promise<{ inserted: number; skipped: number; failed: number }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.push_notes');
+  await assertGate(ctx, 'crm_sync');
   const conn = await loadConnection(ctx, input.connectionId);
   if (conn.status === 'archived') throw invalid('connection is archived');
 
@@ -609,6 +613,7 @@ export async function pushDeal(
   input: PushDealInput,
 ): Promise<{ entry: CrmSyncEntry; result: SyncResult }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.push_deal');
+  await assertGate(ctx, 'crm_sync');
   const conn = await loadConnection(ctx, input.connectionId);
   if (conn.status === 'archived') throw invalid('connection is archived');
   const lead = await loadLead(ctx, input.leadId);

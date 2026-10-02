@@ -13,6 +13,7 @@ import {
 } from '@/lib/db/schema/connectors';
 import { productProfiles } from '@/lib/db/schema/products';
 import { recordAuditEvent } from './audit';
+import { assertGate, checkGate } from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
@@ -341,6 +342,9 @@ export async function runCrawlPlanNow(
 ): Promise<RunPlanResult> {
   if (!canWrite(ctx)) throw denied('crawl_plan.run_now');
   const plan = await getCrawlPlan(ctx, id);
+  // PC-06: a Discovery hold refuses Run now outright, instead of the plan
+  // recording every recipe as failed.
+  await assertGate(ctx, 'discovery');
   return executePlan(ctx, plan);
 }
 
@@ -437,6 +441,9 @@ export interface TickSummary {
   notDue: number;
   totalStartedRuns: number;
   totalFailedRecipes: number;
+  /** PC-06: the automation gate held the workspace; no plan ran and none
+   *  moved (each runs on the first tick after the hold ends). */
+  heldReason?: string;
 }
 
 /** Per-workspace fan-out. Runs every plan whose nextRunAt is past AND
@@ -445,6 +452,18 @@ export async function processDueCrawlPlans(
   ctx: WorkspaceContext,
   now: Date = new Date(),
 ): Promise<TickSummary> {
+  const gate = await checkGate(ctx, 'discovery', { manual: false, now });
+  if (!gate.allowed) {
+    return {
+      workspaces: 1,
+      processed: 0,
+      inQuietHours: 0,
+      notDue: 0,
+      totalStartedRuns: 0,
+      totalFailedRecipes: 0,
+      heldReason: gate.message,
+    };
+  }
   const allPlans = await db
     .select()
     .from(crawlPlans)

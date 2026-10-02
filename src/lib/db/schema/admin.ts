@@ -68,10 +68,14 @@ export type ImpersonationSession = typeof impersonationSessions.$inferSelect;
 export type NewImpersonationSession = typeof impersonationSessions.$inferInsert;
 
 /**
- * `feature_flags` — workspace-scoped premium-module toggles. Each entry is
- * (workspace_id, key) with a boolean enabled flag and optional config jsonb.
- * Future plan-tier logic will hydrate this table from a `plans` table; for
- * now the super-admin toggles per-workspace directly via /admin.
+ * `feature_flags` — LEGACY, read by nothing (I048). The console toggled
+ * these per workspace, but no runtime path ever read them, so a disabled
+ * `outreach.send` or `mailbox.imap_sync` stopped nothing (X6). PC-06
+ * replaced them with holds (`workspace_holds`, services/holds.ts): the
+ * console no longer writes this table, and
+ * scripts/import-legacy-feature-flags.ts turns its disabled rows into
+ * pending_review holds (not enforced until the platform owner confirms
+ * them). The table is dropped one release after that import has run.
  */
 export const featureFlags = pgTable(
   'feature_flags',

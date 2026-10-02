@@ -176,6 +176,13 @@ Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`).
 
 `remediation_log`: one row per changed row — run_id, workspace_id, category (`R1a`, `R4`, …), table_name (allow-listed), row_id, action (`update` / `delete` / `ledger_credit`), before / after (jsonb images: the changed columns for an update, the whole row for a delete), reverted_at.
 
+### `workspace_holds` (Phase 1, PC-06)
+Holds stop work in one workspace (tenant-owned, cascade on workspace delete). kind (`hold` / `note` — a note is a legacy flag with no capability, never enforced), scope (`all` / `capabilities`), capabilities (`automation_capability[]`: sending, inbox_sync, inbound_actions, discovery, autopilot, crm_sync, background_ai, auto_topup), state (`active` / `pending_review` / `released` / `discarded`), source (`tenant` / `platform`), reason, blocks_access (enforced from PC-21), expires_at (NULL = until released), placed_by / placed_at, confirmed_by / confirmed_at, ended_by / ended_at / end_reason, legacy_flag_key (unique per workspace — makes the feature_flags import idempotent), history (jsonb, every transition). CHECK constraints keep the shape honest (a hold has scope `all` with no list or a non-empty list; a note has an empty list and is only pending or discarded; the reason is never blank). Only `active`, unexpired `hold` rows are enforced, by `services/automation-gate.ts`.
+
+`workspaces.automation_owner_incident_at`: set once when automation first finds no accountable owner (the incident), cleared when the owner is back.
+
+`feature_flags` is legacy: nothing reads it, the console no longer writes it, and it is dropped one release after `scripts/remediation/import-legacy-feature-flags.ts --apply` has run.
+
 ## Reserved fields and tables (no migration needed for future phases)
 
 These columns / tables are reserved on Phase-1-and-Phase-2 tables so later phases can attach without an "alter table" parade:

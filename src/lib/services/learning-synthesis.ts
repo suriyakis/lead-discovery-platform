@@ -23,6 +23,7 @@ import { learningEvents, learningLessons } from '@/lib/db/schema/learning';
 import { productProfiles } from '@/lib/db/schema/products';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { recordPlatformAuditEvent } from './audit';
+import { assertGate, checkGate } from './automation-gate';
 import {
   canAdminWorkspace,
   type WorkspaceContext,
@@ -60,7 +61,9 @@ const SYNTHESIS_CONFIDENCE_CAP = 55;
 export interface SynthesisSummary {
   workspaceId: bigint;
   ran: boolean;
-  skippedReason: 'insufficient_events' | 'no_tokens' | null;
+  /** 'held': PC-06 automation gate (a Background AI hold, or no
+   *  accountable owner for the unattended run). */
+  skippedReason: 'insufficient_events' | 'no_tokens' | 'held' | null;
   eventsExamined: number;
   proposalsReceived: number;
   lessonsCreated: number;
@@ -110,6 +113,8 @@ export async function synthesizeWorkspaceLearning(
       'permission_denied',
     );
   }
+  // PC-06: the button is refused under a Background AI hold.
+  await assertGate(ctx, 'background_ai');
   return runSynthesis(ctx);
 }
 
@@ -134,7 +139,20 @@ export async function synthesizeWorkspaceLearningUnattended(
     workspaceId,
     userId: rows[0].ownerUserId,
     role: 'owner',
-  } as WorkspaceContext;
+    trigger: 'automation',
+  };
+  // PC-06: automatic Background AI. Held → skipped, not an error.
+  const gate = await checkGate(ctx, 'background_ai', { manual: false });
+  if (!gate.allowed) {
+    return {
+      workspaceId,
+      ran: false,
+      skippedReason: 'held',
+      eventsExamined: 0,
+      proposalsReceived: 0,
+      lessonsCreated: 0,
+    };
+  }
   return runSynthesis(ctx);
 }
 

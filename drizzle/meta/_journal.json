@@ -463,6 +463,13 @@
       "when": 1790883377761,
       "tag": "0065_faithful_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1790900700589,
+      "tag": "0066_p1_automation_control_holds",
+      "breakpoints": true
     }
   ]
 }

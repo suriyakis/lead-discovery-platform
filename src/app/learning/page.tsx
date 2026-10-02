@@ -126,7 +126,14 @@ export default async function LearningPage({
   async function runCompaction() {
     'use server';
     const c = await getWorkspaceContext();
-    await compactWorkspaceKnowledge(c);
+    try {
+      await compactWorkspaceKnowledge(c);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      // PC-06: a Background AI hold refuses compaction with a reason.
+      const m = err instanceof Error ? err.message : 'compaction failed';
+      redirect(`/learning?error=${encodeURIComponent(m)}`);
+    }
     redirect('/learning');
   }
 
@@ -138,7 +145,9 @@ export default async function LearningPage({
       const msg = !s.ran
         ? s.skippedReason === 'insufficient_events'
           ? `Not enough recent activity to learn from yet (${s.eventsExamined} events in the last 14 days — need 10+).`
-          : 'Skipped — no tokens left for the AI pass.'
+          : s.skippedReason === 'held'
+            ? 'Skipped — Background AI is on hold for this workspace.'
+            : 'Skipped — no tokens left for the AI pass.'
         : s.lessonsCreated > 0
           ? `Learned ${s.lessonsCreated} new rule${s.lessonsCreated === 1 ? '' : 's'} from ${s.eventsExamined} recent events.`
           : `Examined ${s.eventsExamined} recent events — no reliable new pattern found.`;

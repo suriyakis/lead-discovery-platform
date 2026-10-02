@@ -102,7 +102,9 @@ export function describeActionError(
 
   // Validation messages are written for the person who submitted the
   // form ("comment too long (5000 char max)") — show them, tidied up.
-  if (code === 'invalid_input' && typed.message.trim()) {
+  // PC-06: so is the automation gate's refusal (AutomationGateError,
+  // code 'automation_held'): it names the hold and its reason.
+  if ((code === 'invalid_input' || code === 'automation_held') && typed.message.trim()) {
     return { code, message: clampFlash(asSentence(typed.message)) };
   }
 

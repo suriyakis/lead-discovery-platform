@@ -35,6 +35,7 @@ import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
 import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { getAIProviderForCtx } from '@/lib/ai';
+import { checkGate } from './automation-gate';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
 import { summarizeMailboxFailure } from './mailbox';
 import { notify } from './notifications';
@@ -426,6 +427,10 @@ export async function reviewCommunicationQuality(
 
 export async function runWorkspaceHealthCheck(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  options: {
+    /** PC-06: a person pressed Run now (the tick passes false). */
+    manual?: boolean;
+  } = {},
 ): Promise<WorkspaceHealthReport> {
   const [ws] = await db
     .select({ intervalDays: workspaces.healthCheckIntervalDays })
@@ -438,9 +443,13 @@ export async function runWorkspaceHealthCheck(
 
   // The AI part costs tokens — skip it (rules still run) on an empty
   // wallet; the empty wallet is itself the top finding at that point.
-  const commReview = (await hasTokens(ctx))
-    ? await reviewCommunicationQuality(ctx, intervalDays)
-    : [];
+  // PC-06: also under a Background AI hold, and for the scheduled run
+  // when the workspace has no accountable owner.
+  const aiGate = await checkGate(ctx, 'background_ai', { manual: options.manual ?? false });
+  const commReview =
+    aiGate.allowed && (await hasTokens(ctx))
+      ? await reviewCommunicationQuality(ctx, intervalDays)
+      : [];
 
   // Score: start at 100; -15 per warning, -5 per info; communication
   // naturalness averages in when we have reviews (weighted 40%).
@@ -492,7 +501,7 @@ export async function runHealthCheckNow(
   if (!canAdminWorkspace(ctx)) {
     throw new HealthCheckError('Permission denied: health.run', 'permission_denied');
   }
-  const report = await runWorkspaceHealthCheck(ctx);
+  const report = await runWorkspaceHealthCheck(ctx, { manual: true });
   await db
     .update(workspaces)
     .set({ healthCheckLastAt: new Date(), updatedAt: new Date() })
@@ -553,7 +562,7 @@ export async function processDueHealthChecks(): Promise<{
       .returning({ id: workspaces.id });
     if (!claimed[0]) continue;
     try {
-      await runWorkspaceHealthCheck({ workspaceId: ws.id });
+      await runWorkspaceHealthCheck({ workspaceId: ws.id }, { manual: false });
       checked++;
     } catch (err) {
       failed++;

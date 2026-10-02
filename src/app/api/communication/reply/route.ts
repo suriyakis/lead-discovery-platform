@@ -17,6 +17,7 @@ import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { authErrorToResponse } from '@/lib/services/http';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
+import { AutomationGateError } from '@/lib/services/automation-gate';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
 
 const InputSchema = z.object({
@@ -103,6 +104,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       threadId: sent.threadId?.toString() ?? null,
     });
   } catch (err) {
+    // PC-06: a Sending hold or the platform outbound stop refuses the
+    // reply; 409 with the gate's sentence (it names the hold and why).
+    if (err instanceof AutomationGateError) {
+      return NextResponse.json(
+        { error: err.code, reason: err.reason, detail: err.message },
+        { status: 409 },
+      );
+    }
     if (err instanceof MailServiceError) {
       const status = err.code === 'permission_denied' ? 403 : 400;
       return NextResponse.json(

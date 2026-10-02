@@ -194,6 +194,16 @@ export const workspaces = pgTable('workspaces', {
    *  Gmail/Outlook expectation. */
   imapAutoSyncEnabled: boolean('imap_auto_sync_enabled').notNull().default(true),
 
+  /** PC-06 accountable-owner rule: automatic work acts as owner_user_id,
+   *  so it stops when that user is not active or no longer a member. Set
+   *  (once, atomically) when the gate first finds no accountable owner —
+   *  that is when the incident is raised — and cleared when the owner is
+   *  accountable again. NULL = no open incident. */
+  automationOwnerIncidentAt: timestamp('automation_owner_incident_at', {
+    mode: 'date',
+    withTimezone: true,
+  }),
+
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),

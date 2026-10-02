@@ -38,6 +38,7 @@ import {
   TRANSIENT_FAILURE_PAUSE_THRESHOLD,
 } from './imap-backoff';
 import { recordAuditEvent } from './audit';
+import { assertGate } from './automation-gate';
 import { canWrite, type WorkspaceContext } from './context';
 import {
   buildProviderFor,
@@ -146,6 +147,12 @@ export interface SendMailInput {
    *    null      → no signature
    *    bigint    → use that specific signature (validated against workspace) */
   signatureId?: bigint | null;
+  /** PC-06: true for sends the platform makes on its own (the queue
+   *  drain, a follow-up the tick sends without approval). Defaults to the
+   *  context (ctx.trigger). The automation gate refuses every send under
+   *  a Sending hold or the platform outbound stop; automatic ones also
+   *  when the workspace has no accountable owner. */
+  automatic?: boolean;
   /** Test-only override; production passes undefined. */
   providerOverride?: IMailProvider;
 }
@@ -159,6 +166,12 @@ export async function sendMessage(
   const subject = input.subject.trim();
   if (!subject) throw invalid('subject required');
   if (!input.text && !input.html) throw invalid('text or html body required');
+
+  // PC-06: holds, the platform outbound stop and (automatic sends) the
+  // accountable-owner rule, before anything is rendered or sent.
+  await assertGate(ctx, 'sending', {
+    manual: input.automatic === undefined ? undefined : !input.automatic,
+  });
 
   // Suppression check — reject if ANY recipient is suppressed.
   for (const addr of [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])]) {
@@ -694,6 +707,9 @@ export async function syncInbound(
   providerOverride?: IMailProvider,
 ): Promise<SyncInboundResult> {
   if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
+  // PC-06: an Inbox-sync hold stops the tick, manual Sync and autopilot's
+  // sync step alike (X6: the disabled feature flag stopped nothing).
+  await assertGate(ctx, 'inbox_sync');
   const { mailbox, provider } = await buildProviderFor(ctx, mailboxId, providerOverride);
   const since = mailbox.lastSyncedAt ?? undefined;
   const messages = await provider.fetchInbound({ since, limit: 100 });
@@ -1461,6 +1477,9 @@ export async function safeSyncOne(
   // Outside the try: a permission error is the caller's, not the server's,
   // and must not count as a mailbox failure.
   if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
+  // PC-06: also outside the try. A hold is not a mailbox failure, so it
+  // must neither count towards the auto-pause nor push the backoff.
+  await assertGate(ctx, 'inbox_sync');
 
   let recovered = false;
   if (mailbox.status === 'failing') {
@@ -1789,6 +1808,9 @@ export async function retrySend(
     errors: [],
   };
   if (ids.length === 0) return result;
+  // PC-06: refuse the whole batch up front under a Sending hold instead of
+  // collecting the same refusal once per message.
+  await assertGate(ctx, 'sending');
 
   const originals = await db
     .select()

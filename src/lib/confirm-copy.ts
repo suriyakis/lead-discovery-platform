@@ -170,28 +170,70 @@ export type AccountStatusValue = (typeof ACCOUNT_STATUSES)[number];
  * has none — re-applying it only updates the reason). Feed it to
  * ConfirmFormButton's messageByValue on the status select.
  */
-export function accountStatusConfirms(user: {
-  name: string | null;
-  email: string;
-  role: string;
-  accountStatus: string;
-}): Partial<Record<AccountStatusValue, string>> {
+export function accountStatusConfirms(
+  user: {
+    name: string | null;
+    email: string;
+    role: string;
+    accountStatus: string;
+  },
+  /** PC-06: workspaces this user is the accountable owner of. */
+  ownedWorkspaces: readonly WorkspaceRef[] = [],
+): Partial<Record<AccountStatusValue, string>> {
   const who = userLabel(user);
   const superNote =
     user.role === 'super_admin'
       ? `\n\nNote: ${user.email} is a super-admin, and account status does not lock super-admins out. Demote them first.`
       : '';
+  const stopNote = ownerStopNote(ownedWorkspaces);
+  const resumeNote =
+    ownedWorkspaces.length > 0
+      ? `\n\nAutomatic work resumes in the workspace${ownedWorkspaces.length === 1 ? '' : 's'} they own: ${ownedWorkspaces.map((w) => workspaceLabel(w)).join(', ')}.`
+      : '';
   const all: Record<AccountStatusValue, string> = {
-    active: `Set ${who} to active?\n\nThey get access to their workspaces on their next page load.`,
-    pending: `Set ${who} back to pending?\n\nThey lose access on their next page load and wait on the pending screen until someone approves them.${superNote}`,
-    suspended: `Suspend ${who}?\n\nThey lose access to every workspace on their next page load, until a super-admin sets them back to active.${superNote}`,
-    rejected: `Reject ${who}?\n\nThey lose access to every workspace on their next page load and see an "Account rejected" notice.${superNote}`,
+    active: `Set ${who} to active?\n\nThey get access to their workspaces on their next page load.${resumeNote}`,
+    pending: `Set ${who} back to pending?\n\nThey lose access on their next page load and wait on the pending screen until someone approves them.${stopNote}${superNote}`,
+    suspended: `Suspend ${who}?\n\nThey lose access to every workspace on their next page load, until a super-admin sets them back to active.${stopNote}${superNote}`,
+    rejected: `Reject ${who}?\n\nThey lose access to every workspace on their next page load and see an "Account rejected" notice.${stopNote}${superNote}`,
   };
   const out: Partial<Record<AccountStatusValue, string>> = {};
   for (const status of ACCOUNT_STATUSES) {
     if (status !== user.accountStatus) out[status] = all[status];
   }
   return out;
+}
+
+/**
+ * PC-06 accountable-owner rule, said where an owner is suspended:
+ * automation acts only as an active owner, so their workspaces stop all
+ * automatic work (members can still work by hand).
+ */
+export function ownerStopNote(ownedWorkspaces: readonly WorkspaceRef[]): string {
+  if (ownedWorkspaces.length === 0) return '';
+  const names = ownedWorkspaces.map((w) => workspaceLabel(w, { quoted: true })).join(', ');
+  return `\n\nThey own ${names}. Automation only ever acts as an active owner, so all automatic work there stops (sending, inbox sync, discovery, autopilot, CRM sync, background AI) until they are active again or ownership moves. Members can still work by hand.`;
+}
+
+// ---- holds (console, PC-06) -------------------------------------------------
+
+export function placeHoldConfirm(ws: WorkspaceRef): string {
+  return `Put a hold on ${workspaceLabel(ws, { quoted: true })}?\n\nThe work you picked stops there for automatic and manual use alike until the platform releases it (or it expires). Its owners and admins are notified, every member sees a banner, and they cannot release it.`;
+}
+
+export function releaseHoldConfirm(ws: WorkspaceRef, scopeLabel: string): string {
+  return `Release the hold on ${scopeLabel.toLowerCase()} for ${workspaceLabel(ws, { quoted: true })}?\n\nThat work can run again at once, including anything that was waiting. Its owners and admins are notified.`;
+}
+
+export function confirmLegacyHoldConfirm(
+  ws: WorkspaceRef,
+  flagKey: string,
+  scopeLabel: string,
+): string {
+  return `Enforce the legacy flag ${flagKey} as a hold on ${scopeLabel.toLowerCase()} for ${workspaceLabel(ws, { quoted: true })}?\n\nIt was never enforced before: from now on that work stops there, manual and automatic, until the platform releases it. Its owners and admins are notified.`;
+}
+
+export function discardLegacyHoldConfirm(ws: WorkspaceRef, flagKey: string): string {
+  return `Discard the legacy flag ${flagKey} for ${workspaceLabel(ws, { quoted: true })}?\n\nIt was never enforced, so nothing changes for the workspace. The row stays in its hold history as discarded.`;
 }
 
 export function revokePreauthConfirm(p: {

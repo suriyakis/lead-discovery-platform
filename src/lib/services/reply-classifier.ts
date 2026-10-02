@@ -21,6 +21,7 @@ import { mailMessages, type MailMessage } from '@/lib/db/schema/mailing';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { contactAssociations } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
+import { checkGate } from './automation-gate';
 import { canWrite, type WorkspaceContext } from './context';
 import { upsertContact, attachContact } from './contacts';
 import { addSuppression } from './suppression';
@@ -398,6 +399,26 @@ async function applyAutoActions(
   classification: ReplyClassification,
 ): Promise<void> {
   const settings = await getReplyAutoActions(ctx);
+  const anySwitchOn =
+    settings.autoSuppressBounce || settings.autoSuppressUnsubscribe || settings.autoCloseNegative;
+  if (anySwitchOn) {
+    // PC-06: a Reply auto-actions hold leaves every reply for the operator.
+    const gate = await checkGate(ctx, 'inbound_actions', { manual: false });
+    if (!gate.allowed) {
+      await recordAuditEvent(ctx, {
+        kind: 'reply.auto_actions_held',
+        entityType: 'mail_message',
+        entityId: msg.id,
+        payload: {
+          classification: classification.type,
+          path: 'reply_classifier',
+          gate: gate.reason,
+          reason: gate.message,
+        },
+      });
+      return;
+    }
+  }
 
   // Resolve qualified_lead via thread → contact_associations.
   let lead = null as Awaited<ReturnType<typeof leadForThread>>;

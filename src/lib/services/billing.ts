@@ -18,6 +18,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces, type Workspace } from '@/lib/db/schema/workspaces';
 import { recordAuditEvent } from './audit';
+import { checkGate } from './automation-gate';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
 import { getPlanById, type PlanId } from '@/lib/billing/plans';
 import { tokenPackById } from '@/lib/billing/tokens';
@@ -263,6 +264,10 @@ export async function attemptAutoTopup(workspaceId: bigint): Promise<
   }
   const pack = tokenPackById(ws.autoTopupPackId);
   if (!pack?.priceId) return 'skipped';
+  // PC-06: charging the saved card is automatic work — an Auto top-up hold
+  // (or no accountable owner) skips it before the rate-limit claim.
+  const gate = await checkGate({ workspaceId }, 'auto_topup', { manual: false });
+  if (!gate.allowed) return 'skipped';
 
   // ATOMIC claim of the rate-limit window. Concurrent debits all fire
   // this function at once when the balance crosses the threshold; a
