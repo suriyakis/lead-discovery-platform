@@ -20,6 +20,7 @@ import { knowledgeSourceProducts, knowledgeSources } from '@/lib/db/schema/docum
 import { mailboxes, mailMessages, mailThreads } from '@/lib/db/schema/mailing';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { learningLessons } from '@/lib/db/schema/learning';
 import { documentChunks, indexingJobs } from '@/lib/db/schema/rag';
 import { reviewItems } from '@/lib/db/schema/review';
 import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
@@ -54,7 +55,12 @@ import {
   listIndexingJobs,
   retrieve,
 } from '@/lib/services/rag';
-import { resolveThreadProduct, suggestReply } from '@/lib/services/reply-assistant';
+import {
+  resolveThreadProduct,
+  resolveThreadProducts,
+  suggestReply,
+} from '@/lib/services/reply-assistant';
+import { createLesson } from '@/lib/services/learning';
 import DocumentsPage from '@/app/documents/page';
 import DocumentDetail from '@/app/documents/[id]/page';
 import KnowledgeSourceDetail from '@/app/knowledge/[id]/page';
@@ -381,7 +387,7 @@ describe('acceptance 3 — archived documents', () => {
     const reply = await suggestReply(s.a, { threadId: thread.threadId, ai: stubAi, chunkLimit: 50 });
     const replyIds = reply.sources.chunkIds.map(String);
     expect(replyIds.some((id) => docChunks.includes(id))).toBe(false);
-    expect(replyIds.length).toBeGreaterThan(0); // the text / url sources still answer
+    expect(replyIds.length).toBeGreaterThan(0); // the workspace-wide text source still answers
 
     await restoreDocument(s.a, doc.id);
     expect(await sourceIdsFor(s.a, s.pA)).toEqual(live);
@@ -565,10 +571,56 @@ describe('Suggest reply', () => {
     expect(await resolveThreadProduct(s.a, leadThread.threadId)).toBe(s.pB);
     expect(await owned(leadThread.threadId)).toEqual(['B', 'wide']);
 
-    // No lead: workspace-wide plus every source that still has a product.
+    // No lead: workspace-wide knowledge only (design §8) — no product's.
     const plain = await seedThread(s.a.workspaceId, null);
     expect(await resolveThreadProduct(s.a, plain.threadId)).toBeNull();
-    expect(await owned(plain.threadId)).toEqual(['A', 'B', 'wide']);
+    expect(await resolveThreadProducts(s.a, plain.threadId)).toEqual([]);
+    expect(await owned(plain.threadId)).toEqual(['wide']);
+  });
+
+  it('a thread whose leads are for two products reads exactly their union, never a third product', async () => {
+    const s = await setup();
+    const pC = (await createProductProfile(s.a, { name: 'Glazing film' })).id;
+    const forA = await textSource(s.a, 'aerogel note', products(s.pA));
+    const forB = await textSource(s.a, 'sealant note', products(s.pB));
+    const forC = await textSource(s.a, 'glazing note', products(pC));
+    const wide = await textSource(s.a, 'company note', WORKSPACE);
+    const ruleFor = async (name: string, scope: Parameters<typeof createLesson>[1]['scope']) => {
+      const l = await createLesson(s.a, {
+        category: 'reply_quality',
+        rule: `Datasheet value replies: ${name}.`,
+        confidence: 70,
+        scope,
+      });
+      await db
+        .update(learningLessons)
+        .set({ embedding: Array.from({ length: 1536 }, () => 0.01), embeddingModel: 'stub' })
+        .where(eq(learningLessons.id, l.id));
+      return l.id;
+    };
+    const ruleA = await ruleFor('A', products(s.pA));
+    const ruleB = await ruleFor('B', products(s.pB));
+    const ruleC = await ruleFor('C', products(pC));
+    const ruleWide = await ruleFor('wide', WORKSPACE);
+
+    const thread = await seedThread(s.a.workspaceId, [s.pA, s.pB]);
+    expect(await resolveThreadProduct(s.a, thread.threadId)).toBeNull();
+    expect(await resolveThreadProducts(s.a, thread.threadId)).toEqual(
+      [s.pA, s.pB].sort((x, y) => (x < y ? -1 : 1)),
+    );
+    const r = await suggestReply(s.a, {
+      threadId: thread.threadId,
+      ai: stubAi,
+      chunkLimit: 100,
+      lessonLimit: 50,
+    });
+    const ids = r.sources.chunkIds.map(String);
+    const has = async (ks: bigint) => (await chunkIdsOf(ks)).some((id) => ids.includes(id));
+    expect([await has(forA), await has(forB), await has(wide)]).toEqual([true, true, true]);
+    expect(await has(forC)).toBe(false);
+    const lessonIds = r.sources.lessonIds.map(String);
+    expect(lessonIds).toEqual(expect.arrayContaining([ruleA, ruleB, ruleWide].map(String)));
+    expect(lessonIds).not.toContain(ruleC.toString());
   });
 });
 
@@ -680,12 +732,18 @@ const stubAi: IAIProvider = {
 
 let threadSeq = 0;
 
-/** A mail thread with one inbound message; with a product, a qualified lead
+/** A mail thread with one inbound message; per product, a qualified lead
  *  for it whose outreach conversation is this thread. */
 async function seedThread(
   workspaceId: bigint,
-  productProfileId: bigint | null,
+  productOrProducts: bigint | readonly bigint[] | null,
 ): Promise<{ threadId: bigint }> {
+  const productIds =
+    productOrProducts === null
+      ? []
+      : typeof productOrProducts === 'bigint'
+        ? [productOrProducts]
+        : [...productOrProducts];
   threadSeq += 1;
   const [mailbox] = await db
     .insert(mailboxes)
@@ -723,13 +781,13 @@ async function seedThread(
     subject: 'Question about the datasheet',
     bodyText: QUERY,
   });
-  if (productProfileId !== null) {
+  for (const [i, productProfileId] of productIds.entries()) {
     const [source] = await db
       .insert(sourceRecords)
       .values({
         workspaceId,
         sourceSystem: 'mock',
-        sourceId: `kl05-${threadSeq}`,
+        sourceId: `kl05-${threadSeq}-${i}`,
         rawData: {},
         normalizedData: {},
         sourceUrl: 'https://example.test',
@@ -749,15 +807,25 @@ async function seedThread(
         currentThreadId: thread!.id,
       })
       .returning();
-    await db.insert(outreachThreadState).values({
-      workspaceId,
-      qualifiedLeadId: lead!.id,
-      threadId: thread!.id,
-      stage: 'engagement',
-    });
+    // One conversation state per thread (and it would name its product):
+    // a thread shared by several leads is found through their
+    // current_thread_id.
+    if (productIds.length === 1) {
+      await db.insert(outreachThreadState).values({
+        workspaceId,
+        qualifiedLeadId: lead!.id,
+        threadId: thread!.id,
+        stage: 'engagement',
+      });
+    }
     const [contact] = await db
       .insert(contacts)
-      .values({ workspaceId, email: `buyer${threadSeq}@target.test`, name: 'Buyer', status: 'active' })
+      .values({
+        workspaceId,
+        email: `buyer${threadSeq}-${i}@target.test`,
+        name: 'Buyer',
+        status: 'active',
+      })
       .returning();
     await db.insert(contactAssociations).values([
       { workspaceId, contactId: contact!.id, entityType: 'qualified_lead', entityId: lead!.id.toString() },

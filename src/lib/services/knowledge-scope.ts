@@ -13,7 +13,10 @@
 //   AND NOT EXISTS (documents d WHERE d.id = ks.document_id AND d.status = 'archived')
 //   AND (ks.scope_kind = 'workspace'
 //        OR EXISTS (knowledge_source_products p
-//                   WHERE p.source_id = ks.id [AND p.product_profile_id = $pid]))
+//                   WHERE p.source_id = ks.id [AND p.product_profile_id = $pid
+//                                              | IN ($pids)]))
+//
+// (an empty $pids list drops the EXISTS: workspace-wide sources only).
 //
 // url and text sources have document_id NULL and stay retrievable;
 // archiving a document excludes its sources' chunks at once and restoring
@@ -92,13 +95,15 @@ export function knowledgeSourceLive(workspaceId: bigint): SQL {
   )!;
 }
 
-function scopeRowExists(productProfileId?: bigint): SQL {
+function scopeRowExists(products?: bigint | readonly bigint[]): SQL {
   const conds: SQL[] = [
     eq(knowledgeSourceProducts.workspaceId, knowledgeSources.workspaceId),
     eq(knowledgeSourceProducts.sourceId, knowledgeSources.id),
   ];
-  if (productProfileId !== undefined) {
-    conds.push(eq(knowledgeSourceProducts.productProfileId, productProfileId));
+  if (typeof products === 'bigint') {
+    conds.push(eq(knowledgeSourceProducts.productProfileId, products));
+  } else if (products !== undefined) {
+    conds.push(inArray(knowledgeSourceProducts.productProfileId, [...products]));
   }
   return exists(
     db
@@ -119,13 +124,19 @@ export function knowledgeSourceWorkspaceWide(): SQL {
 }
 
 /**
- * With a product: workspace-wide sources plus that product's. Without one
- * (Suggest reply on a thread with no lead product): workspace-wide sources
- * plus every source that still has a product — mirroring lessonInScope().
- * A 'products' source with no row left matches neither.
+ * With a product: workspace-wide sources plus that product's. With a list
+ * (Suggest reply on a thread whose leads are for several products):
+ * workspace-wide sources plus those products' — an EMPTY list is
+ * workspace-wide only (a thread with no lead product). Without either:
+ * workspace-wide sources plus every source that still has a product —
+ * mirroring lessonInScope() (coverage-style reads, never a prompt for one
+ * thread). A 'products' source with no row left matches none of these.
  */
-export function knowledgeSourceInScope(productProfileId?: bigint): SQL {
-  return or(knowledgeSourceWorkspaceWide(), scopeRowExists(productProfileId))!;
+export function knowledgeSourceInScope(products?: bigint | readonly bigint[]): SQL {
+  if (products !== undefined && typeof products !== 'bigint' && products.length === 0) {
+    return knowledgeSourceWorkspaceWide();
+  }
+  return or(knowledgeSourceWorkspaceWide(), scopeRowExists(products))!;
 }
 
 /** 'products' sources with no product left ("Needs a scope"). */
@@ -148,8 +159,12 @@ export function knowledgeSourceNeedsScope(): SQL {
 
 export interface KnowledgeRetrievalScope {
   workspaceId: bigint;
-  /** Omitted: workspace-wide + every source that still has a product. */
+  /** Workspace-wide + this product's sources. */
   productProfileId?: bigint;
+  /** Instead of productProfileId: workspace-wide + these products'
+   *  sources; empty = workspace-wide only. Omitting both: workspace-wide +
+   *  every source that still has a product. */
+  productProfileIds?: readonly bigint[];
 }
 
 /** THE predicate: may a chunk owned by `knowledge_sources` reach a prompt
@@ -157,7 +172,7 @@ export interface KnowledgeRetrievalScope {
 export function knowledgeSourceRetrievable(scope: KnowledgeRetrievalScope): SQL {
   return and(
     knowledgeSourceLive(scope.workspaceId),
-    knowledgeSourceInScope(scope.productProfileId),
+    knowledgeSourceInScope(scope.productProfileId ?? scope.productProfileIds),
   )!;
 }
 

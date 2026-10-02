@@ -445,10 +445,14 @@ export async function embedAllLessons(
 export interface RetrieveOptions {
   /** Top-k. Defaults to 8. */
   limit?: number;
-  /** Workspace-wide sources plus this product's. Omitted: workspace-wide
-   *  sources plus every source that still has a product (Suggest reply on
-   *  a thread with no lead product). See knowledge-scope.ts. */
+  /** Workspace-wide sources plus this product's. See knowledge-scope.ts. */
   productProfileId?: bigint;
+  /** Instead of productProfileId: workspace-wide sources plus these
+   *  products' (Suggest reply on a thread whose leads are for several
+   *  products); EMPTY = workspace-wide only (a thread with no lead
+   *  product). Omitting both: workspace-wide plus every source that still
+   *  has a product. */
+  productProfileIds?: readonly bigint[];
   /** Phase 22: filter chunks to a single knowledge purpose category. */
   purposeCategory?:
     | 'technical'
@@ -497,6 +501,7 @@ export async function retrieve(
     knowledgeSourceRetrievable({
       workspaceId: ctx.workspaceId,
       productProfileId: options.productProfileId,
+      productProfileIds: options.productProfileIds,
     }),
   ];
   // Phase 22: optional purpose-category filter (a source-level axis).
@@ -558,6 +563,9 @@ export interface RetrieveLessonsOptions {
   /** Workspace-wide rules plus that product's rules; omitted = every rule
    *  that applies somewhere (lessonInScope()). */
   productProfileId?: bigint;
+  /** Instead of productProfileId: workspace-wide rules plus these
+   *  products'; EMPTY = workspace-wide rules only. */
+  productProfileIds?: readonly bigint[];
   /** The consuming task; only its registry categories are searched. */
   taskType?: LessonTaskType;
   embedder?: IEmbeddingProvider;
@@ -580,7 +588,7 @@ export async function retrieveLessons(
     eq(learningLessons.workspaceId, ctx.workspaceId),
     eq(learningLessons.lifecycle, 'active'),
     isNotNull(learningLessons.embedding),
-    lessonInScope(options.productProfileId),
+    lessonInScope(options.productProfileId ?? options.productProfileIds),
   ];
   if (options.taskType !== undefined) {
     conditions.push(inArray(learningLessons.category, categoriesForTaskType(options.taskType)));

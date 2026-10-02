@@ -87,28 +87,32 @@ export async function suggestReply(
     || lastInbound.subject
     || messages.map((m) => m.subject).join(' ');
 
-  // KL-05: knowledge for the thread's lead product plus workspace-wide
-  // knowledge, through the same scope predicate as every other path
-  // (knowledge-scope.ts) — a thread about product B never sees a source
-  // scoped to product A. A thread with no single lead product (a generic
-  // inbound inquiry) gets workspace-wide sources plus every source that
-  // still has a product, as lessonInScope() does for rules. This path calls
-  // retrieve() directly: the vector-storage provider abstraction requires
-  // a product. Rules: only the categories the registry routes to reply
-  // suggestions (reply_quality, outreach_style, general_instruction) —
-  // before KL-01 nothing ever asked for reply_quality and every
-  // qualification rule competed for these slots (I038).
-  const productProfileId = (await resolveThreadProduct(ctx, input.threadId)) ?? undefined;
+  // KL-05 (design §8): knowledge for the thread's product plus
+  // workspace-wide knowledge, through the same scope predicate as every
+  // other path (knowledge-scope.ts) — a thread about product B never sees a
+  // source or rule scoped to product A. When the thread's leads are for
+  // several products it gets exactly the union of those products (never a
+  // third product's); a thread with no lead product (a generic inbound
+  // inquiry) gets workspace-wide knowledge only. This path calls retrieve()
+  // directly: the vector-storage provider abstraction requires a product.
+  // Rules: only the categories the registry routes to reply suggestions
+  // (reply_quality, outreach_style, general_instruction) — before KL-01
+  // nothing ever asked for reply_quality and every qualification rule
+  // competed for these slots (I038).
+  const threadProducts = await resolveThreadProducts(ctx, input.threadId);
+  const productProfileId = threadProducts.length === 1 ? threadProducts[0] : undefined;
+  const scope =
+    productProfileId !== undefined ? { productProfileId } : { productProfileIds: threadProducts };
   const [chunks, lessons] = await Promise.all([
     retrieve(ctx, queryText, {
       limit: input.chunkLimit ?? 6,
-      productProfileId,
+      ...scope,
       embedder: input.embedder,
     }),
     retrieveLessons(ctx, queryText, {
       limit: input.lessonLimit ?? 4,
       taskType: 'reply',
-      productProfileId,
+      ...scope,
       embedder: input.embedder,
     }),
   ]);
@@ -127,6 +131,7 @@ export async function suggestReply(
     payload: {
       lastInboundId: lastInbound.id.toString(),
       productProfileId: productProfileId?.toString() ?? null,
+      productProfileIds: threadProducts.map((id) => id.toString()),
       chunkIds: chunks.map((c) => c.chunk.id.toString()),
       lessonIds: lessons.map((l) => l.lesson.id.toString()),
       model: result.model,
@@ -145,18 +150,39 @@ export async function suggestReply(
 
 /**
  * The one product a mail thread is about, or null when there is none or
- * more than one. Walks, in order: the outreach conversation state for the
- * thread, leads whose active thread it is, and the leads of the contacts
- * linked to the thread. Only a single distinct product counts — a guess
- * between two products would scope the reply to the wrong one.
+ * more than one (see resolveThreadProducts) — a guess between two products
+ * would scope the reply to the wrong one.
  */
 export async function resolveThreadProduct(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   threadId: bigint,
 ): Promise<bigint | null> {
+  const products = await resolveThreadProducts(ctx, threadId);
+  return products.length === 1 ? products[0]! : null;
+}
+
+/**
+ * The products a mail thread may be about, sorted: one when a single lead
+ * product is known, several when its leads disagree, none when it has no
+ * lead. Walks, in order: the outreach conversation state for the thread,
+ * leads whose active thread it is, and the leads of the contacts linked to
+ * the thread; the first step that names exactly one product wins, and
+ * otherwise the candidates seen so far are returned (Suggest reply then
+ * reads exactly their union, never another product's knowledge).
+ */
+export async function resolveThreadProducts(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  threadId: bigint,
+): Promise<bigint[]> {
+  const seen = new Map<string, bigint>();
+  const candidates = (): bigint[] =>
+    [...seen.values()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  /** The single product, or null after remembering the ambiguous set. */
   const single = (ids: readonly bigint[]): bigint | null => {
     const distinct = Array.from(new Set(ids.map((id) => id.toString())));
-    return distinct.length === 1 ? BigInt(distinct[0]!) : null;
+    if (distinct.length === 1) return BigInt(distinct[0]!);
+    for (const id of distinct) seen.set(id, BigInt(id));
+    return null;
   };
   const leadProducts = async (leadIds: readonly bigint[]): Promise<bigint[]> => {
     if (leadIds.length === 0) return [];
@@ -179,7 +205,7 @@ export async function resolveThreadProduct(
       ),
     );
   const fromState = single(await leadProducts(states.map((s) => s.leadId)));
-  if (fromState !== null) return fromState;
+  if (fromState !== null) return [fromState];
 
   const current = await db
     .select({ productProfileId: qualifiedLeads.productProfileId })
@@ -190,7 +216,10 @@ export async function resolveThreadProduct(
         eq(qualifiedLeads.currentThreadId, threadId),
       ),
     );
-  if (current.length > 0) return single(current.map((r) => r.productProfileId));
+  if (current.length > 0) {
+    const one = single(current.map((r) => r.productProfileId));
+    return one !== null ? [one] : candidates();
+  }
 
   const threadContacts = await db
     .select({ contactId: contactAssociations.contactId })
@@ -202,7 +231,7 @@ export async function resolveThreadProduct(
         eq(contactAssociations.entityId, threadId.toString()),
       ),
     );
-  if (threadContacts.length === 0) return null;
+  if (threadContacts.length === 0) return candidates();
   const leadLinks = await db
     .select({ entityId: contactAssociations.entityId })
     .from(contactAssociations)
@@ -220,7 +249,8 @@ export async function resolveThreadProduct(
     .map((l) => l.entityId)
     .filter((id) => /^\d+$/.test(id))
     .map((id) => BigInt(id));
-  return single(await leadProducts(leadIds));
+  const fromContacts = single(await leadProducts(leadIds));
+  return fromContacts !== null ? [fromContacts] : candidates();
 }
 
 interface PromptParts {

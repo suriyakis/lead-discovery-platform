@@ -208,13 +208,15 @@ export function normalizeScope(scope: LessonScopeInput | null | undefined): Norm
   return { kind: 'products', productProfileIds: ids };
 }
 
-function scopeRowExists(productProfileId?: bigint): SQL {
+function scopeRowExists(products?: bigint | readonly bigint[]): SQL {
   const conds: SQL[] = [
     eq(lessonScopes.workspaceId, learningLessons.workspaceId),
     eq(lessonScopes.lessonId, learningLessons.id),
   ];
-  if (productProfileId !== undefined) {
-    conds.push(eq(lessonScopes.productProfileId, productProfileId));
+  if (typeof products === 'bigint') {
+    conds.push(eq(lessonScopes.productProfileId, products));
+  } else if (products !== undefined) {
+    conds.push(inArray(lessonScopes.productProfileId, [...products]));
   }
   return exists(db.select({ one: sql`1` }).from(lessonScopes).where(and(...conds)));
 }
@@ -227,13 +229,19 @@ function scopeRowExists(productProfileId?: bigint): SQL {
  *   scope_kind = 'workspace' OR EXISTS (lesson_scopes row [for this product])
  *
  * With a product id: workspace-wide rules plus the rules scoped to that
- * product. Without one ("any product" — the reply assistant, compaction):
- * workspace-wide rules plus product rules that still have a product. A
- * 'products' rule whose products were all deleted matches neither — it
- * applies nowhere until an operator re-scopes or retires it (I109).
+ * product. With a list (Suggest reply on a thread whose leads are for
+ * several products): workspace-wide rules plus those products' rules; an
+ * EMPTY list is workspace-wide rules only (a thread with no lead product).
+ * Without either ("any product" — compaction, embedding): workspace-wide
+ * rules plus product rules that still have a product. A 'products' rule
+ * whose products were all deleted matches none of these — it applies
+ * nowhere until an operator re-scopes or retires it (I109).
  */
-export function lessonInScope(productProfileId?: bigint): SQL {
-  return or(eq(learningLessons.scopeKind, 'workspace'), scopeRowExists(productProfileId))!;
+export function lessonInScope(products?: bigint | readonly bigint[]): SQL {
+  if (products !== undefined && typeof products !== 'bigint' && products.length === 0) {
+    return eq(learningLessons.scopeKind, 'workspace');
+  }
+  return or(eq(learningLessons.scopeKind, 'workspace'), scopeRowExists(products))!;
 }
 
 /** 'products' rules with no product left ("Needs a scope"). */
