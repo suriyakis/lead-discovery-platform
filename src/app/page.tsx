@@ -37,7 +37,7 @@ const LANDING_MODULES: ReadonlyArray<ModuleTile> = [
   {
     title: 'Qualify',
     blurb:
-      'A deterministic rule engine scores each record per product profile — keywords, sectors, lessons. Every verdict has reasons, evidence, and confidence.',
+      'AI scores each record per product profile — keywords, sectors, lessons — with deterministic rules as the fallback. Every verdict has reasons, evidence, and confidence.',
     icon: ListChecks,
     tone: 'amber',
   },

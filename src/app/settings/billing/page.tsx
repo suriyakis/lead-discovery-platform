@@ -1,6 +1,8 @@
 import Link from 'next/link';
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { Coins, CreditCard } from 'lucide-react';
+import { appUrl } from '@/lib/app-origin';
 import { AppShell } from '@/components/AppShell';
 import { BuyTokensButtons } from '@/components/BuyTokensButtons';
 import { auth } from '@/lib/auth';
@@ -89,10 +91,12 @@ export default async function BillingPage({
   async function openPortal() {
     'use server';
     const c = await getWorkspaceContext();
+    // Stripe returns to this deployment, not to production (I155).
+    const requestHeaders = await headers();
     try {
       const result = await createPortalSession(
         c,
-        'https://discover.nulife.pl/settings/billing',
+        appUrl('/settings/billing', { headers: requestHeaders }),
       );
       redirect(result.url);
     } catch (err) {
@@ -114,11 +118,12 @@ export default async function BillingPage({
     if (planId !== 'starter' && planId !== 'pro') {
       redirect(`/settings/billing?err=${encodeURIComponent('Unknown plan.')}`);
     }
+    const requestHeaders = await headers();
     try {
       const result = await createCheckoutSession(c, {
         planId,
-        successUrl: 'https://discover.nulife.pl/settings/billing?stripe=success',
-        cancelUrl: 'https://discover.nulife.pl/settings/billing?stripe=canceled',
+        successUrl: appUrl('/settings/billing?stripe=success', { headers: requestHeaders }),
+        cancelUrl: appUrl('/settings/billing?stripe=canceled', { headers: requestHeaders }),
       });
       redirect(result.url);
     } catch (err) {

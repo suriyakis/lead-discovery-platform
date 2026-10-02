@@ -74,8 +74,8 @@ export default async function KnowledgePage({
         </div>
         <p className="muted">
           Things this workspace knows about its products and sectors —
-          documents, reference URLs, distilled snippets. Future RAG phases
-          chunk and embed these for AI grounding.
+          documents, reference URLs, distilled snippets. Indexing a source
+          (Index now, on its page) chunks and embeds it for AI grounding.
         </p>
 
         <form className="leads-controls" method="get">

@@ -1,5 +1,7 @@
 import Link from 'next/link';
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { appUrl } from '@/lib/app-origin';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   ArrowRight,
@@ -109,11 +111,13 @@ export default async function OnboardingPage({
     if (planId !== 'starter' && planId !== 'pro') {
       redirect(`/onboarding?msg=${encodeURIComponent('Unknown plan id.')}`);
     }
+    // Stripe returns to this deployment, not to production (I155).
+    const requestHeaders = await headers();
     try {
       const result = await createCheckoutSession(c, {
         planId,
-        successUrl: 'https://discover.nulife.pl/onboarding?stripe=success',
-        cancelUrl: 'https://discover.nulife.pl/onboarding?stripe=canceled',
+        successUrl: appUrl('/onboarding?stripe=success', { headers: requestHeaders }),
+        cancelUrl: appUrl('/onboarding?stripe=canceled', { headers: requestHeaders }),
       });
       redirect(result.url);
     } catch (err) {
