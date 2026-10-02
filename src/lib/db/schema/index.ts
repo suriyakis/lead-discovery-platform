@@ -34,3 +34,4 @@ export * from './ops';
 export * from './work-leases';
 export * from './rate-limits';
 export * from './qualification-runs';
+export * from './diagnostics';

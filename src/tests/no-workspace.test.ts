@@ -13,8 +13,9 @@
 //   - first sign-in (provisionOnSignIn, the auth.ts signIn event body);
 //   - preauthorizeEmail when the account already exists;
 //   - createFirstWorkspace and its server action (allowed once);
-//   - the no-workspace screen on /dashboard, and /onboarding and the
-//     settings pages routing such users to it;
+//   - the no-workspace state on Today, and on /onboarding and the
+//     settings pages in place (DS-07: the (app) layout's bare frame
+//     around it, the page shows the state);
 //   - no OWNER_EMAIL left under src/app.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -38,16 +39,16 @@ import {
   workspaceSlugFor,
 } from '@/lib/services/workspace-provisioning';
 import { createFirstWorkspaceAction } from '@/lib/workspace-actions';
-import TodayPage from '@/app/today/page';
-import OnboardingPage from '@/app/onboarding/page';
-import AccountSettingsPage from '@/app/settings/account/page';
-import WorkspaceAuditPage from '@/app/settings/audit/page';
-import BillingPage from '@/app/settings/billing/page';
-import CrmSettingsPage from '@/app/settings/crm/page';
-import IntegrationsPage from '@/app/settings/integrations/page';
-import MembersPage from '@/app/settings/members/page';
-import OutreachSettingsPage from '@/app/settings/outreach/page';
-import UsagePage from '@/app/settings/usage/page';
+import TodayPage from '@/app/(app)/today/page';
+import OnboardingPage from '@/app/(app)/onboarding/page';
+import AccountSettingsPage from '@/app/(app)/settings/account/page';
+import WorkspaceAuditPage from '@/app/(app)/settings/audit/page';
+import BillingPage from '@/app/(app)/settings/billing/page';
+import CrmSettingsPage from '@/app/(app)/settings/crm/page';
+import IntegrationsPage from '@/app/(app)/settings/integrations/page';
+import MembersPage from '@/app/(app)/settings/members/page';
+import OutreachSettingsPage from '@/app/(app)/settings/outreach/page';
+import UsagePage from '@/app/(app)/settings/usage/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { platformCtx } from './helpers/platform';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
@@ -632,7 +633,7 @@ describe('the no-workspace screen on /today', () => {
   });
 });
 
-describe('/onboarding and the settings pages send a user without a workspace to the screen', () => {
+describe('/onboarding and the settings pages show a user without a workspace the state in place (DS-07)', () => {
   const sp = () => Promise.resolve({});
   const PAGES: Array<[string, () => Promise<unknown>]> = [
     ['/onboarding', () => OnboardingPage({ searchParams: sp() })],
@@ -646,10 +647,13 @@ describe('/onboarding and the settings pages send a user without a workspace to 
     ['/settings/usage', () => UsagePage({ searchParams: sp() })],
   ];
 
-  it.each(PAGES)('%s redirects to /today', async (_route, render) => {
+  it.each(PAGES)('%s renders the no-workspace state', async (_route, render) => {
     const user = await seedUser({ email: 'loner@test.local' });
     await signInAs(user);
-    expect(await expectRedirect(render)).toBe('/today');
+    const html = (await renderToHtml((await render()) as ReactNode)).replaceAll('<!-- -->', '');
+    expect(html).toContain('data-no-workspace-state');
+    expect(html).toContain('Create your workspace');
+    expect(html).toContain(`<code>${user}</code>`);
   });
 });
 

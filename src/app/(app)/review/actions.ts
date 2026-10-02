@@ -1,0 +1,114 @@
+'use server';
+
+// Bulk actions for the Review queue. Operates on review_item ids posted
+// from the page-level form. State filter is round-tripped so the user
+// stays on the same tab after the action completes.
+//
+// MOB-06: both are guarded — after a switch in another tab they are
+// refused before any item changes (src/lib/workspace-guard).
+
+import { redirect } from 'next/navigation';
+import { getWorkspaceContext } from '@/lib/services/auth-context';
+import {
+  ReviewServiceError,
+  bulkArchiveReviewItems,
+  bulkDeleteReviewItems,
+} from '@/lib/services/review';
+import { isNextRedirectError } from '@/lib/server-redirect';
+import { parseDecisionKey } from '@/lib/services/learning-decisions';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
+
+function parseIds(formData: FormData): bigint[] {
+  const ids: bigint[] = [];
+  for (const raw of formData.getAll('ids')) {
+    const s = String(raw);
+    if (!/^\d+$/.test(s)) continue;
+    try {
+      ids.push(BigInt(s));
+    } catch {
+      /* skip non-numeric */
+    }
+  }
+  return ids;
+}
+
+function returnTo(formData: FormData, flash: { message?: string; error?: string }): string {
+  const stateRaw = String(formData.get('state') ?? '').trim();
+  const safeState = /^[a-z_]+$/.test(stateRaw) ? stateRaw : '';
+  const fromRaw = String(formData.get('from') ?? '').trim();
+  const toRaw = String(formData.get('to') ?? '').trim();
+  const pageRaw = String(formData.get('page') ?? '').trim();
+  const params = new URLSearchParams();
+  if (safeState && safeState !== 'new') params.set('state', safeState);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fromRaw)) params.set('from', fromRaw);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(toRaw)) params.set('to', toRaw);
+  if (/^\d+$/.test(pageRaw) && pageRaw !== '1') params.set('page', pageRaw);
+  if (flash.message) params.set('message', flash.message);
+  if (flash.error) params.set('error', flash.error);
+  const qs = params.toString();
+  return qs ? `/review?${qs}` : '/review';
+}
+
+async function bulkArchiveForm(formData: FormData): Promise<void> {
+  const ctx = await getWorkspaceContext();
+  const ids = parseIds(formData);
+  if (ids.length === 0) {
+    redirect(returnTo(formData, { error: 'Select at least one item.' }));
+  }
+  try {
+    const r = await bulkArchiveReviewItems(ctx, ids, {
+      decisionKey: parseDecisionKey(formData.get('decisionKey')),
+    });
+    redirect(
+      returnTo(formData, {
+        message: `Archived ${r.archived} of ${r.requested} item(s).`,
+      }),
+    );
+  } catch (err) {
+    if (isNextRedirectError(err)) throw err;
+    redirect(
+      returnTo(formData, {
+        error:
+          err instanceof ReviewServiceError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'archive failed',
+      }),
+    );
+  }
+}
+export const bulkArchiveAction = withWorkspaceGuard('review.bulk_archive', bulkArchiveForm);
+
+async function bulkDeleteForm(formData: FormData): Promise<void> {
+  const ctx = await getWorkspaceContext();
+  const ids = parseIds(formData);
+  if (ids.length === 0) {
+    redirect(returnTo(formData, { error: 'Select at least one item.' }));
+  }
+  try {
+    const r = await bulkDeleteReviewItems(ctx, ids);
+    const kept =
+      r.kept.length > 0
+        ? ` Kept ${r.kept.length} with recorded decisions or comments — archive ${r.kept.length === 1 ? 'it' : 'them'} instead.`
+        : '';
+    redirect(
+      returnTo(formData, {
+        message: `Deleted ${r.deleted} of ${r.requested} item(s).${kept}`,
+      }),
+    );
+  } catch (err) {
+    if (isNextRedirectError(err)) throw err;
+    redirect(
+      returnTo(formData, {
+        error:
+          err instanceof ReviewServiceError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'delete failed',
+      }),
+    );
+  }
+}
+export const bulkDeleteAction = withWorkspaceGuard('review.bulk_delete', bulkDeleteForm);

@@ -61,6 +61,8 @@ export const SKIPPED_PATTERNS: Readonly<Record<string, string>> = {
   // own expectations (500 + app/error.tsx) when ENABLE_TEST_ROUTES=1.
   '/test-only/error-boundary':
     'throws on purpose (404 unless ENABLE_TEST_ROUTES=1); visited by the "branded backstop pages" smoke tests',
+  '/test-only/shell-error':
+    'throws on purpose inside the workspace frame (404 unless ENABLE_TEST_ROUTES=1); visited by e2e/app-shell.spec.ts',
 };
 
 /**
@@ -105,22 +107,29 @@ export function patternToRegExp(pattern: string): RegExp {
 }
 
 /**
- * Every page route under src/app, as a pattern ("/", "/review/[id]", …).
- * Route groups "(x)" don't appear in the URL; parallel-route slots "@x"
- * and private folders "_x" aren't routes of their own.
+ * Every page file under src/app by its route pattern ("/", "/review/[id]",
+ * …): pattern → path of the page file. Route groups "(x)" don't appear in
+ * the URL (the workspace pages live in src/app/(app)/, DS-07), so a
+ * pattern is not a file path; parallel-route slots "@x" and private
+ * folders "_x" aren't routes of their own.
  */
-export function appRoutePatterns(appDir = path.resolve(process.cwd(), 'src/app')): string[] {
+export function appRouteFiles(appDir = path.resolve(process.cwd(), 'src/app')): Map<string, string> {
   const files = readdirSync(appDir, { recursive: true, encoding: 'utf8' });
-  const patterns = new Set<string>();
+  const routes = new Map<string, string>();
   for (const file of files) {
     const parts = file.split(/[\\/]/);
     if (parts.at(-1) !== 'page.tsx' && parts.at(-1) !== 'page.ts') continue;
     const dirs = parts.slice(0, -1);
     if (dirs.some((d) => d.startsWith('@') || d.startsWith('_'))) continue;
     const segs = dirs.filter((d) => !(d.startsWith('(') && d.endsWith(')')));
-    patterns.add(`/${segs.join('/')}`);
+    routes.set(`/${segs.join('/')}`, path.join(appDir, file));
   }
-  return [...patterns].sort();
+  return routes;
+}
+
+/** Every page route under src/app, as a pattern ("/", "/review/[id]", …). */
+export function appRoutePatterns(appDir = path.resolve(process.cwd(), 'src/app')): string[] {
+  return [...appRouteFiles(appDir).keys()].sort();
 }
 
 const pathnameOf = (p: string) => new URL(p, 'http://smoke.invalid').pathname;

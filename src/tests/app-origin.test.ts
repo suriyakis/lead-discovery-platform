@@ -80,7 +80,7 @@ describe('appUrl (I155)', () => {
       if (text.includes('discover.nulife.pl')) offenders.push(f.split(path.sep).join('/'));
     }
     expect(offenders).toEqual([]);
-    for (const f of ['src/app/onboarding/page.tsx', 'src/app/settings/billing/page.tsx'])
+    for (const f of ['src/app/(app)/onboarding/page.tsx', 'src/app/(app)/settings/billing/page.tsx'])
       expect(read(f), f).toMatch(/appUrl\('\/[\w/]+(\?stripe=success)?'/);
   });
 });
@@ -93,7 +93,7 @@ describe('stale copy (I155)', () => {
   });
 
   it('the knowledge page says sources are indexed now, not in a future phase', () => {
-    const knowledge = read('src/app/knowledge/page.tsx').replace(/\s+/g, ' ');
+    const knowledge = read('src/app/(app)/knowledge/page.tsx').replace(/\s+/g, ' ');
     expect(knowledge).not.toMatch(/Future RAG/);
     // KL-06: sources are indexed in the background as soon as they change.
     expect(knowledge).toContain('Each one is chunked and embedded in the background');

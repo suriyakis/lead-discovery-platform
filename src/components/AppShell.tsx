@@ -1,6 +1,21 @@
-// Shared app shell: BrandHeader at the top + Sidebar + main content.
-// AppShell is a server component that pulls the current session itself
-// so pages can render <AppShell>{...}</AppShell> without boilerplate.
+// The workspace frame: BrandHeader at the top + Sidebar + main content,
+// plus the banners, Cmd-K and the "Ask the platform" assistant.
+//
+// DS-07 (absorbs MOB-03, AP-05a, ia:F-09): src/app/(app)/layout.tsx renders
+// it ONCE for every workspace page, and Next keeps the layout mounted
+// across client-side navigation — so the assistant's conversation, the
+// palette's entity cache and the sidebar survive moving between pages
+// (I053). No page renders AppShell itself (src/tests/app-shell-ds07.test.ts
+// fails if one does). What the frame shows is resolved once per layout
+// render by getShellState() (src/lib/shell/state.ts), which also decides
+// the frame's state:
+//   - signed out          → the sign-in page;
+//   - account not active  → /pending;
+//   - no workspace yet    → a bare frame (brand header, account, Sign out;
+//                           a super-admin also gets the Platform console
+//                           link and the workspace switcher): the page
+//                           shows <NoWorkspaceState/>;
+//   - a workspace         → the full frame below.
 //
 // Navigation comes from one registry (src/lib/nav/registry.ts): the
 // Sidebar (areas), AreaFrame (the current area's tabs or the Settings
@@ -8,13 +23,33 @@
 // button, and the account menu (My account, Help & support). Each reads
 // the viewer's role in the active workspace, so admin-only entries only
 // show to admins. Public pages (signed-out landing, /pending) bypass the
-// shell and render BrandHeader on their own.
+// shell and render BrandHeader on their own; /admin has its own layout
+// and AdminShell.
 //
 // The chrome draws its icons with Lucide, never emoji (DS-08; the bell,
 // the god-mode crown, the account menu).
+//
+// MOB-02 + DS-07: every number in the frame (sidebar and tab badges, the
+// bell, the account menu) comes from ONE attention summary (src/lib/
+// attention), computed with the frame and shared with the page (Today asks
+// for the same request-cached one). The layout is not re-rendered on
+// client navigation, so the numbers are client islands fed by
+// <ShellAttentionProvider>, which keeps the summary current with
+// useAttention(); decisions re-render the frame in their own response
+// (refreshChrome()), and <ShellRefresher/> refreshes the server-rendered
+// rest (banners, chip) when the automation state moves or the tab comes
+// back after 5 idle minutes. A number that failed to load prints "—".
+//
+// MOB-06: the frame resolves the workspace of THIS browser session (each
+// session keeps its own) and provides it to every page as the expected
+// workspace (WorkspaceGuardProvider): every guarded form and fetch posts
+// it back, and the server refuses with workspace_changed when the session
+// has moved since. The assistant and the palette are keyed by that
+// workspace, so a switch (or entering god mode) starts them afresh.
 
-import { Bell, Crown, UserCircle } from 'lucide-react';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { Crown, UserCircle } from 'lucide-react';
 import styles from './AppShell.module.css';
 import { AreaFrame } from './AreaNav';
 import { AssistantPanel } from './AssistantPanel';
@@ -23,224 +58,200 @@ import { BrandHeader } from './BrandHeader';
 import { CommandPalette } from './CommandPalette';
 import { CommandPaletteTrigger } from './CommandPaletteTrigger';
 import { fetchCommandPaletteEntities } from './command-palette-action';
-import { NavCountBadge } from './NavCountBadge';
+import { ShellAttentionProvider } from './ShellAttention';
+import {
+  AccountMenuBadge,
+  AccountMenuItemBadge,
+  CloseMenusOnNavigate,
+  NotificationBell,
+} from './ShellHeaderCounts';
+import { ShellRefresher } from './ShellRefresher';
 import { Sidebar } from './Sidebar';
+import {
+  WorkspaceDriftNotice,
+  WorkspaceGuardProvider,
+  WorkspaceSwitchNotice,
+  type PageWorkspace,
+} from './WorkspaceGuard';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
-import { auth } from '@/lib/auth';
 import { signOutAction } from '@/lib/auth-actions';
-import { ACCOUNT_MENU, type NavCountValues } from '@/lib/nav/registry';
-import { resolveNavCount, tabById, type NavViewer } from '@/lib/nav/resolve';
+import { navCountsFromAttention } from '@/lib/attention/project';
+import { ACCOUNT_MENU } from '@/lib/nav/registry';
+import { areaById, areaHref, tabById, type NavViewer } from '@/lib/nav/resolve';
+import { NO_NAV_COUNTS } from '@/lib/services/nav-counts';
+import { chromeSignature } from '@/lib/shell/freshness';
+import { getShellState, type ShellUser, type ShellWorkspaceRow } from '@/lib/shell/state';
 import { cx } from '@/lib/ui/cx';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
-import { listMyWorkspaces } from '@/lib/services/workspace';
-import { getNavCounts, ZERO_NAV_COUNTS } from '@/lib/services/nav-counts';
-import type { WorkspaceRole } from '@/lib/services/context';
-import type { WorkspaceAutomationNotice } from '@/lib/services/automation-gate';
 
 export interface AppShellProps {
   children: React.ReactNode;
-  /**
-   * Override `isSuperAdmin`. By default the shell reads `session.user.role`
-   * and shows the Platform console only when role is `super_admin`.
-   */
-  isSuperAdmin?: boolean;
-  /**
-   * Override the header's right slot. Defaults to: Search, notifications,
-   * workspace switcher (if user has 2+ workspaces) + the account menu.
-   */
-  rightSlot?: React.ReactNode;
 }
 
-export async function AppShell({
-  children,
-  isSuperAdmin,
-  rightSlot,
-}: Readonly<AppShellProps>) {
-  const session = await auth();
-  const showAdmin =
-    isSuperAdmin ?? session?.user?.role === 'super_admin';
-
-  // Phase 28+29: pull the user's workspaces so the header can render a
-  // switcher when they belong to more than one. Super-admins also see
-  // every other workspace as a god-mode option for support.
-  const myWorkspaces = session?.user?.id
-    ? await listMyWorkspaces(session.user.id, {
-        includeAllForSuperAdmin: session.user.role === 'super_admin',
-      })
-    : [];
-
-  // Badges and the viewer's role for the active workspace. Resolve the
-  // workspace THE SAME WAY pages do (incl. the god-mode branch and the
-  // ignore-foreign-pointer rule for normal users) so the shell's badges
-  // never show a different tenant than the page content. Best-effort —
-  // degrades to zero badges and no role when there is no workspace yet.
-  let navCounts: NavCountValues = ZERO_NAV_COUNTS;
-  let role: WorkspaceRole | null = null;
-  let unreadNotifications = 0;
-  // PC-06: holds, the platform outbound stop and a missing accountable
-  // owner, shown to every member of the active workspace.
-  let automationNotice: WorkspaceAutomationNotice | null = null;
-  if (session?.user?.id) {
-    try {
-      const { resolveWorkspaceContextForUser } = await import(
-        '@/lib/services/workspace-resolution'
-      );
-      const shellCtx = await resolveWorkspaceContextForUser(
-        session.user.id,
-        session.user.role === 'super_admin',
-      );
-      role = shellCtx.role;
-      navCounts = await getNavCounts({ workspaceId: shellCtx.workspaceId });
-      const { unreadNotificationCount } = await import(
-        '@/lib/services/notifications'
-      );
-      unreadNotifications = await unreadNotificationCount(shellCtx);
-      const { getWorkspaceAutomationNotice } = await import(
-        '@/lib/services/automation-gate'
-      );
-      automationNotice = await getWorkspaceAutomationNotice(shellCtx);
-    } catch {
-      // No resolvable workspace yet — badges stay at zero.
-    }
+export async function AppShell({ children }: Readonly<AppShellProps>) {
+  const state = await getShellState();
+  if (state.kind === 'signed_out') redirect('/');
+  // Phase 15: accounts waiting for approval see the pending wall only.
+  if (state.kind === 'inactive') redirect('/pending');
+  if (state.kind === 'no_workspace' || state.kind === 'unavailable') {
+    return (
+      <BareFrame
+        user={state.user}
+        workspaces={state.kind === 'no_workspace' ? state.workspaces : []}
+      >
+        {children}
+      </BareFrame>
+    );
   }
-  if (showAdmin) {
-    try {
-      const { adminSupportUnreadCount } = await import('@/lib/services/support');
-      navCounts = { ...navCounts, adminSupportUnread: await adminSupportUnreadCount() };
-    } catch {
-      // Table not migrated yet — the console badge stays hidden.
-    }
-  }
-  const viewer: NavViewer = { role, isSuperAdmin: showAdmin };
 
-  const slot =
-    rightSlot ??
-    (session?.user?.email ? (
-      <DefaultRightSlot
-        email={session.user.email}
-        unreadNotifications={unreadNotifications}
-        navCounts={navCounts}
-        myWorkspaces={myWorkspaces.map((m) => ({
-          id: m.workspace.id.toString(),
-          name: m.workspace.name,
-          slug: m.workspace.slug,
-          role: m.role,
-          isActive: m.isActive,
-          isArchived: m.workspace.status === 'archived',
-          isDefault: m.workspace.isDefault,
-          isGodMode: m.isGodMode,
-        }))}
-      />
-    ) : null);
+  const { user, attention } = state;
+  const viewer: NavViewer = { role: state.role, isSuperAdmin: user.isSuperAdmin };
+  const pageWorkspace: PageWorkspace = state.workspace;
+  // The server render's numbers; in the browser the islands follow the
+  // provider's live summary.
+  const nav = attention ? navCountsFromAttention(attention) : NO_NAV_COUNTS;
 
   // God-mode indicator: the active workspace is one the super-admin is
   // NOT a member of. Every page below renders the TARGET tenant's data,
   // so make that unmissable and offer a one-click way home.
-  const godModeRow = myWorkspaces.find((m) => m.isGodMode && m.isActive);
-  const homeWorkspace = myWorkspaces.find((m) => !m.isGodMode);
-  const returnHome = homeWorkspace
-    ? setActiveWorkspaceAction.bind(null, homeWorkspace.workspace.id.toString())
-    : null;
+  const returnHome =
+    state.godMode && state.homeWorkspaceId
+      ? setActiveWorkspaceAction.bind(null, state.homeWorkspaceId)
+      : null;
 
   return (
-    <div className="app-shell">
-      <BrandHeader rightSlot={slot} />
-      {godModeRow ? (
-        <div role="alert" className={styles.godMode} data-god-mode="">
-          <Crown className={`lucide ${styles.godModeIcon}`} aria-hidden="true" />
-          <span className={styles.godModeText}>
-            GOD MODE — you are inside workspace “{godModeRow.workspace.name}”.
-            Every page shows that tenant&apos;s data and your actions apply to it.
-          </span>
-          {returnHome ? (
-            <form action={returnHome}>
-              <button type="submit" className={`ghost-btn ${styles.godModeExit}`}>
-                Return to my workspace
-              </button>
-            </form>
-          ) : null}
-        </div>
-      ) : null}
-      {automationNotice ? <AutomationHoldBanner notice={automationNotice} /> : null}
-      <div className="app-body">
-        <Sidebar isSuperAdmin={showAdmin} role={role} navCounts={navCounts} />
-        <main className="app-main">
-          <AreaFrame viewer={viewer} navCounts={navCounts}>
-            {children}
-          </AreaFrame>
-        </main>
-      </div>
-      {session?.user?.id ? (
-        <>
-          <CommandPalette
-            fetchEntities={fetchCommandPaletteEntities}
-            isSuperAdmin={showAdmin}
-            role={role}
+    <WorkspaceGuardProvider workspace={pageWorkspace}>
+      <ShellAttentionProvider seed={attention} workspaceId={pageWorkspace.id}>
+        <div className="app-shell" data-shell-workspace={pageWorkspace.id}>
+          <BrandHeader
+            rightSlot={
+              user.email ? <HeaderSlot email={user.email} workspaces={state.workspaces} /> : null
+            }
           />
-          <AssistantPanel />
-        </>
-      ) : null}
-    </div>
+          <WorkspaceSwitchNotice />
+          <WorkspaceDriftNotice />
+          {state.godMode ? (
+            <div role="alert" className={styles.godMode} data-god-mode="">
+              <Crown className={`lucide ${styles.godModeIcon}`} aria-hidden="true" />
+              <span className={styles.godModeText}>
+                GOD MODE — you are inside workspace “{state.godMode.workspaceName}”. Every page
+                shows that tenant&apos;s data and your actions apply to it.
+              </span>
+              {returnHome ? (
+                <form action={returnHome}>
+                  <button type="submit" className={`ghost-btn ${styles.godModeExit}`}>
+                    Return to my workspace
+                  </button>
+                </form>
+              ) : null}
+            </div>
+          ) : null}
+          {state.automationNotice ? <AutomationHoldBanner notice={state.automationNotice} /> : null}
+          <div className="app-body">
+            <Sidebar
+              isSuperAdmin={user.isSuperAdmin}
+              role={state.role}
+              attention={attention}
+              navCounts={nav.values}
+              unknownCounts={[...nav.unknown]}
+            />
+            <main className="app-main">
+              <AreaFrame viewer={viewer} navCounts={nav.values} unknownCounts={nav.unknown}>
+                {children}
+              </AreaFrame>
+            </main>
+          </div>
+          {/* Keyed by the workspace: a switch or god mode starts both afresh
+              (no answer or cached entity of one tenant shows in another). */}
+          <CommandPalette
+            key={`palette:${pageWorkspace.id}`}
+            fetchEntities={fetchCommandPaletteEntities}
+            isSuperAdmin={user.isSuperAdmin}
+            role={state.role}
+          />
+          <AssistantPanel key={pageWorkspace.id} />
+          <ShellRefresher renderedSignature={chromeSignature(attention)} />
+        </div>
+      </ShellAttentionProvider>
+    </WorkspaceGuardProvider>
   );
 }
 
-function DefaultRightSlot({
+/**
+ * The frame for a signed-in user without a workspace (or while it cannot
+ * be resolved): the brand header with who they are and Sign out. Every
+ * module needs a workspace, so there is no sidebar, palette or assistant;
+ * the page shows <NoWorkspaceState/> (or its own error).
+ *
+ * A super-admin with no workspace of their own keeps their way out: the
+ * Platform console link (the sidebar item they would otherwise have) and
+ * the workspace switcher listing every tenant (entering one is god mode,
+ * confirmed and audit-logged as from the full frame).
+ */
+function BareFrame({
+  user,
+  workspaces,
+  children,
+}: Readonly<{ user: ShellUser; workspaces: ShellWorkspaceRow[]; children: React.ReactNode }>) {
+  const consoleArea = user.isSuperAdmin ? areaById('console') : null;
+  return (
+    <>
+      <BrandHeader
+        rightSlot={
+          <>
+            {consoleArea ? (
+              <Link href={areaHref(consoleArea)} className="ghost-btn" data-bare-console="">
+                <Crown className="lucide" aria-hidden="true" />
+                {consoleArea.label}
+              </Link>
+            ) : null}
+            {user.isSuperAdmin && workspaces.length > 0 ? (
+              <WorkspaceSwitcher workspaces={workspaces} />
+            ) : null}
+            {user.email ? <span className="muted">{user.email}</span> : null}
+            <form action={signOutAction}>
+              <button type="submit" className="ghost-btn">
+                Sign out
+              </button>
+            </form>
+          </>
+        }
+      />
+      <main className="dashboard-wrap" data-shell-frame="no-workspace">
+        {children}
+      </main>
+    </>
+  );
+}
+
+/** The header's right slot: Search, the bell, the switcher, the account menu. */
+function HeaderSlot({
   email,
-  unreadNotifications,
-  navCounts,
-  myWorkspaces,
-}: Readonly<{
-  email: string;
-  unreadNotifications: number;
-  navCounts: NavCountValues;
-  myWorkspaces: React.ComponentProps<typeof WorkspaceSwitcher>['workspaces'];
-}>) {
-  // Unread support replies also show on the closed menu, so they are not
-  // hidden behind it.
-  const menuCounts = ACCOUNT_MENU.map((id) => resolveNavCount(tabById(id).tab.count, navCounts));
-  const menuCount = menuCounts.find((c) => c !== null) ?? null;
+  workspaces,
+}: Readonly<{ email: string; workspaces: ShellWorkspaceRow[] }>) {
   return (
     <>
       <CommandPaletteTrigger />
-      {/* The bell counts events; the count is neutral (DS-00 count policy). */}
-      <Link
-        href="/notifications"
-        className={cx('header-bell', styles.bell)}
-        aria-label={
-          unreadNotifications > 0
-            ? `Notifications, ${unreadNotifications} unread`
-            : 'Notifications'
-        }
-      >
-        <Bell className="lucide" aria-hidden="true" />
-        {unreadNotifications > 0 ? (
-          <span className={cx('header-bell-count', styles.bellCount)} aria-hidden="true">
-            {unreadNotifications > 99 ? '99+' : unreadNotifications}
-          </span>
-        ) : null}
-      </Link>
-      {myWorkspaces.length > 1 ? (
-        <WorkspaceSwitcher workspaces={myWorkspaces} />
-      ) : null}
+      <NotificationBell />
+      {workspaces.length > 1 ? <WorkspaceSwitcher workspaces={workspaces} /> : null}
       {/* The account menu (ia §4): who you are, My account, Help &
           support, Sign out — at every width. Plain <details>, so it
           works before hydration and without JS (I144). */}
       <details className={cx('header-account-menu', styles.accountMenu)}>
         <summary className="ghost-btn" aria-label="Account menu" title={email}>
           <UserCircle className="lucide" aria-hidden="true" />
-          {menuCount ? <NavCountBadge count={menuCount} /> : null}
+          <AccountMenuBadge />
         </summary>
         <div className={cx('header-account-menu-panel', styles.accountPanel)}>
           <span className={cx('who', styles.accountWho)}>{email}</span>
           <ul className={cx('header-account-links', styles.accountLinks)}>
             {ACCOUNT_MENU.map((id) => {
               const { tab } = tabById(id);
-              const count = resolveNavCount(tab.count, navCounts);
               return (
                 <li key={id}>
                   <Link href={tab.href} data-tab={tab.id}>
                     {tab.label}
-                    {count ? <NavCountBadge count={count} /> : null}
+                    <AccountMenuItemBadge tabId={id} />
                   </Link>
                 </li>
               );
@@ -253,6 +264,7 @@ function DefaultRightSlot({
           </form>
         </div>
       </details>
+      <CloseMenusOnNavigate />
     </>
   );
 }

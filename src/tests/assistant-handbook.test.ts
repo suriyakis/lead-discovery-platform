@@ -37,6 +37,7 @@ import { LANGUAGE_PRECEDENCE } from '@/lib/i18n/language-precedence';
 import { REPLY_CLASSES } from '@/lib/mail/reply-classes';
 import { routeTable } from '@/lib/nav/route-table';
 import type { ReplyClass } from '@/lib/services/reply-classifier';
+import { appRouteFiles } from '../../e2e/routes';
 
 const SRC = path.resolve(__dirname, '..');
 const APP = path.join(SRC, 'app');
@@ -100,9 +101,13 @@ function listFiles(dir: string, pred: (f: string) => boolean): string[] {
   return out;
 }
 
+// Route pattern → page file. The workspace pages sit in the (app) route
+// group (DS-07), so a URL is not a file path.
+const PAGE_FILES = appRouteFiles(APP);
+
 /** The page file a static path or src/app pattern stands for. */
 function pageFileFor(p: string): string {
-  return path.join(APP, ...p.split('/').filter(Boolean), 'page.tsx');
+  return PAGE_FILES.get(p) ?? path.join(APP, ...p.split('/').filter(Boolean), 'page.tsx');
 }
 
 describe('assistant handbook — content truth', () => {

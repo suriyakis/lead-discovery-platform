@@ -40,6 +40,7 @@ import {
 } from '@/lib/rate-limit';
 import { RETENTION_POLICIES } from '@/lib/services/retention';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { claimHeaders } from './helpers/workspace-guard';
 
 vi.mock('@/lib/auth', () => ({ auth: vi.fn() }));
 
@@ -62,10 +63,18 @@ function signIn(id: string): void {
   authMock.mockResolvedValue({ user: { id, role: 'member', accountStatus: 'active' } });
 }
 
+/** MOB-06: the workspace the calling page was rendered for. The guarded
+ *  routes (assistant, translate, suggest-reply) refuse a request without
+ *  it, so every request carries the workspace world() made. */
+let claimWorkspace: bigint | null = null;
+
 function post(url: string, body: unknown): Request {
   return new Request(`http://localhost${url}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(claimWorkspace !== null ? claimHeaders(claimWorkspace) : {}),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -110,10 +119,12 @@ async function world(extraMembers = 0) {
     ownerUserId: ownerId,
     extraMembers: memberIds.map((userId) => ({ userId, role: 'member' as const })),
   });
+  claimWorkspace = workspaceId;
   return { workspaceId, ownerId, memberIds };
 }
 
 beforeEach(async () => {
+  claimWorkspace = null;
   await truncateAll();
   await _resetRateLimitsForTests();
   authMock.mockReset();

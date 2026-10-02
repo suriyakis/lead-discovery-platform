@@ -123,7 +123,10 @@ ${b.screens}
    approves and queues drafts with no human review (see Autopilot).
    Only an APPROVED draft whose pipeline lead has a contact email can be
    queued. {H-04} Hand-approved drafts cannot be queued from the draft
-   page yet (see Known limitations, I002).
+   page yet (see Known limitations, I002). [/drafts] opens on the drafts
+   awaiting approval (draft or needs edit), the same number as the
+   Outreach badge's drafts and Today's "Drafts awaiting approval"; "All
+   active" adds the approved and rejected ones.
 8. SENDING: queued emails go out from a mailbox after a suppression
    check, a geography re-check, the mailbox's sending policy, the domain
    cooldown and the daily limit. The workspace send caps (daily email
@@ -382,11 +385,23 @@ evidence chain.
   provider over a chosen range; owners and admins also see the tokens
   charged for them (as on [/settings/billing]). [/settings/audit]: who
   changed what (admins). [/settings/account]: your name and password.
-- [/health]: the weekly health report — empty wallet, missing product,
-  no mailbox, each failing mailbox (with how to fix it), no active
-  mailbox, recipes without a target country, failed runs, review
-  backlog, stale drafts, follow-ups awaiting approval, plus an AI review
-  of recent conversations. Admins can run it now.
+- [/health]: the workspace checks, live: what is broken or stopped and
+  why — the pause, holds, the platform stop, not live yet, each failing
+  mailbox (with how to fix it), no active mailbox or product, recipes
+  without a target country, the mock search, a noisy review queue, a
+  spike of automatic suppressions, failed or empty runs, open incidents —
+  each with the page that fixes it; Today shows the problems on top. A
+  free check every 6 hours notifies owners and admins when a new problem
+  appears (at most once a day per kind). The scheduled report adds an AI
+  review of recent conversations; owners and admins switch it off (it
+  then spends no tokens), set its interval or run it now. {H-61}
+- The numbers on the sidebar, on Today and on the bell are one set of
+  counts: open review items, drafts and follow-ups awaiting approval,
+  prospect replies nobody has answered (trash and spam left out), unread
+  notifications and the problems [/health] lists. The sidebar's badges
+  refresh on their own (every minute while the page is open, and when
+  you come back to the tab); Today and the bell refresh when you open a
+  page. "—" means a number could not be loaded just now; it is not zero.
 
 ## Contacting a human (/support)
 When the assistant can't solve it, [/support] (the account menu at the

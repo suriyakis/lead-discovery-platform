@@ -96,7 +96,7 @@ so a dead worker that writes nothing still turns stale.
 | `autopilot.tick` | 5 min | 10 min |
 | `crawl.engine.tick` | 5 min | 10 min |
 | `outreach.follow_up.tick` | 1 h | 1 h |
-| `health.check.tick` | 6 h | 1 h |
+| `health.check.tick` (free diagnostics sweep of every active workspace, then the due weekly reports) | 6 h | 1 h |
 | `ops.reaper.tick` | 5 min | 10 min |
 | `mail.trash.purge.tick` | 24 h | 1 h |
 | `ops.retention.tick` | 24 h | 1 h |

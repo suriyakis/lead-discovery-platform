@@ -15,15 +15,15 @@ import {
   addMemberAction,
   changeMemberRoleAction,
   removeMemberAction,
-} from '@/app/settings/members/actions';
-import { saveFollowUp } from '@/app/settings/outreach/follow-up-actions';
-import { saveReplyAutoActions } from '@/app/settings/outreach/actions';
+} from '@/app/(app)/settings/members/actions';
+import { saveFollowUp } from '@/app/(app)/settings/outreach/follow-up-actions';
+import { saveReplyAutoActions } from '@/app/(app)/settings/outreach/actions';
 import {
   archiveCrmConnectionAction,
   restoreCrmConnectionAction,
   saveCrmConnectionAction,
   testCrmConnectionAction,
-} from '@/app/settings/crm/[id]/actions';
+} from '@/app/(app)/settings/crm/[id]/actions';
 import {
   deleteMailboxMessages,
   restoreMailboxMessages,
@@ -31,13 +31,13 @@ import {
   spamMailboxMessages,
   trashMailboxMessages,
   unspamMailboxMessages,
-} from '@/app/mailbox/[id]/actions';
+} from '@/app/(app)/mailbox/[id]/actions';
 import {
   cancelQueuedEmailAction,
   drainSendQueueAction,
   rescheduleQueuedEmailAction,
   saveSendSettingsAction,
-} from '@/app/mailbox/queue/actions';
+} from '@/app/(app)/mailbox/queue/actions';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect } from './helpers/next-render';
 

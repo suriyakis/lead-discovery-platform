@@ -185,6 +185,8 @@ export const AUDIT_KINDS = [
   'workspace.update_outreach_defaults',
   'workspace.update_outreach_language',
   'workspace.update_vector_storage_quota',
+  /** AP-06 (I069): the scheduled health check switched on/off or its interval. */
+  'health_check.settings_update',
   'onboarding.setup_mode',
   'onboarding.complete',
   'provider_settings.update',

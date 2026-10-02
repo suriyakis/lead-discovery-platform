@@ -13,6 +13,10 @@
 export interface Turn {
   role: 'user' | 'assistant';
   content: string;
+  /** MOB-06: the workspace an answer was computed for; its [/path]
+   *  references link there (through /go when the page is elsewhere).
+   *  Never sent back as history. */
+  workspaceId?: string;
 }
 
 /** What /api/assistant returns, success or error. */
@@ -20,6 +24,8 @@ export interface AssistantReplyBody {
   ok?: boolean;
   answer?: string;
   source?: 'ai' | 'deterministic';
+  /** The workspace the answer was computed for (MOB-06). */
+  workspaceId?: string;
   error?: string;
   detail?: string;
   retryable?: boolean;
@@ -54,6 +60,9 @@ const OWN_COPY_CODES: ReadonlySet<string> = new Set([
   'rate_limited',
   'empty_answer',
   'assistant_failed',
+  // MOB-06: the browser switched workspace in another tab since this page
+  // rendered; the guard's sentence names both workspaces.
+  'workspace_changed',
 ]);
 
 export const PANEL_COPY = {
@@ -114,7 +123,13 @@ export function settleAsk(
       turns: [
         ...prior,
         { role: 'user', content: question },
-        { role: 'assistant', content: answer },
+        {
+          role: 'assistant',
+          content: answer,
+          ...(typeof body.workspaceId === 'string' && /^\d{1,19}$/.test(body.workspaceId)
+            ? { workspaceId: body.workspaceId }
+            : {}),
+        },
       ],
     };
   }
@@ -180,18 +195,20 @@ export function panelReducer(state: PanelState, action: PanelAction): PanelState
 }
 
 /** One round trip to /api/assistant. Never throws: a network failure is
- *  settled like any other failure. */
+ *  settled like any other failure. `headers` carries the page's expected
+ *  workspace (MOB-06: useExpectedWorkspaceHeaders()). */
 export async function postQuestion(
   question: string,
   prior: ReadonlyArray<Turn>,
   fetchImpl: typeof fetch = fetch,
+  headers: Readonly<Record<string, string>> = {},
 ): Promise<AskOutcome> {
   let status: number | null = null;
   let body: AssistantReplyBody | null = null;
   try {
     const res = await fetchImpl('/api/assistant', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ question, history: historyToSend(prior) }),
     });
     status = res.status;
@@ -213,12 +230,13 @@ export async function runAsk(
   dispatch: (action: PanelAction) => void,
   retryQuestion?: string,
   fetchImpl?: typeof fetch,
+  headers?: Readonly<Record<string, string>>,
 ): Promise<AskOutcome | null> {
   const question = (retryQuestion ?? state.input).trim();
   if (!question || state.busy) return null;
   const prior = state.turns;
   dispatch({ type: 'submit', question, retry: retryQuestion !== undefined });
-  const outcome = await postQuestion(question, prior, fetchImpl);
+  const outcome = await postQuestion(question, prior, fetchImpl, headers);
   dispatch({ type: 'settled', question, outcome });
   return outcome;
 }

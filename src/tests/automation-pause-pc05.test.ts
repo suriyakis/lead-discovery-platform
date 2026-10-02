@@ -1629,6 +1629,8 @@ describe('pause service (ia:F-18 / MOB-07 backend)', { timeout: 60_000 }, () => 
     const fd = new FormData();
     fd.set('returnTo', '/mailbox/queue');
     fd.set('reason', 'bad list');
+    // MOB-06: the page posts the workspace it was rendered for.
+    fd.set('expectedWorkspaceId', t.workspaceId.toString());
     const target = await expectRedirect(() => pauseAutomationAction(fd));
     const url = new URL(target, 'http://app.test');
     expect(url.pathname).toBe('/mailbox/queue');
@@ -1826,9 +1828,9 @@ describe('legacy emergency_pause flags', { timeout: 60_000 }, () => {
   });
 
   it('I062 (PC-13): the Crawl Engine page has no autopilot form, so nothing on it can switch autopilot off', async () => {
-    const page = readSrc('app/connectors/engine/page.tsx');
+    const page = readSrc('app/(app)/connectors/engine/page.tsx');
     expect(page).not.toMatch(/name="(autopilotEnabled|enableAutoApproveProjects|enableAutoEnqueueOutreach|autoApproveThreshold)"/);
-    const actions = await import('@/app/connectors/engine/actions');
+    const actions = await import('@/app/(app)/connectors/engine/actions');
     expect(Object.keys(actions)).not.toContain('saveAutopilot');
     const t = await tenant();
     await updateAutopilotSettings(t.owner, { autopilotEnabled: true });
@@ -1842,7 +1844,7 @@ describe('legacy emergency_pause flags', { timeout: 60_000 }, () => {
   });
 
   it('the old checkboxes are gone: both pages host the one pause control', () => {
-    for (const rel of ['app/autopilot/page.tsx', 'app/mailbox/queue/page.tsx']) {
+    for (const rel of ['app/(app)/autopilot/page.tsx', 'app/(app)/mailbox/queue/page.tsx']) {
       const page = readSrc(rel);
       expect(page).toContain('<AutomationPauseControl');
       expect(page).not.toContain('name="emergencyPause"');

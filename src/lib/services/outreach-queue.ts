@@ -911,30 +911,71 @@ async function claimEntry(
   });
 }
 
+/** The workspace daily cap as the drain applies it (I070). */
+export interface SendCapUsage {
+  /** Outbound emails DELIVERED in the window, whatever path sent them
+   *  (the queue, follow-ups, manual sends, replies). */
+  used: number;
+  /** outreach_send_settings.daily_email_limit. */
+  cap: number;
+  remaining: number;
+  /** The window is the trailing 24 hours: [windowStart, now]. */
+  windowStart: Date;
+}
+
+/** Column default of outreach_send_settings.daily_email_limit, for a
+ *  workspace whose settings row was never created. */
+const DEFAULT_DAILY_EMAIL_LIMIT = 50;
+
 /**
- * The workspace daily cap left: the limit minus the emails DELIVERED in
- * the trailing 24 hours. PC-10: failed attempts are not counted — with
- * automatic retries every failed attempt would otherwise eat a slot of
- * the cap meant for real sends.
+ * THE daily-cap usage. The drain (evaluateSendGate), Today's send-queue
+ * tile and the `send.cap_exhausted` finding all read it, so they cannot
+ * disagree (I070): the limit minus the emails DELIVERED in the trailing
+ * 24 hours. PC-10: failed attempts are not counted — with automatic
+ * retries every failed attempt would otherwise eat a slot of the cap meant
+ * for real sends. Pass `dailyEmailLimit` when the caller holds the
+ * settings row; otherwise it is read (never created: a read must not
+ * write).
  */
+export async function getSendCapUsage(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  now: Date = new Date(),
+  options: { dailyEmailLimit?: number } = {},
+): Promise<SendCapUsage> {
+  const windowStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const [sent, cap] = await Promise.all([
+    db
+      .select({ c: count() })
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.direction, 'outbound'),
+          inArray(mailMessages.status, [...DELIVERED_STATUSES]),
+          gte(mailMessages.createdAt, windowStart),
+        ),
+      ),
+    options.dailyEmailLimit !== undefined
+      ? Promise.resolve(options.dailyEmailLimit)
+      : db
+          .select({ limit: outreachSendSettings.dailyEmailLimit })
+          .from(outreachSendSettings)
+          .where(eq(outreachSendSettings.workspaceId, ctx.workspaceId))
+          .limit(1)
+          .then((rows) => rows[0]?.limit ?? DEFAULT_DAILY_EMAIL_LIMIT),
+  ]);
+  const used = Number(sent[0]?.c ?? 0);
+  return { used, cap, remaining: Math.max(0, cap - used), windowStart };
+}
+
+/** The workspace daily cap left (getSendCapUsage). */
 async function remainingDailyCap(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   settings: OutreachSendSettings,
   now: Date,
 ): Promise<number> {
-  const dayStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const sentToday = await db
-    .select({ c: count() })
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.direction, 'outbound'),
-        inArray(mailMessages.status, [...DELIVERED_STATUSES]),
-        gte(mailMessages.createdAt, dayStart),
-      ),
-    );
-  return Math.max(0, settings.dailyEmailLimit - Number(sentToday[0]?.c ?? 0));
+  return (await getSendCapUsage(ctx, now, { dailyEmailLimit: settings.dailyEmailLimit }))
+    .remaining;
 }
 
 /** Outbound mail_messages statuses that mean the email went out. Caps and

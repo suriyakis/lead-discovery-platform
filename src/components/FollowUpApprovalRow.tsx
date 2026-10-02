@@ -8,6 +8,7 @@
 
 import { useState, type CSSProperties } from 'react';
 import { Languages } from 'lucide-react';
+import { ExpectedWorkspaceField, useExpectedWorkspaceHeaders } from './WorkspaceGuard';
 
 interface Props {
   id: string;
@@ -37,6 +38,10 @@ export function FollowUpApprovalRow({
   const [translating, setTranslating] = useState(false);
   const [error, setError] = useState('');
 
+  // MOB-06: the translation spends and the approval sends in the page's
+  // workspace — both carry it.
+  const guardHeaders = useExpectedWorkspaceHeaders();
+
   const canTranslate = Boolean(targetLanguage);
   const isRtl = targetLanguage === 'he' || targetLanguage === 'ar';
 
@@ -47,7 +52,7 @@ export function FollowUpApprovalRow({
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guardHeaders },
         body: JSON.stringify({ subject, body, targetLanguage }),
       });
       const j = (await res.json().catch(() => ({}))) as {
@@ -84,6 +89,7 @@ export function FollowUpApprovalRow({
       style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}
     >
       <input type="hidden" name="id" value={id} />
+      <ExpectedWorkspaceField />
       <label style={col}>
         <span style={lbl} className="muted">
           Subject

@@ -69,16 +69,17 @@ import {
   runReclassificationJob,
 } from '@/lib/services/qualification-runs';
 import { acquireWorkLease, type WorkLease } from '@/lib/services/work-leases';
-import { describeReclassifyStatus } from '@/app/connectors/engine/reclassify-status';
-import * as engineActions from '@/app/connectors/engine/actions';
-import * as learningActions from '@/app/learning/actions';
-import * as autofillActions from '@/app/products/autofill/actions';
-import * as healthActions from '@/app/health/actions';
-import * as autopilotActions from '@/app/autopilot/actions';
-import * as recipeActions from '@/app/connectors/[id]/recipes/[recipeId]/actions';
-import CrawlEnginePage from '@/app/connectors/engine/page';
+import { describeReclassifyStatus } from '@/app/(app)/connectors/engine/reclassify-status';
+import * as engineActions from '@/app/(app)/connectors/engine/actions';
+import * as learningActions from '@/app/(app)/learning/actions';
+import * as autofillActions from '@/app/(app)/products/autofill/actions';
+import * as healthActions from '@/app/(app)/health/actions';
+import * as autopilotActions from '@/app/(app)/autopilot/actions';
+import * as recipeActions from '@/app/(app)/connectors/[id]/recipes/[recipeId]/actions';
+import CrawlEnginePage from '@/app/(app)/connectors/engine/page';
 import { renderToHtml } from './helpers/next-render';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { withClaim } from './helpers/workspace-guard';
 
 // ---- session stub ----------------------------------------------------------
 
@@ -185,10 +186,13 @@ async function redirectOf(run: Promise<unknown>): Promise<URL> {
   throw new Error('expected the action to redirect');
 }
 
+/** A form posted from a page rendered for the signed-in workspace: the
+ *  buttons are behind the expected-workspace guard too (MOB-06), which
+ *  refuses a post that does not say which workspace its page showed. */
 function form(fields: Record<string, string> = {}): FormData {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
-  return fd;
+  return session.ctx ? withClaim(fd, session.ctx.workspaceId) : fd;
 }
 
 async function setBalance(workspaceId: bigint, balance: bigint): Promise<void> {
@@ -1075,7 +1079,7 @@ describe('every AI button is guarded', { timeout: 60_000 }, () => {
     const s = await setup(0);
     await holdAction(s.ws, 'health.check_now');
     actAs(s.owner);
-    const url = await redirectOf(healthActions.runHealthCheckNowAction());
+    const url = await redirectOf(healthActions.runHealthCheckNowAction(form()));
     expect(url.pathname).toBe('/health');
     expect(url.searchParams.get('err')).toMatch(/^Run check now is already running/);
   });
@@ -1092,7 +1096,7 @@ describe('every AI button is guarded', { timeout: 60_000 }, () => {
     const s = await setup(0);
     await fillLimit(s.ws, 'autopilot.run_now');
     actAs(s.owner);
-    const url = await redirectOf(autopilotActions.runAutopilotNowAction());
+    const url = await redirectOf(autopilotActions.runAutopilotNowAction(form()));
     expect(url.pathname).toBe('/autopilot');
     expect(url.searchParams.get('error')).toMatch(
       /^Autopilot Run now was used 30 times in the last hour/,
@@ -1102,7 +1106,7 @@ describe('every AI button is guarded', { timeout: 60_000 }, () => {
   it('autopilot Run now still runs within the limit', async () => {
     const s = await setup(0);
     actAs(s.owner);
-    const url = await redirectOf(autopilotActions.runAutopilotNowAction());
+    const url = await redirectOf(autopilotActions.runAutopilotNowAction(form()));
     expect(url.searchParams.get('message')).toBeTruthy();
     expect(url.searchParams.get('error')).toBeNull();
   });
@@ -1157,8 +1161,9 @@ describe('a click the service refuses never uses up the limit', { timeout: 120_0
         expect(compact.searchParams.get('error')).toMatch(/permission/i);
         const synth = await redirectOf(learningActions.synthesizeNowAction());
         expect(synth.searchParams.get('error')).toMatch(/permission/i);
-        const health = await redirectOf(healthActions.runHealthCheckNowAction());
-        expect(health.searchParams.get('err')).toMatch(/permission/i);
+        const health = await redirectOf(healthActions.runHealthCheckNowAction(form()));
+        // /health says who may run it (AP-06's wording) instead of the code.
+        expect(health.searchParams.get('err')).toMatch(/only workspace owners and admins can run/i);
       }
     }
     expect(await used(s.ws, 'knowledge.compact')).toBeNull();
@@ -1170,7 +1175,7 @@ describe('a click the service refuses never uses up the limit', { timeout: 120_0
     actAs(s.owner);
     for (let i = 0; i < limit; i++) {
       expect((await redirectOf(learningActions.compactNowAction())).searchParams.get('error')).toBeNull();
-      expect((await redirectOf(healthActions.runHealthCheckNowAction())).searchParams.get('err')).toBeNull();
+      expect((await redirectOf(healthActions.runHealthCheckNowAction(form()))).searchParams.get('err')).toBeNull();
     }
     expect(await used(s.ws, 'knowledge.compact')).toBe(limit);
     expect(await used(s.ws, 'health.check_now')).toBe(limit);
@@ -1225,7 +1230,7 @@ describe('a click the service refuses never uses up the limit', { timeout: 120_0
     const s = await setup(0);
     actAs(s.viewer);
     for (let i = 0; i < 3; i++) {
-      const url = await redirectOf(autopilotActions.runAutopilotNowAction());
+      const url = await redirectOf(autopilotActions.runAutopilotNowAction(form()));
       expect(url.searchParams.get('error')).toBe(
         "Your role in this workspace is read-only, so you can't run autopilot. Ask a workspace admin if you need it.",
       );

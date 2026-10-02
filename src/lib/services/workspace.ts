@@ -1,6 +1,6 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { users } from '@/lib/db/schema/auth';
+import { sessions, users } from '@/lib/db/schema/auth';
 import {
   workspaceMembers,
   workspaceSettings,
@@ -469,7 +469,10 @@ export interface MyWorkspaceRow {
  * - `isActive` marks the workspace resolveWorkspaceContextForUser picks
  *   (including its oldest-membership fallback and the god-mode branch),
  *   not the raw users.activeWorkspaceId pointer, so the switcher always
- *   names the workspace the dashboard and every other page show.
+ *   names the workspace the dashboard and every other page show. MOB-06:
+ *   a request passes `activeWorkspaceId` — the workspace ITS session
+ *   resolved to — since another browser's session may work elsewhere;
+ *   without it the user's session-less default is marked.
  *
  * When `includeAllForSuperAdmin: true` and the user really is a
  * super-admin (checked against users.role), the result also contains
@@ -478,7 +481,11 @@ export interface MyWorkspaceRow {
  */
 export async function listMyWorkspaces(
   userId: string,
-  options: { includeAllForSuperAdmin?: boolean } = {},
+  options: {
+    includeAllForSuperAdmin?: boolean;
+    /** The workspace the caller's session resolved to (MOB-06). */
+    activeWorkspaceId?: bigint | null;
+  } = {},
 ): Promise<MyWorkspaceRow[]> {
   const userRows = await db
     .select({ role: users.role })
@@ -488,11 +495,15 @@ export async function listMyWorkspaces(
   const isSuperAdminUser = userRows[0]?.role === 'super_admin';
 
   let activeId: bigint | null = null;
-  try {
-    const resolved = await resolveWorkspaceContextForUser(userId, isSuperAdminUser);
-    activeId = resolved.workspaceId;
-  } catch (err) {
-    if (!(err instanceof NoWorkspaceError)) throw err;
+  if (options.activeWorkspaceId !== undefined) {
+    activeId = options.activeWorkspaceId;
+  } else {
+    try {
+      const resolved = await resolveWorkspaceContextForUser(userId, isSuperAdminUser);
+      activeId = resolved.workspaceId;
+    } catch (err) {
+      if (!(err instanceof NoWorkspaceError)) throw err;
+    }
   }
 
   const memberRows = await db
@@ -553,6 +564,12 @@ export async function listMyWorkspaces(
  * member; super_admin can pass `allowAnyAsSuperAdmin` to bypass the check
  * (god-mode can land anywhere). Returns the resolved workspace.
  *
+ * MOB-06: writes the switching session's own pointer
+ * (`sessions.activeWorkspaceId`, when `sessionToken` names a session of
+ * this user) and the last-used value (`users.activeWorkspaceId`), which a
+ * NEW session starts in. Other sessions of the same user keep their own
+ * workspace.
+ *
  * An archived workspace is refused unless `allowAnyAsSuperAdmin` is set:
  * the resolver ignores archived workspaces for normal users, so accepting
  * the pointer made the switcher claim a workspace the pages never showed
@@ -565,7 +582,7 @@ export async function listMyWorkspaces(
 export async function setActiveWorkspace(
   userId: string,
   workspaceId: bigint,
-  options: { allowAnyAsSuperAdmin?: boolean } = {},
+  options: { allowAnyAsSuperAdmin?: boolean; sessionToken?: string | null } = {},
 ): Promise<Workspace> {
   const wsRows = await db
     .select()
@@ -606,6 +623,7 @@ export async function setActiveWorkspace(
     .update(users)
     .set({ activeWorkspaceId: workspaceId })
     .where(eq(users.id, userId));
+  if (options.sessionToken) await pinSession(userId, options.sessionToken, workspaceId);
 
   if (!isMember && options.allowAnyAsSuperAdmin) {
     // God-mode switch — log it under the TARGET workspace so anyone
@@ -622,6 +640,71 @@ export async function setActiveWorkspace(
   }
 
   return wsRows[0];
+}
+
+/** Point one session of `userId` at `workspaceId` (a no-op for a token
+ *  that is not theirs). */
+async function pinSession(userId: string, sessionToken: string, workspaceId: bigint): Promise<void> {
+  await db
+    .update(sessions)
+    .set({ activeWorkspaceId: workspaceId })
+    .where(and(eq(sessions.sessionToken, sessionToken), eq(sessions.userId, userId)));
+}
+
+export interface SessionSwitchResult {
+  workspace: Pick<Workspace, 'id' | 'name'>;
+  /** false: the session was already in that workspace. */
+  switched: boolean;
+}
+
+/**
+ * MOB-06 — the switch behind `/go?ws=…&to=…`, the workspace-carrying links
+ * in notifications, alerts and the assistant: moves THIS session only
+ * (not the last-used value, not other sessions), and only into a
+ * workspace the user is a member of. Super-admins get no god-mode
+ * shortcut here: entering a tenant they don't belong to stays an explicit,
+ * audited switcher action, never a side effect of opening a link. An
+ * archived workspace is refused for normal users, as the resolver ignores
+ * it for them.
+ *
+ * Throws WorkspaceServiceError 'permission_denied' (not a member, or the
+ * token is not one of this user's sessions) or 'workspace_archived'.
+ */
+export async function switchSessionWorkspace(
+  userId: string,
+  workspaceId: bigint,
+  sessionToken: string,
+): Promise<SessionSwitchResult> {
+  const rows = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      status: workspaces.status,
+      role: users.role,
+    })
+    .from(workspaceMembers)
+    .innerJoin(workspaces, eq(workspaces.id, workspaceMembers.workspaceId))
+    .innerJoin(users, eq(users.id, workspaceMembers.userId))
+    .where(and(eq(workspaceMembers.userId, userId), eq(workspaceMembers.workspaceId, workspaceId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) {
+    throw new WorkspaceServiceError('not a member of that workspace', 'permission_denied');
+  }
+  if (row.status !== 'active' && row.role !== 'super_admin') {
+    throw new WorkspaceServiceError('that workspace is archived', 'workspace_archived');
+  }
+  const current = await db
+    .select({ activeWorkspaceId: sessions.activeWorkspaceId })
+    .from(sessions)
+    .where(and(eq(sessions.sessionToken, sessionToken), eq(sessions.userId, userId)))
+    .limit(1);
+  if (!current[0]) {
+    throw new WorkspaceServiceError('that session is not yours', 'permission_denied');
+  }
+  const switched = current[0].activeWorkspaceId !== workspaceId;
+  if (switched) await pinSession(userId, sessionToken, workspaceId);
+  return { workspace: { id: row.id, name: row.name }, switched };
 }
 
 /**

@@ -69,10 +69,14 @@ Deliverability are Outreach work, Compose belongs to Conversations, and
 
 Pages in no area (`UNLISTED_ROUTES`, each with its reason): `/` (landing
 and sign-in), `/pending`, the redirect stubs `/dashboard`, `/inbox`,
-`/settings` and `/mailbox/threads/[id]`, the test probe
-`/test-only/error-boundary`, and the design-system gallery `/dev/gallery`
-(both 404 unless `ENABLE_TEST_ROUTES=1`). A new page that is in no area and
-not unlisted fails `src/tests/nav-registry.test.ts`.
+`/settings` and `/mailbox/threads/[id]`, the test probes
+`/test-only/error-boundary` (the root error page) and
+`/test-only/shell-error` (a workspace page that throws inside the frame,
+DS-07), the design-system gallery `/dev/gallery` (all 404 unless
+`ENABLE_TEST_ROUTES=1`), and `/workspace-changed`, where a
+refused form lands when this browser switched workspace in another tab
+(MOB-06). A new page that is in no area and not unlisted fails
+`src/tests/nav-registry.test.ts`.
 
 **Cmd-K** lists, for the viewer's role: each area (named as in the
 sidebar), its other tabs, the account-menu pages, the console for
@@ -138,8 +142,9 @@ audit and usage kinds in `src/lib/kinds/`, …), checked by typecheck and by
 
 Counts are data: each badge in the registry has a count key, a tone and an
 optional gate (`NavCountSpec`). A count whose gate is unmet renders in the
-neutral tone, or not at all. Zero or an unknown value renders no badge.
-Numbers above 99 print as 99+; screen readers get the full phrase.
+neutral tone, or not at all. Zero renders no badge; a number that failed
+to load renders "—" in the neutral tone, never 0 (MOB-02). Numbers above
+99 print as 99+; screen readers get the full phrase.
 
 | Where | Count | Tone | Gate |
 | --- | --- | --- | --- |
@@ -151,8 +156,33 @@ Numbers above 99 print as 99+; screen readers get the full phrase.
 | Bell | unread notifications (events) | neutral | — |
 
 No other badges: Pipeline, Discovery, Products and Settings have none.
-`src/lib/services/nav-counts.ts` computes the numbers (MOB-02 later makes
-it a projection of the attention summary).
+
+Every number comes from ONE object, the attention summary
+(`getAttentionSummary(ctx)` in `src/lib/attention`, served as
+`GET /api/attention`, MOB-02). `src/lib/services/nav-counts.ts` is only its
+projection onto the registry's keys; Today's Needs-you tabs and Overview
+tiles, the bell and the assistant read the same summary, and the Sidebar
+keeps it current in the browser with `useAttention()` (on focus, every
+60 s while visible, when the connection returns, after a mutation, on a
+service-worker message). Each key has one definition and equals the
+default list of the page it opens:
+
+| Key | Counts | Opens |
+| --- | --- | --- |
+| `review.open` | review items new + needs_review | Today › Review |
+| `review.needsReview` | needs_review only (the Review badge's amber gate) | /review?state=needs_review |
+| `review.mine` | open review items assigned to the viewer | Today › Review |
+| `drafts.approve` | drafts in draft or needs_edit | /drafts (default: Awaiting approval) |
+| `followUps.approve` | follow-ups awaiting approval | Today › Follow-ups |
+| `replies.awaiting` | threads whose newest prospect reply (trash and spam left out) has no sent answer after it | Today › Replies |
+| `replies.overdue` | the same, waiting more than 24 hours | Today › Replies |
+| `notifications.unread` | the viewer's unread notifications | the bell |
+| `support.unread` | support threads with an unread platform reply | Help & support |
+| `problems` | critical + warning findings of the diagnostics engine | /health |
+
+A later deliverable that changes a key's meaning changes its destination
+page in the same PR (MOB-14 review.decide, MOB-16 follow-ups into drafts,
+MOB-17 the handled state behind replies).
 
 ## Redirects
 

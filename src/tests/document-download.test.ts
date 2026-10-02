@@ -22,8 +22,8 @@ import { exportLeadsToCsv } from '@/lib/services/crm';
 import { LocalFileStorage, _setStorageForTests } from '@/lib/storage';
 import { GET as downloadDocument } from '@/app/api/documents/[id]/download/route';
 import { GET as downloadCsvExport } from '@/app/api/crm/exports/[file]/route';
-import DocumentDetail from '@/app/documents/[id]/page';
-import CrmSettingsPage from '@/app/settings/crm/page';
+import DocumentDetail from '@/app/(app)/documents/[id]/page';
+import CrmSettingsPage from '@/app/(app)/settings/crm/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { renderToHtml } from './helpers/next-render';
 

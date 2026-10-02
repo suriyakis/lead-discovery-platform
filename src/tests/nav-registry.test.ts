@@ -13,7 +13,7 @@ import { createElement, isValidElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { load } from 'cheerio';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { appRoutePatterns, SEEDED_PATHS } from '../../e2e/routes';
+import { appRouteFiles, appRoutePatterns, SEEDED_PATHS } from '../../e2e/routes';
 import {
   ACCOUNT_MENU,
   DETAIL_ROUTES,
@@ -70,7 +70,14 @@ const { AreaFrameView } = await import('@/components/AreaNav');
 const { BrandHeader } = await import('@/components/BrandHeader');
 
 const PATTERNS = appRoutePatterns();
-const APP = path.resolve(process.cwd(), 'src/app');
+// Route pattern → page file (the workspace pages sit in the (app) route
+// group, DS-07, so a URL is not a file path).
+const PAGE_FILES = appRouteFiles();
+const pageFile = (pattern: string) => {
+  const file = PAGE_FILES.get(pattern);
+  if (!file) throw new Error(`no page file for ${pattern}`);
+  return file;
+};
 
 const MEMBER: NavViewer = { role: 'member', isSuperAdmin: false };
 const VIEWER: NavViewer = { role: 'viewer', isSuperAdmin: false };
@@ -760,14 +767,14 @@ describe('vocabulary', () => {
   it("/admin is called 'Platform console' everywhere it is named", () => {
     expect(areaById('console').label).toBe('Platform console');
     const crumbs = PATTERNS.filter((p) => p.startsWith('/admin')).map((p) =>
-      readFileSync(path.join(APP, ...p.split('/').filter(Boolean), 'page.tsx'), 'utf8'),
+      readFileSync(pageFile(p), 'utf8'),
     );
     for (const src of crumbs) expect(src).not.toMatch(/<Link href="\/admin">Admin<\/Link>/);
   });
 
   it('no page still links to the retired /dashboard or /inbox', () => {
     const offenders = PATTERNS.flatMap((p) => {
-      const file = path.join(APP, ...p.split('/').filter(Boolean), 'page.tsx');
+      const file = pageFile(p);
       const src = readFileSync(file, 'utf8');
       return /href=["{`]\/(dashboard|inbox)\b|redirect\('\/(dashboard|inbox)/.test(src) ? [p] : [];
     });

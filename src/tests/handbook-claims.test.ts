@@ -74,7 +74,7 @@ import {
   enqueueDraft,
   getSendSettings,
 } from '@/lib/services/outreach-queue';
-import { saveSendSettingsAction } from '@/app/mailbox/queue/actions';
+import { saveSendSettingsAction } from '@/app/(app)/mailbox/queue/actions';
 import { workspaceMembers } from '@/lib/db/schema/workspaces';
 import { expectRedirect } from './helpers/next-render';
 import {
@@ -361,7 +361,7 @@ describe('review service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(filesContaining('app', 'assignReviewItem')).toEqual([]);
     expect(filesContaining('components', 'assignReviewItem')).toEqual([]);
     // The lead page does offer it…
-    const leadPage = readSrc('app/pipeline/[id]/page.tsx');
+    const leadPage = readSrc('app/(app)/pipeline/[id]/page.tsx');
     expect(leadPage).toContain("from '@/lib/services/pipeline'");
     expect(leadPage).toMatch(/await assign\(/);
     // …and the service behind it works.
@@ -386,10 +386,10 @@ describe('pipeline service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect(lead.contactEmail).toBeNull();
 
     // The only app caller is the Promote button on /leads.
-    expect(filesContaining('app', 'ensureQualifiedLead(')).toEqual(['app/leads/page.tsx']);
-    expect(readSrc('app/leads/page.tsx')).toContain('Promote to pipeline');
+    expect(filesContaining('app', 'ensureQualifiedLead(')).toEqual(['app/(app)/leads/page.tsx']);
+    expect(readSrc('app/(app)/leads/page.tsx')).toContain('Promote to pipeline');
     // The Pipeline page and the IA vocabulary say the same (not "approved").
-    const pipelinePage = readSrc('app/pipeline/page.tsx').replace(/\s+/g, ' ');
+    const pipelinePage = readSrc('app/(app)/pipeline/page.tsx').replace(/\s+/g, ' ');
     expect(pipelinePage).toContain('becomes a lead here when you promote it from Review › By product');
     expect(pipelinePage).not.toMatch(/once it is approved/);
     const ia = fs.readFileSync(path.join(process.cwd(), 'docs/design/IA.md'), 'utf8');
@@ -468,6 +468,8 @@ describe('send queue', { timeout: DB_TEST_TIMEOUT_MS }, () => {
       fd.set('fixedDelayMinutes', String(before.fixedDelayMinutes));
       fd.set('randomDelayMinMinutes', String(before.randomDelayMinMinutes));
       fd.set('randomDelayMaxMinutes', String(before.randomDelayMaxMinutes));
+      // MOB-06: the queue page posts the workspace it was rendered for.
+      fd.set('expectedWorkspaceId', s.workspaceId.toString());
       return fd;
     };
 
@@ -492,9 +494,9 @@ describe('send queue', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     // That action is the only place in the app that saves send settings
     // (nothing on /settings/outreach does).
-    expect(filesContaining('app', 'updateSendSettings(')).toEqual(['app/mailbox/queue/actions.ts']);
+    expect(filesContaining('app', 'updateSendSettings(')).toEqual(['app/(app)/mailbox/queue/actions.ts']);
     // Each mailbox's own limits are on its page.
-    const mailboxPage = readSrc('app/mailbox/[id]/page.tsx');
+    const mailboxPage = readSrc('app/(app)/mailbox/[id]/page.tsx');
     expect(mailboxPage).toContain('Sending policy');
     expect(mailboxPage).toContain('Max per day');
   });
@@ -1260,7 +1262,7 @@ describe('reply classifier', { timeout: DB_TEST_TIMEOUT_MS }, () => {
       updateReplyAutoActions(member, { autoSuppressUnsubscribe: true }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
     expect(filesContaining('app', 'updateReplyAutoActions(')).toEqual([
-      'app/settings/outreach/actions.ts',
+      'app/(app)/settings/outreach/actions.ts',
     ]);
     expect(filesContaining('components', 'updateReplyAutoActions')).toEqual([]);
 
@@ -1567,15 +1569,23 @@ describe('Phase 0 claims from the other lanes', { timeout: DB_TEST_TIMEOUT_MS },
   });
 
   it('[handbook H-29] a failing page shows Try again, Today and support with a reference code; an unknown address shows a not-found page', () => {
-    const error = readSrc('app/error.tsx');
-    expect(error).toContain("'Try again'");
-    expect(error).toContain('href="/today"');
-    expect(error).toContain('href="/support"');
-    expect(error).toContain('Reference <code>{error.digest}</code>');
-    const notFound = readSrc('app/not-found.tsx');
-    expect(notFound).toContain('404');
-    expect(notFound).toContain('href="/today"');
-    expect(notFound).toContain('href="/support"');
+    // DS-07: one card for both error boundaries (outside the workspace
+    // frame, and inside it for a workspace page) and one 404 card.
+    const card = readSrc('components/StatusCards.tsx');
+    expect(card).toContain("'Try again'");
+    expect(card).toContain('href="/today"');
+    expect(card).toContain('href="/support"');
+    expect(card).toContain('Reference <code>{digest}</code>');
+    for (const boundary of ['app/error.tsx', 'app/(app)/error.tsx']) {
+      expect(readSrc(boundary)).toContain('<ErrorCard digest={error.digest} reset={reset} />');
+    }
+    const notFoundCard = readSrc('components/NotFoundCard.tsx');
+    expect(notFoundCard).toContain('404');
+    expect(notFoundCard).toContain('href="/today"');
+    expect(notFoundCard).toContain('href="/support"');
+    for (const page of ['app/not-found.tsx', 'app/(app)/not-found.tsx']) {
+      expect(readSrc(page)).toContain('<NotFoundCard />');
+    }
   });
 
   it("[handbook H-30] no impersonation; a platform admin's change to a workspace is audited there under their own id, platform events never are", async () => {

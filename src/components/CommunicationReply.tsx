@@ -9,6 +9,7 @@
 
 import { useState, useTransition } from 'react';
 import { Languages, Sparkles } from 'lucide-react';
+import { useExpectedWorkspaceHeaders } from './WorkspaceGuard';
 
 interface SignatureOption {
   id: string;
@@ -67,6 +68,9 @@ export function CommunicationReply({
   const [pauseNotice, setPauseNotice] = useState(automationPaused);
   const [confirmPaused, setConfirmPaused] = useState(false);
 
+  // MOB-06: every request here sends, or spends, in the page's workspace.
+  const guardHeaders = useExpectedWorkspaceHeaders();
+
   const canTranslate = Boolean(targetLanguage) && targetLanguage !== nativeLanguage;
   const isRtl = targetLanguage === 'he' || targetLanguage === 'ar';
 
@@ -77,7 +81,7 @@ export function CommunicationReply({
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guardHeaders },
         body: JSON.stringify({ subject, body, targetLanguage }),
       });
       const j = (await res.json().catch(() => ({}))) as {
@@ -108,7 +112,7 @@ export function CommunicationReply({
     try {
       const res = await fetch('/api/communication/suggest-reply', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guardHeaders },
         body: JSON.stringify({ threadId }),
       });
       const j = (await res.json().catch(() => ({}))) as {
@@ -144,7 +148,7 @@ export function CommunicationReply({
       try {
         const res = await fetch('/api/communication/reply', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...guardHeaders },
           body: JSON.stringify({
             threadId,
             mailboxId,

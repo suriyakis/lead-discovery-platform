@@ -14,6 +14,7 @@ import {
 } from '@/lib/db/schema/notifications';
 import { workspaceMembers } from '@/lib/db/schema/workspaces';
 import type { NotificationKind } from '@/lib/kinds/notification';
+import { goHref } from '@/lib/workspace-guard/shared';
 import type { WorkspaceContext } from './context';
 
 export interface NotifyInput {
@@ -59,6 +60,21 @@ export async function notify(
     );
     return null;
   }
+}
+
+/**
+ * MOB-06: the link a notification opens. Rows store the plain in-app path
+ * (`href`, e.g. /communication/123); every link to one is generated here,
+ * through /go with the notification's own workspace, so a notification
+ * opened while this browser works in another workspace (an old tab, a
+ * bookmark, a push or mail that quotes it) switches the session to the
+ * right tenant before showing the record. null when there is no link or
+ * the stored path is not a safe in-app path.
+ */
+export function notificationHref(
+  row: Pick<Notification, 'workspaceId' | 'href'>,
+): string | null {
+  return goHref(row.workspaceId, row.href);
 }
 
 const ADMIN_KEY_SEPARATOR = ':user:';

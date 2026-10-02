@@ -527,8 +527,8 @@ export const NAV_AREAS: ReadonlyArray<NavArea> = [
         label: 'Health checks',
         href: '/health',
         section: 'Automation',
-        purpose: 'The weekly workspace health report; admins can run it now.',
-        keywords: ['health report'],
+        purpose: 'Live workspace checks with fix links, and the scheduled report with its AI review.',
+        keywords: ['health report', 'problems', 'diagnostics'],
       },
       {
         id: 'settings.integrations',
@@ -905,8 +905,12 @@ export const UNLISTED_ROUTES: Readonly<Record<string, string>> = {
   '/mailbox/threads/[id]': 'Legacy URL: a permanent redirect to /communication/[threadId].',
   '/test-only/error-boundary':
     'Test probe that throws on purpose; 404 unless ENABLE_TEST_ROUTES=1.',
+  '/test-only/shell-error':
+    'Test probe: a workspace page that throws, to show the error stays inside the workspace frame (DS-07); 404 unless ENABLE_TEST_ROUTES=1.',
   '/dev/gallery':
     'Design-system component gallery (DS-06) for design review; 404 unless ENABLE_TEST_ROUTES=1.',
+  '/workspace-changed':
+    'Where a refused form lands when this browser switched workspace in another tab after the page rendered (MOB-06).',
 };
 
 // ---- actions, the interim stop, the account menu, the mobile tab bar ----

@@ -49,6 +49,7 @@ import {
   type SendResult,
 } from '@/lib/mail';
 import { runConnectorRun } from '@/lib/connectors/runner';
+import { getJobQueue } from '@/lib/jobs';
 import { runDrainTick, runFollowUpTick, runImapTick } from '@/lib/jobs/repeatables';
 import {
   AUTOPILOT_LEASE_HELD,
@@ -111,8 +112,8 @@ import {
   liveWorkLease,
   withWorkLease,
 } from '@/lib/services/work-leases';
-import { describeRunNow } from '@/app/autopilot/run-now';
-import { describeDrainBlocked, describeRetryOutcome } from '@/app/mailbox/queue/forms';
+import { describeRunNow } from '@/app/(app)/autopilot/run-now';
+import { describeDrainBlocked, describeRetryOutcome } from '@/app/(app)/mailbox/queue/forms';
 import { platformCtx, smuggled } from './helpers/platform';
 import { seedUser, truncateAll } from './helpers/db';
 import {
@@ -973,6 +974,10 @@ describe('one active run per recipe (I068)', () => {
     const { run } = await startRun(ctx, { connectorId: conn.id, recipeId: recipe.id });
     const result = await awaitRun(ctx, run.id);
     expect(['succeeded', 'partial']).toContain(result.status);
+    // awaitRun returns once the row is terminal; the runner gives the lease
+    // back right after, in the same job (integration: a race under a
+    // loaded full run). Wait for the job, not just the row.
+    await getJobQueue().drain?.();
     expect(await isWorkLeaseLive(ctx, 'connector.recipe', recipe.id)).toBe(false);
   });
 });

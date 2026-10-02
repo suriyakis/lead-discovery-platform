@@ -20,6 +20,10 @@ export const NOTIFICATION_KINDS = [
   'follow_up.awaiting_approval',
   /** health-check.ts: the weekly check found warnings. */
   'health.warning',
+  /** diagnostics/notify.ts: the 6-hourly sweep found a problem (AP-06). */
+  'health.finding',
+  /** diagnostics/notify.ts: the sweep found a critical problem (AP-06). */
+  'health.critical',
   // Conversations and people
   /** mail.ts: a prospect answered our outreach. */
   'lead.replied',

@@ -169,7 +169,9 @@ test.describe('pilot: /health', () => {
   test('a health score of 78 and a warning finding render amber', async ({ page }) => {
     await open(page, '/health');
     const amber = await toneColour(page, 'attention');
-    const score = page.locator('section h2 [data-tone]').first();
+    // AP-06: the latest saved report sits under Reports (the live score
+    // under Right now depends on the seed's current state).
+    const score = page.locator('section[aria-labelledby="health-reports"] [data-tone]').first();
     await expect(score).toHaveAttribute('data-tone', 'attention');
     await expect(score).toContainText('78');
     expect(await score.evaluate((el) => getComputedStyle(el).color)).toBe(amber);

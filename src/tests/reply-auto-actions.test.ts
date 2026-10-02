@@ -34,7 +34,7 @@ import {
   updateReplyAutoActions,
   type ReplyAutoActionsImpact,
 } from '@/lib/services/reply-auto-actions';
-import { ReplyAutoActionsCard } from '@/app/settings/outreach/ReplyAutoActionsCard';
+import { ReplyAutoActionsCard } from '@/app/(app)/settings/outreach/ReplyAutoActionsCard';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 interface Setup {

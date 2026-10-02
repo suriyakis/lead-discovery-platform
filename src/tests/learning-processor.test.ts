@@ -83,7 +83,7 @@ vi.mock('@/lib/services/auth-context', () => {
   };
 });
 
-import * as reviewActions from '@/app/review/[id]/actions';
+import * as reviewActions from '@/app/(app)/review/[id]/actions';
 import { GET as getReceiptRoute } from '@/app/api/learning/receipts/[decisionId]/route';
 
 // ---- fixtures -------------------------------------------------------------------
@@ -311,6 +311,8 @@ describe('a decision never waits for the AI (acceptance 1, I108)', () => {
       const form = new FormData();
       form.set('reason', 'Exactly our buyer: roofing contractor with 40 vans');
       form.set('decisionKey', 'kl03-accept-1-approve');
+      // MOB-06: the review page posts the workspace it was rendered for.
+      form.set('expectedWorkspaceId', session.ctx!.workspaceId.toString());
       const started = performance.now();
       try {
         await reviewActions.approveReviewItemAction(r.itemId.toString(), form);

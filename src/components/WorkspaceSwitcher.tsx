@@ -32,18 +32,22 @@ export interface WorkspaceSwitcherProps {
  *
  * The icon says which kind of seat the active one is: a building for a
  * membership, an eye for god mode (Lucide, DS-08).
+ *
+ * With no active row (the bare frame of a super-admin who has no
+ * workspace of their own yet, DS-07) the control opens on a "Choose a
+ * workspace…" placeholder instead of pretending the first row is active.
  */
 export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProps>) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const active = workspaces.find((w) => w.isActive) ?? workspaces[0];
-  if (!active) return null;
+  if (workspaces.length === 0) return null;
+  const active = workspaces.find((w) => w.isActive) ?? null;
 
   const memberships = workspaces.filter((w) => !w.isGodMode);
   const godMode = workspaces.filter((w) => w.isGodMode);
 
   const handleChange = (id: string) => {
-    if (id === active.id) return;
+    if (!id || id === active?.id) return;
     const target = workspaces.find((w) => w.id === id);
     if (
       target?.isGodMode &&
@@ -70,14 +74,14 @@ export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProp
   return (
     <label
       className={
-        active.isGodMode
+        active?.isGodMode
           ? 'workspace-switcher workspace-switcher-god'
           : 'workspace-switcher'
       }
-      title={active.isGodMode ? 'God-mode: not a member' : 'Switch workspace'}
+      title={active?.isGodMode ? 'God-mode: not a member' : 'Switch workspace'}
     >
       <span className="workspace-switcher-icon" aria-hidden="true">
-        {active.isGodMode ? (
+        {active?.isGodMode ? (
           <Eye className="lucide" data-icon="god-mode" />
         ) : (
           <Building2 className="lucide" data-icon="workspace" />
@@ -89,11 +93,16 @@ export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProp
         variant="plain"
         size="sm"
         aria-label="Workspace"
-        value={active.id}
+        value={active?.id ?? ''}
         onChange={(e) => handleChange(e.target.value)}
         disabled={isPending}
         aria-busy={isPending || undefined}
       >
+        {active ? null : (
+          <option value="" disabled>
+            Choose a workspace…
+          </option>
+        )}
         {memberships.length > 0 ? (
           <optgroup label="Member of">
             {memberships.map((w) => (

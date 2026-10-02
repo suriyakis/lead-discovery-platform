@@ -93,21 +93,34 @@ export const COUNT_CAP = 99;
 /**
  * A count: neutral, or attention when a decision waits on this user.
  * `label` is the full phrase for screen readers ("4 records need review");
- * without it the number is read as is.
+ * without it the number is read as is. `null` is a number that could not
+ * be loaded (MOB-02): it prints "—" in the neutral tone, never 0.
  */
 export function CountBadge({
   count,
   tone = 'neutral',
   label,
-}: Readonly<{ count: number; tone?: CountTone; label?: string }>) {
-  const n = Math.max(0, Math.floor(count));
-  const text = n > COUNT_CAP ? `${COUNT_CAP}+` : String(n);
+}: Readonly<{ count: number | null; tone?: CountTone; label?: string }>) {
+  const unknown = count === null;
+  let text: string;
+  let spoken = label;
+  if (unknown) {
+    text = '—';
+    spoken = label ? `${label}: number unavailable` : 'number unavailable';
+  } else {
+    const n = Math.max(0, Math.floor(count));
+    text = n > COUNT_CAP ? `${COUNT_CAP}+` : String(n);
+  }
   return (
-    <span className={styles.count} data-tone={tone}>
-      {label ? (
+    <span
+      className={styles.count}
+      data-tone={unknown ? 'neutral' : tone}
+      data-unknown={unknown ? '' : undefined}
+    >
+      {spoken ? (
         <>
           <span aria-hidden="true">{text}</span>
-          <span className="sr-only">{label}</span>
+          <span className="sr-only">{spoken}</span>
         </>
       ) : (
         text

@@ -5,7 +5,7 @@
 // inbox content, and the retired URLs answer permanent redirects to it.
 // Also pins the autopilot step order the handbook prints (AP-03).
 
-import { createElement } from 'react';
+import { createElement, type ReactNode } from 'react';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { load } from 'cheerio';
 import { eq } from 'drizzle-orm';
@@ -44,7 +44,7 @@ vi.mock('next/navigation', async (importOriginal) => ({
 }));
 
 const { AppShell } = await import('@/components/AppShell');
-const { default: TodayPage } = await import('@/app/today/page');
+const { default: TodayPage } = await import('@/app/(app)/today/page');
 const { default: DashboardRedirect } = await import('@/app/dashboard/page');
 const { default: InboxRedirect } = await import('@/app/inbox/page');
 const { default: Home } = await import('@/app/page');
@@ -202,7 +202,7 @@ describe('count policy on a prod-shaped workspace (DS-05 acceptance)', () => {
     const ids = await seedNewRecords(ws, 310);
     await signInAs(user);
 
-    const counts = await getNavCounts({ workspaceId: ws });
+    const counts = (await getNavCounts({ workspaceId: ws, userId: user })).values;
     expect(counts).toMatchObject({ reviewPending: 310, reviewNeedsReview: 0, outreachPending: 0 });
     let $ = await shell('/review');
     let badge = $('aside.sidebar a[data-area="review"] .nav-count');
@@ -251,18 +251,20 @@ describe('Today and the retired URLs', () => {
     await seedNewRecords(ws, 2);
     await signInAs(user);
 
+    // DS-07: the area tabs belong to the frame the (app) layout renders
+    // around the page.
+    const inFrame = async (page: Promise<ReactNode>) =>
+      load(await renderToHtml(await AppShell({ children: await page })));
     nav.pathname = '/today';
     nav.search = '';
-    let $ = load(await renderToHtml(await TodayPage({ searchParams: Promise.resolve({}) })));
+    let $ = await inFrame(TodayPage({ searchParams: Promise.resolve({}) }));
     expect($('nav.area-tabs a[aria-current="page"]').attr('data-tab')).toBe('today.needs');
     expect($('.scope-tabs a[aria-current="page"]').attr('href')).toBe('/today?tab=review');
     expect($('.profile-list li')).toHaveLength(2);
     expect($('.cockpit-grid')).toHaveLength(0);
 
     nav.search = 'view=overview';
-    $ = load(
-      await renderToHtml(await TodayPage({ searchParams: Promise.resolve({ view: 'overview' }) })),
-    );
+    $ = await inFrame(TodayPage({ searchParams: Promise.resolve({ view: 'overview' }) }));
     expect($('nav.area-tabs a[aria-current="page"]').attr('data-tab')).toBe('today.overview');
     expect($('nav.area-tabs')).toHaveLength(1);
     expect($('h1')).toHaveLength(1);

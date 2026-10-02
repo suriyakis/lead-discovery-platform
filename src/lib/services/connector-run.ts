@@ -294,7 +294,7 @@ export async function deleteConnectorRuns(
 // ---- consolidation (P62-21) ----------------------------------------
 
 /** Friendly label per template type. Mirrors TEMPLATE_META in
- *  src/app/connectors/page.tsx — when we collapse a workspace's
+ *  src/app/(app)/connectors/page.tsx — when we collapse a workspace's
  *  multiple instances into one, this is the name we use. */
 const TEMPLATE_FRIENDLY_NAME: Record<string, string> = {
   internet_search: 'Internet Search',

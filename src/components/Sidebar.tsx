@@ -26,8 +26,11 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { NavCountBadge } from './NavCountBadge';
 import { NavIcon } from './NavIcon';
+import { useFrameAttention } from './ShellAttention';
 import styles from './Sidebar.module.css';
 import { cx } from '@/lib/ui/cx';
+import { navCountsFromAttention } from '@/lib/attention/project';
+import type { AttentionSummary } from '@/lib/attention/types';
 import {
   INTERIM_EMERGENCY_STOP,
   NAV_GROUPS,
@@ -49,8 +52,19 @@ export interface SidebarProps {
   isSuperAdmin?: boolean;
   /** The viewer's role in the active workspace (null: none yet). */
   role?: WorkspaceRole | null;
-  /** Badge numbers from AppShell (services/nav-counts.ts). */
+  /**
+   * MOB-02: the attention summary AppShell rendered with. The badges are
+   * its projection, kept current in the browser by useAttention() (the
+   * poll, focus, reconnects, refreshAttention() after a mutation). Inside
+   * the workspace frame the frame's ShellAttention provider supplies it
+   * (DS-07: the sidebar lives in the (app) layout, not in each page).
+   */
+  attention?: AttentionSummary | null;
+  /** Badge numbers used while there is no summary (no workspace yet: a
+   *  super-admin's console count; tests). */
   navCounts?: NavCountValues;
+  /** Keys of `navCounts` that failed to load ("—"). */
+  unknownCounts?: ReadonlyArray<string>;
 }
 
 /**
@@ -59,10 +73,23 @@ export interface SidebarProps {
  */
 export const COMPACT_SIDEBAR_QUERY = '(max-width: 800px)';
 
-export function Sidebar({ isSuperAdmin = false, role = null, navCounts }: Readonly<SidebarProps>) {
+export function Sidebar({
+  isSuperAdmin = false,
+  role = null,
+  attention,
+  navCounts,
+  unknownCounts,
+}: Readonly<SidebarProps>) {
   const pathname = usePathname() ?? '';
   const viewer: NavViewer = { role, isSuperAdmin };
   const areas = sidebarAreas(viewer);
+  // Inside the workspace frame: the frame's summary (DS-07). Outside it,
+  // its own seed kept live; no summary (fixed numbers, tests): no poll.
+  const live = useFrameAttention(attention);
+  const projected = live ? navCountsFromAttention(live) : null;
+  const counts: SidebarCounts = projected
+    ? { values: projected.values, unknown: projected.unknown }
+    : { values: navCounts, unknown: unknownCounts ? new Set(unknownCounts) : undefined };
   const activeArea = resolveNavLocation(pathname)?.area.id ?? null;
   const showStop = hasNavCapability(INTERIM_EMERGENCY_STOP.capability, viewer);
   const activeRef = useRef<HTMLAnchorElement>(null);
@@ -92,7 +119,7 @@ export function Sidebar({ isSuperAdmin = false, role = null, navCounts }: Readon
                       area={area}
                       active={area.id === activeArea}
                       activeRef={area.id === activeArea ? activeRef : undefined}
-                      navCounts={navCounts}
+                      counts={counts}
                     />
                   </li>
                 ))}
@@ -125,18 +152,24 @@ export function Sidebar({ isSuperAdmin = false, role = null, navCounts }: Readon
   );
 }
 
+interface SidebarCounts {
+  values?: NavCountValues;
+  /** Keys whose number failed to load: the badge prints "—". */
+  unknown?: ReadonlySet<string>;
+}
+
 function SidebarLink({
   area,
   active,
   activeRef,
-  navCounts,
+  counts,
 }: Readonly<{
   area: NavArea;
   active: boolean;
   activeRef?: React.Ref<HTMLAnchorElement>;
-  navCounts?: NavCountValues;
+  counts: SidebarCounts;
 }>) {
-  const count = resolveNavCount(area.count, navCounts);
+  const count = resolveNavCount(area.count, counts.values, { unknown: counts.unknown });
   return (
     <Link
       ref={activeRef}

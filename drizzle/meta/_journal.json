@@ -540,6 +540,20 @@
       "when": 1790954046109,
       "tag": "0076_p1_workers_ai_action_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1790966552269,
+      "tag": "0077_p1_diagnostics_notify_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1790966555227,
+      "tag": "0078_p1_diagnostics_session_workspace",
+      "breakpoints": true
     }
   ]
 }

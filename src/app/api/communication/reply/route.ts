@@ -14,6 +14,10 @@
 // PC-05: while automation is paused a reply is refused (409, reason
 // 'paused', overridable) until the operator confirms "send anyway"
 // (confirmPaused); the confirmed send is audited as outbound.override.
+//
+// MOB-06: guarded — the composer sends the page's workspace as the
+// x-expected-workspace header; after a switch in another tab the reply is
+// refused (409 workspace_changed) before anything is sent.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -23,6 +27,7 @@ import { authErrorToResponse } from '@/lib/services/http';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { AutomationGateError } from '@/lib/services/automation-gate';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
+import { withWorkspaceGuardRoute } from '@/lib/workspace-guard/server';
 
 const InputSchema = z.object({
   threadId: z.coerce.bigint(),
@@ -43,7 +48,7 @@ const InputSchema = z.object({
   confirmPaused: z.boolean().optional(),
 });
 
-export async function POST(req: Request): Promise<NextResponse> {
+async function handlePost(req: Request): Promise<NextResponse> {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -139,3 +144,5 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'send_failed', detail }, { status: 500 });
   }
 }
+
+export const POST = withWorkspaceGuardRoute('communication.reply', handlePost);

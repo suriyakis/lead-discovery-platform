@@ -5,6 +5,11 @@
 // with a short client-held history. [/path] references in answers are
 // rendered as in-app links.
 //
+// MOB-06: each question carries the page's workspace (a guarded route:
+// a switch in another tab answers workspace_changed instead of spending in
+// the other workspace), and each answer remembers the workspace it was
+// computed for: its links go through /go when the page is elsewhere.
+//
 // On failure (AP-02) the question goes back into the input, the
 // unanswered bubble is removed and a Retry button resends it. The state
 // machine (panelReducer) and the ask itself (runAsk) live in
@@ -20,17 +25,34 @@ import {
   runAsk,
   type PanelState,
 } from '@/lib/assistant/panel-state';
+import { assistantLink } from '@/lib/workspace-guard/shared';
+import { useExpectedWorkspace, useExpectedWorkspaceHeaders } from './WorkspaceGuard';
 
-/** Render "[/path]" handbook references as links, everything else as text. */
-function AnswerText({ text }: { text: string }) {
+/** Render "[/path]" handbook references as links, everything else as text.
+ *  A link into another workspace than the page's goes through /go as a
+ *  plain <a> (a full load that switches first; never prefetched). */
+function AnswerText({
+  text,
+  workspaceId,
+  pageWorkspaceId,
+}: {
+  text: string;
+  workspaceId?: string | null;
+  pageWorkspaceId?: string | null;
+}) {
   const parts = text.split(/(\[\/[a-z0-9/\-[\]]*?\])/gi);
   return (
     <>
       {parts.map((p, i) => {
         const m = /^\[(\/[^\]]*)\]$/.exec(p);
-        if (m) {
-          return (
-            <Link key={i} href={m[1]!}>
+        const link = m ? assistantLink(m[1]!, workspaceId ?? null, pageWorkspaceId ?? null) : null;
+        if (m && link) {
+          return link.viaGo ? (
+            <a key={i} href={link.href}>
+              {m[1]}
+            </a>
+          ) : (
+            <Link key={i} href={link.href}>
               {m[1]}
             </Link>
           );
@@ -50,6 +72,8 @@ export interface AssistantPanelViewProps {
   onSubmit: () => void;
   onRetry: (question: string) => void;
   listRef?: RefObject<HTMLDivElement | null>;
+  /** The workspace the page shows (MOB-06), for the answers' links. */
+  pageWorkspaceId?: string | null;
 }
 
 /** The panel for a given state. No state of its own. */
@@ -62,6 +86,7 @@ export function AssistantPanelView({
   onSubmit,
   onRetry,
   listRef,
+  pageWorkspaceId = null,
 }: AssistantPanelViewProps) {
   const { turns, input, busy, failure } = state;
 
@@ -170,7 +195,11 @@ export function AssistantPanelView({
               whiteSpace: 'pre-wrap',
             }}
           >
-            {t.role === 'assistant' ? <AnswerText text={t.content} /> : t.content}
+            {t.role === 'assistant' ? (
+              <AnswerText text={t.content} workspaceId={t.workspaceId ?? null} pageWorkspaceId={pageWorkspaceId} />
+            ) : (
+              t.content
+            )}
           </div>
         ))}
         {busy ? <p className="muted" style={{ margin: 0 }}>Thinking…</p> : null}
@@ -225,9 +254,11 @@ export function AssistantPanel() {
   const [open, setOpen] = useState(false);
   const [state, dispatch] = useReducer(panelReducer, INITIAL_PANEL_STATE);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const pageWorkspace = useExpectedWorkspace();
+  const guardHeaders = useExpectedWorkspaceHeaders();
 
   async function ask(retryQuestion?: string) {
-    const outcome = await runAsk(state, dispatch, retryQuestion);
+    const outcome = await runAsk(state, dispatch, retryQuestion, undefined, guardHeaders);
     if (outcome?.ok) {
       queueMicrotask(() => {
         listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -245,6 +276,7 @@ export function AssistantPanel() {
       onSubmit={() => void ask()}
       onRetry={(question) => void ask(question)}
       listRef={listRef}
+      pageWorkspaceId={pageWorkspace?.id ?? null}
     />
   );
 }

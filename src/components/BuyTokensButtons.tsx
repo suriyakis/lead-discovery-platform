@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { Coins } from 'lucide-react';
+import { useExpectedWorkspaceHeaders } from './WorkspaceGuard';
 
 interface PackOption {
   id: string;
@@ -18,6 +19,8 @@ interface PackOption {
 export function BuyTokensButtons({ packs }: { packs: ReadonlyArray<PackOption> }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // MOB-06: the purchase is for the workspace this page shows.
+  const guardHeaders = useExpectedWorkspaceHeaders();
 
   async function buy(packId: string) {
     setBusyId(packId);
@@ -25,7 +28,7 @@ export function BuyTokensButtons({ packs }: { packs: ReadonlyArray<PackOption> }
     try {
       const res = await fetch('/api/stripe/buy-tokens', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guardHeaders },
         body: JSON.stringify({ packId }),
       });
       const j = (await res.json().catch(() => ({}))) as {

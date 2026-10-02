@@ -12,6 +12,11 @@
 //   400 invalid_input · 429 rate_limited
 //   502 empty_answer (retryable) — the model returned no visible text
 //   500 assistant_failed (retryable) — anything else; logged server-side
+//   409 workspace_changed — MOB-06: the x-expected-workspace header (the
+//       page's workspace) no longer matches this browser's session
+//
+// The answer carries `workspaceId`, the workspace it was computed for, so
+// the panel can link its [/path] references there (through /go).
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -21,6 +26,7 @@ import { AssistantError, askAssistant } from '@/lib/services/assistant';
 import { authErrorToResponse } from '@/lib/services/http';
 import { rateLimitCheck, retryAfterHeaders } from '@/lib/rate-limit';
 import { HISTORY_TURN_MAX_CHARS } from '@/lib/assistant/panel-state';
+import { withWorkspaceGuardRoute } from '@/lib/workspace-guard/server';
 
 const InputSchema = z.object({
   question: z.string().min(1).max(2000),
@@ -38,7 +44,7 @@ const InputSchema = z.object({
     .optional(),
 });
 
-export async function POST(req: Request): Promise<NextResponse> {
+async function handlePost(req: Request): Promise<NextResponse> {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -81,6 +87,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       ok: true,
       answer: result.answer,
       source: result.source,
+      workspaceId: ctx.workspaceId.toString(),
       ...(result.findings ? { findings: result.findings } : {}),
     });
   } catch (err) {
@@ -104,3 +111,5 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 }
+
+export const POST = withWorkspaceGuardRoute('assistant.ask', handlePost);

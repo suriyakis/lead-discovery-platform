@@ -26,7 +26,10 @@
 //   knowledge.compact.tick  every 7 d    → compaction + learning synthesis
 //   mail.trash.purge.tick   every 24 h   → per-workspace trash retention
 //   crawl.engine.tick       every 5 min  → due crawl plans
-//   health.check.tick       every 6 h    → due AI workspace health checks
+//   health.check.tick       every 6 h    → AP-06: the free diagnostics notify
+//                                           sweep (every active workspace),
+//                                           then the due weekly health
+//                                           reports (with their AI review)
 //   ops.reaper.tick         every 5 min  → PC-10: settle stuck sends and
 //                                           stuck discovery runs
 //                                           (services/stuck-work.ts)
@@ -117,6 +120,7 @@ import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-s
 import { runLearningSweep } from '@/lib/services/learning-processor';
 import { runKnowledgeIndexSweep } from '@/lib/services/knowledge-indexing';
 import { processDueHealthChecks } from '@/lib/services/health-check';
+import { runDiagnosticsSweep } from '@/lib/diagnostics/notify';
 import {
   listWorkspacesWithStuckWork,
   reapStuckWork,
@@ -738,23 +742,46 @@ export async function runKnowledgeCompactTick(
 const handleKnowledgeCompactTick: InstrumentedHandler = (_payload, { incidents }) =>
   runKnowledgeCompactTick(incidents);
 
-/** Health-check tick body. Exported for tests. PC-13: only workspaces
- *  whose policy runs the health check are considered; processDueHealthChecks
- *  claims each due one atomically, and its AI review asks the gate itself.
- *  PC-07: a workspace whose check throws is an incident until its next
- *  clean check. */
+/** The tick's diagnostics sweep, as a step of its own (its incidents do
+ *  not close the weekly check's, and the other way round). */
+const DIAGNOSTICS_SWEEP_PART = 'diagnostics';
+
+/** Health-check tick body. Exported for tests.
+ *
+ *  AP-06: first the free notify sweep — every active workspace, whatever
+ *  its health-check setting, pause or holds (it reads and notifies; it
+ *  sends, spends and starts nothing) — then the weekly reports. PC-13: only
+ *  workspaces whose policy runs the health check get a report;
+ *  processDueHealthChecks claims each due one atomically, and its AI review
+ *  asks the gate itself. PC-07: a workspace whose sweep or check throws is
+ *  an incident until its next clean pass. */
 export async function runHealthCheckTick(
   incidents: TickIncidents = NOOP_TICK_INCIDENTS,
-): Promise<Awaited<ReturnType<typeof processDueHealthChecks>>> {
+): Promise<
+  Awaited<ReturnType<typeof processDueHealthChecks>> & {
+    sweep: Awaited<ReturnType<typeof runDiagnosticsSweep>>;
+  }
+> {
   const wss = await workspacesForTick();
+  const sweep = await runDiagnosticsSweep({
+    workspaceIds: wss.map((ws) => ws.workspaceId),
+    onWorkspaceFailed: (workspaceId, err) =>
+      incidents.failed(
+        { workspaceId, part: DIAGNOSTICS_SWEEP_PART, label: 'The diagnostics sweep' },
+        err,
+      ),
+    onWorkspaceSucceeded: (workspaceId) =>
+      incidents.succeeded({ workspaceId, part: DIAGNOSTICS_SWEEP_PART }),
+  });
   const workspaceIds = wss
     .filter((ws) => shouldRun(ws, 'health.check.tick', () => undefined))
     .map((ws) => ws.workspaceId);
-  return processDueHealthChecks({
+  const weekly = await processDueHealthChecks({
     workspaceIds,
     onWorkspaceFailed: (workspaceId, err) => incidents.failed({ workspaceId }, err),
     onWorkspaceSucceeded: (workspaceId) => incidents.succeeded({ workspaceId }),
   });
+  return { ...weekly, sweep };
 }
 
 const handleHealthCheckTick: InstrumentedHandler = (_payload, { incidents }) =>
