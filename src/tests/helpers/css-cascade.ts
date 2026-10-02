@@ -1,10 +1,11 @@
-// A small, honest CSS cascade for tests: parse globals.css, match its
+// A small, honest CSS cascade for tests: parse the app's global
+// stylesheets (src/app/globals.css and the files it @imports), match their
 // selectors against fixture markup with cheerio (css-select understands
 // :is/:where/:not/:has), and resolve which declaration wins by
-// !important → specificity → source order. No layout engine, no
-// inheritance beyond what a test passes in — enough to assert "this
-// element ends up with that colour/border/top" against the REAL
-// stylesheet instead of grepping it.
+// !important → cascade layer → specificity → source order. No layout
+// engine, no inheritance beyond what a test passes in — enough to assert
+// "this element ends up with that colour/border/top" against the REAL
+// stylesheets instead of grepping them.
 //
 // Dynamic pseudo-classes (:hover, :focus-visible, …) never match here:
 // css-select either reports them as non-matching or throws, and a
@@ -27,17 +28,75 @@ export interface CssRule {
   decls: CssDecl[];
   /** Enclosing @media / @supports conditions, outermost first. */
   conditions: string[];
-  /** Source order — later wins at equal specificity. */
+  /** Enclosing `@layer name { }` block, or null for unlayered CSS. */
+  layer: string | null;
+  /** Source order across every file loaded — later wins at equal specificity. */
   order: number;
+  /** Repo-relative file the rule comes from, for failure messages. */
+  file: string;
   /** 1-based line of the opening brace, for failure messages. */
   line: number;
 }
 
 export type Specificity = readonly [number, number, number];
 
+const GLOBALS = 'src/app/globals.css';
+
 /** Vitest runs from the repo root (see vitest.config.ts). */
-export function loadGlobalsCss(): string {
-  return readFileSync(path.resolve(process.cwd(), 'src/app/globals.css'), 'utf8');
+function readRepoFile(file: string): string {
+  return readFileSync(path.resolve(process.cwd(), file), 'utf8');
+}
+
+/** `@layer a, b, c;` statements, in source order (each as its name list). */
+export function layerStatements(source: string): string[][] {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  return [...css.matchAll(/@layer\s+([^{};]+);/g)].map((m) =>
+    m[1]!.split(',').map((n) => n.trim()),
+  );
+}
+
+/** The `@import '…'` targets of a stylesheet, resolved repo-relative. */
+export function cssImports(file: string, source = readRepoFile(file)): string[] {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  return [...css.matchAll(/@import\s+(?:url\()?['"]([^'"]+)['"]\)?[^;]*;/g)].map((m) =>
+    path.posix.normalize(path.posix.join(path.posix.dirname(file), m[1]!)),
+  );
+}
+
+/** The global stylesheets in the order the browser applies them. */
+export function appStylesheetFiles(): string[] {
+  return [...cssImports(GLOBALS), GLOBALS];
+}
+
+/**
+ * Layer order of the app: the first `@layer` statement wins, as in the
+ * browser (every stylesheet repeats the same one).
+ */
+export function appLayerOrder(): string[] {
+  for (const file of appStylesheetFiles()) {
+    const [first] = layerStatements(readRepoFile(file));
+    if (first) return first;
+  }
+  return [];
+}
+
+/**
+ * Every rule of the app's global stylesheets (globals.css and its
+ * imports: tokens, base, legacy, utilities), in cascade source order.
+ */
+export function loadAppRules(): CssRule[] {
+  const rules: CssRule[] = [];
+  for (const file of appStylesheetFiles()) {
+    for (const rule of parseCss(readRepoFile(file), file)) {
+      rules.push({ ...rule, order: rules.length });
+    }
+  }
+  return rules;
+}
+
+/** Rules of one repo file (e.g. 'src/styles/legacy.css'). */
+export function loadCssFile(file: string): CssRule[] {
+  return parseCss(readRepoFile(file), file);
 }
 
 // ---- parsing ----------------------------------------------------------
@@ -102,19 +161,34 @@ function parseDecls(body: string): CssDecl[] {
   });
 }
 
-export function parseCss(source: string): CssRule[] {
+/**
+ * Style rules of one stylesheet. `@media`/`@supports` become conditions,
+ * `@layer name { }` the rule's layer; statements (`@layer a, b;`,
+ * `@import …;`) and other at-rule bodies (@keyframes, @font-face) are
+ * skipped.
+ */
+export function parseCss(source: string, file = 'inline.css'): CssRule[] {
   // Blank comments out but keep their newlines so line numbers hold.
   const css = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
   const rules: CssRule[] = [];
-  const walk = (from: number, to: number, conditions: string[]) => {
+  const walk = (from: number, to: number, conditions: string[], layer: string | null) => {
     let i = from;
     while (i < to) {
       const open = css.indexOf('{', i);
+      const semi = css.indexOf(';', i);
+      if (semi >= 0 && semi < to && (open < 0 || semi < open)) {
+        // A statement at rule-list level: `@layer a, b;` or `@import …;`.
+        i = semi + 1;
+        continue;
+      }
       if (open < 0 || open >= to) return;
       const prelude = css.slice(i, open).replace(/\s+/g, ' ').trim();
       const close = findBlockEnd(css, open);
       if (/^@(media|supports)\b/i.test(prelude)) {
-        walk(open + 1, close, [...conditions, prelude]);
+        walk(open + 1, close, [...conditions, prelude], layer);
+      } else if (/^@layer\b/i.test(prelude)) {
+        const name = prelude.replace(/^@layer\s*/i, '').trim();
+        walk(open + 1, close, conditions, layer ? `${layer}.${name}` : name);
       } else if (!prelude.startsWith('@')) {
         // @keyframes / @font-face bodies are not style rules.
         rules.push({
@@ -122,14 +196,16 @@ export function parseCss(source: string): CssRule[] {
           selectors: splitTopLevel(prelude, ','),
           decls: parseDecls(css.slice(open + 1, close)),
           conditions,
+          layer,
           order: rules.length,
+          file,
           line: css.slice(0, open).split('\n').length,
         });
       }
       i = close + 1;
     }
   };
-  walk(0, css.length, []);
+  walk(0, css.length, [], null);
   return rules;
 }
 
@@ -227,6 +303,26 @@ export function compareSpecificity(x: Specificity, y: Specificity): number {
 export interface CascadeOptions {
   /** Which @media/@supports preludes apply. Default: none of them. */
   conditionMatches?: (prelude: string) => boolean;
+  /** Cascade layer order, earliest first. Default: the app's (appLayerOrder). */
+  layerOrder?: ReadonlyArray<string>;
+}
+
+let cachedLayerOrder: string[] | null = null;
+
+/**
+ * Where a declaration sits in the layer dimension of the cascade; a
+ * higher number wins. Normal declarations: later layers beat earlier
+ * ones and unlayered CSS beats every layer. !important reverses both, so
+ * an important declaration in an early layer beats every later layer.
+ */
+export function layerRank(
+  layer: string | null,
+  important: boolean,
+  order: ReadonlyArray<string>,
+): number {
+  const known = layer === null ? -1 : order.indexOf(layer.split('.')[0]!);
+  const index = layer === null ? order.length + 1 : known < 0 ? order.length : known;
+  return important ? -index : index;
 }
 
 export interface Winner {
@@ -236,7 +332,7 @@ export interface Winner {
   rule: CssRule;
 }
 
-/** Longhands the tests care about, from the shorthands globals.css uses. */
+/** Longhands the tests care about, from the shorthands legacy.css uses. */
 function expand(decl: CssDecl): CssDecl[] {
   const { prop, value, important } = decl;
   if (prop === 'border') {
@@ -281,6 +377,8 @@ export function cascade(
   const el = $(target);
   if (el.length !== 1) throw new Error(`"${target}" matched ${el.length} elements, need 1`);
   const conditionMatches = opts.conditionMatches ?? (() => false);
+  const layers = opts.layerOrder ?? (cachedLayerOrder ??= appLayerOrder());
+  const rank = (rule: CssRule, important: boolean) => layerRank(rule.layer, important, layers);
   const winners = new Map<string, Winner>();
   for (const rule of rules) {
     if (!rule.conditions.every(conditionMatches)) continue;
@@ -300,12 +398,16 @@ export function cascade(
     if (!best) continue;
     for (const decl of rule.decls.flatMap(expand)) {
       const prev = winners.get(decl.prop);
+      const layerDelta = prev ? rank(rule, decl.important) - rank(prev.rule, prev.important) : 0;
       const beats =
         !prev ||
         (decl.important && !prev.important) ||
         (decl.important === prev.important &&
-          (compareSpecificity(best, prev.specificity) > 0 ||
-            (compareSpecificity(best, prev.specificity) === 0 && rule.order >= prev.rule.order)));
+          (layerDelta > 0 ||
+            (layerDelta === 0 &&
+              (compareSpecificity(best, prev.specificity) > 0 ||
+                (compareSpecificity(best, prev.specificity) === 0 &&
+                  rule.order >= prev.rule.order)))));
       if (beats) {
         winners.set(decl.prop, {
           value: decl.value,
@@ -332,14 +434,27 @@ export function styleOf(
 
 // ---- values --------------------------------------------------------------
 
-/** Custom properties declared on :root. */
-export function rootTokens(rules: ReadonlyArray<CssRule>): Map<string, string> {
-  const tokens = new Map<string, string>();
+/**
+ * Custom properties declared on :root outside any @media, as the cascade
+ * resolves them (a later layer beats an earlier one, then source order).
+ */
+export function rootTokens(
+  rules: ReadonlyArray<CssRule>,
+  layerOrder: ReadonlyArray<string> = (cachedLayerOrder ??= appLayerOrder()),
+): Map<string, string> {
+  const winners = new Map<string, { value: string; rank: number; order: number }>();
   for (const rule of rules) {
     if (rule.conditions.length > 0 || !rule.selectors.includes(':root')) continue;
-    for (const d of rule.decls) if (d.prop.startsWith('--')) tokens.set(d.prop, d.value);
+    for (const d of rule.decls) {
+      if (!d.prop.startsWith('--')) continue;
+      const rank = layerRank(rule.layer, d.important, layerOrder);
+      const prev = winners.get(d.prop);
+      if (!prev || rank > prev.rank || (rank === prev.rank && rule.order >= prev.order)) {
+        winners.set(d.prop, { value: d.value, rank, order: rule.order });
+      }
+    }
   }
-  return tokens;
+  return new Map([...winners].map(([name, w]) => [name, w.value]));
 }
 
 /** Replace var(--x[, fallback]) with :root values, recursively. */
@@ -373,7 +488,8 @@ export function parseOklch(value: string): Oklch {
   return { l, c: Number(m[3]), h: Number(m[4]), alpha };
 }
 
-function oklchToLinearSrgb({ l, c, h }: Oklch): [number, number, number] {
+/** OKLCH → linear-light sRGB, each channel clipped to [0, 1] as Chrome does. */
+export function oklchToLinearSrgb({ l, c, h }: Oklch): [number, number, number] {
   const a = c * Math.cos((h * Math.PI) / 180);
   const b = c * Math.sin((h * Math.PI) / 180);
   const l_ = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3;

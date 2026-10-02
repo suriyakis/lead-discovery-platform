@@ -895,6 +895,8 @@ export const UNLISTED_ROUTES: Readonly<Record<string, string>> = {
   '/mailbox/threads/[id]': 'Legacy URL: a permanent redirect to /communication/[threadId].',
   '/test-only/error-boundary':
     'Test probe that throws on purpose; 404 unless ENABLE_TEST_ROUTES=1.',
+  '/dev/gallery':
+    'Design-system component gallery (DS-06) for design review; 404 unless ENABLE_TEST_ROUTES=1.',
 };
 
 // ---- actions, the interim stop, the account menu, the mobile tab bar ----

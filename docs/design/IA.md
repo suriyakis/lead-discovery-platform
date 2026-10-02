@@ -67,9 +67,10 @@ Deliverability are Outreach work, Compose belongs to Conversations, and
 
 Pages in no area (`UNLISTED_ROUTES`, each with its reason): `/` (landing
 and sign-in), `/pending`, the redirect stubs `/dashboard`, `/inbox`,
-`/settings` and `/mailbox/threads/[id]`, and the test probe
-`/test-only/error-boundary`. A new page that is in no area and not unlisted
-fails `src/tests/nav-registry.test.ts`.
+`/settings` and `/mailbox/threads/[id]`, the test probe
+`/test-only/error-boundary`, and the design-system gallery `/dev/gallery`
+(both 404 unless `ENABLE_TEST_ROUTES=1`). A new page that is in no area and
+not unlisted fails `src/tests/nav-registry.test.ts`.
 
 **Cmd-K** lists, for the viewer's role: each area (named as in the
 sidebar), its other tabs, the account-menu pages, the console for

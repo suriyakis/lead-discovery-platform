@@ -247,9 +247,7 @@ function SignatureList({
           <li
             key={s.id}
             style={{
-              outline: isSelected
-                ? '2px solid var(--brand-accent, #e87b1f)'
-                : 'none',
+              outline: isSelected ? '2px solid var(--primary)' : 'none',
               outlineOffset: '-2px',
             }}
           >

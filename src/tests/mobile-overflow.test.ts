@@ -1,7 +1,7 @@
 // DS-03: mobile overflow containment (I059, I144, I145, I146).
 //
-// The real globals.css runs through the test cascade (helpers/
-// css-cascade.ts) at two viewport widths — 1440 (desktop) and 390 (the
+// The real app stylesheets (globals.css and the layers it imports) run
+// through the test cascade (helpers/css-cascade.ts) at two viewport widths — 1440 (desktop) and 390 (the
 // phone the audit measured) — so each check reads "at this width, this
 // element ends up with that value", the way the browser decides it. The
 // source scans keep the fixes from regressing: no new unwrapped table,
@@ -15,7 +15,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { load } from 'cheerio';
 import { describe, expect, it, vi } from 'vitest';
 import { TableScroll } from '@/components/TableScroll';
-import { cascade, type CascadeOptions, loadGlobalsCss, parseCss } from './helpers/css-cascade';
+import { cascade, type CascadeOptions, loadAppRules } from './helpers/css-cascade';
 
 const navigation = vi.hoisted(() => ({ pathname: '/review' }));
 vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname }));
@@ -23,8 +23,8 @@ vi.mock('next/navigation', () => ({ usePathname: () => navigation.pathname }));
 const { Sidebar, COMPACT_SIDEBAR_QUERY } = await import('@/components/Sidebar');
 const { AreaFrameView } = await import('@/components/AreaNav');
 
-const css = loadGlobalsCss();
-const rules = parseCss(css);
+const css = readFileSync(path.resolve(process.cwd(), 'src/styles/legacy.css'), 'utf8');
+const rules = loadAppRules();
 
 /** Which @media preludes hold at a viewport `width` (screen, no motion prefs). */
 function atWidth(width: number): CascadeOptions {
@@ -142,11 +142,14 @@ describe('controls and inline forms (DS-03 item 1, I146)', () => {
     const grids = rules.flatMap((r) =>
       r.decls
         .filter((d) => d.prop === 'grid-template-columns' && /repeat\(auto-fi(t|ll)/.test(d.value))
-        .map((d) => ({ line: r.line, value: d.value })),
+        .map((d) => ({ at: `${r.file}:${r.line}`, value: d.value })),
     );
     expect(grids.length).toBeGreaterThan(10);
     for (const g of grids) {
-      expect(g.value, `globals.css line ${g.line}`).toMatch(/minmax\(min\(100%, [\d.]+(px|rem)\), 1fr\)/);
+      // A literal floor, or a custom property (utilities .grid-auto's --min).
+      expect(g.value, g.at).toMatch(
+        /minmax\(min\(100%, ([\d.]+(px|rem)|var\(--[\w-]+(, [\d.]+(px|rem))?\))\), 1fr\)/,
+      );
     }
   });
 });

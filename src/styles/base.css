@@ -1,0 +1,297 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* ==========================================================================
+   Reset and base element defaults (DS-06)
+
+   Everything here sits below legacy, so any legacy.css rule still wins:
+   these are the floor, not an override. Selectors are wrapped in :where()
+   so a component's single class always beats them inside its own layer.
+
+   Two scopes:
+   - Global: only what the legacy pages already look like (box sizing,
+     page colours, the font stack) plus interaction defaults nobody sees in
+     a screenshot: the keyboard focus ring and the text selection colour.
+   - [data-ds]: the real form-control and typography defaults of Direction
+     A (36px controls, 44px and 16px text on a coarse pointer, input fill,
+     control border, focus ring, invalid and disabled states, checkbox,
+     radio and switch). They are scoped because legacy relies on browser
+     defaults for hundreds of controls, headings and paragraphs, and
+     applying them everywhere is a visible change. DS-10 lifts the control
+     defaults to the whole document with its own screenshot acceptance;
+     migrated pages (PageShell) opt in earlier by carrying data-ds.
+   ========================================================================== */
+
+@layer reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  :where(html) {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  :where(fieldset) {
+    min-width: 0;
+  }
+}
+
+@layer base {
+  :where(html) {
+    color-scheme: dark;
+    background-color: var(--bg);
+  }
+
+  :where(body) {
+    background-color: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 30%, transparent);
+    color: var(--fg);
+  }
+
+  /* One keyboard focus ring for every focusable element. Controls inside
+     [data-ds] swap it for a border and glow below. */
+  :where(:focus-visible) {
+    outline: var(--focus-outline);
+    outline-offset: var(--space-0_5);
+  }
+
+  /* Native dialogs: strip the UA chrome; components position them. */
+  :where(dialog) {
+    max-width: none;
+    max-height: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+  }
+
+  /* ---- Direction A element defaults (opt-in scope, see above) ---- */
+
+  :where([data-ds]) {
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-regular);
+    line-height: var(--leading-sm);
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss01';
+  }
+
+  :where([data-ds]) :where(h1, h2, h3, h4, h5, h6) {
+    margin: 0;
+    font-weight: var(--weight-medium);
+  }
+
+  :where([data-ds]) :where(p, figure, blockquote, dl, dd, pre) {
+    margin: 0;
+  }
+
+  :where([data-ds]) :where(ul, ol) {
+    margin: 0;
+    padding: 0;
+  }
+
+  :where([data-ds]) :where(strong, b) {
+    color: var(--fg);
+    font-weight: var(--weight-medium);
+  }
+
+  :where([data-ds]) :where(a) {
+    color: var(--primary);
+    text-decoration: none;
+    text-underline-offset: var(--space-1);
+  }
+
+  :where([data-ds]) :where(a:hover) {
+    text-decoration: underline;
+  }
+
+  :where([data-ds]) :where(code, kbd, samp) {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+  }
+
+  :where([data-ds]) :where(code) {
+    padding: 0 var(--space-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    background: var(--well);
+    color: var(--fg-muted);
+  }
+
+  :where([data-ds]) :where(kbd) {
+    padding: 0 var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--fg-subtle);
+    font-size: var(--text-label);
+  }
+
+  :where([data-ds]) :where(hr) {
+    margin: 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  :where([data-ds]) :where(button, input, select, textarea) {
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+  }
+
+  :where([data-ds]) :where(button) {
+    cursor: pointer;
+  }
+
+  /* Text-like inputs, selects and textareas. */
+  :where([data-ds])
+    :where(
+      input:not(
+          [type='checkbox'],
+          [type='radio'],
+          [type='range'],
+          [type='file'],
+          [type='color'],
+          [type='submit'],
+          [type='button'],
+          [type='reset'],
+          [type='image'],
+          [type='hidden']
+        ),
+      select,
+      textarea
+    ) {
+    max-width: 100%;
+    min-height: var(--control-md);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface-input);
+    color: var(--fg);
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    transition:
+      border-color var(--dur-1) var(--ease-out),
+      box-shadow var(--dur-1) var(--ease-out);
+  }
+
+  :where([data-ds]) :where(textarea) {
+    min-height: calc(var(--control-md) * 2.5);
+    padding: var(--space-2) var(--space-3);
+    line-height: var(--leading-prose);
+    resize: vertical;
+  }
+
+  /* A drawn chevron replaces the native arrow so the select matches the
+     input next to it. */
+  :where([data-ds]) :where(select) {
+    appearance: none;
+    padding-right: var(--space-8);
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+      linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 17px) 52%,
+      calc(100% - 12px) 52%;
+    background-size:
+      5px 5px,
+      5px 5px;
+    background-repeat: no-repeat;
+  }
+
+  :where([data-ds]) :where(input, textarea)::placeholder {
+    color: var(--fg-subtle);
+    opacity: 1;
+  }
+
+  :where([data-ds]) :where(input, select, textarea):focus-visible {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring-control);
+  }
+
+  :where([data-ds]) :where(input, select, textarea)[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+
+  :where([data-ds]) :where(input, select, textarea, button):disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* Checkbox, radio and switch (input[type=checkbox][role=switch]). */
+  :where([data-ds]) :where(input[type='checkbox'], input[type='radio']) {
+    display: inline-block;
+    flex: none;
+    width: var(--space-4);
+    height: var(--space-4);
+    margin: 0;
+    border: 1.5px solid var(--border-control);
+    border-radius: var(--radius-xs);
+    background: var(--surface-input) center / var(--space-3) no-repeat;
+    vertical-align: middle;
+    cursor: pointer;
+    appearance: none;
+    transition:
+      background-color var(--dur-1) var(--ease-out),
+      border-color var(--dur-1) var(--ease-out);
+  }
+
+  :where([data-ds]) :where(input[type='radio']) {
+    border-radius: var(--radius-full);
+  }
+
+  :where([data-ds]) :where(input[type='checkbox']:checked) {
+    border-color: var(--primary);
+    background-color: var(--primary);
+    background-image: var(--glyph-check);
+  }
+
+  :where([data-ds]) :where(input[type='checkbox']:indeterminate) {
+    border-color: var(--primary);
+    background-color: var(--primary);
+    background-image: var(--glyph-dash);
+  }
+
+  :where([data-ds]) :where(input[type='radio']:checked) {
+    border-color: var(--primary);
+    background-image: radial-gradient(circle, var(--primary) 0 4px, transparent 4.5px);
+    background-size: 100% 100%;
+  }
+
+  :where([data-ds]) :where(input[type='checkbox'][role='switch']) {
+    width: calc(var(--space-8) + var(--space-1));
+    height: var(--space-5);
+    border-radius: var(--radius-full);
+    background-color: var(--surface-input);
+    background-image: radial-gradient(circle, var(--fg-muted) 0 6px, transparent 6.5px);
+    background-position: 0 50%;
+    background-size: 18px 18px;
+  }
+
+  :where([data-ds]) :where(input[type='checkbox'][role='switch']:checked) {
+    border-color: var(--primary);
+    background-color: var(--primary);
+    background-image: radial-gradient(circle, var(--on-primary) 0 6px, transparent 6.5px);
+    background-position: 100% 50%;
+  }
+
+  @media (pointer: coarse) {
+    :where([data-ds])
+      :where(input:not([type='checkbox'], [type='radio']), select, textarea) {
+      font-size: var(--text-md);
+    }
+
+    :where([data-ds]) :where(input[type='checkbox']:not([role='switch']), input[type='radio']) {
+      width: var(--space-5);
+      height: var(--space-5);
+      background-size: 14px;
+    }
+  }
+}

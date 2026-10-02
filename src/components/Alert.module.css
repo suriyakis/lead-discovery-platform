@@ -1,83 +1,92 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
 /* Alert primitive (DS plan Phase 4, landed early by flow:F-04).
  * Grid [icon 16][content][action]; tone sets one accent token that tints
- * the border, background, icon and title. Brand tokens only. */
+ * the border, background, icon and title. Tokens only (DS-06); the action
+ * wraps under the text below 640px. Shown in every tone at /dev/gallery. */
 
-.alert {
-  --alert-accent: var(--brand-primary);
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  gap: 0.5rem 0.75rem;
-  align-items: start;
-  padding: 12px 16px;
-  border-radius: var(--brand-radius);
-  border: 1px solid color-mix(in oklch, var(--alert-accent) 40%, var(--brand-border));
-  background: color-mix(in oklch, var(--alert-accent) 8%, var(--brand-card));
-  color: var(--brand-fg);
-  min-width: 0;
-}
-
-.info {
-  --alert-accent: var(--brand-primary);
-}
-
-.success {
-  --alert-accent: var(--brand-status-approved);
-}
-
-.warning {
-  --alert-accent: var(--brand-accent-amber);
-}
-
-.danger {
-  --alert-accent: var(--brand-status-rejected);
-}
-
-.icon {
-  color: var(--alert-accent);
-  margin-top: 0.2rem;
-  flex-shrink: 0;
-}
-
-.content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.content p {
-  margin: 0;
-}
-
-.content code {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.title {
-  font-weight: 600;
-  color: var(--alert-accent);
-}
-
-.action {
-  align-self: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.action form {
-  margin: 0;
-}
-
-@media (max-width: 600px) {
+@layer components {
   .alert {
-    grid-template-columns: 16px minmax(0, 1fr);
+    --alert-accent: var(--tone-info);
+    display: grid;
+    grid-template-columns: var(--space-4) minmax(0, 1fr);
+    gap: var(--space-2) var(--space-3);
+    align-items: start;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    /* Mixed in oklab like every tint: oklch would interpolate the hue the
+       short way round from the blue-grey border, turning an amber border
+       teal and a red one purple. */
+    border: 1px solid color-mix(in oklab, var(--alert-accent) 40%, var(--border));
+    background: color-mix(in oklab, var(--alert-accent) 8%, var(--surface));
+    color: var(--fg);
+    min-width: 0;
+  }
+
+  .info {
+    --alert-accent: var(--tone-info);
+  }
+
+  .success {
+    --alert-accent: var(--tone-success);
+  }
+
+  .warning {
+    --alert-accent: var(--tone-attention);
+  }
+
+  .danger {
+    --alert-accent: var(--tone-danger);
+  }
+
+  .icon {
+    color: var(--alert-accent);
+    margin-top: var(--space-1);
+    flex-shrink: 0;
+  }
+
+  .content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1_5);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .content p {
+    margin: 0;
+  }
+
+  .content code {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .title {
+    font-weight: 600;
+    color: var(--alert-accent);
   }
 
   .action {
     grid-column: 2;
     align-self: start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .action form {
+    margin: 0;
+  }
+
+  @media (min-width: 640px) {
+    .alert {
+      grid-template-columns: var(--space-4) minmax(0, 1fr) auto;
+    }
+
+    .action {
+      grid-column: auto;
+      align-self: center;
+    }
   }
 }
