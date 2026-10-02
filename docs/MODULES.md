@@ -199,6 +199,8 @@ See `IJobQueue` in `docs/ARCHITECTURE.md`. Job types defined as the system grows
 
 **Log noise and retention (PC-35).** `src/lib/services/retention.ts` (`RETENTION_POLICIES`, `runRetention`, `runRetentionTick`: the daily `ops.retention.tick` deleting autopilot_log > 30 d, `mail.sync_inbound` audit rows > 30 d, read notifications > 90 d, resolved ops_events, the alert log and unused alert keys > 90 d, retired heartbeat rows > 90 d; batched, per policy, not gated by any pause). In `services/autopilot.ts`: `recordGuardState` (a `guard` row only when `autopilot_settings.guard_state` changes) and `guardStateOf` (the gate refusal as a guard state); the tick visits only workspaces whose policy runs autopilot and that the gate lets through (`tickVerdict`, `jobs/repeatables.ts`). `syncInbound` (`services/mail.ts`) audits only syncs that stored new messages.
 
+**Diagnostics (AP-06).** `src/lib/diagnostics` (README.md there: the finding shape, the score, the notify policies and how a workstream contributes a rule): `getWorkspaceDiagnostics(ctx)` is the one source for `/health`, the weekly report, Today's "Needs fixing" and the assistant's `<workspace_state>`; `runDiagnosticsSweep` runs inside `health.check.tick` every 6 hours (free, no AI) and notifies owners and admins by each finding's policy, at most once per rule per workspace per 24 h (`diagnostic_notices`). `getSendCapUsage` (services/outreach-queue.ts) is the daily-cap usage the drain, Today and the `send.cap_exhausted` finding share.
+
 ### File Storage
 
 **Phase.** 1 (interface + local-FS impl), 9+ (S3-compatible for production).

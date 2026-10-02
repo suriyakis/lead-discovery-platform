@@ -1,18 +1,28 @@
 // Dashboard cockpit signals. One server call returns everything the
 // dashboard widgets need so the landing page doesn't fire 5 separate
-// queries with their own loading states. Best-effort — any single
-// query failing degrades to zero rather than failing the page.
+// queries with their own loading states. Best-effort: a failing query
+// does not fail the page — the result comes back `degraded` and the page
+// shows "—" with a warning, never a zero that looks like a real count
+// (PC-33, I070).
+//
+// I070: the send-queue tile shows the daily cap exactly as the drain
+// applies it (getSendCapUsage: emails delivered in the trailing 24 hours,
+// whatever path sent them, against outreach_send_settings.daily_email_limit).
 
 import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { outreachDrafts, outreachQueue, outreachSendSettings } from '@/lib/db/schema/outreach';
+import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { mailMessages } from '@/lib/db/schema/mailing';
 import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { qualifiedLeads, type PipelineState } from '@/lib/db/schema/pipeline';
 import type { WorkspaceContext } from './context';
+import { getSendCapUsage } from './outreach-queue';
 
 export interface DashboardSignals {
+  /** A query failed: every number below is a placeholder, not a count —
+   *  render "—" and say so (I070). */
+  degraded: boolean;
   reviewPending: number;
   drafts: {
     total: number;
@@ -33,7 +43,8 @@ export interface DashboardSignals {
   }>;
   sendQueue: {
     queued: number;
-    sentToday: number;
+    /** Emails delivered in the trailing 24 hours (the drain's cap window). */
+    sent24h: number;
     dailyCap: number;
     nextSendAt: Date | null;
     /** PC-05: the workspace pause (it holds the send queue with every
@@ -63,12 +74,14 @@ const ZERO_DRAFTS = {
   closing: 0,
 };
 
-const ZERO: DashboardSignals = {
+/** What a failed load returns: placeholders, flagged degraded. */
+const DEGRADED: DashboardSignals = {
+  degraded: true,
   reviewPending: 0,
   drafts: ZERO_DRAFTS,
   replies7d: 0,
   recentInbound: [],
-  sendQueue: { queued: 0, sentToday: 0, dailyCap: 50, nextSendAt: null, paused: false },
+  sendQueue: { queued: 0, sent24h: 0, dailyCap: 0, nextSendAt: null, paused: false },
   funnel: ZERO_FUNNEL,
 };
 
@@ -76,9 +89,8 @@ export async function getDashboardSignals(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<DashboardSignals> {
   const ws = ctx.workspaceId;
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
 
   try {
     const [
@@ -87,9 +99,8 @@ export async function getDashboardSignals(
       replies7dRow,
       recentInbound,
       queueQueuedRow,
-      sentTodayRow,
+      capUsage,
       nextSendRow,
-      sendSettings,
       leadRows,
       pauseRow,
     ] = await Promise.all([
@@ -153,16 +164,7 @@ export async function getDashboardSignals(
             inArray(outreachQueue.status, ['queued', 'sending']),
           ),
         ),
-      db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(outreachQueue)
-        .where(
-          and(
-            eq(outreachQueue.workspaceId, ws),
-            eq(outreachQueue.status, 'sent'),
-            gte(outreachQueue.updatedAt, startOfToday),
-          ),
-        ),
+      getSendCapUsage(ctx, now),
       db
         .select({ at: outreachQueue.scheduledSendAt })
         .from(outreachQueue)
@@ -173,11 +175,6 @@ export async function getDashboardSignals(
           ),
         )
         .orderBy(asc(outreachQueue.scheduledSendAt))
-        .limit(1),
-      db
-        .select()
-        .from(outreachSendSettings)
-        .where(eq(outreachSendSettings.workspaceId, ws))
         .limit(1),
       db
         .select({ state: qualifiedLeads.state })
@@ -200,8 +197,8 @@ export async function getDashboardSignals(
     const funnel = { ...ZERO_FUNNEL };
     for (const r of leadRows) funnel[r.state] += 1;
 
-    const settings = sendSettings[0];
     return {
+      degraded: false,
       reviewPending: reviewPendingRow[0]?.n ?? 0,
       drafts,
       replies7d: replies7dRow[0]?.n ?? 0,
@@ -215,15 +212,15 @@ export async function getDashboardSignals(
       })),
       sendQueue: {
         queued: queueQueuedRow[0]?.n ?? 0,
-        sentToday: sentTodayRow[0]?.n ?? 0,
-        dailyCap: settings?.dailyEmailLimit ?? 50,
+        sent24h: capUsage.used,
+        dailyCap: capUsage.cap,
         nextSendAt: nextSendRow[0]?.at ?? null,
         paused: Boolean(pauseRow[0]?.pausedAt),
       },
       funnel,
     };
   } catch (err) {
-    console.warn('[dashboard-signals] degraded to zero:', err);
-    return ZERO;
+    console.warn('[dashboard-signals] degraded:', err);
+    return DEGRADED;
   }
 }

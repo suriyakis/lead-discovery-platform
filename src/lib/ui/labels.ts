@@ -71,7 +71,7 @@ import type { NotificationKind } from '@/lib/kinds/notification';
 import type { LabelledUsageKind, UsageKeySource } from '@/lib/kinds/usage';
 import type { ReplyClass } from '@/lib/mail/reply-classes';
 import type { GeoStatus } from '@/lib/services/geo';
-import type { HealthFindingSeverity } from '@/lib/services/health-check';
+import type { FindingSeverity as HealthFindingSeverity } from '@/lib/diagnostics/types';
 import type { HintSeverity } from '@/lib/services/hints';
 import {
   PULSE_VALUES,
@@ -347,6 +347,8 @@ export const NOTIFICATION_KIND_LABEL = {
   'review.needs_review': 'Needs review',
   'follow_up.awaiting_approval': 'Follow-up approval',
   'health.warning': 'Health check',
+  'health.finding': 'Needs attention',
+  'health.critical': 'Problem found',
   'lead.replied': 'Reply',
   mention: 'Mention',
   assignment: 'Assigned to you',
@@ -396,6 +398,7 @@ export const GEO_STATUS_LABEL = {
 export const HEALTH_FINDING_SEVERITY_LABEL = {
   info: 'Info',
   warning: 'Warning',
+  critical: 'Critical',
 } as const satisfies Record<HealthFindingSeverity, string>;
 
 export const HINT_SEVERITY_LABEL = {
@@ -750,6 +753,7 @@ export const AUDIT_KIND_LABEL = {
   'workspace.update_outreach_defaults': 'Outreach defaults changed',
   'workspace.update_outreach_language': 'Outreach language changed',
   'workspace.update_vector_storage_quota': 'Vector storage quota changed',
+  'health_check.settings_update': 'Health check settings changed',
   'workspace.archive': 'Workspace archived (older entry)',
   'onboarding.setup_mode': 'Setup mode chosen',
   'onboarding.complete': 'Setup completed',

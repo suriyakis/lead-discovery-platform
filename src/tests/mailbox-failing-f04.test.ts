@@ -619,8 +619,9 @@ describe('health check: failing mailboxes (F-04)', () => {
     const failing = findings.filter((f) => f.code === 'mailbox.failing');
     expect(failing).toHaveLength(2);
     expect(failing.map((f) => f.href)).toEqual([`/mailbox/${a.id}`, `/mailbox/${b.id}`]);
-    expect(failing[0]!.severity).toBe('warning');
-    expect(failing[0]!.message).toContain('Mailbox "alpha" has been failing since');
+    // AP-06: a failing mailbox is critical — its inbox is not read.
+    expect(failing[0]!.severity).toBe('critical');
+    expect(failing[0]!.message).toContain('Mailbox "alpha" is failing. It has been failing since');
     expect(failing[0]!.message).toContain('port 465');
     expect(failing[1]!.message).toContain('Mailbox "beta"');
     expect(failing[1]!.message).toContain('refused the login');

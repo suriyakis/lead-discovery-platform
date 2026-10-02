@@ -23,9 +23,11 @@ export const MAIL_TRASH_PURGE_TICK_MS = 24 * 60 * 60 * 1000;
  *  plan can ever fire at (validated by MIN_INTERVAL_MINUTES). Plans
  *  with longer intervals just get checked-and-skipped until due. */
 export const CRAWL_ENGINE_TICK_MS = 5 * 60 * 1000;
-/** AI workspace health check: per-workspace interval (default 7 days)
- *  lives on the workspace row; this is just how often we look for due
- *  ones. The service claims each due workspace atomically. */
+/** AP-06: every 6 hours the free diagnostics sweep runs for every active
+ *  workspace (notifications by policy, no AI), then the weekly health
+ *  reports that are due: their per-workspace interval (default 7 days,
+ *  switchable off) lives on the workspace row, and the service claims each
+ *  due workspace atomically. */
 export const HEALTH_CHECK_TICK_MS = 6 * 60 * 60 * 1000;
 /** PC-10: the stuck-work reaper (sends stuck in 'sending' > 10 min, runs
  *  without progress > 15 min) — src/lib/services/stuck-work.ts. */

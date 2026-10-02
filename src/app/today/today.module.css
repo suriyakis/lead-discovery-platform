@@ -33,4 +33,25 @@
   .emptyCta {
     margin: var(--space-3) 0 0;
   }
+
+  /* Needs fixing (AP-06): the diagnostics engine's problems above both
+   * views, under a heading row that links to Health checks. */
+  .attention {
+    display: grid;
+    gap: var(--space-2);
+    margin-bottom: var(--gap-section);
+    min-width: 0;
+  }
+
+  .attentionHead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .attentionHead h2 {
+    margin: 0;
+  }
 }

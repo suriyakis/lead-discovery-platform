@@ -527,8 +527,8 @@ export const NAV_AREAS: ReadonlyArray<NavArea> = [
         label: 'Health checks',
         href: '/health',
         section: 'Automation',
-        purpose: 'The weekly workspace health report; admins can run it now.',
-        keywords: ['health report'],
+        purpose: 'Live workspace checks with fix links, and the scheduled report with its AI review.',
+        keywords: ['health report', 'problems', 'diagnostics'],
       },
       {
         id: 'settings.integrations',

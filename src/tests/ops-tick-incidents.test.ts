@@ -161,6 +161,13 @@ vi.mock('@/lib/services/token-ledger', async (importOriginal) => {
       check('health', ctx.workspaceId);
       return actual.getTokenWallet(ctx as Parameters<typeof actual.getTokenWallet>[0]);
     }),
+    // AP-06: the weekly check reads the wallet through hasTokens (its
+    // findings come from the diagnostics engine, which reads the
+    // workspace row), so the health step fails here.
+    hasTokens: vi.fn(async (ctx: { workspaceId: bigint }) => {
+      check('health', ctx.workspaceId);
+      return actual.hasTokens(ctx as Parameters<typeof actual.hasTokens>[0]);
+    }),
   };
 });
 

@@ -62,6 +62,10 @@ export async function truncateAll(): Promise<void> {
   // RESTART IDENTITY resets sequences. CASCADE handles FKs.
   const ident = TENANT_TABLES.map((t) => `"${t}"`).join(', ');
   await db.execute(sql.raw(`TRUNCATE TABLE ${ident} RESTART IDENTITY CASCADE;`));
+  // AP-06: workspace ids restart at 1, so a memoised diagnostics result of
+  // the previous test's workspace 1 must not answer for the next one.
+  const { _resetDiagnosticsMemoForTests } = await import('@/lib/diagnostics/engine');
+  _resetDiagnosticsMemoForTests();
 }
 
 export async function seedUser(input: {

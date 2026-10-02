@@ -9,7 +9,8 @@
 //     /dashboard.
 // It also keeps the dashboard's duties: the no-workspace screen, the
 // pending-account wall and the one-time first-run redirect to the setup
-// wizard.
+// wizard. Above both views, "Needs fixing" lists the problems the
+// diagnostics engine finds (AP-06), the same list /health shows.
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
@@ -28,6 +29,7 @@ import { getDashboardSignals } from '@/lib/services/dashboard-signals';
 import { claimOnboardingStart } from '@/lib/services/onboarding';
 import { getActiveWorkspaceSummary } from '@/lib/services/workspace';
 import { getWorkspaceStartState } from '@/lib/services/workspace-provisioning';
+import { TodayAttention } from './_attention';
 import { NeedsYou, parseNeedsYouTab } from './_needs-you';
 import { TodayOverview } from './_overview';
 
@@ -128,6 +130,9 @@ export default async function TodayPage({
             </p>
           ) : null}
         </header>
+
+        {/* AP-06: the problems the workspace checks find, on both views. */}
+        <TodayAttention ctx={ctx} />
 
         {view === 'overview' ? (
           <TodayOverview

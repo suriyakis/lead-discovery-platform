@@ -63,7 +63,7 @@ import type { NotificationKind } from '@/lib/kinds/notification';
 import type { UsageKeySource } from '@/lib/kinds/usage';
 import type { ReplyClass } from '@/lib/mail/reply-classes';
 import type { GeoStatus } from '@/lib/services/geo';
-import type { HealthFindingSeverity } from '@/lib/services/health-check';
+import type { FindingSeverity as HealthFindingSeverity } from '@/lib/diagnostics/types';
 import type { HintSeverity } from '@/lib/services/hints';
 import type {
   AutomationCapability,
@@ -396,6 +396,8 @@ export const NOTIFICATION_KIND_TONE = {
   'review.needs_review': 'attention',
   'follow_up.awaiting_approval': 'attention',
   'health.warning': 'attention',
+  'health.finding': 'attention',
+  'health.critical': 'danger',
   'lead.replied': 'info',
   mention: 'info',
   assignment: 'info',
@@ -445,6 +447,7 @@ export const GEO_STATUS_TONE = {
 export const HEALTH_FINDING_SEVERITY_TONE = {
   info: 'neutral',
   warning: 'attention',
+  critical: 'danger',
 } as const satisfies Record<HealthFindingSeverity, Tone>;
 
 /** Hints on list rows: 'action' and 'warning' wait on the operator. */

@@ -31,3 +31,4 @@ export * from './remediation';
 export * from './holds';
 export * from './automation-state';
 export * from './ops';
+export * from './diagnostics';

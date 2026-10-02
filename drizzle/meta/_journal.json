@@ -519,6 +519,13 @@
       "when": 1790932921515,
       "tag": "0073_p1_knowledge_foundation_learning_knowledge",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1790940368226,
+      "tag": "0074_p1_diagnostics_notify_ledger",
+      "breakpoints": true
     }
   ]
 }

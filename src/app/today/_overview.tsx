@@ -15,6 +15,7 @@ import {
   Send,
   TrendingUp,
 } from 'lucide-react';
+import { Alert } from '@/components/Alert';
 import { StatusBadge } from '@/components/Badge';
 import { FunnelBars } from '@/components/FunnelBars';
 import { NavIcon } from '@/components/NavIcon';
@@ -120,48 +121,65 @@ function CockpitGrid({
 }: {
   signals: Awaited<ReturnType<typeof getDashboardSignals>>;
 }) {
+  // I070: a failed load shows "—", never a zero that reads as a count.
+  const value = (n: number) => (signals.degraded ? null : n);
+  const q = signals.sendQueue;
   return (
     <section className="cockpit-grid">
       <h2 className="section-title">Today&apos;s signals</h2>
       <p className="section-sub">
         What needs your attention right now.
       </p>
+      {signals.degraded ? (
+        <Alert tone="warning" title="Some numbers could not be loaded">
+          The figures below show “—” until the page loads them again.
+        </Alert>
+      ) : null}
       <div className="cockpit-grid-inner">
         <SignalCard
           icon={ListChecks}
           label="Pending review"
-          value={signals.reviewPending}
+          value={value(signals.reviewPending)}
           href={`${HOME_PATH}?tab=review`}
           tone={signals.reviewPending > 0 ? 'amber' : 'neutral'}
         />
         <SignalCard
           icon={PencilLine}
           label="Drafts awaiting approval"
-          value={signals.drafts.total}
+          value={value(signals.drafts.total)}
           href={`${HOME_PATH}?tab=drafts`}
           tone={signals.drafts.total > 0 ? 'amber' : 'neutral'}
-          sub={`${signals.drafts.discovery} disc · ${signals.drafts.engagement} eng · ${signals.drafts.pitch} pitch · ${signals.drafts.closing} close`}
+          sub={
+            signals.degraded
+              ? undefined
+              : `${signals.drafts.discovery} disc · ${signals.drafts.engagement} eng · ${signals.drafts.pitch} pitch · ${signals.drafts.closing} close`
+          }
         />
         <SignalCard
           icon={MessageSquare}
-          label="Inbound replies (7d)"
-          value={signals.replies7d}
+          label="Inbound mail (7d)"
+          value={value(signals.replies7d)}
           href={`${HOME_PATH}?tab=replies`}
           tone={signals.replies7d > 0 ? 'teal' : 'neutral'}
         />
         <SignalCard
           icon={Send}
           label="Send queue"
-          value={signals.sendQueue.queued}
+          value={value(q.queued)}
           href="/mailbox/queue"
-          tone={signals.sendQueue.paused ? 'bad' : 'neutral'}
-          sub={`${signals.sendQueue.sentToday}/${signals.sendQueue.dailyCap} today${
-            signals.sendQueue.nextSendAt
-              ? ` · next ${signals.sendQueue.nextSendAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-              : ''
-          }${signals.sendQueue.paused ? ' · PAUSED' : ''}`}
+          tone={!signals.degraded && q.paused ? 'bad' : 'neutral'}
+          sub={
+            signals.degraded
+              ? '— sent in 24 h'
+              : `${q.sent24h}/${q.dailyCap} sent in 24 h${
+                  q.nextSendAt
+                    ? ` · next ${q.nextSendAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                    : ''
+                }${q.paused ? ' · PAUSED' : ''}`
+          }
         />
-        <FunnelCard funnel={signals.funnel} />
+        {/* Unknown counts draw no funnel (empty bars would read as zero). */}
+        {signals.degraded ? null : <FunnelCard funnel={signals.funnel} />}
         {signals.recentInbound.length > 0 ? (
           <RecentRepliesCard items={signals.recentInbound} />
         ) : null}
@@ -180,12 +198,13 @@ function SignalCard({
 }: {
   icon: LucideIcon;
   label: string;
-  value: number;
+  /** null = unknown (a failed load): shown as "—". */
+  value: number | null;
   href: string;
   tone: 'amber' | 'teal' | 'bad' | 'neutral';
   sub?: string;
 }) {
-  const isActive = tone !== 'neutral' && value > 0;
+  const isActive = tone !== 'neutral' && value !== null && value > 0;
   return (
     <Link
       href={href}
@@ -197,7 +216,7 @@ function SignalCard({
         <Icon className="cockpit-card-icon" aria-hidden="true" />
         <span className="cockpit-card-label">{label}</span>
       </div>
-      <div className="cockpit-card-value">{value}</div>
+      <div className="cockpit-card-value">{value ?? '—'}</div>
       {sub ? <div className="cockpit-card-sub">{sub}</div> : null}
     </Link>
   );
