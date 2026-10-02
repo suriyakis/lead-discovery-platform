@@ -9,7 +9,7 @@
 // base doesn't already cover.
 //
 // Synthesized lessons land with source='synthesis', modest confidence and
-// enabled=true — the reinforcement loop then promotes the ones reality
+// lifecycle 'active' — the reinforcement loop then promotes the ones reality
 // confirms and compaction retires the ones it doesn't. Operators see the
 // provenance badge on /learning and can disable anything on sight.
 //
@@ -27,11 +27,14 @@ import {
   canAdminWorkspace,
   type WorkspaceContext,
 } from './context';
+import { createLesson, lessonInScope, scopeForProduct } from './learning';
 import {
   LESSON_CATEGORIES,
-  createLesson,
-  type LessonCategory,
-} from './learning';
+  LESSON_CATEGORY_REGISTRY,
+  isLessonCategory,
+  parseLessonPolarity,
+  polarityForRule,
+} from './learning-categories';
 import { hasTokens } from './token-ledger';
 
 export class LearningSynthesisError extends Error {
@@ -74,6 +77,8 @@ const ProposalSchema = z.object({
         rule: z.string(),
         /** Product profile id as a string, or null for workspace-wide. */
         productId: z.string().nullable(),
+        /** prefer | avoid | neutral — honoured when the category allows it. */
+        polarity: z.string().nullable().optional(),
         confidence: z.number().int().min(0).max(100),
       }),
     )
@@ -91,10 +96,11 @@ Rules must be:
 - ACTIONABLE one-sentence imperatives
 - NOT a duplicate or trivial rephrasing of an existing rule
 
-Allowed categories: ${LESSON_CATEGORIES.join(', ')}.
+Allowed categories:
+${LESSON_CATEGORIES.map((c) => `- ${c}: ${LESSON_CATEGORY_REGISTRY[c].description}`).join('\n')}
 
 Strict JSON output:
-{"proposals": [{"category": "<allowed category>", "rule": "<one sentence>", "productId": "<product id string from the events, or null for workspace-wide>", "confidence": <int 0-100>}]}
+{"proposals": [{"category": "<allowed category>", "rule": "<one sentence>", "polarity": "prefer" | "avoid" | "neutral", "productId": "<product id string from the events, or null for workspace-wide>", "confidence": <int 0-100>}]}
 
 Return at most ${MAX_PROPOSALS} proposals. Quality over quantity — an empty proposals array is the CORRECT answer when the events show no reliable new pattern. Output JSON only.`;
 
@@ -183,7 +189,8 @@ async function runSynthesis(ctx: WorkspaceContext): Promise<SynthesisSummary> {
     .where(
       and(
         eq(learningLessons.workspaceId, ctx.workspaceId),
-        eq(learningLessons.enabled, true),
+        eq(learningLessons.lifecycle, 'active'),
+        lessonInScope(),
       ),
     )
     .orderBy(desc(learningLessons.confidence))
@@ -247,21 +254,23 @@ Products in this workspace: ${products.map((p) => `${p.id}=${p.name}`).join(', '
   base.ran = true;
   base.proposalsReceived = result.proposals.length;
 
-  const categorySet = new Set<string>(LESSON_CATEGORIES);
   const existingRulesLower = new Set(existing.map((l) => l.rule.trim().toLowerCase()));
   let created = 0;
   for (const p of result.proposals.slice(0, MAX_PROPOSALS)) {
     const rule = p.rule.trim();
-    if (!rule || !categorySet.has(p.category)) continue;
+    // Registry categories only — a removed or invented one is dropped.
+    if (!rule || !isLessonCategory(p.category)) continue;
+    const category = p.category;
     // Belt-and-braces dedupe on top of the prompt instruction.
     if (existingRulesLower.has(rule.toLowerCase())) continue;
     const productId =
       p.productId && validProductIds.has(p.productId) ? BigInt(p.productId) : null;
     try {
       await createLesson(ctx, {
-        category: p.category as LessonCategory,
+        category,
         rule,
-        productProfileId: productId,
+        scope: scopeForProduct(productId),
+        polarity: polarityForRule(category, rule, parseLessonPolarity(p.polarity)),
         confidence: Math.min(p.confidence, SYNTHESIS_CONFIDENCE_CAP),
         source: 'synthesis',
       });

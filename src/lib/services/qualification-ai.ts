@@ -10,6 +10,7 @@ import type { LearningLesson } from '@/lib/db/schema/learning';
 import { getQualificationProviderForCtx } from '@/lib/ai';
 import type { WorkspaceContext } from './context';
 import { countryName } from './geo';
+import { lessonPolarityMark } from './learning-categories';
 import type { ClassifiableRecord, ClassificationVerdict } from './qualification-engine';
 
 const VerdictSchema = z.object({
@@ -146,11 +147,10 @@ function buildUserPrompt(
   if (lessons.length > 0) {
     sections.push('');
     sections.push('### PRIOR LESSONS (operator-validated; weigh accordingly)');
+    // PREFER / AVOID / NOTE come from the rule's own polarity (KL-01), not
+    // from its category name: an "avoid councils" sector rule is AVOID.
     for (const l of lessons.slice(0, 10)) {
-      const polarity = l.category.includes('negative') || l.category === 'false_positive'
-        ? 'AVOID'
-        : 'PREFER';
-      sections.push(`- [${polarity}] ${l.rule}`);
+      sections.push(`- [${lessonPolarityMark(l.polarity)}] ${l.rule}`);
     }
   }
 

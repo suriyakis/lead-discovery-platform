@@ -6,8 +6,8 @@ The system gets smarter over time by capturing what users do (approve, reject, c
 
 ### 1. Structured memory (Phase 5)
 - Events come in as `LearningEvent` rows.
-- A lesson extractor turns them into structured `LearningLesson` rows with a category, a one-sentence rule, optional product-profile scope, and an `enabled` flag.
-- Lessons are retrieved by category + product-profile + free-text similarity (basic, not vector) and injected into prompts or used directly by rules.
+- A lesson extractor turns them into structured `LearningLesson` rows with a category, a one-sentence rule, a polarity (PREFER / AVOID / neutral), a scope (workspace-wide or a set of products) and a lifecycle (`active`, `proposed`, `disabled`, `retired`).
+- Lessons are retrieved by the task's registry categories + scope (`lessonInScope`) + free-text similarity and injected into prompts or used directly by rules. Only `active` lessons are retrieved.
 
 ### 2. Vector memory (Phase 12)
 - Lessons (and example documents, rejected drafts, approved drafts, replies) get embeddings stored in a `vector(1536)` column.
@@ -16,22 +16,26 @@ The system gets smarter over time by capturing what users do (approve, reject, c
 
 The architecture commits to Phase 1 abstractions so Phase 12 is additive.
 
-## Event categories
+## Lesson categories (registry)
 
-Tagged on `LearningEvent.actionType` and inherited by lessons:
+`src/lib/services/learning-categories.ts` is the single source of truth (KL-01). For every category it records the operator label and description, the allowed polarity, which tasks read it (`appliesTo`: qualification / outreach / replies), whether the manual form offers it, and the code that consumes it. Retrieval (`resolveCategoriesForTask`), both extractors, the synthesis prompt, the /learning forms and the qualification prompt's PREFER / AVOID marks derive from it, and `src/tests/learning-categories.test.ts` fails when a category has no consumer for a task it claims.
 
-- `qualification_positive` — "this is the kind of company we want"
-- `qualification_negative` — "this is the kind we don't want"
-- `outreach_style` — "we don't say 'we are excited to'..."
-- `contact_role` — "for this product, target procurement, not engineering"
-- `sector_preference` — "skip councils for this offer"
-- `connector_quality` — "this directory has too many out-of-business companies"
-- `false_positive` — qualification said yes, user said no
-- `false_negative` — qualification said no, user said yes
-- `dedupe_hint` — these two records are the same / are not the same
-- `general_instruction` — workspace-wide rule that doesn't fit a tighter category
-- `reply_quality` — feedback on a generated technical reply
-- `product_positioning` — how we describe this product
+| category | polarity | applies to |
+|---|---|---|
+| `qualification_positive` | PREFER | qualification |
+| `qualification_negative` | AVOID | qualification |
+| `sector_preference` | PREFER or AVOID | qualification |
+| `contact_role` | PREFER or AVOID | qualification, outreach |
+| `false_positive` (not manual) | AVOID | qualification |
+| `false_negative` (not manual) | PREFER | qualification |
+| `outreach_style` | neutral | outreach, replies |
+| `product_positioning` | neutral | outreach |
+| `reply_quality` | neutral | replies |
+| `general_instruction` | any | qualification, outreach, replies |
+
+`dedupe_hint` and `connector_quality` were removed in KL-01: nothing ever read them. Existing rows were retired with `retired_reason = 'category_removed'`. Source quality is a learning event for Discovery, not a rule.
+
+`LearningEvent.actionType` stays a loose text tag (the categories above plus outcome tags such as `reply_positive`).
 
 ## Data model
 
@@ -53,21 +57,28 @@ Append-only.
 | createdAt | timestamptz | |
 
 ### `learning_lessons`
-Mutable (enable/disable, edit text), but never hard-deleted in Phase 5.
+Mutable (edit text, lifecycle), never hard-deleted.
 
 | col | type | notes |
 |---|---|---|
-| id | bigserial | PK |
+| id | bigserial | PK; UNIQUE (workspace_id, id) |
 | workspaceId | bigint | NOT NULL |
-| productProfileId | bigint | nullable — null = workspace-wide |
-| category | text | one of the categories above |
+| scopeKind | enum | `workspace` or `products` (see `lesson_scopes`) |
+| category | text | one of the registry categories |
 | rule | text | one-sentence imperative, e.g., "Skip councils for Vetrofluid offers." |
+| polarity | smallint | +1 PREFER, -1 AVOID, 0 neutral |
 | evidenceEventIds | bigint[] | learning_events that produced/support this lesson |
-| enabled | boolean | NOT NULL default true |
-| confidence | smallint | 0–100 |
-| embedding | vector(1536) | nullable — populated in Phase 12 |
-| createdAt | timestamptz | |
-| updatedAt | timestamptz | |
+| lifecycle | enum | `active` / `proposed` / `disabled` / `retired` |
+| retiredReason, retiredNote, mergedIntoId | | why, and into which rule, a rule was retired |
+| confidence | smallint | 0-100 |
+| applicationCount, lastAppliedAt | | exposures (pulled into a prompt) |
+| citedCount, lastCitedAt | | citations by a model (KL-04) |
+| reinforcedAt | timestamptz | last outcome-driven confidence change |
+| embedding | vector(1536) | nullable |
+| createdAt, updatedAt | timestamptz | |
+
+### `lesson_scopes`
+`(lesson_id, workspace_id, product_profile_id)`; composite FKs on `workspace_id` to both `learning_lessons` and `product_profiles`, `ON DELETE CASCADE`. A rule can only be scoped to products of its own workspace, and deleting a product leaves its rules in place but out of scope.
 
 ## Service interface
 
@@ -86,7 +97,7 @@ interface ILearningMemory {
 
 `recordFeedback` enqueues lesson extraction as a job in Phase 5+. The job calls `extractLesson` (which can be the mock AI or real AI provider), gets a structured draft, and writes a `learning_lessons` row linked back to the event.
 
-`getRelevantLessons` in Phase 5: filter by `(workspaceId, productProfileId, category)` and rank by recency + confidence. In Phase 12: rerank by embedding similarity to the task context.
+`getRelevantLessons`: active lessons, `lessonInScope(productProfileId)`, the task's registry categories, ranked by confidence + recency; reranked by embedding similarity to the task context when the pool exceeds the prompt budget.
 
 ## Extraction policy
 
@@ -96,9 +107,9 @@ interface ILearningMemory {
 
 ## How lessons influence behavior
 
-- **Qualification engine (Phase 7):** `getRelevantLessons` is called with `category in ('qualification_positive', 'qualification_negative', 'sector_preference', 'contact_role', 'product_positioning', 'false_positive', 'false_negative')`. The lessons are passed as additional rules to the rule engine and as additional context to the AI classifier (when AI is used).
-- **Outreach drafts (Phase 8):** lessons in `('outreach_style', 'product_positioning', 'contact_role')` are injected into the prompt that generates the draft. Forbidden phrases come from the product profile, not from lessons.
-- **Connector quality (later):** lessons in `connector_quality` feed into a per-recipe quality score that surfaces in the UI.
+- **Qualification (Phase 7):** `getRelevantLessons({ taskType: 'classification' })` returns the registry's qualification categories, `general_instruction` included. The AI prompt marks each rule PREFER / AVOID / NOTE from its polarity; the rules fallback adds or subtracts by polarity and ignores neutral rules. A review verdict reinforces the matched rules by polarity (`reinforceLessonsForVerdict`): rules that pointed the way the operator decided gain, the others lose.
+- **Outreach drafts (Phase 8):** `taskType: 'outreach'` (`outreach_style`, `contact_role`, `product_positioning`, `general_instruction`). Forbidden phrases come from the product profile, not from lessons.
+- **Reply suggestions:** `retrieveLessons({ taskType: 'reply' })` (`reply_quality`, `outreach_style`, `general_instruction`).
 - **Recommendations layer (later):** lessons drive the "why this lead matters" / "why this may be wrong" features.
 
 ## What we don't do

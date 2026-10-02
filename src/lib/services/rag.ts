@@ -4,13 +4,13 @@
 //   indexDocument(ctx, documentId)         — chunk + embed a document's bytes
 //   indexKnowledgeSource(ctx, ksId)        — chunk + embed a text/url source
 //   embedLesson(ctx, lessonId)             — embed a single learning_lesson
-//   embedAllLessons(ctx)                   — bulk-embed every enabled lesson
+//   embedAllLessons(ctx)                   — bulk-embed every active, in-scope lesson
 //
 // Retrieval path:
 //   retrieve(ctx, query, opts)             — top-k cosine-nearest chunks
 //   retrieveLessons(ctx, query, opts)      — top-k cosine-nearest lessons
 
-import { and, desc, eq, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
 import { Readable } from 'node:stream';
 import { db } from '@/lib/db/client';
 import {
@@ -30,6 +30,10 @@ import {
 import { learningLessons, type LearningLesson } from '@/lib/db/schema/learning';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
+import { categoriesForTaskType, type LessonTaskType } from './learning-categories';
+// Static import is safe: learning.ts reaches rag.ts only through a
+// dynamic import (scheduleLessonEmbedding), so there is no load cycle.
+import { lessonInScope } from './learning';
 import { getStorage, type IStorage } from '@/lib/storage';
 import {
   EMBEDDING_DIM,
@@ -589,13 +593,15 @@ export async function embedAllLessons(
   embedder?: IEmbeddingProvider,
 ): Promise<{ embedded: number }> {
   if (!canWrite(ctx)) throw permissionDenied('rag.embed_all_lessons');
+  // Only rules some prompt can actually receive: active and in scope.
   const rows = await db
     .select()
     .from(learningLessons)
     .where(
       and(
         eq(learningLessons.workspaceId, ctx.workspaceId),
-        eq(learningLessons.enabled, true),
+        eq(learningLessons.lifecycle, 'active'),
+        lessonInScope(),
       ),
     );
   const embedderInst = embedder ?? (await getEmbeddingProviderForCtx(ctx));
@@ -719,11 +725,22 @@ export interface RetrievedLesson {
   similarity: number;
 }
 
-/** Top-k cosine-nearest enabled learning_lessons for `query`. */
+export interface RetrieveLessonsOptions {
+  /** Top-k. Defaults to 8. */
+  limit?: number;
+  /** Workspace-wide rules plus that product's rules; omitted = every rule
+   *  that applies somewhere (lessonInScope()). */
+  productProfileId?: bigint;
+  /** The consuming task; only its registry categories are searched. */
+  taskType?: LessonTaskType;
+  embedder?: IEmbeddingProvider;
+}
+
+/** Top-k cosine-nearest active, in-scope learning_lessons for `query`. */
 export async function retrieveLessons(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   query: string,
-  options: RetrieveOptions = {},
+  options: RetrieveLessonsOptions = {},
 ): Promise<RetrievedLesson[]> {
   if (!query.trim()) return [];
   const embedder = options.embedder ?? (await getEmbeddingProviderForCtx(ctx));
@@ -734,13 +751,12 @@ export async function retrieveLessons(
 
   const conditions: SQL[] = [
     eq(learningLessons.workspaceId, ctx.workspaceId),
-    eq(learningLessons.enabled, true),
+    eq(learningLessons.lifecycle, 'active'),
     isNotNull(learningLessons.embedding),
+    lessonInScope(options.productProfileId),
   ];
-  if (options.productProfileId !== undefined) {
-    conditions.push(
-      sql`(${learningLessons.productProfileId} IS NULL OR ${learningLessons.productProfileId} = ${options.productProfileId})`,
-    );
+  if (options.taskType !== undefined) {
+    conditions.push(inArray(learningLessons.category, categoriesForTaskType(options.taskType)));
   }
 
   const rows = await db

@@ -92,6 +92,10 @@ export async function suggestReply(
   // long as the workspace stays on pgvector (the default), both code
   // paths land in the same underlying tables. retrieveLessons() likewise
   // operates on learning_lessons and isn't part of the provider abstraction.
+  // Rules: only the categories the registry routes to reply suggestions
+  // (reply_quality, outreach_style, general_instruction) — before KL-01
+  // nothing ever asked for reply_quality and every qualification rule
+  // competed for these slots (I038).
   const [chunks, lessons] = await Promise.all([
     retrieve(ctx, queryText, {
       limit: input.chunkLimit ?? 6,
@@ -99,6 +103,7 @@ export async function suggestReply(
     }),
     retrieveLessons(ctx, queryText, {
       limit: input.lessonLimit ?? 4,
+      taskType: 'reply',
       embedder: input.embedder,
     }),
   ]);

@@ -159,11 +159,11 @@ This document is a reference; deep details live in each module's own README (add
 
 **Purpose.** Capture user feedback as structured lessons that influence future qualification, drafts, and recommendations.
 
-**Tables.** `learning_events`, `learning_lessons`.
+**Tables.** `learning_events`, `learning_lessons`, `lesson_scopes`.
 
 **`LearningEvent`.** Raw input: workspace, user, entity, action, original comment, optional product profile context.
 
-**`LearningLesson`.** Extracted, durable lesson. Categories: `qualification_positive | qualification_negative | outreach_style | contact_role | sector_preference | connector_quality | false_positive | false_negative | dedupe_hint | general_instruction | reply_quality | product_positioning`.
+**`LearningLesson`.** Extracted, durable lesson with a scope (workspace-wide or a set of products via `lesson_scopes`), a lifecycle (`active | proposed | disabled | retired`) and a polarity (PREFER / AVOID / neutral). Categories come from the registry in `src/lib/services/learning-categories.ts`: `qualification_positive | qualification_negative | sector_preference | contact_role | false_positive | false_negative | outreach_style | product_positioning | reply_quality | general_instruction` (KL-01 removed `dedupe_hint` and `connector_quality`). Every reader applies `lessonInScope(pid)`.
 
 **Service API.**
 - `recordFeedback(ctx, event)` — append + run extraction synchronously or as a job

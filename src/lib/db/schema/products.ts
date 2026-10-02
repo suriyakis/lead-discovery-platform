@@ -9,6 +9,7 @@ import {
   smallint,
   text,
   timestamp,
+  unique,
 } from 'drizzle-orm/pg-core';
 import { users } from './auth';
 import { workspaces } from './workspaces';
@@ -124,6 +125,13 @@ export const productProfiles = pgTable(
     workspaceActiveIdx: index('product_profiles_workspace_active_idx').on(
       table.workspaceId,
       table.active,
+    ),
+    /** Target of composite (workspace_id, product_profile_id) FKs from
+     *  scope join tables (lesson_scopes, KL-01): a row there can only
+     *  point at a product of its own workspace. */
+    workspaceIdUnique: unique('product_profiles_workspace_id_id_unique').on(
+      table.workspaceId,
+      table.id,
     ),
   }),
 );

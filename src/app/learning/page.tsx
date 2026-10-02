@@ -12,12 +12,21 @@ import {
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace } from '@/lib/services/context';
 import {
-  LESSON_CATEGORIES,
   countLessons,
   getLessonCategoryCounts,
+  getLessonScopeProducts,
   listLessons,
+  type ListLessonsFilter,
   type LessonCategoryCounts,
 } from '@/lib/services/learning';
+import {
+  APPLIES_TO_LABELS,
+  LESSON_CATEGORIES,
+  getLessonCategoryDefinition,
+  lessonCategoryLabel,
+  lessonPolarityLabel,
+  type LessonCategory,
+} from '@/lib/services/learning-categories';
 import {
   compactWorkspaceKnowledge,
   lastCompactionRun,
@@ -25,10 +34,14 @@ import {
 import { synthesizeWorkspaceLearning } from '@/lib/services/learning-synthesis';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { listProductProfiles } from '@/lib/services/product-profile';
+import type { LessonLifecycle } from '@/lib/db/schema/learning';
 import { bulkDisableAction, bulkEnableAction } from './actions';
 
 const BULK_FORM_ID = 'learning-bulk-form';
 const PAGE_SIZE = 25;
+
+/** Lifecycles shown by default: rules in service or waiting for a decision. */
+const DEFAULT_LIFECYCLES: readonly LessonLifecycle[] = ['active', 'proposed'];
 
 function confidenceBadgeClass(conf: number): string {
   if (conf >= 75) return 'badge badge-good';
@@ -55,9 +68,46 @@ function sourceLabel(source: string): { label: string; title: string } | null {
   }
 }
 
+const RETIRED_REASON_LABELS: Record<string, string> = {
+  stale: 'retired: unused',
+  merged: 'retired: merged',
+  superseded: 'retired: superseded',
+  contradicted: 'retired: contradicted',
+  operator_rejected: 'retired: rejected',
+  source_decision_voided: 'retired: decision undone',
+  absorbed_into_profile: 'retired: in the profile',
+  product_deleted: 'retired: product deleted',
+  category_removed: 'retired: category removed',
+};
+
+function lifecycleBadge(
+  lifecycle: LessonLifecycle,
+  retiredReason: string | null,
+): { label: string; cls: string } | null {
+  switch (lifecycle) {
+    case 'active':
+      return null;
+    case 'proposed':
+      return { label: 'proposed', cls: 'badge badge-warn' };
+    case 'disabled':
+      return { label: 'disabled', cls: 'badge' };
+    case 'retired':
+      return {
+        label: (retiredReason && RETIRED_REASON_LABELS[retiredReason]) ?? 'retired',
+        cls: 'badge',
+      };
+  }
+}
+
+function appliesToText(category: string): string | null {
+  const def = getLessonCategoryDefinition(category);
+  if (!def) return null;
+  return def.appliesTo.map((a) => APPLIES_TO_LABELS[a]).join(' · ');
+}
+
 const CATEGORY_FILTERS = [
   { key: 'all' as const, label: 'All' },
-  ...LESSON_CATEGORIES.map((c) => ({ key: c, label: c.replace(/_/g, ' ') })),
+  ...LESSON_CATEGORIES.map((c) => ({ key: c, label: lessonCategoryLabel(c) })),
 ];
 
 export default async function LearningPage({
@@ -66,6 +116,7 @@ export default async function LearningPage({
   searchParams: Promise<{
     category?: string;
     enabled?: string;
+    scope?: string;
     page?: string;
     message?: string;
     error?: string;
@@ -79,25 +130,27 @@ export default async function LearningPage({
     ? sp.category
     : 'all';
   const showDisabled = sp.enabled === 'all';
+  const needsScopeOnly = sp.scope === 'needs_scope';
   const pageParam = Number(sp.page ?? 1);
   const page = Number.isFinite(pageParam) && pageParam > 0 ? Math.floor(pageParam) : 1;
 
   let lessons;
   let counts: LessonCategoryCounts | null = null;
   let productNameById = new Map<string, string>();
+  let scopeByLesson = new Map<string, bigint[]>();
+  let needsScopeCount = 0;
   let isAdmin = false;
   let lastCompaction: Awaited<ReturnType<typeof lastCompactionRun>> = null;
   let total = 0;
   try {
     const ctx = await getWorkspaceContext();
     isAdmin = canAdminWorkspace(ctx);
-    const enabledFilter = showDisabled ? {} : { enabled: true as const };
-    counts = await getLessonCategoryCounts(ctx, enabledFilter);
-    const listFilter = {
-      ...(categoryKey !== 'all'
-        ? { category: categoryKey as (typeof LESSON_CATEGORIES)[number] }
-        : {}),
-      ...enabledFilter,
+    const lifecycleFilter = showDisabled ? {} : { lifecycle: DEFAULT_LIFECYCLES };
+    counts = await getLessonCategoryCounts(ctx, lifecycleFilter);
+    const listFilter: Omit<ListLessonsFilter, 'limit' | 'offset'> = {
+      ...(categoryKey !== 'all' ? { category: categoryKey as LessonCategory } : {}),
+      ...lifecycleFilter,
+      ...(needsScopeOnly ? { needsScope: true } : {}),
     };
     total = await countLessons(ctx, listFilter);
     lessons = await listLessons(ctx, {
@@ -105,6 +158,11 @@ export default async function LearningPage({
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
     });
+    needsScopeCount = await countLessons(ctx, { ...lifecycleFilter, needsScope: true });
+    scopeByLesson = await getLessonScopeProducts(
+      ctx,
+      lessons.filter((l) => l.scopeKind === 'products').map((l) => l.id),
+    );
     const products = await listProductProfiles(ctx, { includeArchived: true });
     productNameById = new Map(products.map((p) => [p.id.toString(), p.name]));
     lastCompaction = await lastCompactionRun(ctx);
@@ -150,6 +208,17 @@ export default async function LearningPage({
     }
   }
 
+  const filterQuery = (overrides: { category?: string; scope?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    const cat = overrides.category ?? categoryKey;
+    if (cat !== 'all') params.set('category', cat);
+    if (showDisabled) params.set('enabled', 'all');
+    const scope = overrides.scope === undefined ? (needsScopeOnly ? 'needs_scope' : null) : overrides.scope;
+    if (scope) params.set('scope', scope);
+    const qs = params.toString();
+    return qs ? `/learning?${qs}` : '/learning';
+  };
+
   return (
     <AppShell>
         <div className="page-header">
@@ -181,7 +250,8 @@ export default async function LearningPage({
             <p className="muted">
               Weekly AI pass that merges near-duplicate lessons and retires
               stale low-confidence ones. Survivor lessons keep the full
-              evidence trail; retired ones are disabled, not deleted.
+              evidence trail; retired ones stay on record with the reason,
+              they are never deleted.
             </p>
             {lastCompaction ? (
               <p className="muted">
@@ -218,19 +288,32 @@ export default async function LearningPage({
           ) : null}
         </section>
 
+        {needsScopeCount > 0 ? (
+          <p className="mail-flash error">
+            {needsScopeCount} rule{needsScopeCount === 1 ? '' : 's'} lost every
+            product {needsScopeCount === 1 ? 'it' : 'they'} applied to and{' '}
+            {needsScopeCount === 1 ? 'is' : 'are'} not used anywhere.{' '}
+            {needsScopeOnly ? (
+              <Link href={filterQuery({ scope: null })}>Show all rules</Link>
+            ) : (
+              <Link href={filterQuery({ scope: 'needs_scope' })}>
+                Show the rules that need a scope
+              </Link>
+            )}
+          </p>
+        ) : null}
+
         <div className="state-tabs">
           {CATEGORY_FILTERS.map((f) => {
             const active = f.key === categoryKey;
-            const params = new URLSearchParams();
-            if (f.key !== 'all') params.set('category', f.key);
-            if (showDisabled) params.set('enabled', 'all');
-            const qs = params.toString();
             const count = f.key === 'all' ? counts?.total ?? 0 : counts?.[f.key] ?? 0;
+            const def = f.key === 'all' ? null : getLessonCategoryDefinition(f.key);
             return (
               <Link
                 key={f.key}
-                href={qs ? `/learning?${qs}` : '/learning'}
+                href={filterQuery({ category: f.key })}
                 className={active ? 'tab active' : 'tab'}
+                title={def ? def.description : undefined}
               >
                 {f.label}
                 <span className="tab-count">{count}</span>
@@ -242,6 +325,7 @@ export default async function LearningPage({
           {categoryKey !== 'all' ? (
             <input type="hidden" name="category" value={categoryKey} />
           ) : null}
+          {needsScopeOnly ? <input type="hidden" name="scope" value="needs_scope" /> : null}
           <label>
             <input
               type="checkbox"
@@ -249,7 +333,7 @@ export default async function LearningPage({
               value="all"
               defaultChecked={showDisabled}
             />
-            Show disabled lessons
+            Show disabled and retired lessons
           </label>
           <button type="submit">Apply</button>
         </form>
@@ -259,6 +343,7 @@ export default async function LearningPage({
             <input type="hidden" name="category" value={categoryKey} />
           ) : null}
           {showDisabled ? <input type="hidden" name="enabled" value="all" /> : null}
+          {needsScopeOnly ? <input type="hidden" name="scope" value="needs_scope" /> : null}
           {page > 1 ? <input type="hidden" name="page" value={String(page)} /> : null}
           <div className="bulk-toolbar-info">
             {lessons.length > 0 ? <SelectAllVisible formId={BULK_FORM_ID} /> : null}
@@ -300,12 +385,19 @@ export default async function LearningPage({
           ) : (
             <ul className="profile-list bulk-selectable-list">
               {lessons.map((l) => {
-                const productId = l.productProfileId?.toString();
-                const productName = productId
-                  ? productNameById.get(productId) ?? `product #${productId}`
-                  : null;
+                const scopedIds = scopeByLesson.get(l.id.toString()) ?? [];
+                const scopeText =
+                  l.scopeKind === 'workspace'
+                    ? 'all products'
+                    : scopedIds
+                        .map((pid) => productNameById.get(pid.toString()) ?? `product #${pid}`)
+                        .map((name) => `→ ${name}`)
+                        .join(', ');
+                const needsScope = l.scopeKind === 'products' && scopedIds.length === 0;
+                const lifecycle = lifecycleBadge(l.lifecycle, l.retiredReason);
+                const appliesTo = appliesToText(l.category);
                 return (
-                  <li key={l.id.toString()} className={l.enabled ? '' : 'archived'}>
+                  <li key={l.id.toString()} className={l.lifecycle === 'active' ? '' : 'archived'}>
                     <label className="row-select">
                       <input
                         type="checkbox"
@@ -320,10 +412,25 @@ export default async function LearningPage({
                       <span className={confidenceBadgeClass(l.confidence)}>
                         conf {l.confidence}
                       </span>
-                      <span>{l.category.replace(/_/g, ' ')}</span>
-                      <span>
-                        {productName ? `→ ${productName}` : 'workspace-wide'}
-                      </span>
+                      <span>{lessonCategoryLabel(l.category)}</span>
+                      {l.polarity !== 0 ? (
+                        <span className={l.polarity > 0 ? 'badge badge-good' : 'badge badge-bad'}>
+                          {lessonPolarityLabel(l.polarity)}
+                        </span>
+                      ) : null}
+                      {needsScope ? (
+                        <span
+                          className="badge badge-bad"
+                          title="Every product this rule applied to was deleted. Open it to choose products or apply it to all products."
+                        >
+                          Needs a scope
+                        </span>
+                      ) : (
+                        <span>{scopeText}</span>
+                      )}
+                      {appliesTo ? (
+                        <span title="Where the platform uses this rule">{appliesTo}</span>
+                      ) : null}
                       {(() => {
                         const s = sourceLabel(l.source);
                         return s ? (
@@ -337,7 +444,7 @@ export default async function LearningPage({
                           used {l.applicationCount}×
                         </span>
                       ) : null}
-                      {!l.enabled ? <span>disabled</span> : null}
+                      {lifecycle ? <span className={lifecycle.cls}>{lifecycle.label}</span> : null}
                     </div>
                   </li>
                 );
@@ -349,6 +456,7 @@ export default async function LearningPage({
             query={{
               category: categoryKey === 'all' ? undefined : categoryKey,
               enabled: showDisabled ? 'all' : undefined,
+              scope: needsScopeOnly ? 'needs_scope' : undefined,
             }}
             page={page}
             pageSize={PAGE_SIZE}

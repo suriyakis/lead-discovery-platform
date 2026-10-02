@@ -32,7 +32,7 @@ import { hasTokens } from './token-ledger';
 import {
   createLesson,
   reinforceLessons,
-  type LessonDraft,
+  scopeForProduct,
 } from './learning';
 import type { WorkspaceContext } from './context';
 
@@ -247,17 +247,12 @@ export async function learnFromDraftEdit(
       return { learned: false, reason: 'not_worth_learning' };
     }
 
-    const draft: LessonDraft = {
+    await createLesson(ctx, {
       category: 'outreach_style',
       rule: rule.slice(0, 1000),
+      scope: scopeForProduct(input.productProfileId),
       // Edit-derived rules start modest — reinforcement raises the good ones.
       confidence: Math.min(verdict.confidence, 65),
-    };
-    await createLesson(ctx, {
-      category: draft.category,
-      rule: draft.rule,
-      productProfileId: input.productProfileId,
-      confidence: draft.confidence,
       source: 'draft_edit',
       evidenceEventIds: event ? [event.id] : [],
     });

@@ -18,8 +18,10 @@ import { workspaces } from '@/lib/db/schema/workspaces';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import {
   createLesson,
+  getLessonScopeProducts,
   getRelevantLessons,
   reinforceLessons,
+  reinforceLessonsForVerdict,
 } from '@/lib/services/learning';
 import {
   isMaterialEdit,
@@ -144,6 +146,66 @@ describe('reinforceLessons', () => {
       'cross-tenant attempt',
     );
     expect(n).toBe(0);
+    expect((await lessonRow(lessonB.id)).confidence).toBe(50);
+  });
+});
+
+// ---- reinforceLessonsForVerdict (I098) ------------------------------------
+
+describe('reinforceLessonsForVerdict', () => {
+  it('a verdict strengthens the rules that pointed its way and weakens the others; neutral rules untouched', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA);
+    const avoid = await createLesson(c, {
+      category: 'qualification_negative',
+      rule: 'Skip consultancies.',
+      confidence: 60,
+    });
+    const prefer = await createLesson(c, {
+      category: 'qualification_positive',
+      rule: 'Target manufacturers.',
+      confidence: 60,
+    });
+    const neutral = await createLesson(c, {
+      category: 'outreach_style',
+      rule: 'Keep it short.',
+      confidence: 60,
+    });
+
+    // The operator REJECTS: the AVOID rule was right, the PREFER rule wrong.
+    const rejected = await reinforceLessonsForVerdict(
+      c,
+      [avoid.id, prefer.id, neutral.id],
+      'not_fit',
+      'test:reject',
+    );
+    expect(rejected.strengthened).toEqual([avoid.id]);
+    expect(rejected.weakened).toEqual([prefer.id]);
+    expect((await lessonRow(avoid.id)).confidence).toBe(62);
+    expect((await lessonRow(prefer.id)).confidence).toBe(57);
+    expect((await lessonRow(neutral.id)).confidence).toBe(60);
+    expect((await lessonRow(avoid.id)).reinforcedAt).not.toBeNull();
+
+    // The operator APPROVES: the reverse.
+    await reinforceLessonsForVerdict(c, [avoid.id, prefer.id], 'fit', 'test:approve');
+    expect((await lessonRow(avoid.id)).confidence).toBe(59);
+    expect((await lessonRow(prefer.id)).confidence).toBe(59);
+  });
+
+  it('is workspace-scoped — foreign ids no-op', async () => {
+    const s = await setup();
+    const lessonB = await createLesson(ctx(s.workspaceB, s.ownerB), {
+      category: 'qualification_negative',
+      rule: 'B rule.',
+      confidence: 50,
+    });
+    const r = await reinforceLessonsForVerdict(
+      ctx(s.workspaceA, s.ownerA),
+      [lessonB.id],
+      'not_fit',
+      'cross-tenant attempt',
+    );
+    expect(r).toEqual({ strengthened: [], weakened: [] });
     expect((await lessonRow(lessonB.id)).confidence).toBe(50);
   });
 });
@@ -286,7 +348,10 @@ describe('learnFromDraftEdit', () => {
       );
     expect(lessons).toHaveLength(1);
     expect(lessons[0]!.category).toBe('outreach_style');
-    expect(lessons[0]!.productProfileId).toBe(product.id);
+    expect(lessons[0]!.scopeKind).toBe('products');
+    expect((await getLessonScopeProducts(c, [lessons[0]!.id])).get(lessons[0]!.id.toString())).toEqual([
+      product.id,
+    ]);
     expect(lessons[0]!.confidence).toBe(65); // capped below the AI's 80
 
     // Same draft again → guard blocks a second lesson.
@@ -460,9 +525,14 @@ describe('synthesizeWorkspaceLearningUnattended', () => {
         ),
       );
     expect(created).toHaveLength(1);
-    expect(created[0]!.productProfileId).toBe(product.id);
+    expect(created[0]!.scopeKind).toBe('products');
+    expect((await getLessonScopeProducts(c, [created[0]!.id])).get(created[0]!.id.toString())).toEqual([
+      product.id,
+    ]);
     expect(created[0]!.confidence).toBe(55); // capped
-    expect(created[0]!.enabled).toBe(true);
+    expect(created[0]!.lifecycle).toBe('active');
+    // qualification_negative fixes the direction, whatever the model says.
+    expect(created[0]!.polarity).toBe(-1);
 
     const notes = await db
       .select()

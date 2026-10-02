@@ -25,6 +25,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import bcrypt from 'bcryptjs';
 import * as s from '../src/lib/db/schema';
+import { polarityForRule, type LessonCategory } from '../src/lib/services/learning-categories';
 
 // Only ever usable against the throwaway databases allowed below.
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD || 'demo-local-only-password';
@@ -3069,7 +3070,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   ]);
 
   // ======================= learning =======================
-  const LESSONS: { cat: string; rule: string; src: 'operator' | 'draft_edit' | 'synthesis'; product: ProductKey | null; conf: number; enabled?: boolean; apps: number; d: number }[] = [
+  const LESSONS: { cat: LessonCategory; rule: string; src: 'operator' | 'draft_edit' | 'synthesis'; product: ProductKey | null; conf: number; enabled?: boolean; apps: number; d: number }[] = [
     { cat: 'qualification_negative', rule: 'Skip residential loft / cavity-wall installers for aerogel — they never buy industrial blankets.', src: 'operator', product: 'aerogel', conf: 92, apps: 41, d: 26 },
     { cat: 'qualification_positive', rule: 'Companies mentioning CUI programmes or cryogenic lines are strong aerogel fits even with a thin website.', src: 'synthesis', product: 'aerogel', conf: 78, apps: 33, d: 18 },
     { cat: 'false_positive', rule: 'Online insulation shops are retailers, not installers — reject even if keywords match.', src: 'operator', product: null, conf: 88, apps: 12, d: 25 },
@@ -3077,8 +3078,8 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     { cat: 'outreach_style', rule: 'Do not mention price in the first email; offer a datasheet instead.', src: 'operator', product: 'aerogel', conf: 90, apps: 49, d: 24 },
     { cat: 'contact_role', rule: 'For PL facade contractors, the "Kierownik zakupów" or technical director picks insulation — not the CEO.', src: 'synthesis', product: 'wool', conf: 72, apps: 14, d: 15 },
     { cat: 'sector_preference', rule: 'Data-centre fit-out contractors convert best for fire-rated sealants.', src: 'synthesis', product: 'sealant', conf: 68, apps: 9, d: 11 },
-    { cat: 'connector_quality', rule: 'IT directory listings older than 2 years are often defunct companies — verify the website is live.', src: 'operator', product: null, conf: 64, apps: 6, d: 14 },
-    { cat: 'dedupe_hint', rule: 'Branches of the same group (e.g. "Berlin" office of Brandschutz Krüger) should be merged as duplicates.', src: 'operator', product: null, conf: 75, apps: 4, d: 2 },
+    { cat: 'qualification_negative', rule: 'IT directory listings older than 2 years are often defunct companies — reject unless the website is live.', src: 'operator', product: null, conf: 64, apps: 6, d: 14 },
+    { cat: 'general_instruction', rule: 'Treat branches of the same group (e.g. the Berlin office of Brandschutz Krüger) as one company.', src: 'operator', product: null, conf: 75, apps: 4, d: 2 },
     { cat: 'general_instruction', rule: 'Always write to Polish prospects in Polish, with formal "Pan/Pani" tone.', src: 'operator', product: 'wool', conf: 95, apps: 28, d: 30 },
     { cat: 'reply_quality', rule: 'When a prospect asks for documents, answer in the same thread and summarise the key number in the body.', src: 'draft_edit', product: null, conf: 77, apps: 11, d: 3 },
     { cat: 'product_positioning', rule: 'Position aerogel on installed cost per metre, not material cost per m².', src: 'synthesis', product: 'aerogel', conf: 70, apps: 7, d: 9 },
@@ -3094,13 +3095,14 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   const lessonRows = await db
     .insert(s.learningLessons)
     .values(
-      LESSONS.map((l) => ({
+      LESSONS.map((l): s.NewLearningLesson => ({
         workspaceId: A,
-        productProfileId: l.product ? P[l.product] : null,
+        scopeKind: l.product ? 'products' : 'workspace',
         category: l.cat,
         rule: l.rule,
+        polarity: polarityForRule(l.cat, l.rule),
         source: l.src,
-        enabled: l.enabled ?? true,
+        lifecycle: l.enabled === false ? 'disabled' : 'active',
         confidence: l.conf,
         applicationCount: l.apps,
         lastAppliedAt: l.apps > 0 ? ago(between(0, Math.max(0, l.d - 1)), between(0, 20)) : null,
@@ -3111,6 +3113,13 @@ async function seedRest(ctx: RestCtx): Promise<void> {
       })),
     )
     .returning();
+  // KL-01: product rules name their product through lesson_scopes.
+  const scopeRows: (typeof s.lessonScopes.$inferInsert)[] = [];
+  lessonRows.forEach((lesson, i) => {
+    const product = must(LESSONS[i], 'lesson spec').product;
+    if (product) scopeRows.push({ lessonId: lesson.id, workspaceId: A, productProfileId: P[product] });
+  });
+  if (scopeRows.length > 0) await db.insert(s.lessonScopes).values(scopeRows);
   const eventRows: s.NewLearningEvent[] = [];
   lessonRows.forEach((lesson, i) => {
     const spec = must(LESSONS[i], 'lesson spec');
@@ -3122,7 +3131,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
         userId: spec.src === 'synthesis' ? pick([MEMBER_ID, ADMIN_ID]) : lesson.createdBy,
         entityType: spec.src === 'draft_edit' ? 'outreach_draft' : 'review_item',
         entityId: sd.reviewItemId.toString(),
-        productProfileId: lesson.productProfileId,
+        productProfileId: spec.product ? P[spec.product] : null,
         actionType: spec.cat,
         originalComment: spec.src === 'draft_edit' ? 'Operator shortened the draft and removed the price mention.' : pick(['Not our customer.', 'Good fit — keep these.', 'Wrong person, redirect next time.', 'Duplicate branch.', null]),
         extractedLessonId: lesson.id,

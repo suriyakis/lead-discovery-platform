@@ -304,8 +304,10 @@ async function feedDecisionIntoLearning(
     );
 
   // Outcome reinforcement: the operator's verdict judges the lessons that
-  // steered these qualifications. Approve → the applied lessons earn
-  // confidence; reject → they lose some. Fire-and-forget — reinforcement
+  // steered these qualifications, by each rule's polarity (I098): a rule
+  // that pointed the way the operator decided (PREFER on approve, AVOID
+  // on reject) earns confidence, one that pointed the other way loses
+  // some, neutral rules are untouched. Fire-and-forget — reinforcement
   // must never block the decision itself.
   const appliedLessonIds = Array.from(
     new Set(
@@ -318,11 +320,11 @@ async function feedDecisionIntoLearning(
     ),
   ).map(BigInt);
   if (appliedLessonIds.length > 0) {
-    const { reinforceLessons } = await import('./learning');
-    void reinforceLessons(
+    const { reinforceLessonsForVerdict } = await import('./learning');
+    void reinforceLessonsForVerdict(
       ctx,
       appliedLessonIds,
-      args.decision === 'approved' ? 'up' : 'down',
+      args.decision === 'approved' ? 'fit' : 'not_fit',
       `review:${args.decision}`,
     ).catch(() => {});
   }

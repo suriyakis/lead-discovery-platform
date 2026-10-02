@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/connectors/mock';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -497,6 +497,59 @@ describe('approve/reject feeds the learning layer', () => {
       .from(learningEvents)
       .where(eq(learningEvents.workspaceId, s.workspaceB));
     expect(eventsB).toHaveLength(0);
+  });
+
+  it('I098: a rejection strengthens the AVOID rule that flagged the record and weakens the PREFER one', async () => {
+    const { createProductProfile } = await import('@/lib/services/product-profile');
+    const { qualifications } = await import('@/lib/db/schema/qualifications');
+    const { learningLessons } = await import('@/lib/db/schema/learning');
+    const { createLesson } = await import('@/lib/services/learning');
+    const s = await setup();
+    const owner = ctx(s.workspaceA, s.ownerA, 'owner');
+    const { items, sourceRecords: sr } = await seedDiscovery(s, 1);
+    if (!items[0] || !sr[0]) return;
+    const product = await createProductProfile(owner, { name: 'Vetrofluid' });
+    const avoid = await createLesson(owner, {
+      category: 'qualification_negative',
+      rule: 'Skip councils.',
+      confidence: 60,
+    });
+    const prefer = await createLesson(owner, {
+      category: 'qualification_positive',
+      rule: 'Roofers are a fit.',
+      confidence: 60,
+    });
+    const neutral = await createLesson(owner, {
+      category: 'general_instruction',
+      rule: 'Group branches count as one company.',
+      confidence: 60,
+    });
+    // A rules_fallback verdict that matched all three (as the rules engine
+    // serialises them: id strings).
+    await db.insert(qualifications).values({
+      workspaceId: s.workspaceA,
+      sourceRecordId: sr[0].id,
+      productProfileId: product.id,
+      isRelevant: false,
+      relevanceScore: 35,
+      confidence: 60,
+      method: 'rules_fallback',
+      evidence: {
+        contributions: [],
+        matchedLessonIds: [avoid.id, prefer.id, neutral.id].map((id) => id.toString()),
+      },
+    });
+
+    await rejectReviewItem(owner, items[0].id);
+
+    const confidenceOf = async (id: bigint) =>
+      (await db.select().from(learningLessons).where(eq(learningLessons.id, id)))[0]!.confidence;
+    // Reinforcement is fire-and-forget after the decision commits.
+    await vi.waitFor(async () => {
+      expect(await confidenceOf(avoid.id)).toBe(62);
+    });
+    expect(await confidenceOf(prefer.id)).toBe(57);
+    expect(await confidenceOf(neutral.id)).toBe(60);
   });
 });
 

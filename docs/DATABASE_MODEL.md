@@ -166,8 +166,19 @@ The review queue. State, assigned user, comments (separate `review_comments` tab
 ### `outreach_drafts` (Phase 8)
 Linked to a workspace, product profile, and target entity (company/contact/opportunity).
 
-### `learning_events`, `learning_lessons` (Phase 5)
-`learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge with an `enabled` flag and a reserved `embedding vector(1536)` column for Phase 12.
+### `learning_events`, `learning_lessons`, `lesson_scopes` (Phase 5, KL-01)
+`learning_events` is append-only raw feedback. `learning_lessons` is the derived, structured knowledge ("rules") with an `embedding vector(1536)` column (Phase 12).
+
+KL-01 shape of `learning_lessons`:
+- `scope_kind` (`workspace` | `products`). NULL never means "everywhere": a `products` rule applies to exactly its `lesson_scopes` rows, and one with no rows left (its products were deleted) applies nowhere ("Needs a scope").
+- `lifecycle` (`active` | `proposed` | `disabled` | `retired`) replaces `enabled`; only `active` rules reach a prompt or scoring step. A retired rule always has `retired_reason` (`stale`, `merged`, `superseded`, `contradicted`, `operator_rejected`, `source_decision_voided`, `absorbed_into_profile`, `product_deleted`, `category_removed`), optionally `retired_note` and `merged_into_id` (self-FK to the surviving rule). CHECK constraints keep reason and lifecycle consistent.
+- `polarity` smallint (+1 PREFER, -1 AVOID, 0 neutral; CHECK in (-1, 0, 1)); allowed values per category come from the category registry (`src/lib/services/learning-categories.ts`).
+- `cited_count`, `last_cited_at` (citations, filled by KL-04), `reinforced_at` (last outcome-driven confidence change).
+- `UNIQUE (workspace_id, id)`, the target of the composite FK below.
+
+`lesson_scopes(lesson_id, workspace_id, product_profile_id)`, PK `(lesson_id, product_profile_id)`. Both FKs are composite on `workspace_id`: `(workspace_id, lesson_id) -> learning_lessons(workspace_id, id)` and `(workspace_id, product_profile_id) -> product_profiles(workspace_id, id)`, both `ON DELETE CASCADE`. The database itself refuses a scope row joining a rule to another tenant's product; deleting a product drops its scope rows instead of the rules. `product_profiles` carries `UNIQUE (workspace_id, id)` for this.
+
+Every reader filters through `lessonInScope(pid)` in `src/lib/services/learning.ts`: `scope_kind = 'workspace' OR EXISTS (lesson_scopes row [for pid])`. Rollback of the KL-01 migrations: `drizzle/rollback/p1_knowledge_foundation_lesson_scopes.down.sql`.
 
 ### `remediation_runs`, `remediation_log` (Phase 0, flow:F-06)
 Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`). Not tenant-owned: a run spans workspaces and is driven by a platform super admin.
