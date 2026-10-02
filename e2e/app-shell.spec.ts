@@ -54,6 +54,24 @@ async function reviewBadge(page: Page): Promise<string> {
 
 test.describe('the workspace frame is mounted once (DS-07)', () => {
   test('the assistant conversation survives navigation across five routes', async ({ page }) => {
+    // The guide answers from a stub: this test is about the frame keeping
+    // the conversation, not about the AI. The demo seed sets the workspace
+    // to OpenAI and the smoke runs with no provider key, so the real route
+    // would answer "unavailable" (the route itself is covered by
+    // src/tests/assistant-route.test.ts and the Phase 1 drill).
+    const asked: Array<string | undefined> = [];
+    await page.route('**/api/assistant', async (route) => {
+      const workspace = route.request().headers()['x-expected-workspace'];
+      asked.push(workspace);
+      await route.fulfill({
+        json: {
+          ok: true,
+          answer: 'Check that your recipes have a target country and a product is active.',
+          source: 'deterministic',
+          workspaceId: workspace,
+        },
+      });
+    });
     await page.goto('/today', { waitUntil: 'load' });
     await markDocument(page);
     await page.getByRole('button', { name: /Ask the platform/ }).click();
@@ -64,6 +82,9 @@ test.describe('the workspace frame is mounted once (DS-07)', () => {
     await expect(question).toHaveCount(1);
     await expect(page.locator('[data-turn="assistant"]')).toHaveCount(1, { timeout: 30_000 });
     const answer = (await page.locator('[data-turn="assistant"]').textContent()) ?? '';
+    // MOB-06: the panel sent the page's workspace with the question.
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatch(/^\d+$/);
 
     for (const [area, path] of [
       ['review', /\/review(\?|$)/],
