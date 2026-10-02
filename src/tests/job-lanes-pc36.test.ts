@@ -53,7 +53,7 @@ import {
 import { TICK_CATALOG } from '@/lib/jobs/tick-catalog';
 import { startWorkerProcess } from '@/lib/jobs/worker-process';
 import { _resetJobShutdownForTests, jobShutdownRequested } from '@/lib/jobs/shutdown';
-import { startBackgroundWork } from '@/lib/jobs/background';
+import { formatTickInterval, startBackgroundWork } from '@/lib/jobs/background';
 import { registerNodeRuntime } from '@/instrumentation-node';
 import { KNOWLEDGE_INDEX_JOB } from '@/lib/services/knowledge-index-queue';
 import { LEARNING_PROCESS_JOB } from '@/lib/services/learning-decisions';
@@ -824,6 +824,13 @@ describe('worker process (PC-36)', () => {
     expect((queues.get(RUNS_QUEUE)?.added ?? []).filter((a) => a.opts?.repeat)).toEqual([]);
     expect(listen).not.toHaveBeenCalled();
     expect(logs.join('\n')).toMatch(/lanes ticks×4, batch×3, runs×2/);
+    // I155: the boot log names every scheduled tick and its cadence.
+    const scheduled = logs.find((l) => l.includes('background ticks scheduled')) ?? '';
+    expect(scheduled).toContain(`${TICK_CATALOG.length} background ticks scheduled`);
+    for (const t of TICK_CATALOG) {
+      expect(scheduled).toContain(`${t.name} every ${formatTickInterval(t.everyMs)}`);
+    }
+    expect(scheduled).toContain('outreach.drain.tick every 30 s');
 
     expect(jobShutdownRequested()).toBe(false);
     await worker.stop('test');

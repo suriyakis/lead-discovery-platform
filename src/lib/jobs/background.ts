@@ -11,6 +11,26 @@
 //      registration is a critical platform incident (PC-07).
 
 import { getJobQueue, type LegacyQueueMigration } from './index';
+import { TICK_CATALOG } from './tick-catalog';
+
+/** A tick's cadence for the boot log: "30 s", "2 min", "6 h", "7 d". */
+export function formatTickInterval(ms: number): string {
+  const units: Array<[number, string]> = [
+    [24 * 60 * 60 * 1000, 'd'],
+    [60 * 60 * 1000, 'h'],
+    [60 * 1000, 'min'],
+  ];
+  for (const [size, unit] of units) {
+    if (ms >= size && ms % size === 0) return `${ms / size} ${unit}`;
+  }
+  return ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`;
+}
+
+/** I155: the boot log names every catalogued tick and its cadence (it used
+ *  to name three of them, so the others looked unscheduled). */
+export function describeTickSchedule(): string {
+  return TICK_CATALOG.map((t) => `${t.name} every ${formatTickInterval(t.everyMs)}`).join(', ');
+}
 
 export interface BackgroundStartOptions {
   /** JOB_QUEUE_PROVIDER, for the log line. */
@@ -69,8 +89,8 @@ export async function startBackgroundWork(
   try {
     await registerRepeatableJobs();
     log(
-      `[startup] Background ticks scheduled (provider=${options.provider}, boot=${options.bootId}): ` +
-        'outreach drain every 30s, IMAP every 2min, autopilot every 5min.',
+      `[startup] ${TICK_CATALOG.length} background ticks scheduled ` +
+        `(provider=${options.provider}, boot=${options.bootId}): ${describeTickSchedule()}.`,
     );
     return { scheduled: true, legacy };
   } catch (err) {
