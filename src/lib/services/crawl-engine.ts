@@ -381,16 +381,24 @@ export interface RunPlanResult {
  *  the operator archived them since). Always updates lastRunAt +
  *  nextRunAt, even if the plan has zero eligible recipes — that keeps
  *  the scheduler moving forward. */
+/**
+ * Would a plan's "Run now" be refused? Writers only; PC-06: a Discovery
+ * hold refuses it outright, instead of the plan recording every recipe as
+ * failed. (Run now is a person's request: the workspace pause does not
+ * stop it.) PC-38: the button asks this before its guard counts the click.
+ */
+export async function assertCanRunCrawlPlanNow(ctx: WorkspaceContext): Promise<void> {
+  if (!canWrite(ctx)) throw denied('crawl_plan.run_now');
+  await assertGate(ctx, 'discovery');
+}
+
 export async function runCrawlPlanNow(
   ctx: WorkspaceContext,
   id: bigint,
 ): Promise<RunPlanResult> {
   if (!canWrite(ctx)) throw denied('crawl_plan.run_now');
   const plan = await getCrawlPlan(ctx, id);
-  // PC-06: a Discovery hold refuses Run now outright, instead of the plan
-  // recording every recipe as failed. (Run now is a person's request: the
-  // workspace pause does not stop it.)
-  await assertGate(ctx, 'discovery');
+  await assertCanRunCrawlPlanNow(ctx);
   return executePlan(ctx, plan);
 }
 

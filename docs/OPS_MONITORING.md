@@ -368,7 +368,11 @@ Postgres:
   | Recipe Run now | `connector.recipe_run_now` | 60 an hour | by `connector.recipe` |
 
   Re-classify all, Synthesize now and product autofill refuse an empty
-  wallet before any AI call.
+  wallet before any AI call. A click the service refuses anyway (a member
+  or viewer on an admin-only button, an empty wallet, a hold) is refused
+  before the lease and the count, so it never uses up the workspace's
+  limit: each service exports its check (`assertCan…`) and the button
+  passes it as the guard's `precheck`.
 
 **Re-classify all** is a background job (`qualification.reclassify`, runs
 lane): admins only, one `qualification_runs` row per run, batches of 50

@@ -10,8 +10,14 @@ import {
 import { isLessonCategory } from '@/lib/services/learning-categories';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { guardAction } from '@/lib/services/action-guards';
-import { compactWorkspaceKnowledge } from '@/lib/services/knowledge-compaction';
-import { synthesizeWorkspaceLearning } from '@/lib/services/learning-synthesis';
+import {
+  assertCanCompactKnowledge,
+  compactWorkspaceKnowledge,
+} from '@/lib/services/knowledge-compaction';
+import {
+  assertCanSynthesizeLearning,
+  synthesizeWorkspaceLearning,
+} from '@/lib/services/learning-synthesis';
 
 function parseIds(formData: FormData): bigint[] {
   const ids: bigint[] = [];
@@ -92,7 +98,9 @@ export async function bulkEnableAction(formData: FormData): Promise<void> {
 // Both are AI passes over the whole workspace. They used to be inline page
 // actions with no guard, so a double-click ran the pass twice. Now each is
 // single-flight in the workspace and rate-limited (services/action-guards.ts);
-// a refusal says why on the page.
+// a refusal says why on the page. The service's own refusals (admins only,
+// the wallet, a hold) are asked first, so a refused click never uses up the
+// workspace's limit.
 
 function learningFlash(flash: { message?: string; error?: string }): string {
   const params = new URLSearchParams();
@@ -105,7 +113,9 @@ function learningFlash(flash: { message?: string; error?: string }): string {
 export async function compactNowAction(): Promise<void> {
   const c = await getWorkspaceContext();
   try {
-    await guardAction(c, 'knowledge.compact', () => compactWorkspaceKnowledge(c));
+    await guardAction(c, 'knowledge.compact', () => compactWorkspaceKnowledge(c), {
+      precheck: () => assertCanCompactKnowledge(c),
+    });
   } catch (err) {
     if (isNextRedirectError(err)) throw err;
     // PC-06: a Background AI hold refuses compaction with a reason.
@@ -118,7 +128,9 @@ export async function compactNowAction(): Promise<void> {
 export async function synthesizeNowAction(): Promise<void> {
   const c = await getWorkspaceContext();
   try {
-    const s = await guardAction(c, 'learning.synthesize', () => synthesizeWorkspaceLearning(c));
+    const s = await guardAction(c, 'learning.synthesize', () => synthesizeWorkspaceLearning(c), {
+      precheck: () => assertCanSynthesizeLearning(c),
+    });
     const msg = !s.ran
       ? s.skippedReason === 'insufficient_events'
         ? `Not enough recent activity to learn from yet (${s.eventsExamined} events in the last 14 days — need 10+).`

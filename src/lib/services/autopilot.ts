@@ -596,11 +596,18 @@ export interface RunOptions {
  * the run works and checked before every step and every item: a run that
  * held it past its maximum (or lost it after a stall) stops there.
  */
+/** Would autopilot's "Run now" be refused? Writers only (a hold, the
+ *  pause or autopilot being off are reported by the run, not refused).
+ *  PC-38: the button asks this before its rate limit counts the click. */
+export function assertCanRunAutopilot(ctx: WorkspaceContext): void {
+  if (!canWrite(ctx)) throw denied('autopilot.run');
+}
+
 export async function runOnce(
   ctx: WorkspaceContext,
   options: RunOptions = {},
 ): Promise<AutopilotRunResult> {
-  if (!canWrite(ctx)) throw denied('autopilot.run');
+  assertCanRunAutopilot(ctx);
   const runId = randomUUID();
   const ranAt = new Date();
   const leased = await withWorkLease(

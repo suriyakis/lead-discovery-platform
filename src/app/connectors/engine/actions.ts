@@ -10,6 +10,7 @@ import { redirect } from 'next/navigation';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import {
   CrawlEngineError,
+  assertCanRunCrawlPlanNow,
   createCrawlPlan,
   deleteCrawlPlan,
   describeRecipeSkips,
@@ -125,9 +126,11 @@ export async function runPlanAction(formData: FormData): Promise<void> {
   }
   const id = BigInt(idStr);
   try {
-    // PC-38: one Run now per plan at a time, within the workspace's limit.
+    // PC-38: one Run now per plan at a time, within the workspace's limit
+    // (a viewer's click or one under a Discovery hold counts nothing).
     const r = await guardAction(c, 'crawl_plan.run_now', () => runCrawlPlanNow(c, id), {
       resource: id,
+      precheck: () => assertCanRunCrawlPlanNow(c),
     });
     const parts: string[] = [];
     if (r.startedRuns.length > 0)

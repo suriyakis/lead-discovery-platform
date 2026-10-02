@@ -511,12 +511,19 @@ export async function runWorkspaceHealthCheck(
 }
 
 /** Admin-triggered immediate check (the "Run now" button). */
-export async function runHealthCheckNow(
-  ctx: WorkspaceContext,
-): Promise<WorkspaceHealthReport> {
+/** Would "Run check now" be refused? Workspace admins only. (The AI part
+ *  is skipped, not refused, on an empty wallet or a hold.) PC-38: the
+ *  button asks this before its guard counts the click. */
+export function assertCanRunHealthCheckNow(ctx: WorkspaceContext): void {
   if (!canAdminWorkspace(ctx)) {
     throw new HealthCheckError('Permission denied: health.run', 'permission_denied');
   }
+}
+
+export async function runHealthCheckNow(
+  ctx: WorkspaceContext,
+): Promise<WorkspaceHealthReport> {
+  assertCanRunHealthCheckNow(ctx);
   const report = await runWorkspaceHealthCheck(ctx, { manual: true });
   await db
     .update(workspaces)

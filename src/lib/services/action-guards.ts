@@ -25,6 +25,14 @@
 //                                    double-click that gets "already
 //                                    running" does not use up the limit.
 //
+// `precheck` (both helpers): the service's own refusals — its permission
+// check, the wallet, a hold — asked BEFORE the lease is taken and the
+// start is counted. A click the service would refuse anyway (a viewer on
+// an admin-only button, an empty wallet, a Background AI hold) then never
+// uses up the workspace's limit, so it cannot lock the admins out for the
+// rest of the hour. Each service exports its precheck (assertCan…), and
+// calls it again itself: the precheck is an early answer, not the guard.
+//
 // ActionGuardError is a coded service error: describeActionError shows its
 // message as is (src/lib/action-errors.ts).
 //
@@ -154,15 +162,21 @@ export function alreadyRunning(
   return new ActionGuardError(message, { code: 'already_running', action, held });
 }
 
+/** The service's refusals, asked before anything is leased or counted. */
+export type ActionPrecheck = () => Promise<unknown> | unknown;
+
 /**
  * Run `fn` when the workspace is within the action's limit (counting this
- * start); otherwise throw ActionGuardError 'rate_limited'.
+ * start); otherwise throw ActionGuardError 'rate_limited'. A `precheck`
+ * that throws refuses first, and counts nothing.
  */
 export async function withRateLimit<T>(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   action: GuardedAction,
   fn: () => Promise<T>,
+  options: { precheck?: ActionPrecheck } = {},
 ): Promise<T> {
+  if (options.precheck) await options.precheck();
   const p: GuardedActionPolicy = GUARDED_ACTIONS[action];
   const decision = await rateLimitCheck(actionRateLimitKey(ctx, action), p.limit, p.windowMs);
   if (!decision.allowed) {
@@ -181,6 +195,12 @@ export interface SingleFlightOptions {
   resource?: bigint | string;
   /** Lease policy overrides (WorkLeaseSpec). */
   lease?: Pick<WorkLeaseSpec, 'ttlMs' | 'maxHoldMs' | 'autoRenew'>;
+}
+
+export interface GuardActionOptions extends SingleFlightOptions {
+  /** The service's own refusals (permission, wallet, hold), asked before
+   *  the lease is taken and the start counted. */
+  precheck?: ActionPrecheck;
 }
 
 /**
@@ -207,12 +227,18 @@ export async function singleFlight<T>(
   return r.value;
 }
 
-/** singleFlight + withRateLimit: the guard every AI button goes through. */
+/**
+ * precheck + singleFlight + withRateLimit: the guard every AI button goes
+ * through. Only a click the service would accept, and that finds the
+ * action free, counts against the limit.
+ */
 export async function guardAction<T>(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   action: GuardedAction,
   fn: (lease: WorkLease) => Promise<T>,
-  options: SingleFlightOptions = {},
+  options: GuardActionOptions = {},
 ): Promise<T> {
-  return singleFlight(ctx, action, (lease) => withRateLimit(ctx, action, () => fn(lease)), options);
+  const { precheck, ...flight } = options;
+  if (precheck) await precheck();
+  return singleFlight(ctx, action, (lease) => withRateLimit(ctx, action, () => fn(lease)), flight);
 }

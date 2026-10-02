@@ -5,13 +5,15 @@
 // synthesized (one AI call) and created the draft twice. Now it is
 // single-flight in the workspace and rate-limited
 // (services/action-guards.ts), and the service refuses an empty wallet
-// before the fetch.
+// before the fetch — asked before the guard, so a refused click never uses
+// up the workspace's limit.
 
 import { redirect } from 'next/navigation';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { guardAction } from '@/lib/services/action-guards';
 import {
   ProductAutofillError,
+  assertCanAutofillProduct,
   autofillProductProfileFromSources,
 } from '@/lib/services/product-autofill';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -38,11 +40,15 @@ export async function autofillAction(formData: FormData): Promise<void> {
     redirect(`/products/autofill?error=${encodeURIComponent('Provide a URL, a PDF, or both.')}`);
   }
   try {
-    const result = await guardAction(c, 'product.autofill', () =>
-      autofillProductProfileFromSources(c, {
-        url,
-        pdfs: pdfFiles,
-      }),
+    const result = await guardAction(
+      c,
+      'product.autofill',
+      () =>
+        autofillProductProfileFromSources(c, {
+          url,
+          pdfs: pdfFiles,
+        }),
+      { precheck: () => assertCanAutofillProduct(c) },
     );
     // Expose per-source extraction sizes so the operator can spot a
     // thin/empty fetch (SPA, paywall, scanned-image PDF) at a glance.

@@ -110,20 +110,27 @@ Return at most ${MAX_PROPOSALS} proposals. Quality over quantity — an empty pr
 /**
  * Attended entry point (the /learning "Synthesize now" button). Admin-gated.
  */
-export async function synthesizeWorkspaceLearning(
-  ctx: WorkspaceContext,
-): Promise<SynthesisSummary> {
+/**
+ * Would "Synthesize now" be refused? Workspace admins only. PC-38 (I184):
+ * an empty wallet refuses the button before any AI call (TokenError),
+ * instead of a silent 'no_tokens' skip. PC-06: so does a Background AI
+ * hold. The button asks this before its guard counts the click.
+ */
+export async function assertCanSynthesizeLearning(ctx: WorkspaceContext): Promise<void> {
   if (!canAdminWorkspace(ctx)) {
     throw new LearningSynthesisError(
       'Permission denied: learning.synthesize',
       'permission_denied',
     );
   }
-  // PC-38 (I184): an empty wallet refuses the button before any AI call
-  // (TokenError), instead of a silent 'no_tokens' skip.
   await assertTokens(ctx);
-  // PC-06: the button is refused under a Background AI hold.
   await assertGate(ctx, 'background_ai');
+}
+
+export async function synthesizeWorkspaceLearning(
+  ctx: WorkspaceContext,
+): Promise<SynthesisSummary> {
+  await assertCanSynthesizeLearning(ctx);
   return runSynthesis(ctx);
 }
 

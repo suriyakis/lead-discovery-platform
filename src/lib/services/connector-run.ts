@@ -640,18 +640,26 @@ export interface StartRunInput {
  * Returns the pending run row immediately. Pass `wait:true` (typically in
  * tests) to block until the job reaches a terminal state.
  */
+/**
+ * Would a discovery run be refused before it starts? Writers only. PC-06:
+ * every discovery run starts in startRun (recipe Run now, crawl plans, the
+ * tick), so a Discovery hold stops them all. Prepaid gate: discovery runs
+ * drive search + AI qualification spend, so an empty wallet (not
+ * billing-exempt) refuses new runs. PC-38: a recipe's Run now asks this
+ * before its rate limit counts the click.
+ */
+export async function assertCanStartRun(ctx: WorkspaceContext): Promise<void> {
+  if (!canWrite(ctx)) throw permissionDenied('start connector run');
+  await assertGate(ctx, 'discovery');
+  const { assertTokens } = await import('./token-ledger');
+  await assertTokens(ctx);
+}
+
 export async function startRun(
   ctx: WorkspaceContext,
   input: StartRunInput,
 ): Promise<{ run: ConnectorRun; jobId: string; result?: RunResult }> {
-  if (!canWrite(ctx)) throw permissionDenied('start connector run');
-  // PC-06: every discovery run starts here (recipe Run now, crawl plans,
-  // the tick) — a Discovery hold stops them all.
-  await assertGate(ctx, 'discovery');
-  // Prepaid gate: discovery runs drive search + AI qualification spend.
-  // Empty wallet (and not billing-exempt) → refuse to start new runs.
-  const { assertTokens } = await import('./token-ledger');
-  await assertTokens(ctx);
+  await assertCanStartRun(ctx);
 
   const connector = await getConnectorRow(ctx, input.connectorId);
   if (!connector.active) {

@@ -304,6 +304,15 @@ async function holdAction(
   return got.lease;
 }
 
+/** The action's window in the shared table (null: never counted). */
+async function used(workspaceId: bigint, action: GuardedAction): Promise<number | null> {
+  const [row] = await db
+    .select({ count: rateLimitBuckets.count })
+    .from(rateLimitBuckets)
+    .where(eq(rateLimitBuckets.key, actionRateLimitKey({ workspaceId }, action)));
+  return row?.count ?? null;
+}
+
 async function fillLimit(workspaceId: bigint, action: GuardedAction): Promise<void> {
   const p = GUARDED_ACTIONS[action];
   for (let i = 0; i < p.limit; i++) {
@@ -991,6 +1000,120 @@ describe('every AI button is guarded', { timeout: 60_000 }, () => {
     expect(url.searchParams.get('error')).toMatch(
       /^Recipe Run now was used 60 times in the last hour/,
     );
+  });
+});
+
+// ---- a refused click never uses up the limit (review of PC-38) ---------------
+
+describe('a click the service refuses never uses up the limit', { timeout: 120_000 }, () => {
+  it('guardAction / withRateLimit: a throwing precheck runs nothing, leases nothing, counts nothing', async () => {
+    const s = await setup(0);
+    let runs = 0;
+    const refuse = () => {
+      throw new Error('Permission denied: learning.synthesize');
+    };
+    for (let i = 0; i < 10; i++) {
+      await expect(
+        guardAction(s.owner, 'learning.synthesize', async () => runs++, { precheck: refuse }),
+      ).rejects.toThrow('Permission denied');
+      await expect(
+        withRateLimit(s.owner, 'autopilot.run_now', async () => runs++, { precheck: refuse }),
+      ).rejects.toThrow('Permission denied');
+    }
+    expect(runs).toBe(0);
+    expect(await db.select().from(workLeases).where(eq(workLeases.workspaceId, s.ws))).toEqual([]);
+    expect(await used(s.ws, 'learning.synthesize')).toBeNull();
+    expect(await used(s.ws, 'autopilot.run_now')).toBeNull();
+    // A precheck that passes: counted once, as before.
+    await guardAction(s.owner, 'learning.synthesize', async () => runs++, { precheck: async () => {} });
+    expect(runs).toBe(1);
+    expect(await used(s.ws, 'learning.synthesize')).toBe(1);
+  });
+
+  it('members and viewers clicking the admin-only buttons: refused every time, and the admins keep the whole quota', async () => {
+    const s = await setup(0);
+    const limit = GUARDED_ACTIONS['knowledge.compact'].limit;
+    for (const who of [s.viewer, s.member]) {
+      actAs(who);
+      for (let i = 0; i < limit + 1; i++) {
+        const compact = await redirectOf(learningActions.compactNowAction());
+        expect(compact.searchParams.get('error')).toMatch(/permission/i);
+        const synth = await redirectOf(learningActions.synthesizeNowAction());
+        expect(synth.searchParams.get('error')).toMatch(/permission/i);
+        const health = await redirectOf(healthActions.runHealthCheckNowAction());
+        expect(health.searchParams.get('err')).toMatch(/permission/i);
+      }
+    }
+    expect(await used(s.ws, 'knowledge.compact')).toBeNull();
+    expect(await used(s.ws, 'learning.synthesize')).toBeNull();
+    expect(await used(s.ws, 'health.check_now')).toBeNull();
+    expect(ai.calls).toBe(0);
+
+    // The owner's clicks all go through.
+    actAs(s.owner);
+    for (let i = 0; i < limit; i++) {
+      expect((await redirectOf(learningActions.compactNowAction())).searchParams.get('error')).toBeNull();
+      expect((await redirectOf(healthActions.runHealthCheckNowAction())).searchParams.get('err')).toBeNull();
+    }
+    expect(await used(s.ws, 'knowledge.compact')).toBe(limit);
+    expect(await used(s.ws, 'health.check_now')).toBe(limit);
+  });
+
+  it('an empty wallet refuses Synthesize now and product autofill without counting them', async () => {
+    const s = await setup(0);
+    await setBalance(s.ws, 0n);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    actAs(s.owner);
+    for (let i = 0; i < GUARDED_ACTIONS['learning.synthesize'].limit + 1; i++) {
+      const url = await redirectOf(learningActions.synthesizeNowAction());
+      expect(url.searchParams.get('error')).toMatch(/^No tokens left/);
+      const auto = await redirectOf(
+        autofillActions.autofillAction(form({ url: 'https://example.com/products/glass' })),
+      );
+      expect(auto.searchParams.get('error')).toMatch(/^No tokens left/);
+    }
+    expect(await used(s.ws, 'learning.synthesize')).toBeNull();
+    expect(await used(s.ws, 'product.autofill')).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(ai.calls).toBe(0);
+  });
+
+  it('a hold refuses Compact now, a plan Run now and a recipe Run now without counting them', async () => {
+    const s = await setup(0);
+    await placeTenantHold(s.owner, {
+      scope: 'capabilities',
+      capabilities: ['background_ai', 'discovery'],
+      reason: 'audit',
+    });
+    actAs(s.owner);
+    for (let i = 0; i < 3; i++) {
+      expect((await redirectOf(learningActions.compactNowAction())).searchParams.get('error')).toMatch(/hold/i);
+      expect(
+        (await redirectOf(engineActions.runPlanAction(form({ id: '42' })))).searchParams.get('error'),
+      ).toMatch(/hold/i);
+      expect(
+        (
+          await redirectOf(
+            recipeActions.runRecipeNowAction(s.connectorId.toString(), s.recipeId.toString()),
+          )
+        ).searchParams.get('error'),
+      ).toMatch(/hold/i);
+    }
+    expect(await used(s.ws, 'knowledge.compact')).toBeNull();
+    expect(await used(s.ws, 'crawl_plan.run_now')).toBeNull();
+    expect(await used(s.ws, 'connector.recipe_run_now')).toBeNull();
+  });
+
+  it('a viewer clicking autopilot Run now is refused without counting it', async () => {
+    const s = await setup(0);
+    actAs(s.viewer);
+    for (let i = 0; i < 3; i++) {
+      const url = await redirectOf(autopilotActions.runAutopilotNowAction());
+      expect(url.searchParams.get('error')).toBe(
+        "Your role in this workspace is read-only, so you can't run autopilot. Ask a workspace admin if you need it.",
+      );
+    }
+    expect(await used(s.ws, 'autopilot.run_now')).toBeNull();
   });
 });
 

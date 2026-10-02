@@ -13,6 +13,7 @@ import { AutomationGateError } from '@/lib/services/automation-gate';
 import {
   ConnectorServiceError,
   RecipeRunInFlightError,
+  assertCanStartRun,
   startRun,
 } from '@/lib/services/connector-run';
 import { TokenError } from '@/lib/services/token-ledger';
@@ -33,10 +34,15 @@ export async function runRecipeNowAction(
 
   let runId: bigint;
   try {
-    // PC-38: rate-limited per workspace. One run per recipe at a time the
-    // recipe's own lease already ensures (PC-12, RecipeRunInFlightError).
-    const { run } = await withRateLimit(ctx, 'connector.recipe_run_now', () =>
-      startRun(ctx, { connectorId, recipeId }),
+    // PC-38: rate-limited per workspace; a click startRun would refuse (a
+    // viewer, a Discovery hold, an empty wallet) counts nothing. One run per
+    // recipe at a time the recipe's own lease already ensures (PC-12,
+    // RecipeRunInFlightError).
+    const { run } = await withRateLimit(
+      ctx,
+      'connector.recipe_run_now',
+      () => startRun(ctx, { connectorId, recipeId }),
+      { precheck: () => assertCanStartRun(ctx) },
     );
     runId = run.id;
   } catch (err) {
