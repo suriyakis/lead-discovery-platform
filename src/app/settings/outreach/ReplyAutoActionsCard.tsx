@@ -13,6 +13,7 @@ import type {
   ReplyAutoActionSwitches,
   ReplyAutoActionsImpact,
 } from '@/lib/services/reply-auto-actions';
+import { Switch } from '@/components/ui';
 
 const ROWS: ReadonlyArray<{ key: ReplyAutoActionKey; title: string; sub: string }> = [
   {
@@ -114,27 +115,15 @@ export function ReplyAutoActionsCard({
       {ROWS.map((row, i) => (
         <div key={row.key}>
           {i > 0 ? <div className="config-divider" /> : null}
-          <div className="config-row">
-            <div className="config-row-label">
-              <p className="config-row-title" id={`reply-auto-${row.key}`}>
-                {row.title}
-              </p>
-              <p className="config-row-sub">{row.sub}</p>
-            </div>
-            <label className="config-switch">
-              <input
-                type="checkbox"
-                name={row.key}
-                defaultChecked={switches[row.key]}
-                disabled={readOnly}
-                aria-labelledby={`reply-auto-${row.key}`}
-                className="config-switch-input"
-              />
-              <span className="config-switch-track">
-                <span className="config-switch-thumb" />
-              </span>
-            </label>
-          </div>
+          {/* DS-10: a labelled switch; the title names it, the text describes it. */}
+          <Switch
+            name={row.key}
+            label={row.title}
+            description={row.sub}
+            position="end"
+            defaultChecked={switches[row.key]}
+            disabled={readOnly}
+          />
         </div>
       ))}
 

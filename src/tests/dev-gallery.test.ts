@@ -67,6 +67,8 @@ describe('/dev/gallery with ENABLE_TEST_ROUTES=1', () => {
       ...TOKEN_GROUPS.map((g) => g.id),
       'tones',
       'form-controls',
+      'fields',
+      'email-preview',
       'alerts',
       'badges',
       'brand',
@@ -147,6 +149,33 @@ describe('/dev/gallery with ENABLE_TEST_ROUTES=1', () => {
     expect($('#form-controls input[type="checkbox"][role="switch"]')).toHaveLength(2);
     expect($('#form-controls input[type="radio"][checked]')).toHaveLength(1);
     expect($('#form-controls input[type="date"]')).toHaveLength(1);
+  });
+
+  it('shows the form primitives, every control named, and an email preview frame (DS-10)', () => {
+    const $ = render();
+    const fields = $('#fields');
+    const sizes = fields
+      .find('[data-field-sample="sizes"] input[data-size]')
+      .map((_, el) => $(el).attr('data-size'))
+      .get();
+    expect(sizes.slice(0, 3)).toEqual(['sm', 'md', 'lg']);
+    fields.find('input, select, textarea').each((_, el) => {
+      const id = $(el).attr('id');
+      const named =
+        (id && $(`label[for="${id}"]`).length > 0) ||
+        $(el).closest('label').length > 0 ||
+        Boolean($(el).attr('aria-label'));
+      expect(named, $.html(el)).toBe(true);
+    });
+    expect(fields.find('[data-layout="inline"]').length).toBeGreaterThanOrEqual(2);
+    expect(fields.find('input[role="switch"]').length).toBeGreaterThanOrEqual(4);
+    expect(fields.find('input[type="search"]')).toHaveLength(2);
+    expect(fields.find('[data-field-sample="legacy-context"].form-grid input')).toHaveLength(1);
+    const frame = $('#email-preview iframe[data-email-preview]');
+    expect(frame.attr('sandbox')).toBe('allow-same-origin');
+    expect(frame.attr('srcdoc')).toContain('data-isolation-probe');
+    // The sample signature (and its probe input) never reaches the page DOM.
+    expect($('[data-isolation-probe]')).toHaveLength(0);
   });
 
   it('renders the Alert primitive in all four tones', () => {

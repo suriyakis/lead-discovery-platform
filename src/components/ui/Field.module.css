@@ -1,0 +1,99 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* Field (DS-10): a label, one control, an error and a hint, wired by id
+ * (components/ui/Field.tsx). Stack: the label above a full-width control.
+ * Inline: the label left of the control, for filter bars. The label
+ * restates its type so a legacy `form label` rule cannot restyle it.
+ * Tokens only; shown at /dev/gallery#fields. */
+
+@layer components {
+  .field {
+    display: grid;
+    gap: var(--space-1_5);
+    min-width: 0;
+    align-content: start;
+  }
+
+  /* The control is the one child that is not the label, error or hint
+     (an Input, Select, Textarea, SearchInput or a bare control). Widths
+     apply to it, never to the label and help around it. */
+  .field[data-width='full'] > :not(.label, .hint, .error) {
+    width: 100%;
+  }
+
+  /* A number or a short code: 120px at most (DS-16 numeric fields). */
+  .field[data-width='num'] > :not(.label, .hint, .error) {
+    width: 120px;
+    max-width: 100%;
+  }
+
+  .field[data-width='auto'] > :not(.label, .hint, .error) {
+    width: auto;
+    max-width: 100%;
+  }
+
+  /* Inline: the label left of the control while both fit; on a narrow
+     screen the control wraps under its label instead of shrinking. */
+  .field[data-layout='inline'] {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1_5) var(--space-2);
+  }
+
+  .field[data-layout='inline'] > :not(.hint, .error) {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .field[data-layout='inline'][data-width='full'] > :not(.label, .hint, .error) {
+    flex: 1 1 auto;
+    width: auto;
+  }
+
+  .field[data-layout='inline'] > .hint,
+  .field[data-layout='inline'] > .error {
+    flex-basis: 100%;
+  }
+
+  .label {
+    display: block;
+    margin: 0;
+    padding: 0;
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-sm);
+    letter-spacing: normal;
+    text-transform: none;
+  }
+
+  .optional {
+    color: var(--fg-subtle);
+    font-weight: var(--weight-regular);
+  }
+
+  .hint,
+  .error {
+    margin: 0;
+    font-size: var(--text-xs);
+    line-height: var(--leading-xs);
+  }
+
+  .hint {
+    color: var(--fg-muted);
+  }
+
+  .error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-1_5);
+    color: var(--danger);
+  }
+
+  .errorIcon {
+    flex: none;
+    width: var(--space-4);
+    height: var(--leading-xs);
+  }
+}

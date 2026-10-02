@@ -11,6 +11,7 @@ import {
   renderSignatureText,
 } from '@/lib/signature-render';
 import { AISignatureRedesigner } from './AISignatureRedesigner';
+import { EmailPreview } from './ui/EmailPreview';
 
 interface MailboxOption {
   id: string;
@@ -294,7 +295,7 @@ export function SignatureForm({
               maxLength={20000}
               placeholder={'<table>\n  <tr><td>...</td></tr>\n</table>'}
               spellCheck={false}
-              style={{ fontFamily: 'var(--brand-mono)', fontSize: '0.825rem' }}
+              style={{ fontFamily: 'var(--font-mono)' }}
               value={bodyHtml}
               onChange={(e) => setBodyHtml(e.target.value)}
             />
@@ -369,15 +370,10 @@ export function SignatureForm({
             Start filling out the form — your signature will render here as you type.
           </div>
         ) : previewTab === 'html' ? (
-          <div
-            className="signature-preview-frame"
-            // Same renderer mail.sendMessage uses; XSS-safe via the renderer's
-            // escape() pass on every untrusted field. When custom HTML is
-            // pasted, the user is explicitly authoring markup for their own
-            // outbound mail — same trust boundary as the existing
-            // `bodyHtml` save path.
-            dangerouslySetInnerHTML={{ __html: previewHtml }}
-          />
+          // The renderer mail.sendMessage uses (it escapes every untrusted
+          // field), or the pasted custom HTML, in a sandboxed frame: the
+          // app's CSS stays out and pasted markup cannot run (DS-10).
+          <EmailPreview html={previewHtml} title="Signature preview" />
         ) : (
           <pre className="signature-preview-text">{previewText}</pre>
         )}

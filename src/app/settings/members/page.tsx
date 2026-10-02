@@ -18,6 +18,7 @@ import {
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { addMemberAction, changeMemberRoleAction, removeMemberAction } from './actions';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { Field, Input, Select } from '@/components/ui';
 import { removeMemberConfirm } from '@/lib/confirm-copy';
 import { WORKSPACE_MEMBER_ROLE_DESCRIPTION, WORKSPACE_MEMBER_ROLE_LABEL } from '@/lib/ui/labels';
 
@@ -84,20 +85,18 @@ export default async function MembersPage({
           <p className="muted">Only a workspace owner can grant the owner role.</p>
         )}
         <form action={addMemberAction} className="inline-form">
-          <label>
-            <span>User id</span>
-            <input type="text" name="userId" required maxLength={120} />
-          </label>
-          <label>
-            <span>Role</span>
-            <select name="role" defaultValue="member">
+          <Field label="User id">
+            <Input name="userId" required maxLength={120} autoComplete="off" />
+          </Field>
+          <Field label="Role">
+            <Select name="role" defaultValue="member">
               {roles.map((r) => (
                 <option key={r} value={r} title={WORKSPACE_MEMBER_ROLE_DESCRIPTION[r]}>
                   {WORKSPACE_MEMBER_ROLE_LABEL[r]}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Field>
           <button type="submit" className="primary-btn">
             Add
           </button>
@@ -122,16 +121,15 @@ export default async function MembersPage({
                 <div className="action-row" style={{ marginTop: '0.5rem' }}>
                   <form action={changeMemberRoleAction} className="inline-form">
                     <input type="hidden" name="userId" value={user.id} />
-                    <label>
-                      <span>Role</span>
-                      <select name="role" defaultValue={member.role}>
+                    <Field label="Role" layout="inline">
+                      <Select name="role" defaultValue={member.role}>
                         {roles.map((r) => (
                           <option key={r} value={r} title={WORKSPACE_MEMBER_ROLE_DESCRIPTION[r]}>
                             {WORKSPACE_MEMBER_ROLE_LABEL[r]}
                           </option>
                         ))}
-                      </select>
-                    </label>
+                      </Select>
+                    </Field>
                     <button type="submit">Update</button>
                   </form>
                   <form action={removeMemberAction}>

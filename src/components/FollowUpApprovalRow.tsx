@@ -108,7 +108,7 @@ export function FollowUpApprovalRow({
             if (shown) setShown(false);
           }}
           required
-          style={{ width: '100%', fontSize: '0.88rem', lineHeight: 1.55, padding: '0.5rem', resize: 'vertical' }}
+          style={{ width: '100%' }}
         />
       </label>
 
@@ -161,7 +161,7 @@ export function FollowUpApprovalRow({
               value={tBody}
               onChange={(e) => setTBody(e.target.value)}
               dir={isRtl ? 'rtl' : 'ltr'}
-              style={{ width: '100%', fontSize: '0.88rem', lineHeight: 1.55, padding: '0.5rem', resize: 'vertical' }}
+              style={{ width: '100%' }}
             />
           </label>
         </>

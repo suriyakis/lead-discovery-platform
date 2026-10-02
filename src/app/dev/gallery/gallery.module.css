@@ -304,28 +304,6 @@
     box-shadow: var(--shadow-card);
   }
 
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1_5);
-    min-width: 0;
-  }
-
-  .fieldLabel {
-    color: var(--fg);
-    font-weight: var(--weight-medium);
-  }
-
-  .fieldHint {
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
-  }
-
-  .fieldError {
-    color: var(--danger);
-    font-size: var(--text-xs);
-  }
-
   .checks {
     display: flex;
     flex-direction: column;

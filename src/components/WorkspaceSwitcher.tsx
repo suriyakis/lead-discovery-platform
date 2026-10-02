@@ -4,6 +4,7 @@ import { useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Building2, Eye } from 'lucide-react';
 import { setActiveWorkspaceAction } from '@/lib/workspace-actions';
+import { Select } from './ui/Select';
 
 export interface WorkspaceSwitcherProps {
   workspaces: ReadonlyArray<{
@@ -82,10 +83,16 @@ export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProp
           <Building2 className="lucide" data-icon="workspace" />
         )}
       </span>
-      <select
+      {/* The pill draws the box; the select is the plain, small control
+          inside it (DS-10), named for screen readers (the icon is not). */}
+      <Select
+        variant="plain"
+        size="sm"
+        aria-label="Workspace"
         value={active.id}
         onChange={(e) => handleChange(e.target.value)}
         disabled={isPending}
+        aria-busy={isPending || undefined}
       >
         {memberships.length > 0 ? (
           <optgroup label="Member of">
@@ -105,7 +112,7 @@ export function WorkspaceSwitcher({ workspaces }: Readonly<WorkspaceSwitcherProp
             ))}
           </optgroup>
         ) : null}
-      </select>
+      </Select>
     </label>
   );
 }

@@ -12,6 +12,7 @@ import { redirect } from 'next/navigation';
 import { eq, inArray } from 'drizzle-orm';
 import { AppShell } from '@/components/AppShell';
 import { ViewerTimeZoneField } from '@/components/ViewerTimeZoneField';
+import { Field, Input, Select } from '@/components/ui';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -122,43 +123,39 @@ export default async function WorkspaceAuditPage({
       </p>
 
       <form className="leads-controls" method="get">
-        <label>
-          Kind
-          <select name="kind" defaultValue={kindFilter ?? ''}>
+        <Field label="Kind" layout="inline">
+          <Select name="kind" defaultValue={kindFilter ?? ''}>
             <option value="">All</option>
             {auditKindOptions(kinds.map((k) => k.kind)).map((o) => (
               <option key={o.kind} value={o.kind}>
                 {o.label}
               </option>
             ))}
-          </select>
-        </label>
-        <label>
-          Since
-          <input
+          </Select>
+        </Field>
+        <Field label="Since" layout="inline">
+          <Input
             type="datetime-local"
             name="since"
             defaultValue={since ? toDateTimeLocalValue(since, timeZone) : ''}
           />
-        </label>
-        <label>
-          Until
-          <input
+        </Field>
+        <Field label="Until" layout="inline">
+          <Input
             type="datetime-local"
             name="until"
             defaultValue={until ? toDateTimeLocalValue(until, timeZone) : ''}
           />
-        </label>
-        <label>
-          Limit
-          <select name="limit" defaultValue={safeLimit.toString()}>
+        </Field>
+        <Field label="Limit" layout="inline">
+          <Select name="limit" defaultValue={safeLimit.toString()}>
             {ALLOWED_LIMITS.map((n) => (
               <option key={n} value={n}>
                 {n}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </Field>
         <ViewerTimeZoneField current={requestedZone} />
         <button type="submit">Apply</button>
       </form>

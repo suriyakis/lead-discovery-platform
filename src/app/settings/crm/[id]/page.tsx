@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { Field, Input } from '@/components/ui';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -98,25 +99,21 @@ export default async function CrmConnectionDetail({
               nested <form> here broke hydration and the Test button
               (I115). */}
           <form action={save} className="edit-draft-form">
-            <label>
-              <span>Display name</span>
-              <input type="text" name="name" defaultValue={conn.name} required maxLength={120} />
-            </label>
-            <label>
-              <span>Credential (leave blank to keep current)</span>
-              <input type="password" name="credential" autoComplete="new-password" />
-            </label>
-            <label>
-              <span>Base URL override (leave blank for the default)</span>
-              <input
-                type="text"
+            <Field label="Display name">
+              <Input name="name" defaultValue={conn.name} required maxLength={120} />
+            </Field>
+            <Field label="Credential" hint="Leave blank to keep the current one." optional>
+              <Input type="password" name="credential" autoComplete="new-password" />
+            </Field>
+            <Field label="Base URL override" hint="Leave blank for the default." optional>
+              <Input
                 name="baseUrl"
                 maxLength={500}
                 defaultValue={
                   ((conn.config as Record<string, unknown>).baseUrl as string | undefined) ?? ''
                 }
               />
-            </label>
+            </Field>
             <div className="action-row">
               <button type="submit" className="primary-btn">
                 Save

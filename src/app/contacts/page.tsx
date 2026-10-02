@@ -4,7 +4,6 @@ import {
   Building2,
   ChevronLeft,
   ChevronRight,
-  Search,
   Sparkles,
   Tags,
   Users,
@@ -12,6 +11,7 @@ import {
   UserX,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { SearchInput } from '@/components/ui';
 import {
   ContactsListView,
   type ContactRow,
@@ -256,15 +256,15 @@ export default async function ContactsPage({
           className="contacts-filters"
           role="search"
         >
-          <div className="contacts-filter-search">
-            <Search className="lucide" style={{ opacity: 0.6 }} />
-            <input
-              type="search"
-              name="q"
-              defaultValue={search}
-              placeholder="Search by name, email, or company…"
-            />
-          </div>
+          {/* The base control lifted the bare search input to 36px inside
+              its legacy box; the SearchInput is the box (DS-10). */}
+          <SearchInput
+            className="contacts-filter-search"
+            name="q"
+            defaultValue={search}
+            placeholder="Search by name, email, or company…"
+            aria-label="Search contacts"
+          />
           <label>
             <span>Company domain</span>
             <input

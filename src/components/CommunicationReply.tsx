@@ -290,15 +290,7 @@ export function CommunicationReply({
           }}
           required
           placeholder="Write your reply here…"
-          style={{
-            width: '100%',
-            minHeight: '22ch',
-            resize: 'vertical',
-            fontFamily: 'inherit',
-            fontSize: '0.92rem',
-            lineHeight: 1.55,
-            padding: '0.75rem',
-          }}
+          style={{ width: '100%', minHeight: '22ch' }}
         />
       </label>
 
@@ -352,15 +344,7 @@ export function CommunicationReply({
               value={tBody}
               onChange={(e) => setTBody(e.target.value)}
               dir={isRtl ? 'rtl' : 'ltr'}
-              style={{
-                width: '100%',
-                minHeight: '22ch',
-                resize: 'vertical',
-                fontFamily: 'inherit',
-                fontSize: '0.92rem',
-                lineHeight: 1.55,
-                padding: '0.75rem',
-              }}
+              style={{ width: '100%', minHeight: '22ch' }}
             />
           </label>
         </section>

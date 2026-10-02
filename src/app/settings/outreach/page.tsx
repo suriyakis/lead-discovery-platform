@@ -46,6 +46,7 @@ import {
   updateTrashRetentionDays,
 } from '@/lib/services/mail';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { Field, Input, Select, Switch, Textarea } from '@/components/ui';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   getReplyAutoActions,
@@ -274,21 +275,15 @@ export default async function OutreachSettingsPage({
           </div>
         </header>
 
-        <label className="config-card-row">
-          <span>Workspace native language</span>
-          <select
-            name="nativeLanguage"
-            defaultValue={nativeLanguage}
-            className="select-input"
-            style={{ minWidth: '12rem' }}
-          >
+        <Field label="Workspace native language" layout="inline">
+          <Select name="nativeLanguage" defaultValue={nativeLanguage}>
             {ENABLED_LANGUAGE_OPTIONS.map((o) => (
               <option key={o.code} value={o.code}>
                 {o.name}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </Field>
 
         <div className="config-card-actions">
           <button type="submit" className="primary-btn">
@@ -314,22 +309,16 @@ export default async function OutreachSettingsPage({
           </div>
         </header>
 
-        <label className="config-card-row">
-          <span>Default outreach language</span>
-          <select
-            name="outreachLanguage"
-            defaultValue={outreachLanguage ?? ''}
-            className="select-input"
-            style={{ minWidth: '12rem' }}
-          >
+        <Field label="Default outreach language" layout="inline">
+          <Select name="outreachLanguage" defaultValue={outreachLanguage ?? ''}>
             <option value="">Auto (follow recipe / product)</option>
             {ENABLED_LANGUAGE_OPTIONS.map((o) => (
               <option key={o.code} value={o.code}>
                 {o.name}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </Field>
 
         <div className="config-card-actions">
           <button type="submit" className="primary-btn">
@@ -350,30 +339,23 @@ export default async function OutreachSettingsPage({
           </div>
         </header>
 
-        <div className="config-row">
-          <div className="config-row-label">
-            <p className="config-row-title">Auto-draft replies</p>
-            <p className="config-row-sub">
-              Generate the next reply via AI and queue it for your review.
-              Recommended: on.
-            </p>
-          </div>
-          <ToggleSwitch name="autoDraftReplies" defaultChecked={ws.autoDraftReplies} />
-        </div>
+        <Switch
+          name="autoDraftReplies"
+          label="Auto-draft replies"
+          description="Generate the next reply via AI and queue it for your review. Recommended: on."
+          position="end"
+          defaultChecked={ws.autoDraftReplies}
+        />
 
         <div className="config-divider" />
 
-        <div className="config-row">
-          <div className="config-row-label">
-            <p className="config-row-title">Auto-send replies</p>
-            <p className="config-row-sub">
-              Send high-confidence drafts without manual approval. Implies
-              auto-draft. Recommended: off until you have weeks of supervised
-              drafts.
-            </p>
-          </div>
-          <ToggleSwitch name="autoSendReplies" defaultChecked={ws.autoSendReplies} />
-        </div>
+        <Switch
+          name="autoSendReplies"
+          label="Auto-send replies"
+          description="Send high-confidence drafts without manual approval. Implies auto-draft. Recommended: off until you have weeks of supervised drafts."
+          position="end"
+          defaultChecked={ws.autoSendReplies}
+        />
 
         <div className="config-card-actions">
           <button type="submit" className="primary-btn">Save reply settings</button>
@@ -400,15 +382,13 @@ export default async function OutreachSettingsPage({
           </div>
         </header>
 
-        <div className="config-row">
-          <div className="config-row-label">
-            <p className="config-row-title">Follow-ups enabled</p>
-            <p className="config-row-sub">
-              When off, no new schedules are created.
-            </p>
-          </div>
-          <ToggleSwitch name="followUpEnabled" defaultChecked={followUpSettings.enabled} />
-        </div>
+        <Switch
+          name="followUpEnabled"
+          label="Follow-ups enabled"
+          description="When off, no new schedules are created."
+          position="end"
+          defaultChecked={followUpSettings.enabled}
+        />
 
         <div className="config-divider" />
 
@@ -446,7 +426,7 @@ export default async function OutreachSettingsPage({
                 </label>
               </div>
               <label className="followup-step-input-row">
-                <input
+                <Input
                   type="number"
                   name={stepDaysField(i)}
                   min={1}
@@ -461,7 +441,7 @@ export default async function OutreachSettingsPage({
               </label>
               <details className="followup-step-instr" open={s.customInstructions !== ''}>
                 <summary>AI instructions for step {i + 1}</summary>
-                <textarea
+                <Textarea
                   name={stepInstrField(i)}
                   defaultValue={s.customInstructions}
                   placeholder={defaultInstr(i, steps.length)}
@@ -491,7 +471,7 @@ export default async function OutreachSettingsPage({
                 </span>
               </div>
               <label className="followup-step-input-row">
-                <input
+                <Input
                   type="number"
                   name={stepDaysField(steps.length)}
                   min={1}
@@ -506,7 +486,7 @@ export default async function OutreachSettingsPage({
               </label>
               <details className="followup-step-instr">
                 <summary>AI instructions for the new step</summary>
-                <textarea
+                <Textarea
                   name={stepInstrField(steps.length)}
                   placeholder="Optional. Leave empty to use the default tone."
                   maxLength={FOLLOW_UP_MAX_INSTRUCTIONS}
@@ -525,22 +505,25 @@ export default async function OutreachSettingsPage({
 
         <div className="config-divider" />
 
-        <div className="config-row">
-          <div className="config-row-label">
-            <p className="config-row-title">Require approval before send</p>
-            <p className="config-row-sub">
-              The worker composes via AI as usual but stages the email for
-              human review. Approve, edit, or reject each one from{' '}
-              <Link href="/communication/follow-ups">
-                Communication → Follow-ups
-              </Link>
-              .
-            </p>
-          </div>
-          <ToggleSwitch
+        {/* The description holds a link, so it sits outside the label
+            (a link inside a label is a nested interactive element);
+            aria-describedby still reads it with the switch. */}
+        <div>
+          <Switch
             name="followUpRequireApproval"
+            label="Require approval before send"
+            position="end"
             defaultChecked={followUpSettings.requireApproval}
+            aria-describedby="followup-require-approval-help"
           />
+          <p className="config-row-sub" id="followup-require-approval-help">
+            The worker composes via AI as usual but stages the email for
+            human review. Approve, edit, or reject each one from{' '}
+            <Link href="/communication/follow-ups">
+              Communication → Follow-ups
+            </Link>
+            .
+          </p>
         </div>
 
         <div className="followup-info-amber">
@@ -586,13 +569,12 @@ export default async function OutreachSettingsPage({
           </div>
         </header>
 
-        <label className="config-card-row">
-          <span>Auto-sync</span>
-          <ToggleSwitch
-            name="imapAutoSyncEnabled"
-            defaultChecked={ws.imapAutoSyncEnabled}
-          />
-        </label>
+        <Switch
+          name="imapAutoSyncEnabled"
+          label="Auto-sync"
+          position="end"
+          defaultChecked={ws.imapAutoSyncEnabled}
+        />
 
         <div className="config-card-actions">
           <button type="submit" className="primary-btn">
@@ -616,21 +598,20 @@ export default async function OutreachSettingsPage({
           </div>
         </header>
 
-        <label className="config-card-row">
-          <span>Auto-purge trash after</span>
-          <span className="config-card-inline">
-            <input
-              type="number"
-              name="trashRetentionDays"
-              min={TRASH_RETENTION_DAYS_MIN}
-              max={TRASH_RETENTION_DAYS_MAX}
-              step={1}
-              defaultValue={ws.trashRetentionDays}
-              style={{ width: '6rem' }}
-            />
-            <span className="muted small">days (0 = never)</span>
-          </span>
-        </label>
+        <Field
+          label="Auto-purge trash after (days)"
+          hint="0 turns the automatic purge off."
+          width="num"
+        >
+          <Input
+            type="number"
+            name="trashRetentionDays"
+            min={TRASH_RETENTION_DAYS_MIN}
+            max={TRASH_RETENTION_DAYS_MAX}
+            step={1}
+            defaultValue={ws.trashRetentionDays}
+          />
+        </Field>
 
         <div className="config-card-actions">
           <button type="submit" className="primary-btn">
@@ -646,25 +627,6 @@ export default async function OutreachSettingsPage({
         </div>
       </form>
     </AppShell>
-  );
-}
-
-function ToggleSwitch({
-  name,
-  defaultChecked,
-}: Readonly<{ name: string; defaultChecked: boolean }>) {
-  return (
-    <label className="config-switch">
-      <input
-        type="checkbox"
-        name={name}
-        defaultChecked={defaultChecked}
-        className="config-switch-input"
-      />
-      <span className="config-switch-track">
-        <span className="config-switch-thumb" />
-      </span>
-    </label>
   );
 }
 

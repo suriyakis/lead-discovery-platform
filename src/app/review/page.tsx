@@ -6,6 +6,7 @@ import { CountBadge, StatusBadge } from '@/components/Badge';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { Pagination } from '@/components/Pagination';
 import { SelectAllVisible } from '@/components/SelectAllVisible';
+import { Field, Input } from '@/components/ui';
 import { auth } from '@/lib/auth';
 import {
   AuthRequiredError,
@@ -141,14 +142,13 @@ export default async function ReviewPage({
           {stateKey !== 'new' ? (
             <input type="hidden" name="state" value={stateKey} />
           ) : null}
-          <label>
-            From
-            <input type="date" name="from" defaultValue={fromRaw} />
-          </label>
-          <label>
-            To
-            <input type="date" name="to" defaultValue={toRaw} />
-          </label>
+          {/* DS-10 pilot: the native date inputs as Field + Input. */}
+          <Field label="From" layout="inline">
+            <Input type="date" name="from" defaultValue={fromRaw} />
+          </Field>
+          <Field label="To" layout="inline">
+            <Input type="date" name="to" defaultValue={toRaw} />
+          </Field>
           <button type="submit">Apply</button>
         </form>
 

@@ -1,24 +1,27 @@
 @layer reset, tokens, base, legacy, components, patterns, utilities;
 
 /* ==========================================================================
-   Reset and base element defaults (DS-06)
+   Reset and base element defaults (DS-06, DS-10)
 
    Everything here sits below legacy, so any legacy.css rule still wins:
    these are the floor, not an override. Selectors are wrapped in :where()
    so a component's single class always beats them inside its own layer.
 
    Two scopes:
-   - Global: only what the legacy pages already look like (box sizing,
-     page colours, the font stack) plus interaction defaults nobody sees in
-     a screenshot: the keyboard focus ring and the text selection colour.
-   - [data-ds]: the real form-control and typography defaults of Direction
-     A (36px controls, 44px and 16px text on a coarse pointer, input fill,
-     control border, focus ring, invalid and disabled states, checkbox,
-     radio and switch). They are scoped because legacy relies on browser
-     defaults for hundreds of controls, headings and paragraphs, and
-     applying them everywhere is a visible change. DS-10 lifts the control
-     defaults to the whole document with its own screenshot acceptance;
-     migrated pages (PageShell) opt in earlier by carrying data-ds.
+   - Global: box sizing, page colours, the font stack, the keyboard focus
+     ring and the selection colour, and (DS-10) the form controls: input,
+     select, textarea, checkbox, radio, switch and the native date inputs
+     get the control-token heights (36px, 44px with 16px text on a coarse
+     pointer), the input fill, the control border, the focus ring and a
+     dark colour scheme. Legacy's scoped restyles still win where they
+     exist; every control nobody styled is fixed at once.
+   - [data-ds]: the Direction A typography defaults (headings, paragraphs,
+     lists, links, code) and the button font. They stay scoped because
+     legacy relies on browser defaults for hundreds of headings and
+     paragraphs; migrated pages (PageShell) opt in by carrying data-ds.
+   The control components (src/components/ui) restate these values in
+   @layer components, so a component control looks the same inside a
+   legacy context that restyles bare controls.
    ========================================================================== */
 
 @layer reset {
@@ -139,19 +142,32 @@
     border-top: 1px solid var(--border-subtle);
   }
 
-  :where([data-ds]) :where(button, input, select, textarea) {
+  :where([data-ds]) :where(button) {
     color: inherit;
     font: inherit;
     letter-spacing: inherit;
-  }
-
-  :where([data-ds]) :where(button) {
     cursor: pointer;
   }
 
-  /* Text-like inputs, selects and textareas. */
-  :where([data-ds])
-    :where(
+  :where([data-ds]) :where(button):disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* ---- Form controls, everywhere (DS-10) ---- */
+
+  :where(input, select, textarea) {
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    color-scheme: dark;
+  }
+
+  /* Text-like inputs (text, email, search, number, password, url, tel and
+     the date and time types), selects and textareas. min-height, not
+     height: a legacy rule that adds padding grows the box instead of
+     clipping its text. */
+  :where(
       input:not(
           [type='checkbox'],
           [type='radio'],
@@ -169,6 +185,7 @@
     ) {
     max-width: 100%;
     min-height: var(--control-md);
+    margin: 0;
     padding: 0 var(--space-3);
     border: 1px solid var(--border-control);
     border-radius: var(--radius-sm);
@@ -176,21 +193,22 @@
     color: var(--fg);
     font-size: var(--text-sm);
     line-height: var(--leading-sm);
+    vertical-align: middle;
     transition:
       border-color var(--dur-1) var(--ease-out),
       box-shadow var(--dur-1) var(--ease-out);
   }
 
-  :where([data-ds]) :where(textarea) {
-    min-height: calc(var(--control-md) * 2.5);
+  /* A textarea keeps its rows: its floor is one control height. */
+  :where(textarea) {
     padding: var(--space-2) var(--space-3);
     line-height: var(--leading-prose);
     resize: vertical;
   }
 
   /* A drawn chevron replaces the native arrow so the select matches the
-     input next to it. */
-  :where([data-ds]) :where(select) {
+     input next to it. A list box (multiple or size) keeps its rows. */
+  :where(select:not([multiple], [size])) {
     appearance: none;
     padding-right: var(--space-8);
     background-image:
@@ -205,28 +223,45 @@
     background-repeat: no-repeat;
   }
 
-  :where([data-ds]) :where(input, textarea)::placeholder {
+  :where(select[multiple], select[size]) {
+    padding: var(--space-1);
+  }
+
+  /* Native date and time inputs keep the browser's picker (there is no
+     custom date picker); the dark scheme draws its icon light. */
+  :where(
+      input[type='date'],
+      input[type='datetime-local'],
+      input[type='time'],
+      input[type='month'],
+      input[type='week']
+    )::-webkit-calendar-picker-indicator {
+    opacity: 0.75;
+    cursor: pointer;
+  }
+
+  :where(input, textarea)::placeholder {
     color: var(--fg-subtle);
     opacity: 1;
   }
 
-  :where([data-ds]) :where(input, select, textarea):focus-visible {
+  :where(input, select, textarea):focus-visible {
     outline: none;
     border-color: var(--primary);
     box-shadow: var(--focus-ring-control);
   }
 
-  :where([data-ds]) :where(input, select, textarea)[aria-invalid='true'] {
+  :where(input, select, textarea)[aria-invalid='true'] {
     border-color: var(--danger);
   }
 
-  :where([data-ds]) :where(input, select, textarea, button):disabled {
+  :where(input, select, textarea):disabled {
     cursor: not-allowed;
     opacity: 0.5;
   }
 
   /* Checkbox, radio and switch (input[type=checkbox][role=switch]). */
-  :where([data-ds]) :where(input[type='checkbox'], input[type='radio']) {
+  :where(input[type='checkbox'], input[type='radio']) {
     display: inline-block;
     flex: none;
     width: var(--space-4);
@@ -243,29 +278,29 @@
       border-color var(--dur-1) var(--ease-out);
   }
 
-  :where([data-ds]) :where(input[type='radio']) {
+  :where(input[type='radio']) {
     border-radius: var(--radius-full);
   }
 
-  :where([data-ds]) :where(input[type='checkbox']:checked) {
+  :where(input[type='checkbox']:checked) {
     border-color: var(--primary);
     background-color: var(--primary);
     background-image: var(--glyph-check);
   }
 
-  :where([data-ds]) :where(input[type='checkbox']:indeterminate) {
+  :where(input[type='checkbox']:indeterminate) {
     border-color: var(--primary);
     background-color: var(--primary);
     background-image: var(--glyph-dash);
   }
 
-  :where([data-ds]) :where(input[type='radio']:checked) {
+  :where(input[type='radio']:checked) {
     border-color: var(--primary);
     background-image: radial-gradient(circle, var(--primary) 0 4px, transparent 4.5px);
     background-size: 100% 100%;
   }
 
-  :where([data-ds]) :where(input[type='checkbox'][role='switch']) {
+  :where(input[type='checkbox'][role='switch']) {
     width: calc(var(--space-8) + var(--space-1));
     height: var(--space-5);
     border-radius: var(--radius-full);
@@ -275,20 +310,26 @@
     background-size: 18px 18px;
   }
 
-  :where([data-ds]) :where(input[type='checkbox'][role='switch']:checked) {
+  :where(input[type='checkbox'][role='switch']:checked) {
     border-color: var(--primary);
     background-color: var(--primary);
     background-image: radial-gradient(circle, var(--on-primary) 0 6px, transparent 6.5px);
     background-position: 100% 50%;
   }
 
+  /* A box has no border to recolour: it keeps the outline ring. */
+  :where(input[type='checkbox'], input[type='radio']):focus-visible {
+    outline: var(--focus-outline);
+    outline-offset: var(--space-0_5);
+    box-shadow: none;
+  }
+
   @media (pointer: coarse) {
-    :where([data-ds])
-      :where(input:not([type='checkbox'], [type='radio']), select, textarea) {
+    :where(input:not([type='checkbox'], [type='radio']), select, textarea) {
       font-size: var(--text-md);
     }
 
-    :where([data-ds]) :where(input[type='checkbox']:not([role='switch']), input[type='radio']) {
+    :where(input[type='checkbox']:not([role='switch']), input[type='radio']) {
       width: var(--space-5);
       height: var(--space-5);
       background-size: 14px;

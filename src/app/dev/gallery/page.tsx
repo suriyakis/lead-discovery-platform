@@ -8,9 +8,11 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { Alert, type AlertTone } from '@/components/Alert';
 import { BrandLockup, BrandMark } from '@/components/Brand';
+import { Field } from '@/components/ui';
 import { BRAND_NAME } from '@/lib/brand';
 import { IndeterminateCheckbox } from './_IndeterminateCheckbox';
 import { SignalSamples } from './_signals';
+import { EmailPreviewSample, FieldSamples } from './_fields';
 import { GallerySection, TokenGroupSamples, ToneSamples } from './_samples';
 import { TOKEN_GROUPS } from './_catalog';
 import styles from './gallery.module.css';
@@ -43,49 +45,6 @@ const ALERTS: ReadonlyArray<{ tone: AlertTone; title: string; body: string }> = 
   { tone: 'danger', title: 'Mailbox failing', body: 'Password rejected by the mail server.' },
 ];
 
-interface ControlProps {
-  id: string;
-  'aria-describedby'?: string;
-}
-
-/** Label, control, error and hint, wired by id the way the Field primitive (DS-10) will be. */
-function Field({
-  id,
-  label,
-  hint,
-  error,
-  control,
-}: Readonly<{
-  id: string;
-  label: string;
-  hint?: string;
-  error?: string;
-  control: (props: ControlProps) => React.ReactNode;
-}>) {
-  const describedBy = [error ? `${id}-error` : null, hint ? `${id}-hint` : null].filter(Boolean);
-  return (
-    <div className={styles.field}>
-      <label htmlFor={id} className={styles.fieldLabel}>
-        {label}
-      </label>
-      {control({
-        id,
-        ...(describedBy.length ? { 'aria-describedby': describedBy.join(' ') } : {}),
-      })}
-      {error ? (
-        <span id={`${id}-error`} className={styles.fieldError}>
-          {error}
-        </span>
-      ) : null}
-      {hint ? (
-        <span id={`${id}-hint`} className={styles.fieldHint}>
-          {hint}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
 export default function ComponentGallery() {
   if (process.env.ENABLE_TEST_ROUTES !== '1') notFound();
 
@@ -93,6 +52,8 @@ export default function ComponentGallery() {
     ...TOKEN_GROUPS.map((g) => ({ id: g.id, title: g.title })),
     { id: 'tones', title: 'Tones' },
     { id: 'form-controls', title: 'Form controls' },
+    { id: 'fields', title: 'Form components' },
+    { id: 'email-preview', title: 'Email preview' },
     { id: 'alerts', title: 'Alert' },
     { id: 'badges', title: 'Badges' },
     { id: 'brand', title: 'Brand' },
@@ -139,71 +100,48 @@ export default function ComponentGallery() {
       <GallerySection
         id="form-controls"
         title="Form controls"
-        description="Base element defaults inside [data-ds]: 36px controls (44px and 16px text on touch), the control border, focus ring (press Tab), invalid and disabled states. Buttons keep the legacy look until the Button primitive."
+        description="Bare elements, styled by base.css everywhere (DS-10): 36px controls (44px and 16px text on touch), the input fill, the control border, the focus ring (press Tab), invalid and disabled states, and the native date picker. Buttons keep the legacy look until the Button primitive."
       >
         <div className={styles.fields}>
-          <Field
-            id="g-company"
-            label="Company name"
-            hint="As it appears on the website."
-            control={(p) => <input {...p} type="text" placeholder="Mersey Mechanical" />}
-          />
-          <Field
-            id="g-website"
-            label="Website"
-            control={(p) => <input {...p} type="url" defaultValue="https://mersey.example" />}
-          />
+          <Field id="g-company" label="Company name" hint="As it appears on the website.">
+            <input type="text" placeholder="Mersey Mechanical" />
+          </Field>
+          <Field id="g-website" label="Website">
+            <input type="url" defaultValue="https://mersey.example" />
+          </Field>
           <Field
             id="g-email"
             label="Contact email"
             error="Enter a full address, like name@example.com."
-            control={(p) => <input {...p} type="email" defaultValue="sales@" aria-invalid="true" />}
-          />
-          <Field
-            id="g-search"
-            label="Search"
-            control={(p) => <input {...p} type="search" placeholder="Search records" />}
-          />
-          <Field
-            id="g-limit"
-            label="Daily send limit"
-            control={(p) => <input {...p} type="number" defaultValue={40} min={0} />}
-          />
-          <Field
-            id="g-date"
-            label="Follow up on"
-            control={(p) => <input {...p} type="date" defaultValue="2026-10-02" />}
-          />
-          <Field
-            id="g-disabled"
-            label="Disabled input"
-            control={(p) => <input {...p} type="text" defaultValue="Not editable" disabled />}
-          />
-          <Field
-            id="g-product"
-            label="Product"
-            control={(p) => (
-              <select {...p} defaultValue="aerogel">
-                <option value="aerogel">Aerogel blankets</option>
-                <option value="boards">Insulation boards</option>
-              </select>
-            )}
-          />
-          <Field
-            id="g-product-disabled"
-            label="Disabled select"
-            control={(p) => (
-              <select {...p} defaultValue="aerogel" disabled>
-                <option value="aerogel">Aerogel blankets</option>
-              </select>
-            )}
-          />
-          <Field
-            id="g-reason"
-            label="Reason"
-            hint="Kept as a lesson for this product."
-            control={(p) => <textarea {...p} placeholder="Why is this not a fit?" />}
-          />
+          >
+            <input type="email" defaultValue="sales@" aria-invalid="true" />
+          </Field>
+          <Field id="g-search" label="Search">
+            <input type="search" placeholder="Search records" />
+          </Field>
+          <Field id="g-limit" label="Daily send limit">
+            <input type="number" defaultValue={40} min={0} />
+          </Field>
+          <Field id="g-date" label="Follow up on">
+            <input type="date" defaultValue="2026-10-02" />
+          </Field>
+          <Field id="g-disabled" label="Disabled input">
+            <input type="text" defaultValue="Not editable" disabled />
+          </Field>
+          <Field id="g-product" label="Product">
+            <select defaultValue="aerogel">
+              <option value="aerogel">Aerogel blankets</option>
+              <option value="boards">Insulation boards</option>
+            </select>
+          </Field>
+          <Field id="g-product-disabled" label="Disabled select">
+            <select defaultValue="aerogel" disabled>
+              <option value="aerogel">Aerogel blankets</option>
+            </select>
+          </Field>
+          <Field id="g-reason" label="Reason" hint="Kept as a lesson for this product.">
+            <textarea placeholder="Why is this not a fit?" />
+          </Field>
           <fieldset className={styles.checks}>
             <legend>Checkboxes</legend>
             <label className={styles.check}>
@@ -243,16 +181,32 @@ export default function ComponentGallery() {
               Autopilot on
             </label>
           </fieldset>
-          <div className={styles.field}>
-            <span className={styles.fieldLabel}>Native buttons</span>
+          <fieldset className={styles.checks}>
+            <legend>Native buttons</legend>
             <div className={styles.check}>
               <button type="button">Save</button>
               <button type="button" disabled>
                 Disabled
               </button>
             </div>
-          </div>
+          </fieldset>
         </div>
+      </GallerySection>
+
+      <GallerySection
+        id="fields"
+        title="Form components"
+        description="Field (label, control, error, hint; stack or inline; full, num or auto width), Input, Select, Textarea and SearchInput at sm 28px, md 36px and lg 44px, Checkbox and Switch with and without a description (DS-10). Each restates the base look in the components layer, so it holds inside a legacy form context."
+      >
+        <FieldSamples />
+      </GallerySection>
+
+      <GallerySection
+        id="email-preview"
+        title="Email preview"
+        description="Email HTML renders in a sandboxed frame (no scripts, images only), on a light mail-client canvas: none of the app's CSS reaches it, so the form inside this sample keeps the browser's own look."
+      >
+        <EmailPreviewSample />
       </GallerySection>
 
       <GallerySection

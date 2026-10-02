@@ -1,0 +1,157 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* Checkbox and Switch (DS-10): a native checkbox inside its own label, so
+ * the whole row is the click target and the text is its accessible name.
+ * The box and the switch restate base.css's drawing in @layer components,
+ * so a legacy rule on bare checkboxes cannot reach them. A switch is
+ * input[type=checkbox][role=switch]: it submits "on" like any checkbox,
+ * with no JavaScript. Tokens only; shown at /dev/gallery#fields. */
+
+@layer components {
+  .choice {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--control-md);
+    max-width: 100%;
+    margin: 0;
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-regular);
+    line-height: var(--leading-sm);
+    letter-spacing: normal;
+    text-transform: none;
+    cursor: pointer;
+  }
+
+  /* With a description the control lines up with the first text line. */
+  .choice[data-described] {
+    align-items: flex-start;
+    padding-block: var(--space-2);
+  }
+
+  /* The settings row: text on the left, the control at the end. */
+  .choice[data-position='end'] {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: space-between;
+    gap: var(--space-6);
+    width: 100%;
+  }
+
+  .choice:has(> .box:disabled) {
+    cursor: not-allowed;
+  }
+
+  .choice:has(> .box:disabled) .label {
+    color: var(--fg-muted);
+  }
+
+  .text {
+    display: grid;
+    gap: var(--space-0_5);
+    min-width: 0;
+  }
+
+  .choice[data-position='end'] > .text {
+    flex: 1 1 auto;
+  }
+
+  .label {
+    color: var(--fg);
+  }
+
+  .choice[data-described] .label {
+    font-weight: var(--weight-medium);
+  }
+
+  .description {
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: var(--leading-xs);
+  }
+
+  .box {
+    display: inline-block;
+    flex: none;
+    position: static;
+    width: var(--space-4);
+    height: var(--space-4);
+    margin: 0;
+    padding: 0;
+    border: 1.5px solid var(--border-control);
+    border-radius: var(--radius-xs);
+    background: var(--surface-input) center / var(--space-3) no-repeat;
+    vertical-align: middle;
+    opacity: 1;
+    cursor: inherit;
+    appearance: none;
+    accent-color: auto;
+    transition:
+      background-color var(--dur-1) var(--ease-out),
+      border-color var(--dur-1) var(--ease-out),
+      background-position var(--dur-1) var(--ease-out);
+  }
+
+  .choice[data-described] > .box {
+    margin-top: var(--space-0_5);
+  }
+
+  .box:checked {
+    border-color: var(--primary);
+    background-color: var(--primary);
+    background-image: var(--glyph-check);
+  }
+
+  .box:indeterminate {
+    border-color: var(--primary);
+    background-color: var(--primary);
+    background-image: var(--glyph-dash);
+  }
+
+  .box:focus-visible {
+    outline: var(--focus-outline);
+    outline-offset: var(--space-0_5);
+  }
+
+  .box:disabled {
+    opacity: 0.5;
+  }
+
+  .box[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+
+  .box.switch {
+    width: calc(var(--space-8) + var(--space-1));
+    height: var(--space-5);
+    border-radius: var(--radius-full);
+    background-color: var(--surface-input);
+    background-image: radial-gradient(circle, var(--fg-muted) 0 6px, transparent 6.5px);
+    background-position: 0 50%;
+    background-size: 18px 18px;
+  }
+
+  .box.switch:checked {
+    border-color: var(--primary);
+    background-color: var(--primary);
+    background-image: radial-gradient(circle, var(--on-primary) 0 6px, transparent 6.5px);
+    background-position: 100% 50%;
+  }
+
+  .choice[data-described] > .box.switch {
+    margin-top: 0;
+  }
+
+  @media (pointer: coarse) {
+    .choice {
+      min-height: var(--control-lg);
+    }
+
+    .box:not(.switch) {
+      width: var(--space-5);
+      height: var(--space-5);
+      background-size: 14px;
+    }
+  }
+}
