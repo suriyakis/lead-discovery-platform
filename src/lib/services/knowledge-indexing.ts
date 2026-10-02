@@ -10,7 +10,11 @@
 //   1. CLAIM: under the source row lock, the queued row becomes 'running'
 //      (attempts + 1) and the source 'indexing' — unless another run holds
 //      the source (the row is deferred a minute; one run per source,
-//      enforced by a partial unique index too).
+//      enforced by a partial unique index too). A run that will have to
+//      EXTRACT its document (Re-extract with OCR, or no valid cache) also
+//      takes the document row lock and is deferred while another source of
+//      the same document is being indexed: extraction (and a paid OCR) is
+//      serialized per document, and the deferred run then reuses the cache.
 //   2. TEXT: text / url sources read their row; a document source reads
 //      the extraction cache (document-extraction.ts) — OCR is paid once
 //      per document SHA, never once per product or per retry.
@@ -36,7 +40,7 @@
 //     lost (no backoff, older than 2 minutes).
 // It only enqueues, so it works the same on the memory and BullMQ queues.
 
-import { and, asc, eq, isNotNull, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, lt, lte, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   documents,
@@ -362,8 +366,9 @@ export function describeOcrCost(estimate: OcrEstimate): string {
 /**
  * Admin only: OCR the PDF again (even with a cached text or a text
  * layer) and re-index the document's sources. One paid OCR run however
- * many sources wrap the document: the first run caches the OCR text and
- * the others reuse it.
+ * many sources wrap the document, even on a concurrent queue: the claim
+ * serializes extraction per document (documentExtractionBusy), the first
+ * run caches the OCR text and the others reuse it.
  */
 export async function requestDocumentOcrReextract(
   ctx: WorkspaceContext,
@@ -513,6 +518,56 @@ type Claim =
   | { kind: 'claimed'; job: IndexingJob; source: KnowledgeSource }
   | { kind: 'skipped'; reason: 'not_found' | 'not_queued' | 'not_due' | 'busy' };
 
+/**
+ * Inside the claim transaction (the source row already locked): will this
+ * run have to extract its document — Re-extract with OCR, or no valid
+ * extraction cache — while another source of the same document is being
+ * indexed? Then it must wait: two sources of one document (legacy data, or
+ * Re-extract with OCR queueing every source) would otherwise extract — and
+ * pay Mistral OCR — in parallel on a concurrent queue. The document row
+ * lock serializes concurrent claims for the same document (lock order:
+ * source, then document); once the first run has cached the text, the
+ * deferred one reuses it (forceOcr is satisfied by an OCR extraction newer
+ * than its row).
+ */
+async function documentExtractionBusy(
+  tx: Tx,
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  source: KnowledgeSource,
+  job: IndexingJob,
+): Promise<boolean> {
+  if (source.kind !== 'document' || source.documentId === null) return false;
+  const [doc] = await tx
+    .select({ sha256: documents.sha256, extractedSha256: documents.extractedSha256 })
+    .from(documents)
+    .where(and(eq(documents.workspaceId, ctx.workspaceId), eq(documents.id, source.documentId)))
+    .for('update')
+    .limit(1);
+  if (!doc) return false;
+  // No cache, or a cache of other bytes: this run extracts.
+  if (!job.forceOcr && doc.extractedSha256 === doc.sha256) return false;
+  const [sibling] = await tx
+    .select({ id: indexingJobs.id })
+    .from(indexingJobs)
+    .innerJoin(
+      knowledgeSources,
+      and(
+        eq(knowledgeSources.id, indexingJobs.knowledgeSourceId),
+        eq(knowledgeSources.workspaceId, indexingJobs.workspaceId),
+      ),
+    )
+    .where(
+      and(
+        eq(indexingJobs.workspaceId, ctx.workspaceId),
+        eq(indexingJobs.status, 'running'),
+        eq(knowledgeSources.documentId, source.documentId),
+        ne(indexingJobs.id, job.id),
+      ),
+    )
+    .limit(1);
+  return sibling !== undefined;
+}
+
 async function claimIndexJob(ctx: WorkspaceContext, jobId: bigint, now: Date): Promise<Claim> {
   return db.transaction(async (tx): Promise<Claim> => {
     const [row] = await tx
@@ -555,7 +610,7 @@ async function claimIndexJob(ctx: WorkspaceContext, jobId: bigint, now: Date): P
         ),
       )
       .limit(1);
-    if (running) {
+    if (running || (await documentExtractionBusy(tx, ctx, source, job))) {
       await tx
         .update(indexingJobs)
         .set({ nextAttemptAt: new Date(now.getTime() + BUSY_DEFER_MS) })

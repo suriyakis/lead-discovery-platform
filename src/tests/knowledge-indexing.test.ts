@@ -25,7 +25,7 @@ import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db/client';
 import { usageLog } from '@/lib/db/schema/audit';
-import { documents, knowledgeSources } from '@/lib/db/schema/documents';
+import { documents, knowledgeSourceProducts, knowledgeSources } from '@/lib/db/schema/documents';
 import { notifications } from '@/lib/db/schema/notifications';
 import { documentChunks, indexingJobs } from '@/lib/db/schema/rag';
 import { productVectorStores } from '@/lib/db/schema/vector-stores';
@@ -995,6 +995,67 @@ describe('Re-extract with OCR (admin, with the cost)', () => {
     await requestKnowledgeIndex(s.a, ks.id);
     await runQueuedIndexJobs(s.a);
     expect(ocr.calls).toBe(1);
+  });
+
+  it('two sources of one document (legacy data) pay for ONE OCR run even on a concurrent queue', async () => {
+    const s = await setup();
+    pdf.text = OCR_TEXT.replace(/Vetrofluid/g, 'Textlayer');
+    const doc = await uploadScan(s.a, 'datasheet.pdf', 'two-sources');
+    const first = await createKnowledgeSource(s.a, {
+      kind: 'document',
+      title: 'Datasheet',
+      documentId: doc.id,
+      scope: { kind: 'workspace' },
+    });
+    // A second source wrapping the same document: only data from before
+    // KL-05 has one (createKnowledgeSource refuses it now).
+    const [second] = await db
+      .insert(knowledgeSources)
+      .values({
+        workspaceId: s.a.workspaceId,
+        kind: 'document',
+        documentId: doc.id,
+        title: 'Datasheet (copy)',
+        scopeKind: 'products',
+      })
+      .returning();
+    await db.insert(knowledgeSourceProducts).values({
+      sourceId: second!.id,
+      workspaceId: s.a.workspaceId,
+      productProfileId: s.products[0]!,
+    });
+    await runQueuedIndexJobs(s.a);
+    expect(ocr.calls).toBe(0); // a text layer
+
+    const { jobs } = await requestDocumentOcrReextract(s.a, doc.id);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.every((j) => j.forceOcr)).toBe(true);
+    let release!: () => void;
+    ocr.gate = new Promise<void>((r) => (release = r));
+    // Both jobs start together (BullMQ concurrency): the first extracts,
+    // the second is deferred while the document is being extracted.
+    const runs = jobs.map((j) => runKnowledgeIndexJob(s.a, j.id));
+    for (let i = 0; i < 100 && ocr.started === 0; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    ocr.gate = null;
+    release();
+    const outcomes = await Promise.all(runs);
+    expect(outcomes.map((o) => o.kind).sort()).toEqual(['skipped', 'succeeded']);
+    expect(outcomes.find((o) => o.kind === 'skipped')).toEqual({ kind: 'skipped', reason: 'busy' });
+    // The deferred run comes back after its minute and reuses the cache.
+    await runQueuedIndexJobs(s.a, { now: () => new Date(Date.now() + minutes(2)) });
+    expect(ocr.started).toBe(1);
+    expect(ocr.calls).toBe(1);
+    expect(await ocrUsageRows(s.a.workspaceId)).toHaveLength(1);
+    for (const id of [first.id, second!.id]) {
+      expect((await sourceRow(id)).indexStatus).toBe('indexed');
+      const chunks = await db
+        .select({ content: documentChunks.content })
+        .from(documentChunks)
+        .where(eq(documentChunks.knowledgeSourceId, id));
+      expect(chunks.map((c) => c.content).join(' ')).toContain('Vetrofluid');
+    }
   });
 
   it('is unavailable without an OCR key, and says so', async () => {
