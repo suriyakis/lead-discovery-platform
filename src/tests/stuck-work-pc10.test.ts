@@ -369,6 +369,9 @@ describe('honest run status (I074)', () => {
     });
     expect(failed.result!.status).toBe('failed');
     expect(failed.result!.recordCount).toBe(0);
+    // The run's notification and incident follow the terminal status in
+    // the same job: wait for the job, not just the row.
+    await getJobQueue().drain?.();
     const failedRun = await runRow(failed.run.id);
     expect(failedRun.status).toBe('failed');
     expect((failedRun.errorPayload as { message: string }).message).toBe(
@@ -391,6 +394,7 @@ describe('honest run status (I074)', () => {
       wait: true,
     });
     expect(partial.result!.status).toBe('partial');
+    await getJobQueue().drain?.();
     const partialRun = await runRow(partial.run.id);
     expect(partialRun.status).toBe('partial');
     expect(partialRun.recordCount).toBeGreaterThan(0);
@@ -633,6 +637,10 @@ describe('run incidents nothing could resolve (PC-10 review)', () => {
     _setSearchProviderForTests(new FlakySearch(() => true));
     const r = await startRun(ctx(s), { connectorId: connector.id, recipeId: recipe.id, wait: true });
     expect(r.result!.status).toBe('failed');
+    // awaitRun returns once the row is terminal; the runner's incident
+    // bookkeeping right after that finishes with the job (integration: a
+    // race under a loaded full run).
+    await getJobQueue().drain?.();
     expect(await openEvents('run.stuck')).toHaveLength(0);
     expect(await openEvents('run.failed')).toHaveLength(1);
   });
