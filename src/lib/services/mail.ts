@@ -38,8 +38,17 @@ import {
   TRANSIENT_FAILURE_PAUSE_THRESHOLD,
 } from './imap-backoff';
 import { recordAuditEvent } from './audit';
-import { assertGate } from './automation-gate';
-import { canWrite, type WorkspaceContext } from './context';
+import {
+  AutomationGateError,
+  assertGate,
+  checkGate,
+  decideGate,
+  loadAutomationState,
+  originForDraft,
+  reconcileOwnerIncident,
+  type SendOrigin,
+} from './automation-gate';
+import { canWrite, isAutomatic, type WorkspaceContext } from './context';
 import {
   buildProviderFor,
   markMailboxFailing,
@@ -153,6 +162,15 @@ export interface SendMailInput {
    *  a Sending hold or the platform outbound stop; automatic ones also
    *  when the workspace has no accountable owner. */
   automatic?: boolean;
+  /** flow:F-07 / PC-05 — where this email comes from (SendOrigin): the
+   *  go-live hold holds cold, follow_up and ai_reply mail until the
+   *  workspace is live. Required on every send, like `mode`, so no caller
+   *  slips past the hold by accident. */
+  origin: SendOrigin;
+  /** PC-05: a person confirmed "send anyway" while automation is paused.
+   *  Only manual sends can be confirmed; each confirmed send is audited
+   *  (outbound.override) before it goes out. */
+  confirmPaused?: boolean;
   /** Test-only override; production passes undefined. */
   providerOverride?: IMailProvider;
 }
@@ -167,11 +185,20 @@ export async function sendMessage(
   if (!subject) throw invalid('subject required');
   if (!input.text && !input.html) throw invalid('text or html body required');
 
-  // PC-06: holds, the platform outbound stop and (automatic sends) the
-  // accountable-owner rule, before anything is rendered or sent.
-  await assertGate(ctx, 'sending', {
-    manual: input.automatic === undefined ? undefined : !input.automatic,
-  });
+  // PC-06 + PC-05: holds, the platform outbound stop, (automatic sends)
+  // the accountable-owner rule, the workspace pause (a manual send only
+  // after "send anyway") and the go-live hold for this origin — before
+  // anything is rendered or sent.
+  const manual = input.automatic === undefined ? !isAutomatic(ctx) : !input.automatic;
+  const gateState = await loadAutomationState(ctx.workspaceId);
+  if (!manual) await reconcileOwnerIncident(gateState);
+  const gateItem = {
+    manual,
+    origin: input.origin,
+    confirmPaused: manual && input.confirmPaused === true,
+  };
+  const gate = decideGate(gateState, 'sending', gateItem);
+  if (!gate.allowed) throw new AutomationGateError(gate);
 
   // Suppression check — reject if ANY recipient is suppressed.
   for (const addr of [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])]) {
@@ -183,11 +210,37 @@ export async function sendMessage(
     input.mailboxId,
     input.providerOverride,
   );
+  // PC-05 (P0-F08, I095): an automatic send from a mailbox that is not
+  // active is held by the gate (the caller defers it, nothing fails); a
+  // person sending by hand gets the mailbox's own reason below.
+  const mailboxGate = decideGate(gateState, 'sending', {
+    ...gateItem,
+    mailboxStatus: mailbox.status,
+  });
+  if (!mailboxGate.allowed) throw new AutomationGateError(mailboxGate);
   if (mailbox.status === 'archived') {
     throw new MailServiceError('mailbox is archived', 'invalid_input');
   }
   if (mailbox.status === 'paused') {
     throw new MailServiceError('mailbox is paused — re-enable it from Edit mailbox to resume sends', 'invalid_input');
+  }
+  // PC-05: a manual send the person confirmed while automation is paused
+  // is audited before it goes out, so it is on record even if the send
+  // then fails.
+  if (gate.pauseOverridden) {
+    await recordAuditEvent(ctx, {
+      kind: 'outbound.override',
+      entityType: 'mailbox',
+      entityId: mailbox.id,
+      payload: {
+        override: 'automation_paused',
+        origin: input.origin,
+        pausedAt: gateState.pause?.since.toISOString() ?? null,
+        pausedByUserId: gateState.pause?.byUserId ?? null,
+        to: input.to.map((a) => a.address),
+        subject,
+      },
+    });
   }
 
   const headers: Record<string, string> = { ...(input.headers ?? {}) };
@@ -607,6 +660,12 @@ export async function sendTestEmail(
   if (!to) throw invalid('to required');
   if (!subject) throw invalid('subject required');
   if (!body || !body.trim()) throw invalid('body required');
+  // PC-05: a test send bypasses sendMessage, so it asks the gate itself.
+  // A Sending hold or the platform outbound stop refuses it like any send;
+  // the workspace pause does not — pressing "Send test" on the mailbox page
+  // is the person's explicit, audited (mail.send_test) choice, made to
+  // check the mailbox, which is what one does while paused.
+  await assertGate(ctx, 'sending', { manual: true, origin: 'manual', confirmPaused: true });
 
   const { mailbox, provider } = await buildProviderFor(
     ctx,
@@ -1618,6 +1677,9 @@ export const TRASH_RETENTION_DAYS_DEFAULT = 30;
 export interface TrashPurgeResult {
   deleted: number;
   retentionDays: number;
+  /** PC-05: the automation gate held the purge (the workspace pause, a
+   *  Trash purge hold, no accountable owner); nothing was deleted. */
+  heldReason?: string;
 }
 
 /** Unattended (cron) version: hard-delete rows in this workspace whose
@@ -1636,6 +1698,13 @@ export async function purgeOldTrashUnattended(
     .limit(1);
   const retentionDays = rows[0]?.retentionDays ?? TRASH_RETENTION_DAYS_DEFAULT;
   if (retentionDays <= 0) return { deleted: 0, retentionDays };
+  // PC-05: the purge is automatic work — it stops while automation is
+  // paused (and under a Trash purge hold), so nothing is lost while a
+  // workspace is being looked at.
+  const gate = await checkGate({ workspaceId, trigger: 'automation' }, 'trash_purge', {
+    manual: false,
+  });
+  if (!gate.allowed) return { deleted: 0, retentionDays, heldReason: gate.message };
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
   const deleted = await db
     .delete(mailMessages)
@@ -1782,6 +1851,32 @@ export function isHardBounce(msg: {
   return isRecipientHardBounceText(msg.failureReason);
 }
 
+/** flow:F-07: the origin of an email we already tried to send — from its
+ *  draft when it had one (cold first touch or AI reply), otherwise a
+ *  sequence email without a draft is a follow-up and anything else was
+ *  written by a person. */
+async function originOfSentMessage(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  msg: Pick<MailMessage, 'sourceDraftId' | 'headers'>,
+): Promise<SendOrigin> {
+  if (msg.sourceDraftId !== null) {
+    const { outreachDrafts } = await import('@/lib/db/schema/outreach');
+    const [draft] = await db
+      .select({
+        stage: outreachDrafts.stage,
+        triggeredByMessageId: outreachDrafts.triggeredByMessageId,
+      })
+      .from(outreachDrafts)
+      .where(
+        and(eq(outreachDrafts.workspaceId, ctx.workspaceId), eq(outreachDrafts.id, msg.sourceDraftId)),
+      )
+      .limit(1);
+    // A draft that no longer exists was outreach: fail closed (cold).
+    return draft ? originForDraft(draft) : 'cold';
+  }
+  return sendModeFromHeaders(msg.headers) === 'sequence' ? 'follow_up' : 'manual';
+}
+
 export interface RetryResult {
   retried: bigint[];
   skippedHardBounce: bigint[];
@@ -1809,8 +1904,23 @@ export async function retrySend(
   };
   if (ids.length === 0) return result;
   // PC-06: refuse the whole batch up front under a Sending hold instead of
-  // collecting the same refusal once per message.
-  await assertGate(ctx, 'sending');
+  // collecting the same refusal once per message. PC-05: also while
+  // automation is paused — a bulk retry has no per-message "send anyway".
+  {
+    const gate = await checkGate(ctx, 'sending');
+    if (!gate.allowed) {
+      throw new AutomationGateError(
+        gate.reason === 'paused'
+          ? {
+              ...gate,
+              overridable: false,
+              message:
+                'Automation is paused, so failed emails are not retried. An owner or admin can resume it; to send one email now, reply from its thread and confirm "send anyway".',
+            }
+          : gate,
+      );
+    }
+  }
 
   const originals = await db
     .select()
@@ -1848,6 +1958,9 @@ export async function retrySend(
         inReplyTo: original.inReplyTo ?? undefined,
         references: original.references,
         sourceDraftId: original.sourceDraftId ?? undefined,
+        // flow:F-07: a retry is the original email again, so it keeps the
+        // original's origin (a retried cold email waits for go-live too).
+        origin: await originOfSentMessage(ctx, original),
         providerOverride,
       });
       // Trash the original so a successful retry actually clears the

@@ -5,6 +5,10 @@
 // List-Unsubscribe headers), and the signature is added exactly once: the
 // form no longer pre-fills it into the body (I090); the operator picks it
 // here and sendMessage appends it.
+//
+// PC-05 / flow:F-07: compose is manual mail — never held by the go-live
+// hold — and while automation is paused it sends only after the operator
+// confirmed "send anyway" (confirmPaused, audited by sendMessage).
 
 import type { SendMailInput } from '@/lib/services/mail';
 
@@ -27,6 +31,8 @@ export interface SendComposeInput {
   draftId?: string;
   /** SIGNATURE_DEFAULT (mailbox default), SIGNATURE_NONE, or a signature id. */
   signature?: string;
+  /** PC-05: "send anyway" while automation is paused. */
+  confirmPaused?: boolean;
 }
 
 export type ComposeSendInputResult =
@@ -86,6 +92,8 @@ export function buildComposeSendInput(
       signatureId: signature.signatureId,
       sourceDraftId:
         input.draftId && /^\d+$/.test(input.draftId) ? BigInt(input.draftId) : undefined,
+      origin: 'manual',
+      confirmPaused: input.confirmPaused === true,
     },
   };
 }

@@ -27,7 +27,14 @@ import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { canWrite, type WorkspaceContext } from './context';
 import { recordAuditEvent } from './audit';
-import { AutomationGateError, assertGate, checkGate } from './automation-gate';
+import {
+  AutomationGateError,
+  assertGate,
+  checkGate,
+  deferUntil,
+  mailboxHeldMessage,
+  type GateOptions,
+} from './automation-gate';
 import { getAIProviderForCtx } from '@/lib/ai';
 import {
   composeFollowUpDraft,
@@ -360,6 +367,11 @@ export interface ProcessDueFollowUpsDeps {
   mailProviderOverride?: IMailProvider;
 }
 
+/** PC-05: what the follow-up tick asks the gate — automatic Sending of
+ *  follow-up mail (the go-live hold applies) that the AI composes (the
+ *  wallet must not be empty). */
+const FOLLOW_UP_GATE: GateOptions = { manual: false, origin: 'follow_up', spendsTokens: true };
+
 export async function processDueFollowUps(
   ctx: WorkspaceContext,
   deps: ProcessDueFollowUpsDeps = {},
@@ -375,19 +387,14 @@ export async function processDueFollowUps(
   const settings = await loadSettings(ctx.workspaceId);
   if (!settings.enabled) return { checked: 0, sent: 0, skipped: 0, failed: 0 };
 
-  // PC-06: follow-ups are automatic Sending work. Checked before the AI
-  // composes anything, so a hold costs no tokens.
-  const gate = await checkGate(ctx, 'sending', { manual: false });
+  // PC-06 + PC-05: follow-ups are automatic Sending work that the AI
+  // composes. Checked before anything is composed, so the workspace pause,
+  // a hold, the go-live hold (follow-ups wait until the workspace is
+  // live) or an empty wallet costs no tokens and leaves every row pending
+  // for a later tick.
+  const gate = await checkGate(ctx, 'sending', FOLLOW_UP_GATE);
   if (!gate.allowed) {
     return { checked: 0, sent: 0, skipped: 0, failed: 0, heldReason: gate.message };
-  }
-
-  // Prepaid gate: follow-up composition is AI-metered. Empty wallet →
-  // leave the rows pending (they fire on a later tick once topped up)
-  // rather than erroring them out.
-  const { hasTokens } = await import('./token-ledger');
-  if (!(await hasTokens(ctx))) {
-    return { checked: 0, sent: 0, skipped: 0, failed: 0 };
   }
 
   const due = await db
@@ -408,9 +415,10 @@ export async function processDueFollowUps(
   let failed = 0;
   let heldReason: string | undefined;
   for (const [i, row] of due.entries()) {
-    // PC-06: re-check before each composition (AI spend) and send.
+    // PC-06 + PC-05: re-check before each composition (AI spend); the
+    // send re-checks again inside sendMessage.
     if (i > 0) {
-      const recheck = await checkGate(ctx, 'sending', { manual: false });
+      const recheck = await checkGate(ctx, 'sending', FOLLOW_UP_GATE);
       if (!recheck.allowed) {
         heldReason = recheck.message;
         break;
@@ -422,15 +430,22 @@ export async function processDueFollowUps(
       else if (verdict === 'skipped') skipped++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // PC-06: the gate refused the send after composition (a hold placed
-      // mid-tick). Not this step's failure: it stays pending with the reason.
+      // PC-06 / PC-05: the gate refused the send after composition. Never
+      // a failure of the step: it stays pending with the reason. An item
+      // refusal (its mailbox stopped being active) defers just this step;
+      // a workspace one (the pause or a hold landed mid-tick) stops the tick.
       if (err instanceof AutomationGateError) {
         skipped++;
-        heldReason = msg;
         await db
           .update(outreachFollowUps)
-          .set({ lastError: msg.slice(0, 2000), updatedAt: new Date() })
+          .set({
+            lastError: msg.slice(0, 2000),
+            ...(err.scope === 'item' ? { scheduledFor: deferUntil(new Date()) } : {}),
+            updatedAt: new Date(),
+          })
           .where(eq(outreachFollowUps.id, row.id));
+        if (err.scope === 'item') continue;
+        heldReason = msg;
         break;
       }
       // flow:F-05: a refused SMTP login is the mailbox's problem
@@ -576,9 +591,11 @@ async function processOne(
     return 'skipped';
   }
 
-  // flow:F-05: the thread's mailbox is failing (a refused SMTP login, or
-  // the IMAP auto-pause) — leave the step pending: no compose, no send
-  // attempt. It goes out on a later tick once the mailbox is reactivated.
+  // flow:F-05 + PC-05 (P0-F08): the thread's mailbox is not active —
+  // failing (a refused SMTP login, the IMAP auto-pause), paused or
+  // archived. Leave the step pending with the reason and look again after
+  // GATE_DEFER_MS: no compose, no send attempt, never 'failed'. It goes
+  // out once the mailbox is active again.
   const [mailbox] = await db
     .select({ status: mailboxes.status })
     .from(mailboxes)
@@ -589,7 +606,16 @@ async function processOne(
       ),
     )
     .limit(1);
-  if (mailbox?.status === 'failing') {
+  if (mailbox && mailbox.status !== 'active') {
+    const now = new Date();
+    await db
+      .update(outreachFollowUps)
+      .set({
+        lastError: mailboxHeldMessage(mailbox.status),
+        scheduledFor: deferUntil(now),
+        updatedAt: now,
+      })
+      .where(and(eq(outreachFollowUps.id, row.id), eq(outreachFollowUps.status, 'pending')));
     return 'skipped';
   }
 
@@ -733,6 +759,8 @@ async function processOne(
     references: lastMessage.references ?? [],
     // PC-06: sent by the tick without a person approving it.
     automatic: true,
+    // flow:F-07: follow-ups wait for go-live.
+    origin: 'follow_up',
     providerOverride: deps.mailProviderOverride,
   });
 
@@ -780,13 +808,21 @@ export async function approveFollowUp(
     translatedSubject?: string;
     translatedBody?: string;
     targetLanguage?: string;
+    /** PC-05: the operator confirmed "send anyway" while automation is
+     *  paused (audited as outbound.override by sendMessage). */
+    confirmPaused?: boolean;
   },
   deps: ProcessDueFollowUpsDeps = {},
 ): Promise<OutreachFollowUp> {
   if (!canWrite(ctx)) throw denied('follow_up.approve');
-  // PC-06: refuse before translating (AI) under a Sending hold or the
-  // platform outbound stop; the step stays awaiting approval.
-  await assertGate(ctx, 'sending');
+  // PC-06 + PC-05: refuse before translating (AI) under a Sending hold,
+  // the platform outbound stop, the go-live hold (follow-ups wait until
+  // the workspace is live) or the pause without "send anyway"; the step
+  // stays awaiting approval.
+  await assertGate(ctx, 'sending', {
+    origin: 'follow_up',
+    confirmPaused: override?.confirmPaused === true,
+  });
   const [row] = await db
     .select()
     .from(outreachFollowUps)
@@ -897,6 +933,8 @@ export async function approveFollowUp(
     targetLanguage,
     inReplyTo: lastMessage?.messageId ?? undefined,
     references: lastMessage?.references ?? [],
+    origin: 'follow_up',
+    confirmPaused: override?.confirmPaused === true,
     providerOverride: deps.mailProviderOverride,
   });
 

@@ -70,7 +70,6 @@ const sendSettingsSchema = z
     fixedDelayMinutes: wholeNumber('Fixed delay', SEND_SETTINGS_LIMITS.delayMinutes),
     randomDelayMinMinutes: wholeNumber('Random min', SEND_SETTINGS_LIMITS.delayMinutes),
     randomDelayMaxMinutes: wholeNumber('Random max', SEND_SETTINGS_LIMITS.delayMinutes),
-    emergencyPause: z.boolean(),
   })
   .refine((v) => v.randomDelayMinMinutes <= v.randomDelayMaxMinutes, {
     message: 'Random min cannot be more than random max.',
@@ -91,8 +90,6 @@ export function parseSendSettingsForm(formData: FormData): ParseResult<UpdateSen
     fixedDelayMinutes: text('fixedDelayMinutes'),
     randomDelayMinMinutes: text('randomDelayMinMinutes'),
     randomDelayMaxMinutes: text('randomDelayMaxMinutes'),
-    // An unticked checkbox is simply absent from the form.
-    emergencyPause: formData.get('emergencyPause') === 'on',
   });
   if (!result.success) {
     return { ok: false, error: result.error.issues[0]?.message ?? 'Check the send settings.' };

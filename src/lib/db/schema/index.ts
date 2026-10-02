@@ -29,3 +29,4 @@ export * from './support';
 export * from './platform-settings';
 export * from './remediation';
 export * from './holds';
+export * from './automation-state';

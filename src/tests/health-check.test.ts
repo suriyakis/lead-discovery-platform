@@ -193,13 +193,14 @@ describe('collectRuleFindings', () => {
       expect((await mailboxCodes(s)).map((f) => f.code)).toEqual(['mailbox.failing']);
     });
 
-    it('only paused mailboxes: due sends are marked failed, not held', async () => {
+    it('only paused mailboxes: due sends are held, not failed (PC-05, P0-F08)', async () => {
       const s = await setup();
       await addMailbox(s, 'sales@test.local', 'paused');
       const found = await mailboxCodes(s);
       expect(found.map((f) => f.code)).toEqual(['mailbox.none']);
       expect(found[0]!.message).toContain('(each one is paused)');
-      expect(found[0]!.message).toContain('marked failed, not held');
+      expect(found[0]!.message).toContain('are held (not sent, not failed) until you re-enable it');
+      expect(found[0]!.message).not.toContain('marked failed');
       expect(found[0]!.href).toBe('/mailbox');
     });
 

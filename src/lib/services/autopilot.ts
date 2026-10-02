@@ -26,7 +26,7 @@ import { reviewItems } from '@/lib/db/schema/review';
 import { mailboxes } from '@/lib/db/schema/mailing';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { recordAuditEvent } from './audit';
-import { checkGate, type AutomationCapability } from './automation-gate';
+import { checkGate, checkGates, type AutomationCapability } from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
@@ -84,7 +84,6 @@ export async function getAutopilotSettings(
 
 export interface UpdateAutopilotSettingsInput {
   autopilotEnabled?: boolean;
-  emergencyPause?: boolean;
   enableAutoApproveProjects?: boolean;
   autoApproveThreshold?: number;
   enableAutoEnqueueOutreach?: boolean;
@@ -104,8 +103,9 @@ export async function updateAutopilotSettings(
 ): Promise<AutopilotSettings> {
   if (!canAdminWorkspace(ctx)) throw denied('autopilot.settings.update');
   // Autopilot is a subscription feature. Only ENABLING is gated —
-  // turning things off (incl. emergencyPause) must always work, so a
-  // lapsed subscription can still stop automation.
+  // turning things off must always work, so a lapsed subscription can
+  // still stop automation. (Stopping everything is the workspace pause,
+  // PC-05 automation-pause.ts, which is never plan-gated at all.)
   const enabling =
     input.autopilotEnabled === true ||
     input.enableAutoApproveProjects === true ||
@@ -125,7 +125,6 @@ export async function updateAutopilotSettings(
   };
   for (const k of [
     'autopilotEnabled',
-    'emergencyPause',
     'enableAutoApproveProjects',
     'enableAutoEnqueueOutreach',
     'enableAutoDrainQueue',
@@ -202,7 +201,10 @@ export async function getEffectiveAutopilotSettings(
   return {
     ...base,
     autopilotEnabled: overlay.autopilotEnabled ?? base.autopilotEnabled,
-    emergencyPause: overlay.emergencyPause ?? base.emergencyPause,
+    // PC-05: the workspace-level emergency_pause is gone (the workspace
+    // pause replaced it); only the product overlay's own value remains,
+    // and it is not applied yet (I020, PC-13).
+    emergencyPause: overlay.emergencyPause ?? false,
     enableAutoApproveProjects:
       overlay.enableAutoApproveProjects ?? base.enableAutoApproveProjects,
     autoApproveThreshold:
@@ -405,45 +407,35 @@ export async function runOnce(
   const ranAt = new Date();
   const steps: AutopilotRunResult['steps'] = [];
 
-  if (!settings.autopilotEnabled || settings.emergencyPause) {
-    await recordStep(ctx, runId, 'guard', 'skipped', settings.emergencyPause ? 'emergency_pause' : 'autopilot_disabled');
-    steps.push({
-      step: 'guard',
-      outcome: 'skipped',
-      detail: settings.emergencyPause ? 'emergency_pause' : 'autopilot_disabled',
-    });
+  if (!settings.autopilotEnabled) {
+    await recordStep(ctx, runId, 'guard', 'skipped', 'autopilot_disabled');
+    steps.push({ step: 'guard', outcome: 'skipped', detail: 'autopilot_disabled' });
     return { runId, ranAt, steps };
   }
 
-  // PC-06: autopilot is automatic work whoever presses Run now: an
-  // Autopilot hold (or scope 'all'), or a workspace with no accountable
-  // owner, runs nothing.
+  // PC-06 + PC-05: autopilot is automatic work whoever presses Run now:
+  // the workspace pause, an Autopilot hold (or scope 'all'), a workspace
+  // with no accountable owner, or a plan without autopilot runs nothing.
+  // (The plan check keeps a workspace that enabled autopilot while
+  // subscribed and then lapsed from running forever.)
   {
     const gate = await checkGate(ctx, 'autopilot', { manual: false });
     if (!gate.allowed) {
-      const detail = `held: ${gate.message}`.slice(0, 500);
+      const detail =
+        gate.reason === 'plan_no_autopilot'
+          ? 'plan_no_autopilot'
+          : `held: ${gate.message}`.slice(0, 500);
       await recordStep(ctx, runId, 'guard', 'skipped', detail);
       steps.push({ step: 'guard', outcome: 'skipped', detail });
       return { runId, ranAt, steps };
     }
   }
 
-  // Plan guard: autopilot is a subscription feature. The toggle gate in
-  // updateAutopilotSettings stops NEW enables, but a workspace that
-  // enabled autopilot while subscribed and then lapsed would keep
-  // running forever without this runtime check.
-  {
-    const { getEffectivePlan } = await import('./plan-limits');
-    const plan = await getEffectivePlan(ctx);
-    if (!plan.limits.autopilot) {
-      await recordStep(ctx, runId, 'guard', 'skipped', 'plan_no_autopilot');
-      steps.push({ step: 'guard', outcome: 'skipped', detail: 'plan_no_autopilot' });
-      return { runId, ranAt, steps };
-    }
-  }
-
-  // PC-06: each step also needs its own capability (an Inbox-sync,
-  // Sending or CRM-sync hold skips just that step, recorded with why).
+  // PC-06 + PC-05: before each step the gate is asked again — Autopilot
+  // (a pause or hold placed mid-run stops the remaining steps) and the
+  // step's own capability (an Inbox-sync, Sending or CRM-sync hold skips
+  // just that step, recorded with why). Each step re-checks before every
+  // item too (itemHeld).
   if (settings.enableAutoSyncInbound) {
     const r =
       (await heldStep(ctx, runId, 'auto_sync_inbound', 'inbox_sync')) ??
@@ -491,19 +483,35 @@ export async function runOnce(
 
 // ---- steps -------------------------------------------------------
 
-/** PC-06: null when the gate allows `capability`; otherwise the step is
- *  recorded as skipped with the gate's reason and returned. */
+/** PC-06 + PC-05: null when the gate allows Autopilot and the step's
+ *  `capability`; otherwise the step is recorded as skipped with the
+ *  gate's reason and returned. */
 async function heldStep(
   ctx: WorkspaceContext,
   runId: string,
   step: string,
   capability: AutomationCapability,
 ): Promise<AutopilotRunResult['steps'][number] | null> {
-  const gate = await checkGate(ctx, capability, { manual: false });
+  const gate = await checkGates(ctx, ['autopilot', capability], { manual: false });
   if (gate.allowed) return null;
   const detail = `held: ${gate.message}`.slice(0, 500);
   await recordStep(ctx, runId, step, 'skipped', detail);
   return { step, outcome: 'skipped', detail };
+}
+
+/** PC-05: re-check before each item of a step (a candidate, a lead). A
+ *  pause or hold placed mid-step stops the step at the next item, recorded
+ *  as skipped with why; true = stop. */
+async function itemHeld(
+  ctx: WorkspaceContext,
+  runId: string,
+  step: string,
+  capabilities: readonly AutomationCapability[],
+): Promise<boolean> {
+  const gate = await checkGates(ctx, capabilities, { manual: false });
+  if (gate.allowed) return false;
+  await recordStep(ctx, runId, step, 'skipped', `held: ${gate.message}`.slice(0, 500));
+  return true;
 }
 
 async function stepAutoSyncInbound(
@@ -520,6 +528,7 @@ async function stepAutoSyncInbound(
   let totalNew = 0;
   let totalDup = 0;
   for (const mb of eligible) {
+    if (await itemHeld(ctx, runId, 'auto_sync_inbound', ['autopilot', 'inbox_sync'])) break;
     try {
       const r = await syncInbound(ctx, mb.id, providerOverride);
       totalNew += r.inserted;
@@ -574,6 +583,7 @@ async function stepAutoApproveProjects(
 
   let approved = 0;
   for (const row of candidates) {
+    if (await itemHeld(ctx, runId, 'auto_approve_projects', ['autopilot'])) break;
     // Per-product overlay: if the product disables auto-approve or sets a
     // higher threshold, honor that.
     const eff = await getEffectiveAutopilotSettings(ctx, row.q.productProfileId);
@@ -649,6 +659,7 @@ async function stepAutoEnqueueOutreach(
 
   let enqueued = 0;
   for (const row of candidates) {
+    if (await itemHeld(ctx, runId, 'auto_enqueue_outreach', ['autopilot', 'sending'])) break;
     // Per-product overlay: skip if this product opts out of auto-enqueue.
     const eff = await getEffectiveAutopilotSettings(ctx, row.q.productProfileId);
     if (!eff.enableAutoEnqueueOutreach) continue;
@@ -774,6 +785,7 @@ async function stepAutoCrmContactSync(
 
   let synced = 0;
   for (const lead of candidates) {
+    if (await itemHeld(ctx, runId, 'auto_crm_contact_sync', ['autopilot', 'crm_sync'])) break;
     // Per-product overlay: skip if the lead's product opts out.
     const eff = await getEffectiveAutopilotSettings(ctx, lead.productProfileId);
     if (!eff.enableAutoCrmContactSync) continue;
@@ -843,6 +855,7 @@ async function stepAutoCrmDealOnQualified(
 
   let created = 0;
   for (const lead of candidates) {
+    if (await itemHeld(ctx, runId, 'auto_crm_deal_on_qualified', ['autopilot', 'crm_sync'])) break;
     // Per-product overlay.
     const eff = await getEffectiveAutopilotSettings(ctx, lead.productProfileId);
     if (!eff.enableAutoCrmDealOnQualified) continue;

@@ -274,6 +274,7 @@ describe('contacts auto-resolved from outbound + inbound mail', () => {
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com', name: 'Lead Person' }],
       subject: 'Hi',
@@ -300,6 +301,7 @@ describe('contacts auto-resolved from outbound + inbound mail', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Question',

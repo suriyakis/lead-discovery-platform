@@ -183,9 +183,10 @@ describe('gates wired into services', () => {
     await expect(
       updateAutopilotSettings(c, { autopilotEnabled: true }),
     ).rejects.toBeInstanceOf(PlanLimitError);
-    // Turning OFF (and emergency pause) always works.
+    // Turning OFF always works (pausing is the workspace pause, which is
+    // never plan-gated — automation-pause-pc05.test.ts).
     await expect(
-      updateAutopilotSettings(c, { autopilotEnabled: false, emergencyPause: true }),
+      updateAutopilotSettings(c, { autopilotEnabled: false }),
     ).resolves.toBeDefined();
   });
 });

@@ -24,6 +24,7 @@ import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { resolveOutboundLanguage } from '@/lib/services/language-resolution';
 import { FollowUpApprovalRow } from '@/components/FollowUpApprovalRow';
+import { loadAutomationState } from '@/lib/services/automation-gate';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 type FollowUpFilter = 'all' | 'pending' | 'awaiting_approval' | 'sent' | 'skipped' | 'failed';
@@ -169,6 +170,8 @@ export default async function FollowUpsPage({
         translatedSubject: translatedSubject || undefined,
         translatedBody: translatedBody || undefined,
         targetLanguage: targetLanguage || undefined,
+        // PC-05: "send anyway" ticked while automation is paused.
+        confirmPaused: formData.get('confirmPaused') === 'on',
       });
       redirect(
         `/communication/follow-ups?status=${activeStatus}&message=${encodeURIComponent(
@@ -217,6 +220,9 @@ export default async function FollowUpsPage({
       );
     }
   }
+
+  // PC-05: approving while automation is paused needs "send anyway".
+  const automationPaused = (await loadAutomationState(ctx.workspaceId)).pause !== null;
 
   return (
     <AppShell>
@@ -417,6 +423,7 @@ export default async function FollowUpsPage({
                       stagedBody={r.stagedBody ?? ''}
                       targetLanguage={followUpTargets.get(r.id.toString()) ?? null}
                       approveAction={approve}
+                      automationPaused={automationPaused}
                     />
                     <form
                       action={reject}

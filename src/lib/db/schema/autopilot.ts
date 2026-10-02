@@ -17,7 +17,8 @@ import { workspaces } from './workspaces';
 /**
  * Phase 21: per-workspace autopilot configuration. The autopilot orchestrator
  * runs through a fixed set of steps; each step is gated by its own boolean
- * here. A single emergency_pause toggle disables every step at once.
+ * here. Stopping everything is the workspace pause (PC-05,
+ * workspaces.automation_paused_at), not a column of this table.
  *
  * The default for all `enable_*` flags is `false` so a workspace turning
  * autopilot on must opt in explicitly to each automated action.
@@ -29,7 +30,12 @@ export const autopilotSettings = pgTable('autopilot_settings', {
 
   /** Master switch — when false, runOnce() is a no-op. */
   autopilotEnabled: boolean('autopilot_enabled').notNull().default(false),
-  /** Kill switch — when true, runOnce() is a no-op even if autopilotEnabled. */
+  /**
+   * @deprecated PC-05: read by nothing. Migrated into the workspace pause
+   * (workspaces.automation_paused_at); kept one release as a write-only
+   * mirror of it (services/automation-pause.ts) so a rollback to the old
+   * code still sees a pause, then dropped.
+   */
   emergencyPause: boolean('emergency_pause').notNull().default(false),
 
   /** Step toggles. */

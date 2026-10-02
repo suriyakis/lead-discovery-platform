@@ -40,6 +40,7 @@ function minutesToHoursDisplay(min: number): number {
 }
 import { listProductProfiles } from '@/lib/services/product-profile';
 import { getAutopilotSettings } from '@/lib/services/autopilot';
+import { loadAutomationState } from '@/lib/services/automation-gate';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   createPlan,
@@ -87,6 +88,11 @@ export default async function CrawlEnginePage({
     listProductProfiles(ctx, { includeArchived: false }),
     getAutopilotSettings(ctx),
   ]);
+  // PC-05 (I062): the master box shows autopilotEnabled only; the
+  // workspace pause is shown beside it as a badge linking to its control,
+  // so saving this form while paused never switches autopilot off.
+  const paused = (await loadAutomationState(ctx.workspaceId)).pause !== null;
+  const running = autopilot.autopilotEnabled && !paused;
 
   const connectorNameById = new Map(
     connectors.map((c) => [c.id.toString(), c.name]),
@@ -167,19 +173,17 @@ export default async function CrawlEnginePage({
                 <input
                   type="checkbox"
                   name="autopilotEnabled"
-                  defaultChecked={
-                    autopilot.autopilotEnabled && !autopilot.emergencyPause
-                  }
+                  defaultChecked={autopilot.autopilotEnabled}
                 />
                 <span>
-                  Autopilot{' '}
-                  <strong>
-                    {autopilot.autopilotEnabled && !autopilot.emergencyPause
-                      ? 'ON'
-                      : 'OFF'}
-                  </strong>
+                  Autopilot <strong>{autopilot.autopilotEnabled ? 'ON' : 'OFF'}</strong>
                 </span>
               </label>
+              {paused ? (
+                <Link href="/autopilot#pause" className="badge badge-bad">
+                  Paused — all automation waits
+                </Link>
+              ) : null}
               <button type="submit" className="primary-btn">
                 <Save className="lucide" /> Save
               </button>
@@ -243,17 +247,13 @@ export default async function CrawlEnginePage({
             </li>
             <li
               className={
-                autopilot.autopilotEnabled &&
-                !autopilot.emergencyPause &&
-                autopilot.enableAutoApproveProjects
+                running && autopilot.enableAutoApproveProjects
                   ? 'pipeline-step is-on'
                   : 'pipeline-step is-off'
               }
             >
               <span className="pipeline-step-icon">
-                {autopilot.autopilotEnabled &&
-                !autopilot.emergencyPause &&
-                autopilot.enableAutoApproveProjects ? (
+                {running && autopilot.enableAutoApproveProjects ? (
                   <CheckCircle2 className="lucide" />
                 ) : (
                   <PauseCircle className="lucide" />
@@ -289,17 +289,13 @@ export default async function CrawlEnginePage({
             </li>
             <li
               className={
-                autopilot.autopilotEnabled &&
-                !autopilot.emergencyPause &&
-                autopilot.enableAutoEnqueueOutreach
+                running && autopilot.enableAutoEnqueueOutreach
                   ? 'pipeline-step is-on'
                   : 'pipeline-step is-off'
               }
             >
               <span className="pipeline-step-icon">
-                {autopilot.autopilotEnabled &&
-                !autopilot.emergencyPause &&
-                autopilot.enableAutoEnqueueOutreach ? (
+                {running && autopilot.enableAutoEnqueueOutreach ? (
                   <Mail className="lucide" />
                 ) : (
                   <PauseCircle className="lucide" />

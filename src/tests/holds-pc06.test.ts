@@ -276,6 +276,7 @@ async function followUpFixture(t: Tenant, provider: MockMailProvider) {
     .returning();
   const first = await sendMessage(t.owner, {
     mode: 'sequence',
+    origin: 'manual',
     mailboxId: mb.id,
     to: [{ address: 'lead@target.com' }],
     subject: 'Hi',
@@ -549,6 +550,11 @@ function state(overrides: Partial<AutomationState> = {}): AutomationState {
     ownerIncidentOpenSince: null,
     holds: [],
     platformOutboundStop: null,
+    // PC-05 inputs, all neutral here (running, live, funded, entitled).
+    pause: null,
+    live: { since: new Date('2026-09-01T00:00:00Z'), byUserId: null },
+    walletHasTokens: true,
+    planAllowsAutopilot: true,
     evaluatedAt: new Date('2026-10-02T12:00:00Z'),
     ...overrides,
   };
@@ -749,6 +755,7 @@ describe('(1) Sending hold blocks every sending gate point', { timeout: 60_000 }
     await expectGateError(
       sendMessage(t.admin, {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'anna@target.com' }],
         subject: 'Re: hi',
@@ -958,6 +965,7 @@ describe("(2) scope 'all' and expiry", { timeout: 60_000 }, () => {
     await expectGateError(
       sendMessage(t.admin, {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'anna@target.com' }],
         subject: 'hi',
@@ -1035,6 +1043,7 @@ describe('(3) accountable owner', { timeout: 60_000 }, () => {
     const provider = new MockMailProvider();
     await sendMessage(t.admin, {
       mode: 'one_to_one',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'colleague@target.com' }],
       subject: 'manual',
@@ -1046,6 +1055,7 @@ describe('(3) accountable owner', { timeout: 60_000 }, () => {
     await expectGateError(
       sendMessage(t.admin, {
         mode: 'sequence',
+        origin: 'manual',
         mailboxId: mb.id,
         to: [{ address: 'anna@target.com' }],
         subject: 'auto',
@@ -1196,7 +1206,13 @@ describe('holds service', { timeout: 60_000 }, () => {
     expect(
       renderToStaticMarkup(
         AutomationHoldBanner({
-          notice: { platformOutboundStop: null, holds: [], ownerProblemMessage: null },
+          notice: {
+            platformOutboundStop: null,
+            holds: [],
+            ownerProblemMessage: null,
+            pause: null,
+            notLive: false,
+          },
         }) ?? '',
       ),
     ).toBe('');
@@ -1244,6 +1260,7 @@ describe('platform-wide outbound stop', { timeout: 60_000 }, () => {
       await expectGateError(
         sendMessage(t.owner, {
           mode: 'one_to_one',
+          origin: 'manual',
           mailboxId: mb.id,
           to: [{ address: 'x@y.test' }],
           subject: 's',

@@ -156,6 +156,26 @@ MinIO, R2 all need path style). For native AWS, leave it false.
    `document_chunks` + the HNSW vector index.
 4. The reply assistant on `/mailbox/threads/<id>` is now grounded.
 
+### Pausing all automation
+
+Something looks wrong (wrong list, wrong copy, a complaint)? Press **Pause
+all automation** on `/autopilot` or `/mailbox/queue`. Anyone who can edit
+can press it, on any plan and with an empty wallet. At the next item it
+stops everything that runs on its own: the send queue, follow-ups (nothing
+is composed), autopilot, scheduled crawls, reply auto-actions, background
+AI, auto top-up and the trash purge. Nothing fails — it waits. Mailboxes
+keep syncing, so replies still arrive. A banner on every page says who
+paused and when; the person who paused can **Undo** for 10 seconds.
+Emails you write yourself (a thread reply, compose, approving a follow-up)
+still go out after you tick "send anyway" (recorded in the audit log).
+Owners and admins **Resume**; the confirm lists what starts again,
+including reply auto-actions that waited (they are not applied — check
+those replies yourself).
+
+A new workspace is also **not live** for outreach until the platform
+releases it: its cold emails, follow-ups and AI reply drafts wait in the
+queue (a banner says so) while email you write yourself sends normally.
+
 ## 6. Admin operations (super-admin only)
 
 - `/admin` — platform totals, workspace metrics, billing and token grants
@@ -172,6 +192,11 @@ MinIO, R2 all need path style). For native AWS, leave it false.
   Discard drops it. Automatic work also stops by itself while the
   workspace owner is not active or no longer a member (a suspended owner
   stops their workspace's automation; members can still work by hand).
+  **Outreach go-live** (above Holds): every workspace starts not live —
+  its cold emails, follow-ups and AI reply drafts wait in the queue (never
+  failed) while email its members write themselves sends. Release it with
+  an audited reason once it is ready; "Put back on hold" reverses it. The
+  section also shows whether the tenant has paused its automation.
 - `/admin/users`, `/admin/users/<id>` — account status, pre-authorisation,
   password users, platform role, memberships.
 - `/admin/support` — the support inbox across every workspace.

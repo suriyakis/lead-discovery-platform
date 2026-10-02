@@ -32,6 +32,12 @@ import {
 } from '@/lib/services/holds';
 import { formatUtc } from '@/lib/format-utc';
 import {
+  GO_LIVE_REASON_MAX,
+  GoLiveError,
+  releaseOutreachLive,
+  revokeOutreachLive,
+} from '@/lib/services/go-live';
+import {
   TokenError,
   adjustTokens,
   listTokenTransactions,
@@ -52,9 +58,11 @@ import {
   confirmLegacyHoldConfirm,
   discardLegacyHoldConfirm,
   placeHoldConfirm,
+  releaseGoLiveConfirm,
   releaseHoldConfirm,
   removeMemberConfirm,
   restoreWorkspaceConfirm,
+  revokeGoLiveConfirm,
 } from '@/lib/confirm-copy';
 
 /** PC-06: how long a new hold lasts (the place-hold form's select). */
@@ -81,6 +89,10 @@ function parseHoldId(raw: FormDataEntryValue | null): bigint | null {
 
 function holdErrorMessage(err: unknown): string {
   return err instanceof HoldServiceError ? err.message : 'failed';
+}
+
+function goLiveErrorMessage(err: unknown): string {
+  return err instanceof GoLiveError ? err.message : 'failed';
 }
 
 export default async function AdminWorkspaceDetail({
@@ -132,6 +144,18 @@ export default async function AdminWorkspaceDetail({
           .where(inArray(users.id, holdActorIds))
       : [];
   const actorEmail = new Map(holdActors.map((u) => [u.id, u.email]));
+  // PC-05 / flow:F-07: who released the workspace for outreach, and who
+  // paused it.
+  const stateActorIds = [automation.live?.byUserId, automation.pause?.byUserId].filter(
+    (x): x is string => Boolean(x) && !actorEmail.has(x as string),
+  );
+  if (stateActorIds.length > 0) {
+    const more = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(inArray(users.id, stateActorIds));
+    for (const u of more) actorEmail.set(u.id, u.email);
+  }
 
   // Billing + usage snapshot for THIS workspace. Both reads are
   // workspace-scoped services aimed at the target tenant — legitimate
@@ -180,6 +204,30 @@ export default async function AdminWorkspaceDetail({
       if (isNextRedirectError(err)) throw err;
       const m = err instanceof AdminServiceError ? err.message : err instanceof Error ? err.message : 'failed';
       redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(m)}`);
+    }
+  }
+
+  async function releaseLive(formData: FormData) {
+    'use server';
+    const c = await requirePlatformAdmin();
+    try {
+      await releaseOutreachLive(c, targetWorkspaceId, String(formData.get('reason') ?? ''));
+      redirect(`/admin/workspaces/${idStr}?message=Workspace+released+for+outreach#go-live`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(goLiveErrorMessage(err))}#go-live`);
+    }
+  }
+
+  async function revokeLive(formData: FormData) {
+    'use server';
+    const c = await requirePlatformAdmin();
+    try {
+      await revokeOutreachLive(c, targetWorkspaceId, String(formData.get('reason') ?? ''));
+      redirect(`/admin/workspaces/${idStr}?message=Workspace+back+on+the+go-live+hold#go-live`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(goLiveErrorMessage(err))}#go-live`);
     }
   }
 
@@ -714,6 +762,55 @@ export default async function AdminWorkspaceDetail({
           ) : (
             <p className="muted">All active users are already members.</p>
           )}
+        </section>
+
+        <section id="go-live">
+          <h2>Outreach go-live</h2>
+          <p className="muted">
+            Every workspace starts not live: its cold emails, follow-ups and AI reply drafts
+            wait in the queue (never failed) while email its members write themselves sends
+            normally. Release it once it is ready to send on its own; the reason is audited
+            against the workspace and its owners and admins are notified.
+          </p>
+          <p>
+            {automation.live ? (
+              <>
+                <span className="badge badge-good">live</span> since{' '}
+                {formatUtc(automation.live.since)}
+                {automation.live.byUserId
+                  ? ` (released by ${actorEmail.get(automation.live.byUserId) ?? automation.live.byUserId})`
+                  : ''}
+              </>
+            ) : (
+              <span className="badge badge-bad">not live</span>
+            )}
+          </p>
+          <p className="muted">
+            Workspace pause:{' '}
+            {automation.pause
+              ? `paused since ${formatUtc(automation.pause.since)}${
+                  automation.pause.byUserId
+                    ? ` by ${actorEmail.get(automation.pause.byUserId) ?? automation.pause.byUserId}`
+                    : ''
+                }${automation.pause.reason ? ` (${automation.pause.reason})` : ''} — its owners and admins resume it.`
+              : 'running.'}
+          </p>
+          <form action={automation.live ? revokeLive : releaseLive} className="inline-form">
+            <label>
+              <span>Reason (audited)</span>
+              <input type="text" name="reason" required minLength={3} maxLength={GO_LIVE_REASON_MAX} />
+            </label>
+            <ConfirmFormButton
+              className={automation.live ? 'ghost-btn' : 'primary-btn'}
+              message={
+                automation.live
+                  ? revokeGoLiveConfirm({ name: ws.name, slug: ws.slug })
+                  : releaseGoLiveConfirm({ name: ws.name, slug: ws.slug })
+              }
+            >
+              {automation.live ? 'Put back on hold' : 'Release for outreach'}
+            </ConfirmFormButton>
+          </form>
         </section>
 
         <section id="holds">

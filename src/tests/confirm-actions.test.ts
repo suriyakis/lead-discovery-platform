@@ -346,7 +346,6 @@ describe('confirm copy names what it acts on', () => {
   describe('autopilot overrides', () => {
     const base: AutopilotBaseLike = {
       autopilotEnabled: true,
-      emergencyPause: false,
       enableAutoApproveProjects: true,
       autoApproveThreshold: 60,
       enableAutoEnqueueOutreach: true,
@@ -364,7 +363,7 @@ describe('confirm copy names what it acts on', () => {
       defaultMailboxId: null,
     };
 
-    it('spells out automation that turns ON and a pause that is lifted', () => {
+    it('spells out automation that turns ON and an old product pause that is removed', () => {
       const msg = clearAutopilotOverridesConfirm(
         'Widget',
         {
@@ -378,7 +377,9 @@ describe('confirm copy names what it acts on', () => {
         base,
       );
       expect(msg).toContain('Clear all autopilot overrides for "Widget"?');
-      expect(msg).toContain('- Lifts the emergency pause on Widget.');
+      // PC-05 / I020: the per-product pause was saved but never applied.
+      expect(msg).toContain("- Removes Widget's old per-product pause setting");
+      expect(msg).toContain('never applied');
       expect(msg).toContain('- Turns ON: Auto-generate + enqueue outreach drafts.');
       expect(msg).toContain("- Turns off: Auto-sync qualified leads' contacts to CRM.");
       expect(msg).toContain('- Approval threshold: 90 → 60.');
@@ -394,13 +395,10 @@ describe('confirm copy names what it acts on', () => {
       expect(msg).toContain('Nothing changes in practice');
     });
 
-    it('warns when clearing puts the product under the workspace emergency pause', () => {
-      const msg = clearAutopilotOverridesConfirm(
-        'Widget',
-        { ...inherit, emergencyPause: false },
-        { ...base, emergencyPause: true },
-      );
-      expect(msg).toContain('- Pauses Widget');
+    it('PC-05: never claims a workspace emergency pause (there is none any more)', () => {
+      const msg = clearAutopilotOverridesConfirm('Widget', { ...inherit, emergencyPause: false }, base);
+      expect(msg).not.toContain('emergency pause');
+      expect(msg).toContain("- Removes Widget's old per-product pause setting");
     });
   });
 });

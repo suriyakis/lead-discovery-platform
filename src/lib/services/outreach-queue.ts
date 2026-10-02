@@ -8,7 +8,7 @@
 // worker is a thin wrapper around drainQueue() that any deployment can
 // schedule (left out of the service layer to keep tests clean).
 
-import { and, asc, count, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   outreachDrafts,
@@ -21,12 +21,21 @@ import {
   type OutreachStage,
   type SendDelayMode,
 } from '@/lib/db/schema/outreach';
-import { mailMessages, mailboxes } from '@/lib/db/schema/mailing';
+import { mailMessages, mailboxes, type MailboxStatus } from '@/lib/db/schema/mailing';
+import { workspaces } from '@/lib/db/schema/workspaces';
 import { classifySmtpError } from '@/lib/mail/smtp-errors';
 import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems } from '@/lib/db/schema/review';
 import { recordAuditEvent } from './audit';
-import { AutomationGateError, checkGate } from './automation-gate';
+import {
+  AutomationGateError,
+  PAUSED_MESSAGE,
+  checkGate,
+  deferUntil,
+  mailboxHeldMessage,
+  originForDraft,
+  type SendOrigin,
+} from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
@@ -100,7 +109,6 @@ export interface UpdateSendSettingsInput {
   fixedDelayMinutes?: number;
   randomDelayMinMinutes?: number;
   randomDelayMaxMinutes?: number;
-  emergencyPause?: boolean;
 }
 
 export async function updateSendSettings(
@@ -138,9 +146,6 @@ export async function updateSendSettings(
       0,
       24 * 60,
     );
-  }
-  if (input.emergencyPause !== undefined) {
-    updates.emergencyPause = input.emergencyPause;
   }
   const [updated] = await db
     .update(outreachSendSettings)
@@ -383,10 +388,16 @@ export interface DrainResult {
   picked: number;
   sent: number;
   failed: number;
+  /** Not sent this pass: suppressed, geo-blocked, domain cooldown, the
+   *  sending policy's window, or deferred by the gate (see `deferred`). */
   skipped: number;
-  /** PC-06: set when the automation gate stopped the drain (a Sending
-   *  hold, the platform outbound stop, no accountable owner). The rows
-   *  it did not reach stay queued, untouched. */
+  /** PC-05: rows the gate deferred (still queued, due again later, the
+   *  reason in last_error): the go-live hold for their origin, or a
+   *  paused / failing / archived mailbox. Counted in `skipped` too. */
+  deferred: number;
+  /** PC-06 / PC-05: set when the automation gate stopped the drain (the
+   *  workspace pause, a Sending hold, the platform outbound stop, no
+   *  accountable owner). The rows it did not reach stay queued, untouched. */
   heldReason?: string;
 }
 
@@ -399,21 +410,28 @@ export interface DrainOptions {
   now?: Date;
 }
 
+/**
+ * Send the queued entries that are due. Draining is automatic work
+ * whoever triggers it (the 30 s tick, autopilot, "Send due emails now"),
+ * so the gate applies its automatic rules: the workspace pause, holds,
+ * the platform stop and the accountable owner stop the whole drain; the
+ * go-live hold and a mailbox that is not active defer just that row.
+ *
+ * PC-05: the gate is asked again before every row, and the claim itself
+ * refuses while the workspace is paused (under a share lock on the
+ * workspace row, which the pause has to wait for), so a pause committed
+ * while row k is being sent leaves every later row queued and untouched,
+ * and no row is claimed after the pause time.
+ */
 export async function drainQueue(
   ctx: WorkspaceContext,
   options: DrainOptions = {},
 ): Promise<DrainResult> {
   if (!canWrite(ctx)) throw denied('outreach.queue.drain');
-  // PC-06: draining is automatic work whoever triggers it, so the
-  // accountable-owner rule applies as well as holds and the platform stop.
+  const empty = { picked: 0, sent: 0, failed: 0, skipped: 0, deferred: 0 };
   const gate = await checkGate(ctx, 'sending', { manual: false });
-  if (!gate.allowed) {
-    return { picked: 0, sent: 0, failed: 0, skipped: 0, heldReason: gate.message };
-  }
+  if (!gate.allowed) return { ...empty, heldReason: gate.message };
   const settings = await getSendSettings(ctx);
-  if (settings.emergencyPause) {
-    return { picked: 0, sent: 0, failed: 0, skipped: 0 };
-  }
   const now = options.now ?? new Date();
 
   // Daily cap: count outbound mail sent in the trailing 24h.
@@ -434,9 +452,7 @@ export async function drainQueue(
   );
 
   const limit = Math.min(options.limit ?? 50, remainingCap, 200);
-  if (limit === 0) {
-    return { picked: 0, sent: 0, failed: 0, skipped: 0 };
-  }
+  if (limit === 0) return empty;
 
   const due = await db
     .select()
@@ -450,49 +466,155 @@ export async function drainQueue(
     )
     .orderBy(asc(outreachQueue.scheduledSendAt))
     .limit(limit);
+  const origins = await originsForEntries(ctx, due);
 
   let sent = 0;
   let failed = 0;
   let skipped = 0;
+  let deferred = 0;
   let heldReason: string | undefined;
-  for (const [i, entry] of due.entries()) {
-    // PC-06: re-check before every claim. A hold placed while the drain
-    // runs stops the loop here; the rows after it stay queued untouched.
-    if (i > 0) {
-      const recheck = await checkGate(ctx, 'sending', { manual: false });
-      if (!recheck.allowed) {
-        heldReason = recheck.message;
+  for (const entry of due) {
+    const origin = origins.get(entry.id.toString()) ?? 'cold';
+    // PC-05: re-check before every claim — the pause, holds, the platform
+    // stop, the owner, this row's origin (go-live) and its mailbox.
+    const decision = await checkGate(ctx, 'sending', {
+      manual: false,
+      origin,
+      mailboxStatus: await mailboxStatusOf(ctx, entry.mailboxId),
+    });
+    if (!decision.allowed) {
+      if (decision.scope === 'workspace') {
+        heldReason = decision.message;
         break;
       }
+      if (await deferEntry(entry, now, decision.message)) {
+        deferred++;
+        skipped++;
+      }
+      continue;
     }
-    const result = await processEntry(ctx, entry, settings, options.providerOverride, now);
-    if (result === 'sent') sent++;
-    else if (result === 'failed') failed++;
-    else skipped++;
+    const result = await processEntry(ctx, entry, settings, origin, options.providerOverride, now);
+    if (result.kind === 'stopped') {
+      heldReason = result.reason;
+      break;
+    }
+    if (result.kind === 'sent') sent++;
+    else if (result.kind === 'failed') failed++;
+    else {
+      skipped++;
+      if (result.kind === 'deferred') deferred++;
+    }
   }
   return {
     picked: due.length,
     sent,
     failed,
     skipped,
+    deferred,
     ...(heldReason ? { heldReason } : {}),
   };
+}
+
+/** Where each entry's email comes from (flow:F-07). A draft decides it;
+ *  an entry without one (its draft was deleted) fails closed as cold. */
+async function originsForEntries(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  entries: ReadonlyArray<OutreachQueueEntry>,
+): Promise<Map<string, SendOrigin>> {
+  const out = new Map<string, SendOrigin>();
+  const draftIds = [
+    ...new Set(entries.map((e) => e.draftId).filter((d): d is bigint => d !== null)),
+  ];
+  const drafts =
+    draftIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: outreachDrafts.id,
+            stage: outreachDrafts.stage,
+            triggeredByMessageId: outreachDrafts.triggeredByMessageId,
+          })
+          .from(outreachDrafts)
+          .where(
+            and(
+              eq(outreachDrafts.workspaceId, ctx.workspaceId),
+              inArray(outreachDrafts.id, draftIds),
+            ),
+          );
+  const byId = new Map(drafts.map((d) => [d.id.toString(), d]));
+  for (const e of entries) {
+    const draft = e.draftId !== null ? byId.get(e.draftId.toString()) : undefined;
+    out.set(e.id.toString(), draft ? originForDraft(draft) : 'cold');
+  }
+  return out;
+}
+
+async function mailboxStatusOf(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+): Promise<MailboxStatus | undefined> {
+  const [row] = await db
+    .select({ status: mailboxes.status })
+    .from(mailboxes)
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
+    .limit(1);
+  return row?.status;
+}
+
+type EntryOutcome =
+  | { kind: 'sent' }
+  | { kind: 'failed' }
+  | { kind: 'skipped' }
+  /** Still queued, due again later, the reason on the row. */
+  | { kind: 'deferred' }
+  /** The workspace-level gate refused (the pause landed, a hold): the
+   *  entry is untouched or handed back as it was; stop the drain. */
+  | { kind: 'stopped'; reason: string };
+
+/**
+ * PC-05: claim the row — 'queued' → 'sending', stamped claimed_at from the
+ * database clock — unless the workspace is paused. The share lock on the
+ * workspace row makes a concurrent pause (which locks the row FOR UPDATE
+ * before stamping its time) wait for this claim, or this claim wait for
+ * the pause and then see it. KEY SHARE, so ordinary workspace updates
+ * (token debits) never wait on a claim.
+ */
+async function claimEntry(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  entry: OutreachQueueEntry,
+): Promise<'claimed' | 'paused' | 'lost'> {
+  return db.transaction(async (tx) => {
+    const [ws] = await tx
+      .select({ pausedAt: workspaces.automationPausedAt })
+      .from(workspaces)
+      .where(eq(workspaces.id, ctx.workspaceId))
+      .for('key share');
+    if (!ws || ws.pausedAt) return 'paused';
+    const rows = await tx
+      .update(outreachQueue)
+      .set({
+        status: 'sending',
+        attemptCount: entry.attemptCount + 1,
+        claimedAt: sql`clock_timestamp()`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'queued')))
+      .returning({ id: outreachQueue.id });
+    return rows.length > 0 ? 'claimed' : 'lost';
+  });
 }
 
 async function processEntry(
   ctx: WorkspaceContext,
   entry: OutreachQueueEntry,
   settings: OutreachSendSettings,
+  origin: SendOrigin,
   providerOverride: IMailProvider | undefined,
   now: Date,
-): Promise<'sent' | 'failed' | 'skipped'> {
-  // Claim the row. Best-effort optimistic update.
-  const claim = await db
-    .update(outreachQueue)
-    .set({ status: 'sending', attemptCount: entry.attemptCount + 1, updatedAt: new Date() })
-    .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'queued')))
-    .returning();
-  if (claim.length === 0) return 'skipped';
+): Promise<EntryOutcome> {
+  const claim = await claimEntry(ctx, entry);
+  if (claim === 'paused') return { kind: 'stopped', reason: PAUSED_MESSAGE };
+  if (claim === 'lost') return { kind: 'skipped' };
 
   try {
     // Suppression check (any recipient).
@@ -506,7 +628,7 @@ async function processEntry(
             updatedAt: new Date(),
           })
           .where(eq(outreachQueue.id, entry.id));
-        return 'skipped';
+        return { kind: 'skipped' };
       }
     }
 
@@ -537,18 +659,8 @@ async function processEntry(
             to: entry.toAddresses,
           },
         });
-        return 'skipped';
+        return { kind: 'skipped' };
       }
-    }
-
-    // flow:F-05: a mailbox marked failing (a refused SMTP login, or the
-    // IMAP auto-pause — then nobody reads the replies) holds its queue: no
-    // repeated failed logins against the provider's rate limit / fail2ban,
-    // and no entry turns 'failed' for a problem that is ours. The entry
-    // goes out once the mailbox is reactivated.
-    if (await isMailboxFailing(ctx, entry.mailboxId)) {
-      await holdEntry(entry, now, MAILBOX_FAILING_HOLD_REASON);
-      return 'skipped';
     }
 
     // Phase 43: per-mailbox sending policy. Checks business window
@@ -576,7 +688,7 @@ async function processEntry(
           updatedAt: new Date(),
         })
         .where(eq(outreachQueue.id, entry.id));
-      return 'skipped';
+      return { kind: 'skipped' };
     }
 
     // Domain cooldown: any prior outbound to this domain in the last
@@ -614,7 +726,7 @@ async function processEntry(
               updatedAt: new Date(),
             })
             .where(eq(outreachQueue.id, entry.id));
-          return 'skipped';
+          return { kind: 'skipped' };
         }
       }
     }
@@ -678,6 +790,8 @@ async function processEntry(
       targetLanguage,
       // PC-06: the drain sends on its own — the accountable-owner rule applies.
       automatic: true,
+      // flow:F-07: sendMessage checks the go-live hold for it again.
+      origin,
       providerOverride,
     };
     if (entry.inReplyTo) sendInput.inReplyTo = entry.inReplyTo;
@@ -703,13 +817,18 @@ async function processEntry(
     } catch (counterErr) {
       console.error('[outreach-queue] recordSendCounter failed:', counterErr);
     }
-    return 'sent';
+    return { kind: 'sent' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // PC-06: the automation gate refused the send (a hold placed after the
-    // claim). Not this entry's failure: hand it back to the queue as it
-    // was, due at the same time, with the reason on it.
+    // PC-06 / PC-05: the automation gate refused the send after the claim
+    // — never this entry's failure. A workspace-level refusal (a hold
+    // placed mid-drain) hands it back exactly as it was and stops the
+    // drain; an item-level one (its mailbox stopped being active) defers it.
     if (err instanceof AutomationGateError) {
+      if (err.scope === 'item') {
+        await deferClaimedEntry(entry, now, message);
+        return { kind: 'deferred' };
+      }
       await db
         .update(outreachQueue)
         .set({
@@ -719,18 +838,18 @@ async function processEntry(
           updatedAt: new Date(),
         })
         .where(eq(outreachQueue.id, entry.id));
-      return 'skipped';
+      return { kind: 'stopped', reason: message };
     }
     // flow:F-05: a refused SMTP login is the mailbox's problem (sendMessage
     // has marked it failing), not this entry's — keep it queued behind the
     // failing-mailbox hold instead of failing it.
     if (classifySmtpError(err, entry.toAddresses).kind === 'auth') {
-      await holdEntry(
+      await deferClaimedEntry(
         entry,
         now,
-        `${MAILBOX_FAILING_HOLD_REASON} Last error: ${message}`.slice(0, 2000),
+        `${mailboxHeldMessage('failing')} Last error: ${message}`,
       );
-      return 'skipped';
+      return { kind: 'deferred' };
     }
     await db
       .update(outreachQueue)
@@ -740,7 +859,7 @@ async function processEntry(
         updatedAt: new Date(),
       })
       .where(eq(outreachQueue.id, entry.id));
-    return 'failed';
+    return { kind: 'failed' };
   }
 }
 
@@ -775,7 +894,7 @@ export async function cancelQueuedForRecipient(
   return rows.map((r) => r.id);
 }
 
-// ---- send mode + failing-mailbox hold (flow:F-05) -----------------
+// ---- send mode + held entries (flow:F-05, PC-05) ------------------
 
 /**
  * A draft is one-to-one when it answers a prospect's reply: it was
@@ -813,34 +932,37 @@ async function sendModeForEntry(
   return draft ? sendModeForDraft(draft) : 'sequence';
 }
 
-/** How long a held entry waits before the drain looks at it again. Keeps
- *  held entries from filling every drain batch. */
-export const MAILBOX_FAILING_HOLD_MS = 30 * 60 * 1000;
-export const MAILBOX_FAILING_HOLD_REASON =
-  'Held: the mailbox is failing (see its last error). Fix it under Edit settings and Reactivate — this send then goes out.';
-
-async function isMailboxFailing(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  mailboxId: bigint,
-): Promise<boolean> {
-  const [row] = await db
-    .select({ status: mailboxes.status })
-    .from(mailboxes)
-    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
-    .limit(1);
-  return row?.status === 'failing';
+/** PC-05: defer an entry the gate held before it was claimed (the go-live
+ *  hold, a mailbox that is not active): still 'queued', due again after
+ *  GATE_DEFER_MS, the reason in last_error — never 'failed'. Conditional
+ *  on 'queued' so a concurrent cancel wins. True when it was deferred. */
+async function deferEntry(entry: OutreachQueueEntry, now: Date, reason: string): Promise<boolean> {
+  const rows = await db
+    .update(outreachQueue)
+    .set({
+      scheduledSendAt: deferUntil(now),
+      lastError: reason.slice(0, 2000),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(outreachQueue.id, entry.id), eq(outreachQueue.status, 'queued')))
+    .returning({ id: outreachQueue.id });
+  return rows.length > 0;
 }
 
 /** Put a claimed entry back to 'queued' (undoing the claim's attempt
- *  bump) and look at it again after MAILBOX_FAILING_HOLD_MS. */
-async function holdEntry(entry: OutreachQueueEntry, now: Date, reason: string): Promise<void> {
+ *  bump) and defer it like deferEntry. */
+async function deferClaimedEntry(
+  entry: OutreachQueueEntry,
+  now: Date,
+  reason: string,
+): Promise<void> {
   await db
     .update(outreachQueue)
     .set({
       status: 'queued',
       attemptCount: entry.attemptCount,
-      scheduledSendAt: new Date(now.getTime() + MAILBOX_FAILING_HOLD_MS),
-      lastError: reason,
+      scheduledSendAt: deferUntil(now),
+      lastError: reason.slice(0, 2000),
       updatedAt: new Date(),
     })
     .where(eq(outreachQueue.id, entry.id));

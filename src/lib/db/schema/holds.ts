@@ -31,6 +31,11 @@ import { workspaces } from './workspaces';
  *                    learning synthesis, the health check's AI review,
  *                    reply auto-drafting, inbound auto-translation
  *   auto_topup       charging the saved card when the wallet runs low
+ *   trash_purge      PC-05: the daily hard-delete of old trash (a hold on
+ *                    it keeps deleted mail, e.g. for a dispute)
+ *
+ * The workspace pause (PC-05) stops the automatic side of every one of
+ * these except inbox_sync: replies keep arriving while paused.
  */
 export const AUTOMATION_CAPABILITIES = [
   'sending',
@@ -41,6 +46,7 @@ export const AUTOMATION_CAPABILITIES = [
   'crm_sync',
   'background_ai',
   'auto_topup',
+  'trash_purge',
 ] as const;
 
 export const automationCapability = pgEnum('automation_capability', AUTOMATION_CAPABILITIES);

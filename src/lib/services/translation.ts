@@ -436,8 +436,10 @@ export async function maybeAutoTranslateInbound(
   if (row.bodyTextNative && row.bodyTextNative.trim())
     return 'skipped:already_translated';
 
-  // PC-06: inbound auto-translation is Background AI.
-  const gate = await checkGate(ctx, 'background_ai', { manual: false });
+  // PC-06 + PC-05: inbound auto-translation is Background AI — skipped
+  // while paused, under a hold, without an accountable owner, or with an
+  // empty wallet.
+  const gate = await checkGate(ctx, 'background_ai', { manual: false, spendsTokens: true });
   if (!gate.allowed) return 'skipped:held';
 
   // Pivot on the workspace's native language, not a hardcoded English.

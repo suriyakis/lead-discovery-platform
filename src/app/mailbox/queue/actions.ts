@@ -20,7 +20,6 @@ import {
   OutreachQueueError,
   cancelQueueEntry,
   drainQueue,
-  getSendSettings,
   rescheduleQueueEntry,
   updateSendSettings,
 } from '@/lib/services/outreach-queue';
@@ -71,16 +70,18 @@ export async function drainSendQueueAction(formData: FormData): Promise<void> {
   const ctx = await requireActionContext();
   const message = await runOrFlash(view, 'drain', async () => {
     const r = await drainQueue(ctx);
+    // PC-05: the gate stopped the drain (the workspace pause, a hold, the
+    // platform stop) — say why rather than implying the queue is empty.
+    const held = r.heldReason ? ` Stopped: ${r.heldReason}` : '';
     if (r.picked > 0) {
-      return `Sent ${r.sent}, skipped ${r.skipped}, failed ${r.failed} of ${r.picked} due ${
+      const deferred =
+        r.deferred > 0 ? ` (${r.deferred} held — each shows why)` : '';
+      return `Sent ${r.sent}, skipped ${r.skipped}${deferred}, failed ${r.failed} of ${r.picked} due ${
         r.picked === 1 ? 'email' : 'emails'
-      }.`;
+      }.${held}`;
     }
-    // drainQueue returns all zeros when sending is paused; say so rather
-    // than implying the queue is simply empty.
-    const settings = await getSendSettings(ctx);
-    return settings.emergencyPause
-      ? 'Sending is paused, so nothing was sent. Turn off the emergency pause to resume.'
+    return r.heldReason
+      ? `Nothing was sent. ${r.heldReason}`
       : "Nothing was sent: no emails are due yet, or today's limit has been reached.";
   });
   backToQueue(view, 'message', message);

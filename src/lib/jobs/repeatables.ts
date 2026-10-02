@@ -19,17 +19,28 @@
 // stuck workspace can't block the whole platform.
 //
 // PC-06: every tick iterates activeWorkspacesForTicks() — active
-// workspaces, each with its automation state and a context that acts as
-// the accountable owner — and skips a workspace the automation gate holds
-// for the tick's capability (a hold, the platform outbound stop for
-// sending, or no accountable owner). A skip is not an error: it is
-// counted as `held` in the tick's summary.
+// workspaces, selected from the workspace_automation_state view, each with
+// its automation state and a context that acts as the accountable owner —
+// and skips a workspace the automation gate holds for the tick's
+// capability (a hold, the platform outbound stop for sending, or no
+// accountable owner). A skip is not an error: it is counted as `held` in
+// the tick's summary.
+//
+// PC-05: the workspace pause holds every tick except the IMAP one (replies
+// keep arriving while paused), and each tick's service re-checks the gate
+// before every item it works on (a queue row, a follow-up, a recipe, a
+// mailbox), so a pause committed mid-tick stops it at the next item.
 
 import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
-import { activeWorkspacesForTicks, logGateSkip } from '@/lib/services/automation-gate';
+import {
+  AutomationGateError,
+  activeWorkspacesForTicks,
+  checkGate,
+  logGateSkip,
+} from '@/lib/services/automation-gate';
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import { purgeOldTrashUnattended, safeSyncOne } from '@/lib/services/mail';
@@ -217,11 +228,26 @@ export async function runImapTick(now: Date = new Date()): Promise<{
     if (eligible.length === 0) continue;
     const ctx = ws.ctx;
     for (const mb of eligible) {
+      // PC-05: re-check per mailbox — an Inbox-sync hold placed mid-tick
+      // (or the owner losing access) stops this workspace's remaining
+      // syncs. The workspace pause never does: inbox sync keeps reading.
+      const recheck = await checkGate(ctx, 'inbox_sync', { manual: false, now });
+      if (!recheck.allowed) {
+        held++;
+        logGateSkip('imap.tick', ws.workspaceId, recheck);
+        break;
+      }
       if (mb.status === 'failing') rechecked++;
       let outcome: Awaited<ReturnType<typeof safeSyncOne>>;
       try {
         outcome = await safeSyncOne(ctx, mb);
       } catch (err) {
+        if (err instanceof AutomationGateError) {
+          // The gate refused inside safeSyncOne (a hold between the
+          // re-check and the sync): held, not a mailbox failure.
+          held++;
+          break;
+        }
         // A DB error, not a mailbox one — one bad row must not stop the tick.
         failed++;
         console.error(
@@ -313,6 +339,8 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
   totalStartedRuns: number;
   totalFailedRecipes: number;
   held: number;
+  /** PC-05: due plans skipped (and moved on) for an empty wallet. */
+  walletEmptySkipped: number;
 }> {
   const wss = await activeWorkspacesForTicks(now);
   let processed = 0;
@@ -320,6 +348,7 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
   let totalStarted = 0;
   let totalFailed = 0;
   let held = 0;
+  let walletEmptySkipped = 0;
   for (const ws of wss) {
     const gate = ws.gate('discovery');
     if (!gate.allowed) {
@@ -333,6 +362,7 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
       inQuiet += result.inQuietHours;
       totalStarted += result.totalStartedRuns;
       totalFailed += result.totalFailedRecipes;
+      walletEmptySkipped += result.walletEmptySkipped ?? 0;
       if (result.heldReason) held++;
     } catch (err) {
       console.error(
@@ -348,32 +378,48 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
     totalStartedRuns: totalStarted,
     totalFailedRecipes: totalFailed,
     held,
+    walletEmptySkipped,
   };
 }
 
 const handleCrawlEngineTick: JobHandler = () => runCrawlEngineTick();
 
-const handleMailTrashPurgeTick: JobHandler = async () => {
-  const wss = await db
-    .select()
-    .from(workspaces)
-    .where(eq(workspaces.status, 'active'));
+/** Trash purge tick body. Exported for tests. PC-05: the purge is
+ *  automatic work — held while the workspace is paused (and under a
+ *  Trash purge hold, or without an accountable owner). */
+export async function runMailTrashPurgeTick(): Promise<{
+  workspaces: number;
+  deleted: number;
+  failed: number;
+  held: number;
+}> {
+  const wss = await activeWorkspacesForTicks();
   let totalDeleted = 0;
   let failed = 0;
+  let held = 0;
   for (const ws of wss) {
+    const gate = ws.gate('trash_purge');
+    if (!gate.allowed) {
+      held++;
+      logGateSkip('mail.trash.purge.tick', ws.workspaceId, gate);
+      continue;
+    }
     try {
-      const result = await purgeOldTrashUnattended(ws.id);
+      const result = await purgeOldTrashUnattended(ws.workspaceId);
       totalDeleted += result.deleted;
+      if (result.heldReason) held++;
     } catch (err) {
       failed++;
       console.error(
-        `[mail.trash.purge.tick] workspace=${ws.id} failed:`,
+        `[mail.trash.purge.tick] workspace=${ws.workspaceId} failed:`,
         err instanceof Error ? err.message : err,
       );
     }
   }
-  return { workspaces: wss.length, deleted: totalDeleted, failed };
-};
+  return { workspaces: wss.length, deleted: totalDeleted, failed, held };
+}
+
+const handleMailTrashPurgeTick: JobHandler = () => runMailTrashPurgeTick();
 
 /** Knowledge-compaction (+ synthesis) tick body. Exported for tests. */
 export async function runKnowledgeCompactTick(): Promise<{
@@ -393,8 +439,9 @@ export async function runKnowledgeCompactTick(): Promise<{
   let failed = 0;
   let held = 0;
   for (const ws of wss) {
-    // PC-06: compaction and synthesis are both Background AI.
-    const gate = ws.gate('background_ai');
+    // PC-06: compaction and synthesis are both Background AI. PC-05: both
+    // call the AI, so an empty wallet skips them too (I110).
+    const gate = ws.gate('background_ai', { spendsTokens: true });
     if (!gate.allowed) {
       held++;
       logGateSkip('knowledge.compact.tick', ws.workspaceId, gate);

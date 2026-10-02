@@ -96,8 +96,14 @@ export async function seedWorkspace(input: {
    *  the limits themselves. Token debits are unaffected either way
    *  (billing_exempt stays false). */
   plan?: 'free' | 'starter' | 'pro';
+  /** flow:F-07 go-live hold. Real workspaces start NOT live (cold,
+   *  follow-up and AI-reply mail is held until a super-admin releases
+   *  them). Seeded test workspaces default to live so suites that are not
+   *  about the hold can send; pass false to test it. */
+  live?: boolean;
 }): Promise<bigint> {
   const plan = input.plan ?? 'pro';
+  const live = input.live ?? true;
   return db.transaction(async (tx) => {
     const ws = await tx
       .insert(workspaces)
@@ -108,6 +114,7 @@ export async function seedWorkspace(input: {
         ...(plan === 'free'
           ? {}
           : { plan, subscriptionStatus: 'active' as const }),
+        ...(live ? { outreachLiveAt: new Date() } : {}),
       })
       .returning();
     const workspaceId = ws[0]?.id;

@@ -204,6 +204,40 @@ export const workspaces = pgTable('workspaces', {
     withTimezone: true,
   }),
 
+  /**
+   * PC-05: the single workspace pause. Non-NULL = paused since then: every
+   * kind of automatic work stops (the queue drain, follow-ups, autopilot,
+   * scheduled crawls, reply auto-actions, background AI, auto top-up and
+   * the trash purge) while inbox sync keeps reading; a manual send needs
+   * an explicit, audited "send anyway". Any write role pauses; owners and
+   * admins resume (services/automation-pause.ts). Set from the database
+   * clock under a row lock, so no queue claim can carry a later time.
+   * Replaces autopilot_settings.emergency_pause and
+   * outreach_send_settings.emergency_pause.
+   */
+  automationPausedAt: timestamp('automation_paused_at', { mode: 'date', withTimezone: true }),
+  /** Who paused (NULL when that user was deleted, or for the legacy-flag
+   *  migration). */
+  automationPausedByUserId: text('automation_paused_by_user_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
+  /** Optional reason the person gave. */
+  automationPauseReason: text('automation_pause_reason'),
+  /** Where the pause came from (PAUSE_SOURCES in services/automation-pause.ts). */
+  automationPauseSource: text('automation_pause_source'),
+
+  /**
+   * flow:F-07: the go-live hold. NULL = not live: automatic outreach —
+   * cold first touches, follow-ups and AI reply drafts — is held (queued,
+   * never failed) while manual mail sends normally. Every workspace starts
+   * not live; a super-admin releases it with an audited reason
+   * (services/go-live.ts) until the F-40 checklist takes over.
+   */
+  outreachLiveAt: timestamp('outreach_live_at', { mode: 'date', withTimezone: true }),
+  outreachLiveByUserId: text('outreach_live_by_user_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
+
   createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -1,6 +1,11 @@
 // Phase 27: Autopilot console. Reorganized around an "Autonomous Flow"
 // visualization at the top + a scope picker that lets the operator
 // switch between Workspace-default settings and per-product overrides.
+//
+// PC-05: the "Emergency pause (kill switch)" checkbox (which wrote
+// autopilot_settings.emergency_pause and stopped autopilot runs only) is
+// replaced by the workspace pause control (#pause): one standalone action
+// that stops every kind of automatic work, never plan-gated.
 
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
@@ -32,7 +37,10 @@ import type { AutopilotSettings, AutopilotProductSettings } from '@/lib/db/schem
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { AutomationPauseControl } from '@/components/AutomationPauseControl';
 import { clearAutopilotOverridesConfirm } from '@/lib/confirm-copy';
+import { getAutomationPauseOverview } from '@/lib/services/automation-pause';
+import { PlanLimitError } from '@/lib/services/plan-limits';
 
 type FlowStepKey =
   | 'discovery'
@@ -79,7 +87,7 @@ export default async function AutopilotPage({
     throw err;
   }
 
-  const [base, log, mailboxes, crmConns, products, productOverlays] =
+  const [base, log, mailboxes, crmConns, products, productOverlays, pauseOverview] =
     await Promise.all([
       getAutopilotSettings(ctx),
       listAutopilotLog(ctx, 100),
@@ -87,6 +95,7 @@ export default async function AutopilotPage({
       listCrmConnections(ctx),
       listProductProfiles(ctx, { includeArchived: false }),
       listProductAutopilotSettings(ctx),
+      getAutomationPauseOverview(ctx),
     ]);
   const overlayByProduct = new Map(
     productOverlays.map((o) => [o.productProfileId.toString(), o]),
@@ -124,7 +133,6 @@ export default async function AutopilotPage({
     try {
       await updateAutopilotSettings(c, {
         autopilotEnabled: formData.get('autopilotEnabled') === 'on',
-        emergencyPause: formData.get('emergencyPause') === 'on',
         enableAutoApproveProjects: formData.get('enableAutoApproveProjects') === 'on',
         autoApproveThreshold: num('autoApproveThreshold'),
         enableAutoEnqueueOutreach: formData.get('enableAutoEnqueueOutreach') === 'on',
@@ -140,7 +148,9 @@ export default async function AutopilotPage({
       redirect('/autopilot?message=Workspace+defaults+saved');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
-      const m = err instanceof AutopilotError ? err.message : 'failed';
+      // I063: a lapsed plan's refusal says why instead of "failed".
+      const m =
+        err instanceof AutopilotError || err instanceof PlanLimitError ? err.message : 'failed';
       redirect(`/autopilot?error=${encodeURIComponent(m)}`);
     }
   }
@@ -171,7 +181,6 @@ export default async function AutopilotPage({
       await upsertProductAutopilotSettings(c, {
         productProfileId: pid,
         autopilotEnabled: tri('autopilotEnabled'),
-        emergencyPause: tri('emergencyPause'),
         enableAutoApproveProjects: tri('enableAutoApproveProjects'),
         autoApproveThreshold: num('autoApproveThreshold'),
         enableAutoEnqueueOutreach: tri('enableAutoEnqueueOutreach'),
@@ -224,7 +233,9 @@ export default async function AutopilotPage({
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
-      <MasterStrip settings={base} runNow={runNow} />
+      <MasterStrip settings={base} paused={pauseOverview.pause !== null} runNow={runNow} />
+
+      <AutomationPauseControl overview={pauseOverview} returnTo="/autopilot" />
 
       <AutonomousFlow
         eff={effective}
@@ -285,9 +296,12 @@ export default async function AutopilotPage({
 
 function MasterStrip({
   settings,
+  paused,
   runNow,
 }: Readonly<{
   settings: AutopilotSettings;
+  /** PC-05: the workspace pause (it stops autopilot with everything else). */
+  paused: boolean;
   runNow: () => Promise<void>;
 }>) {
   return (
@@ -303,13 +317,11 @@ function MasterStrip({
         <strong>Master state:</strong>
         <span
           className={
-            settings.autopilotEnabled && !settings.emergencyPause
-              ? 'badge badge-good'
-              : 'badge badge-bad'
+            settings.autopilotEnabled && !paused ? 'badge badge-good' : 'badge badge-bad'
           }
         >
-          {settings.emergencyPause
-            ? '🛑 emergency pause'
+          {paused
+            ? '🛑 paused (all automation)'
             : settings.autopilotEnabled
               ? '🟢 enabled'
               : '⚫ disabled'}
@@ -474,14 +486,9 @@ function WorkspaceDefaultsForm({
             />
             <span>Autopilot enabled (master)</span>
           </label>
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              name="emergencyPause"
-              defaultChecked={settings.emergencyPause}
-            />
-            <span>🛑 Emergency pause (kill switch)</span>
-          </label>
+          <p className="muted small">
+            To stop everything at once, use <a href="#pause">Pause all automation</a> above.
+          </p>
         </fieldset>
 
         <fieldset className="ks-kind-fields">
@@ -634,12 +641,6 @@ function ProductOverlayForm({
             label="Autopilot enabled (master)"
             base={base.autopilotEnabled}
             override={overlay?.autopilotEnabled ?? null}
-          />
-          <TriToggle
-            name="emergencyPause"
-            label="🛑 Emergency pause"
-            base={base.emergencyPause}
-            override={overlay?.emergencyPause ?? null}
           />
         </fieldset>
 

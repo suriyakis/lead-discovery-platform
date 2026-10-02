@@ -1,3 +1,5 @@
+import { pauseAutomation } from '@/lib/services/automation-pause';
+import { PAUSED_MESSAGE } from '@/lib/services/automation-gate';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import '@/lib/connectors/mock';
 import { eq } from 'drizzle-orm';
@@ -91,19 +93,17 @@ describe('runOnce guards', () => {
     });
   });
 
-  it('emergency pause halts even when enabled', async () => {
+  it('the workspace pause halts even when enabled (PC-05)', async () => {
     const s = await setup();
     await updateAutopilotSettings(ctx(s.workspaceA, s.ownerA), {
       autopilotEnabled: true,
-      emergencyPause: true,
       enableAutoApproveProjects: true,
     });
+    await pauseAutomation(ctx(s.workspaceA, s.ownerA), { source: 'api' });
     const r = await runOnce(ctx(s.workspaceA, s.ownerA));
-    expect(r.steps[0]).toEqual({
-      step: 'guard',
-      outcome: 'skipped',
-      detail: 'emergency_pause',
-    });
+    expect(r.steps).toEqual([
+      { step: 'guard', outcome: 'skipped', detail: `held: ${PAUSED_MESSAGE}` },
+    ]);
   });
 });
 

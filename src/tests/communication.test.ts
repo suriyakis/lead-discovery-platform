@@ -132,6 +132,7 @@ describe('listCommunication (P57)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hello',
@@ -152,6 +153,7 @@ describe('listCommunication (P57)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hello',
@@ -182,6 +184,7 @@ describe('listCommunication (P57)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hello',
@@ -211,6 +214,7 @@ describe('listCommunication (P57)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hello',
@@ -240,6 +244,7 @@ describe('listCommunication (P57)', () => {
     // Thread A: sent only
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'a@target.com' }],
       subject: 'A',
@@ -249,6 +254,7 @@ describe('listCommunication (P57)', () => {
     // Thread B: sent + reply → replied
     const b = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'b@target.com' }],
       subject: 'B',
@@ -291,6 +297,7 @@ describe('listCommunication (P57)', () => {
     const ri = await makeReviewItem(s.workspaceA);
     const t = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'alice@acme.com' }],
       subject: 'Concrete tender Q3',
@@ -354,6 +361,7 @@ describe('listCommunication (P57)', () => {
     const ri2 = await makeReviewItem(s.workspaceA);
     const t1 = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'x@target.com' }],
       subject: 'Subj 1',
@@ -362,6 +370,7 @@ describe('listCommunication (P57)', () => {
     });
     const t2 = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'y@target.com' }],
       subject: 'Subj 2',
@@ -416,6 +425,7 @@ describe('countCommunicationByStatus', () => {
     // a: sent only
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'a@x.com' }],
       subject: 'A',
@@ -425,6 +435,7 @@ describe('countCommunicationByStatus', () => {
     // b: sent + reply
     const b = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'b@x.com' }],
       subject: 'B',

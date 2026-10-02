@@ -16,6 +16,9 @@ interface Props {
   /** Recipient's resolved language, or null when it matches native / no lead. */
   targetLanguage: string | null;
   approveAction: (formData: FormData) => void | Promise<void>;
+  /** PC-05: automation is paused — approving sends only after "send
+   *  anyway" (posted as confirmPaused, audited by the server). */
+  automationPaused?: boolean;
 }
 
 export function FollowUpApprovalRow({
@@ -24,6 +27,7 @@ export function FollowUpApprovalRow({
   stagedBody,
   targetLanguage,
   approveAction,
+  automationPaused = false,
 }: Props) {
   const [subject, setSubject] = useState(stagedSubject);
   const [body, setBody] = useState(stagedBody);
@@ -171,6 +175,15 @@ export function FollowUpApprovalRow({
         <span className="form-error" style={{ fontSize: '0.8em' }}>
           {error}
         </span>
+      ) : null}
+
+      {automationPaused ? (
+        <label className="checkbox-row">
+          <input type="checkbox" name="confirmPaused" value="on" required />
+          <span>
+            Automation is paused. Send this follow-up anyway (recorded in the audit log).
+          </span>
+        </label>
       ) : null}
 
       <div className="action-row" style={{ display: 'flex', gap: '0.4rem' }}>

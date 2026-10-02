@@ -183,6 +183,13 @@ Holds stop work in one workspace (tenant-owned, cascade on workspace delete). ki
 
 `feature_flags` is legacy: nothing reads it, the console no longer writes it, and it is dropped one release after `scripts/remediation/import-legacy-feature-flags.ts --apply` has run.
 
+### The workspace pause, the go-live hold and `workspace_automation_state` (Phase 1, PC-05)
+`workspaces.automation_paused_at` (NULL = running; set from the database clock under a row lock), `automation_paused_by_user_id`, `automation_pause_reason`, `automation_pause_source`: the single workspace pause (`services/automation-pause.ts`). `workspaces.outreach_live_at` / `outreach_live_by_user_id`: the go-live hold (NULL = not live: cold, follow-up and AI-reply mail is held; set by a super-admin, `services/go-live.ts`). `outreach_queue.claimed_at`: when the drain last claimed the row (database clock; never after `automation_paused_at`). `automation_capability` gains `trash_purge`.
+
+View `workspace_automation_state` (plain, not materialized): one row per workspace with every workspace-level gate input — workspace_status, owner_user_id, owner_account_status, owner_is_member, owner_incident_at, paused_at / paused_by_user_id / pause_reason / pause_source, outreach_live_at / outreach_live_by_user_id, wallet_has_tokens (billing-exempt or a positive balance), billing_exempt, plan, subscription_status. The gate and the ticks read it.
+
+`autopilot_settings.emergency_pause` and `outreach_send_settings.emergency_pause` are legacy: migrated into the pause (a workspace started paused if either was on), read by nothing, written only as a mirror of the pause, and dropped one release later.
+
 ## Reserved fields and tables (no migration needed for future phases)
 
 These columns / tables are reserved on Phase-1-and-Phase-2 tables so later phases can attach without an "alter table" parade:

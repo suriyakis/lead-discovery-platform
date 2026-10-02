@@ -271,10 +271,12 @@ export async function handleClassifiedReply(
     return { action, draftIds: [], forkedThreadStateId: null };
   }
 
-  // PC-06: auto-drafting is Background AI — a hold (or no accountable
-  // owner) means no draft; the decision above is still recorded.
+  // PC-06 + PC-05: auto-drafting is Background AI — the workspace pause, a
+  // hold, no accountable owner or an empty wallet (I093: these Opus-tier
+  // drafts never checked the wallet) means no draft; the decision above is
+  // still recorded.
   {
-    const gate = await checkGate(ctx, 'background_ai', { manual: false });
+    const gate = await checkGate(ctx, 'background_ai', { manual: false, spendsTokens: true });
     if (!gate.allowed) {
       return { action, draftIds: [], forkedThreadStateId: null };
     }

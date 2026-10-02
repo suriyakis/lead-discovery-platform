@@ -53,6 +53,8 @@ describe('POST /api/communication/reply under a Sending hold', () => {
       error: 'automation_held',
       reason: 'hold',
       detail: 'Sending is on hold (placed by the platform): spam complaints',
+      // PC-05: a hold cannot be overridden by "send anyway" (the pause can).
+      overridable: false,
     });
   });
 });

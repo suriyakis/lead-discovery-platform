@@ -628,19 +628,22 @@ describe('health check: failing mailboxes (F-04)', () => {
     const none = findings.find((f) => f.code === 'mailbox.none');
     expect(none?.message).toContain('failing or paused');
     expect(none?.message).toContain('queued on a failing mailbox are held');
-    expect(none?.message).toContain('on a paused mailbox are marked failed, not held');
+    // PC-05 (P0-F08): a paused mailbox now holds its due sends too.
+    expect(none?.message).toContain('on a paused mailbox are held (not sent, not failed)');
     expect(none?.message).not.toContain('approved drafts cannot be sent');
     expect(none?.href).toBe('/mailbox');
   });
 
-  it('only paused mailboxes: never claims the queue is held', async () => {
+  it('only paused mailboxes: their due sends are held until re-enabled (PC-05, P0-F08)', async () => {
     const s = await setup();
     const p = await makeMailbox(s, 'resting');
     await pauseMailbox(s.c, p.id);
     const none = (await collectRuleFindings(s.c)).find((f) => f.code === 'mailbox.none');
     expect(none?.message).toContain('(each one is paused)');
-    expect(none?.message).toContain('marked failed, not held');
-    expect(none?.message).not.toContain('are held until');
+    expect(none?.message).toContain('held (not sent, not failed) until you re-enable it');
+    expect(none?.message).not.toContain('marked failed');
+    // Only a failing mailbox stops reading replies.
+    expect(none?.message).not.toContain('queued on a failing mailbox');
   });
 
   it('only failing mailboxes: the queue is held', async () => {

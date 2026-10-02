@@ -585,9 +585,9 @@ export type NewReplyAutoActions = typeof replyAutoActions.$inferInsert;
  * "sent today / this hour" counters so the gate doesn't have to scan
  * mail_messages for every tick.
  *
- * Workspace-level outreach_send_settings still owns the emergency_pause
- * kill switch and the workspace-default delay mode; per-mailbox rows
- * take precedence for everything they cover.
+ * Workspace-level outreach_send_settings still owns the workspace-default
+ * delay mode (stopping everything is the workspace pause, PC-05);
+ * per-mailbox rows take precedence for everything they cover.
  */
 export const mailboxSendingLimits = pgTable('mailbox_sending_limits', {
   mailboxId: bigint('mailbox_id', { mode: 'bigint' })

@@ -79,10 +79,11 @@ const TRANSCRIPT_CHAR_BUDGET = 9000;
 // ---- rule findings --------------------------------------------------
 
 /**
- * flow:F-04: what "no active mailbox" means depends on why. Only a
- * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
- * follow-up processOne check); sends through a PAUSED one are refused
- * and the queue entries / follow-ups that come due are marked failed.
+ * flow:F-04 + PC-05: what "no active mailbox" means depends on why. Both
+ * a FAILING and a PAUSED mailbox hold their queue — the automation gate
+ * defers due entries and follow-ups instead of failing them (P0-F08) —
+ * but a failing one also stops reading replies, while a paused one is
+ * the operator's own choice.
  */
 export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean): string {
   const why = anyFailing && anyPaused ? 'failing or paused' : anyFailing ? 'failing' : 'paused';
@@ -94,8 +95,8 @@ export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean):
   }
   if (anyPaused) {
     parts.push(
-      'Outreach and follow-ups that come due on a paused mailbox are marked failed, not held — ' +
-        're-enable it before they are due.',
+      'Outreach and follow-ups that come due on a paused mailbox are held (not sent, not failed) ' +
+        'until you re-enable it.',
     );
   }
   return parts.join(' ');
@@ -273,8 +274,8 @@ export type MailboxFindingRow = Pick<
  *     is the broken side); the advice is the mailbox page's own
  *     (summarizeMailboxFailure — e.g. "use port 465 with TLS on connect"
  *     when a server refuses 587), plus the last error;
- *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing ones hold
- *     their queue, paused ones mark due sends failed.
+ *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing and paused
+ *     ones both hold their queue (PC-05).
  * A paused mailbox next to an active one is the operator's choice, not
  * a finding.
  */
@@ -445,7 +446,11 @@ export async function runWorkspaceHealthCheck(
   // wallet; the empty wallet is itself the top finding at that point.
   // PC-06: also under a Background AI hold, and for the scheduled run
   // when the workspace has no accountable owner.
-  const aiGate = await checkGate(ctx, 'background_ai', { manual: options.manual ?? false });
+  // PC-05: the scheduled run also skips it while the workspace is paused.
+  const aiGate = await checkGate(ctx, 'background_ai', {
+    manual: options.manual ?? false,
+    spendsTokens: true,
+  });
   const commReview =
     aiGate.allowed && (await hasTokens(ctx))
       ? await reviewCommunicationQuality(ctx, intervalDays)

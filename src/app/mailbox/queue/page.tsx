@@ -10,6 +10,8 @@ import {
 } from '@/lib/services/auth-context';
 import { canAdminWorkspace, canWrite } from '@/lib/services/context';
 import { getSendSettings, listQueueEntries } from '@/lib/services/outreach-queue';
+import { getAutomationPauseOverview } from '@/lib/services/automation-pause';
+import { AutomationPauseControl } from '@/components/AutomationPauseControl';
 import {
   cancelQueuedEmailAction,
   drainSendQueueAction,
@@ -55,6 +57,7 @@ export default async function QueuePage({
     throw err;
   }
   const settings = await getSendSettings(ctx);
+  const pauseOverview = await getAutomationPauseOverview(ctx);
   const entries = await listQueueEntries(ctx, {
     status: statusKey === 'all' ? undefined : statusKey,
     limit: 200,
@@ -75,13 +78,13 @@ export default async function QueuePage({
       {sp.message ? <p className="form-message">{sp.message}</p> : null}
       {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
+      {/* PC-05: the workspace pause replaces the "Emergency pause (kill
+          switch)" checkbox that sat in the settings form below (it wrote
+          a separate send-queue flag and only admins could reach it). */}
+      <AutomationPauseControl overview={pauseOverview} returnTo="/mailbox/queue" />
+
       <section>
         <h2>Send settings</h2>
-        {settings.emergencyPause ? (
-          <p className="form-error">
-            Emergency pause is on. Queued emails are held while sending is paused.
-          </p>
-        ) : null}
         {isAdmin ? (
           <form action={saveSendSettingsAction} className="edit-draft-form">
             <input type="hidden" name="status" value={statusKey} />
@@ -154,14 +157,6 @@ export default async function QueuePage({
                 />
               </label>
             </fieldset>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                name="emergencyPause"
-                defaultChecked={settings.emergencyPause}
-              />
-              <span>Emergency pause (kill switch)</span>
-            </label>
             <div className="action-row">
               <button type="submit" className="primary-btn">
                 Save settings

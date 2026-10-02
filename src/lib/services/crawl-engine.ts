@@ -13,10 +13,11 @@ import {
 } from '@/lib/db/schema/connectors';
 import { productProfiles } from '@/lib/db/schema/products';
 import { recordAuditEvent } from './audit';
-import { assertGate, checkGate } from './automation-gate';
+import { AutomationGateError, assertGate, checkGate } from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
+  isAutomatic,
   type WorkspaceContext,
 } from './context';
 import { startRun } from './connector-run';
@@ -329,6 +330,9 @@ export interface RunPlanResult {
   startedRuns: bigint[];
   skippedRecipes: bigint[];
   failedRecipes: Array<{ recipeId: bigint; error: string }>;
+  /** PC-05: the automation gate stopped the plan before every recipe ran
+   *  (the pause, a hold, an empty wallet); the rest were not started. */
+  heldReason?: string;
 }
 
 /** Fire every active recipe in a plan as a separate connector_runs row.
@@ -343,7 +347,8 @@ export async function runCrawlPlanNow(
   if (!canWrite(ctx)) throw denied('crawl_plan.run_now');
   const plan = await getCrawlPlan(ctx, id);
   // PC-06: a Discovery hold refuses Run now outright, instead of the plan
-  // recording every recipe as failed.
+  // recording every recipe as failed. (Run now is a person's request: the
+  // workspace pause does not stop it.)
   await assertGate(ctx, 'discovery');
   return executePlan(ctx, plan);
 }
@@ -354,9 +359,11 @@ async function executePlan(
   plan: CrawlPlan,
 ): Promise<RunPlanResult> {
   const now = new Date();
+  const automatic = isAutomatic(ctx);
   const startedRuns: bigint[] = [];
   const skippedRecipes: bigint[] = [];
   const failedRecipes: Array<{ recipeId: bigint; error: string }> = [];
+  let heldReason: string | null = null;
   // Resolve eligible recipes: must belong to workspace AND be active.
   const eligible =
     plan.recipeIds.length === 0
@@ -379,6 +386,16 @@ async function executePlan(
       skippedRecipes.push(r.id);
       continue;
     }
+    // PC-05: the tick re-checks before every recipe. A pause or hold
+    // placed mid-plan stops it here; the remaining recipes are neither
+    // started nor recorded as failed.
+    if (automatic) {
+      const gate = await checkGate(ctx, 'discovery', { manual: false, spendsTokens: true });
+      if (!gate.allowed) {
+        heldReason = gate.message;
+        break;
+      }
+    }
     try {
       const { run } = await startRun(ctx, {
         connectorId: r.connectorId,
@@ -387,12 +404,25 @@ async function executePlan(
       });
       startedRuns.push(run.id);
     } catch (err) {
+      // A refusal of the gate inside startRun (a hold or the pause that
+      // landed between the check and the start) is not the recipe's
+      // failure either.
+      if (err instanceof AutomationGateError) {
+        heldReason = err.message;
+        break;
+      }
       failedRecipes.push({
         recipeId: r.id,
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
+  // PC-05: held before anything ran — the plan stays as it was (not
+  // run, still due), so it runs on the first tick after the hold lifts.
+  if (heldReason && startedRuns.length === 0 && failedRecipes.length === 0) {
+    return { planId: plan.id, startedRuns, skippedRecipes, failedRecipes, heldReason };
+  }
+
   // Recipes referenced by plan but no longer in workspace (e.g. deleted)
   // count as skipped.
   const seenIds = new Set(eligible.map((r) => r.id.toString()));
@@ -410,6 +440,7 @@ async function executePlan(
       recipeId: f.recipeId.toString(),
       error: f.error,
     })),
+    ...(heldReason ? { heldReason } : {}),
     ranAt: now.toISOString(),
   };
   const nextRunAt = new Date(now.getTime() + plan.intervalMinutes * 60_000);
@@ -429,7 +460,13 @@ async function executePlan(
     entityId: plan.id,
     payload: summary,
   });
-  return { planId: plan.id, startedRuns, skippedRecipes, failedRecipes };
+  return {
+    planId: plan.id,
+    startedRuns,
+    skippedRecipes,
+    failedRecipes,
+    ...(heldReason ? { heldReason } : {}),
+  };
 }
 
 // ---- cron tick -----------------------------------------------------
@@ -441,9 +478,14 @@ export interface TickSummary {
   notDue: number;
   totalStartedRuns: number;
   totalFailedRecipes: number;
-  /** PC-06: the automation gate held the workspace; no plan ran and none
-   *  moved (each runs on the first tick after the hold ends). */
+  /** PC-06 / PC-05: the automation gate held the workspace (the pause, a
+   *  Discovery hold, no accountable owner); no plan ran and none moved
+   *  (each runs on the first tick after the hold ends). */
   heldReason?: string;
+  /** PC-05: the wallet is empty. The due plans were skipped and their
+   *  nextRunAt moved one interval on; no recipe was started or recorded
+   *  as failed. */
+  walletEmptySkipped?: number;
 }
 
 /** Per-workspace fan-out. Runs every plan whose nextRunAt is past AND
@@ -452,17 +494,20 @@ export async function processDueCrawlPlans(
   ctx: WorkspaceContext,
   now: Date = new Date(),
 ): Promise<TickSummary> {
-  const gate = await checkGate(ctx, 'discovery', { manual: false, now });
-  if (!gate.allowed) {
-    return {
-      workspaces: 1,
-      processed: 0,
-      inQuietHours: 0,
-      notDue: 0,
-      totalStartedRuns: 0,
-      totalFailedRecipes: 0,
-      heldReason: gate.message,
-    };
+  const held = {
+    workspaces: 1,
+    processed: 0,
+    inQuietHours: 0,
+    notDue: 0,
+    totalStartedRuns: 0,
+    totalFailedRecipes: 0,
+  };
+  // PC-05: discovery spends tokens (search + AI qualification), so the
+  // wallet is part of the question. Any other refusal (the pause, a hold,
+  // no accountable owner) holds the workspace: no plan runs or moves.
+  const gate = await checkGate(ctx, 'discovery', { manual: false, now, spendsTokens: true });
+  if (!gate.allowed && gate.reason !== 'wallet_empty') {
+    return { ...held, heldReason: gate.message };
   }
   const allPlans = await db
     .select()
@@ -473,6 +518,27 @@ export async function processDueCrawlPlans(
         eq(crawlPlans.enabled, true),
       ),
     );
+
+  // PC-05: with an empty wallet the workspace is skipped: each due plan
+  // moves on one interval, and nothing is started or recorded as failed
+  // (startRun would refuse every recipe and the plan would log them all
+  // as failures, I068).
+  if (!gate.allowed) {
+    let moved = 0;
+    for (const plan of allPlans) {
+      const due = plan.nextRunAt === null || plan.nextRunAt.getTime() <= now.getTime();
+      if (!due) continue;
+      await db
+        .update(crawlPlans)
+        .set({
+          nextRunAt: new Date(now.getTime() + plan.intervalMinutes * 60_000),
+          updatedAt: now,
+        })
+        .where(eq(crawlPlans.id, plan.id));
+      moved++;
+    }
+    return { ...held, notDue: allPlans.length - moved, walletEmptySkipped: moved };
+  }
   let processed = 0;
   let inQuiet = 0;
   let notDue = 0;
@@ -503,6 +569,19 @@ export async function processDueCrawlPlans(
       processed++;
       totalStarted += result.startedRuns.length;
       totalFailed += result.failedRecipes.length;
+      // PC-05: the gate stopped this plan mid-way — stop the workspace;
+      // the remaining due plans run on the first tick after it lifts.
+      if (result.heldReason) {
+        return {
+          workspaces: 1,
+          processed,
+          inQuietHours: inQuiet,
+          notDue,
+          totalStartedRuns: totalStarted,
+          totalFailedRecipes: totalFailed,
+          heldReason: result.heldReason,
+        };
+      }
     } catch (err) {
       console.error(
         `[crawl.engine.tick] plan=${plan.id} failed:`,

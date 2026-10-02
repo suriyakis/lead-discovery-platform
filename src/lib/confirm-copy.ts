@@ -308,10 +308,11 @@ export interface AutopilotOverlayLike {
   defaultMailboxId: bigint | null;
 }
 
-/** The workspace defaults those columns fall back to. */
+/** The workspace defaults those columns fall back to. (PC-05: there is
+ *  no workspace emergency pause any more — stopping everything is the
+ *  workspace pause, see resumeAutomationConfirm.) */
 export interface AutopilotBaseLike {
   autopilotEnabled: boolean;
-  emergencyPause: boolean;
   enableAutoApproveProjects: boolean;
   autoApproveThreshold: number;
   enableAutoEnqueueOutreach: boolean;
@@ -331,8 +332,7 @@ const AUTOPILOT_STEP_LABELS = {
 /**
  * Confirm text for "Clear all overrides for <product>": spells out what
  * the product actually starts doing once it inherits the workspace
- * defaults — above all automation that turns ON and an emergency pause
- * that is lifted.
+ * defaults — above all automation that turns ON.
  */
 export function clearAutopilotOverridesConfirm(
   productName: string,
@@ -349,11 +349,12 @@ export function clearAutopilotOverridesConfirm(
     (base[key] ? turnsOn : turnsOff).push(AUTOPILOT_STEP_LABELS[key]);
   }
   const effects: string[] = [];
-  if (overlay.emergencyPause === true && !base.emergencyPause) {
-    effects.push(`- Lifts the emergency pause on ${productName}.`);
-  }
-  if (overlay.emergencyPause === false && base.emergencyPause) {
-    effects.push(`- Pauses ${productName} (the workspace is on emergency pause).`);
+  if (overlay.emergencyPause !== null) {
+    // PC-05 / I020: a saved per-product pause override was never applied;
+    // clearing it changes nothing that runs, so say so.
+    effects.push(
+      `- Removes ${productName}'s old per-product pause setting (it was saved but never applied; pausing is for the whole workspace).`,
+    );
   }
   if (turnsOn.length > 0) effects.push(`- Turns ON: ${turnsOn.join('; ')}.`);
   if (turnsOff.length > 0) effects.push(`- Turns off: ${turnsOff.join('; ')}.`);
@@ -373,4 +374,55 @@ export function clearAutopilotOverridesConfirm(
       ? effects.join('\n')
       : 'Nothing changes in practice: every override matches the workspace default.';
   return `Clear all autopilot overrides for "${productName}"?\n\nEvery step for this product goes back to the workspace default.\n${body}`;
+}
+
+// ---- workspace pause (PC-05) ------------------------------------------------
+
+export interface PauseImpactLike {
+  queued: number;
+  queuedDue: number;
+  /** Already formatted for the reader (UTC), or null when nothing is queued. */
+  nextSendAt: string | null;
+  pendingFollowUps: number;
+  awaitingApprovalFollowUps: number;
+  enabledCrawlPlans: number;
+  autopilotEnabled: boolean;
+  heldInboundActions: number;
+}
+
+function plural(n: number, one: string, many: string = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Resume asks first: everything that waited starts again at once. */
+export function resumeAutomationConfirm(impact: PauseImpactLike): string {
+  const lines = [
+    `- Send queue: ${plural(impact.queued, 'queued email')}${
+      impact.queued > 0
+        ? ` (${impact.queuedDue} already due${impact.nextSendAt ? `, next ${impact.nextSendAt}` : ''})`
+        : ''
+    }, within the daily limit and sending windows.`,
+    `- Follow-ups: ${plural(impact.pendingFollowUps, 'pending step')} composed by AI and sent on schedule${
+      impact.awaitingApprovalFollowUps > 0
+        ? ` (${impact.awaitingApprovalFollowUps} more wait for your approval)`
+        : ''
+    }.`,
+    `- Scheduled crawls: ${plural(impact.enabledCrawlPlans, 'enabled plan')}.`,
+    `- Autopilot: ${impact.autopilotEnabled ? 'on — its next run starts within 5 minutes' : 'off (stays off)'}.`,
+    '- Reply auto-actions, background AI, auto top-up and the trash purge.',
+  ];
+  const held =
+    impact.heldInboundActions > 0
+      ? `\n\n${plural(impact.heldInboundActions, 'reply auto-action')} waited while paused. They are not applied on resume — check those replies yourself.`
+      : '';
+  return `Resume all automation in this workspace?\n\nWhat starts again at once:\n${lines.join('\n')}${held}`;
+}
+
+/** The go-live release (console, flow:F-07). */
+export function releaseGoLiveConfirm(ws: WorkspaceRef): string {
+  return `Release ${workspaceLabel(ws, { quoted: true })} for outreach?\n\nIts cold emails, follow-ups and AI reply drafts start sending on their schedule — anything held in its queue goes out within the daily limit. Its owners and admins are notified.`;
+}
+
+export function revokeGoLiveConfirm(ws: WorkspaceRef): string {
+  return `Put ${workspaceLabel(ws, { quoted: true })} back on the go-live hold?\n\nIts cold emails, follow-ups and AI reply drafts stop and wait in the queue (not failed) until it is released again. Email its members write themselves still sends. Its owners and admins are notified.`;
 }

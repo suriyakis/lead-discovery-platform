@@ -142,8 +142,10 @@ export async function runPlanAction(formData: FormData): Promise<void> {
 
 export async function saveAutopilot(formData: FormData): Promise<void> {
   const c = await getWorkspaceContext();
-  // Read each toggle. Form posts the key only when ticked; we always
-  // include a paired hidden input so flipping off works too.
+  // Read each toggle: an unticked checkbox is absent from the form. The
+  // master box reflects autopilotEnabled only (PC-05, I062: it used to
+  // show OFF while the old emergency pause was on, so saving switched
+  // autopilot off); pausing is the separate workspace pause.
   const autopilotEnabled = formData.get('autopilotEnabled') === 'on';
   const enableAutoApproveProjects =
     formData.get('enableAutoApproveProjects') === 'on';

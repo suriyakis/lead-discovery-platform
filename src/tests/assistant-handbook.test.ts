@@ -109,10 +109,14 @@ describe('assistant handbook — content truth', () => {
     expect(autopilot).toContain('[/autopilot]');
     expect(autopilot).toContain('[/connectors/engine]');
     const f = flat(autopilot);
-    // Both pause switches, and what each one really stops.
-    expect(f).toContain('stops autopilot runs only');
-    // ia:F-02 (hotfixes fb131d8): the queue's pause is owners/admins only.
-    expect(f).toContain('(owners and admins, on [/mailbox/queue]) stops the send queue only');
+    // PC-05: one pause for the whole workspace replaced the two
+    // Emergency pause switches; anyone who can edit pauses, owners and
+    // admins resume.
+    expect(f).toContain(
+      '"Pause all automation" (on [/autopilot] and [/mailbox/queue]; anyone who can edit, never blocked by the plan or an empty wallet)',
+    );
+    expect(f).toContain('Only owners and admins resume');
+    expect(f).not.toContain('Emergency pause');
     expect(f).toContain('every 5 minutes');
     expect(f).toContain('Starter and Pro');
   });
