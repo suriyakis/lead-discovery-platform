@@ -11,8 +11,10 @@
 // the frame's state:
 //   - signed out          → the sign-in page;
 //   - account not active  → /pending;
-//   - no workspace yet    → a bare frame (brand header, account, Sign out):
-//                           the page shows <NoWorkspaceState/>;
+//   - no workspace yet    → a bare frame (brand header, account, Sign out;
+//                           a super-admin also gets the Platform console
+//                           link and the workspace switcher): the page
+//                           shows <NoWorkspaceState/>;
 //   - a workspace         → the full frame below.
 //
 // Navigation comes from one registry (src/lib/nav/registry.ts): the
@@ -75,7 +77,7 @@ import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { signOutAction } from '@/lib/auth-actions';
 import { navCountsFromAttention } from '@/lib/attention/project';
 import { ACCOUNT_MENU } from '@/lib/nav/registry';
-import { tabById, type NavViewer } from '@/lib/nav/resolve';
+import { areaById, areaHref, tabById, type NavViewer } from '@/lib/nav/resolve';
 import { NO_NAV_COUNTS } from '@/lib/services/nav-counts';
 import { chromeSignature } from '@/lib/shell/freshness';
 import { getShellState, type ShellUser, type ShellWorkspaceRow } from '@/lib/shell/state';
@@ -92,7 +94,14 @@ export async function AppShell({ children }: Readonly<AppShellProps>) {
   // Phase 15: accounts waiting for approval see the pending wall only.
   if (state.kind === 'inactive') redirect('/pending');
   if (state.kind === 'no_workspace' || state.kind === 'unavailable') {
-    return <BareFrame user={state.user}>{children}</BareFrame>;
+    return (
+      <BareFrame
+        user={state.user}
+        workspaces={state.kind === 'no_workspace' ? state.workspaces : []}
+      >
+        {children}
+      </BareFrame>
+    );
   }
 
   const { user, attention } = state;
@@ -173,13 +182,32 @@ export async function AppShell({ children }: Readonly<AppShellProps>) {
  * be resolved): the brand header with who they are and Sign out. Every
  * module needs a workspace, so there is no sidebar, palette or assistant;
  * the page shows <NoWorkspaceState/> (or its own error).
+ *
+ * A super-admin with no workspace of their own keeps their way out: the
+ * Platform console link (the sidebar item they would otherwise have) and
+ * the workspace switcher listing every tenant (entering one is god mode,
+ * confirmed and audit-logged as from the full frame).
  */
-function BareFrame({ user, children }: Readonly<{ user: ShellUser; children: React.ReactNode }>) {
+function BareFrame({
+  user,
+  workspaces,
+  children,
+}: Readonly<{ user: ShellUser; workspaces: ShellWorkspaceRow[]; children: React.ReactNode }>) {
+  const consoleArea = user.isSuperAdmin ? areaById('console') : null;
   return (
     <>
       <BrandHeader
         rightSlot={
           <>
+            {consoleArea ? (
+              <Link href={areaHref(consoleArea)} className="ghost-btn" data-bare-console="">
+                <Crown className="lucide" aria-hidden="true" />
+                {consoleArea.label}
+              </Link>
+            ) : null}
+            {user.isSuperAdmin && workspaces.length > 0 ? (
+              <WorkspaceSwitcher workspaces={workspaces} />
+            ) : null}
             {user.email ? <span className="muted">{user.email}</span> : null}
             <form action={signOutAction}>
               <button type="submit" className="ghost-btn">

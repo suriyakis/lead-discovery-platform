@@ -11,8 +11,11 @@
 // The frame has four states, decided here and nowhere else:
 //   signed_out    → the layout sends the visitor to the sign-in page;
 //   inactive      → an account waiting for approval goes to /pending;
-//   no_workspace  → a bare frame (brand header, sign out); every page
-//                   answers with <NoWorkspaceState/> (ia:F-07);
+//   no_workspace  → a bare frame (brand header, sign out; for a
+//                   super-admin also the Platform console link and the
+//                   workspace switcher, so /admin and god mode stay
+//                   reachable); every page answers with
+//                   <NoWorkspaceState/> (ia:F-07);
 //   workspace     → the full frame: sidebar, header, banners, Cmd-K and
 //                   the assistant, for the workspace of THIS session
 //                   (MOB-06), with the attention summary as its seed.
@@ -29,7 +32,7 @@ import {
   type WorkspaceAutomationNotice,
 } from '@/lib/services/automation-gate';
 import type { WorkspaceContext, WorkspaceRole } from '@/lib/services/context';
-import { listMyWorkspaces } from '@/lib/services/workspace';
+import { listMyWorkspaces, type MyWorkspaceRow } from '@/lib/services/workspace';
 import { noteShellRender } from './render-probe';
 
 export interface ShellUser {
@@ -73,11 +76,43 @@ export interface WorkspaceShellState {
 export type ShellState =
   | { kind: 'signed_out' }
   | { kind: 'inactive'; user: ShellUser }
-  | { kind: 'no_workspace'; user: ShellUser }
+  /** `workspaces`: for a super-admin, every workspace they can enter (the
+   *  bare frame's switcher, so god mode stays reachable); [] otherwise. */
+  | { kind: 'no_workspace'; user: ShellUser; workspaces: ShellWorkspaceRow[] }
   /** The workspace could not be resolved for another reason (the database
    *  is unreachable): a bare frame, and the page reports its own error. */
   | { kind: 'unavailable'; user: ShellUser }
   | WorkspaceShellState;
+
+function toShellRows(rows: MyWorkspaceRow[]): ShellWorkspaceRow[] {
+  return rows.map((m) => ({
+    id: m.workspace.id.toString(),
+    name: m.workspace.name,
+    slug: m.workspace.slug,
+    role: m.role,
+    isActive: m.isActive,
+    isArchived: m.workspace.status === 'archived',
+    isDefault: m.workspace.isDefault,
+    isGodMode: m.isGodMode,
+  }));
+}
+
+/**
+ * The bare frame's workspace list: a super-admin with no workspace of
+ * their own (no membership, no pointer) still reaches every tenant from
+ * it, as they did from the full frame's switcher. Nobody else has any.
+ */
+async function bareFrameWorkspaces(user: ShellUser): Promise<ShellWorkspaceRow[]> {
+  if (!user.isSuperAdmin) return [];
+  try {
+    return toShellRows(
+      await listMyWorkspaces(user.id, { includeAllForSuperAdmin: true, activeWorkspaceId: null }),
+    );
+  } catch (err) {
+    console.error('[shell] workspace list failed:', err);
+    return [];
+  }
+}
 
 async function loadShellState(): Promise<ShellState> {
   const session = await auth();
@@ -101,7 +136,9 @@ async function loadShellState(): Promise<ShellState> {
   try {
     ctx = await resolveSessionWorkspaceContext({ id: user.id, role: sessionUser.role });
   } catch (err) {
-    if (err instanceof NoWorkspaceError) return { kind: 'no_workspace', user };
+    if (err instanceof NoWorkspaceError) {
+      return { kind: 'no_workspace', user, workspaces: await bareFrameWorkspaces(user) };
+    }
     console.error('[shell] workspace resolution failed:', err);
     return { kind: 'unavailable', user };
   }
@@ -136,16 +173,7 @@ async function loadShellState(): Promise<ShellState> {
     },
     attention: summary.status === 'fulfilled' ? summary.value : null,
     automationNotice: notice.status === 'fulfilled' ? notice.value : null,
-    workspaces: myWorkspaces.map((m) => ({
-      id: m.workspace.id.toString(),
-      name: m.workspace.name,
-      slug: m.workspace.slug,
-      role: m.role,
-      isActive: m.isActive,
-      isArchived: m.workspace.status === 'archived',
-      isDefault: m.workspace.isDefault,
-      isGodMode: m.isGodMode,
-    })),
+    workspaces: toShellRows(myWorkspaces),
     godMode: godModeRow ? { workspaceName: godModeRow.workspace.name } : null,
     homeWorkspaceId: home ? home.workspace.id.toString() : null,
   };

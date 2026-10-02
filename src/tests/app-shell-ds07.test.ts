@@ -449,6 +449,34 @@ describe('AppShell, rendered once by the (app) layout', () => {
     expect($('aside.sidebar')).toHaveLength(0);
     expect($('[data-command-palette-trigger]')).toHaveLength(0);
     expect($.html()).not.toContain('Ask the platform');
+    // Not a super-admin: no console link, no switcher.
+    expect($('[data-bare-console]')).toHaveLength(0);
+    expect($('.workspace-switcher')).toHaveLength(0);
+  });
+
+  it('no workspace, super-admin: the bare frame keeps the console link and a switcher into every tenant', async () => {
+    const root = await seedUser({ email: 'root@test.local', role: 'super_admin' });
+    const tenantOwner = await seedUser({ email: 'tenant@test.local' });
+    const tenant = await seedWorkspace({ name: 'Tenant Co', ownerUserId: tenantOwner });
+    signIn(root, 'super_admin');
+    const $ = load(await renderToHtml(await shellTree()));
+    expect($('main[data-shell-frame="no-workspace"] #page').text()).toBe('Page');
+    expect($('aside.sidebar')).toHaveLength(0);
+
+    const consoleLink = $('header.brand-header a[data-bare-console]');
+    expect(consoleLink.attr('href')).toBe('/admin');
+    expect(consoleLink.text()).toBe('Platform console');
+    expect(consoleLink.find('svg.lucide')).toHaveLength(1);
+
+    const select = $('header.brand-header .workspace-switcher select');
+    expect(select).toHaveLength(1);
+    // Nothing is active: the placeholder is what shows, never a tenant.
+    expect(select.find('option[value=""]').text()).toBe('Choose a workspace…');
+    expect(select.find('option[selected]').attr('value') ?? '').toBe('');
+    expect(select.find(`optgroup[label^="God mode"] option[value="${tenant}"]`).text()).toContain(
+      'Tenant Co',
+    );
+    expect($('header.brand-header button').text()).toBe('Sign out');
   });
 
   it.each([
