@@ -260,8 +260,14 @@
     opacity: 0.5;
   }
 
-  /* Checkbox, radio and switch (input[type=checkbox][role=switch]). */
+  /* Checkbox, radio and switch (input[type=checkbox][role=switch]).
+     appearance: none draws every box here, so accent-color does nothing:
+     the checked colour is --choice-on, the primary unless the control
+     carries a tone (data-tone="live" for teal selection lists,
+     data-tone="danger" for a destructive choice such as Remove step).
+     <Checkbox tone> sets the same attribute. */
   :where(input[type='checkbox'], input[type='radio']) {
+    --choice-on: var(--primary);
     display: inline-block;
     flex: none;
     width: var(--space-4);
@@ -278,25 +284,33 @@
       border-color var(--dur-1) var(--ease-out);
   }
 
+  :where(input[type='checkbox'][data-tone='live'], input[type='radio'][data-tone='live']) {
+    --choice-on: var(--tone-live);
+  }
+
+  :where(input[type='checkbox'][data-tone='danger'], input[type='radio'][data-tone='danger']) {
+    --choice-on: var(--tone-danger);
+  }
+
   :where(input[type='radio']) {
     border-radius: var(--radius-full);
   }
 
   :where(input[type='checkbox']:checked) {
-    border-color: var(--primary);
-    background-color: var(--primary);
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
     background-image: var(--glyph-check);
   }
 
   :where(input[type='checkbox']:indeterminate) {
-    border-color: var(--primary);
-    background-color: var(--primary);
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
     background-image: var(--glyph-dash);
   }
 
   :where(input[type='radio']:checked) {
-    border-color: var(--primary);
-    background-image: radial-gradient(circle, var(--primary) 0 4px, transparent 4.5px);
+    border-color: var(--choice-on);
+    background-image: radial-gradient(circle, var(--choice-on) 0 4px, transparent 4.5px);
     background-size: 100% 100%;
   }
 
@@ -311,8 +325,8 @@
   }
 
   :where(input[type='checkbox'][role='switch']:checked) {
-    border-color: var(--primary);
-    background-color: var(--primary);
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
     background-image: radial-gradient(circle, var(--on-primary) 0 6px, transparent 6.5px);
     background-position: 100% 50%;
   }

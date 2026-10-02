@@ -1,6 +1,6 @@
 {
   "file": "src/styles/legacy.css",
-  "lines": 7618,
+  "lines": 7614,
   "selectors": [
     "*",
     "*::after",

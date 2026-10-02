@@ -22,6 +22,7 @@ import { load, type CheerioAPI } from 'cheerio';
 import { describe, expect, it } from 'vitest';
 import {
   Checkbox,
+  CHOICE_TONES,
   EmailPreview,
   EMAIL_PREVIEW_CSP,
   EMAIL_PREVIEW_SANDBOX,
@@ -236,6 +237,20 @@ describe('Checkbox and Switch', () => {
     expect($('input').attr('aria-label')).toBe('Select row 7');
     expect($('input').attr('disabled')).toBe('disabled');
     expect($('label').text()).toBe('');
+  });
+
+  it('a tone lands on the input as data-tone; the default (info) adds none', () => {
+    expect(render(h(Checkbox, { label: 'x' }))('input').attr('data-tone')).toBeUndefined();
+    expect(
+      render(h(Checkbox, { label: 'x', tone: 'info' }))('input').attr('data-tone'),
+    ).toBeUndefined();
+    expect(
+      render(h(Checkbox, { label: 'Remove', tone: 'danger' }))('input').attr('data-tone'),
+    ).toBe('danger');
+    expect(render(h(Switch, { label: 'On', tone: 'live' }))('input').attr('data-tone')).toBe(
+      'live',
+    );
+    expect([...CHOICE_TONES]).toEqual(['info', 'live', 'danger']);
   });
 });
 
@@ -472,6 +487,85 @@ describe('legacy contexts resolve to the base control (the I153 sweep)', () => {
       // The phone width cap on the header switcher stays (layout, not look).
       ['.workspace-switcher select'],
     );
+  });
+});
+
+// base.css draws every checkbox and radio (appearance: none), so a legacy
+// `accent-color` restyle is dead CSS: the four that picked a colour (the
+// red Remove step, the teal crawl, select-all and row checkboxes) went
+// primary blue without any test noticing. Their colour is now data-tone.
+describe('checked colours come from tones, not accent-color', () => {
+  const rules = loadAppRules();
+  const choice = loadCssFile('src/components/ui/choice.module.css');
+  const BOX = /input\[type='checkbox'\], input\[type='radio'\]\)$/;
+  const TONED = CHOICE_TONES.filter((t) => t !== 'info');
+
+  it('base draws the box (appearance: none) and colours it with --choice-on, primary by default', () => {
+    const box = base.find((r) => r.conditions.length === 0 && BOX.test(r.selectorText))!;
+    const values = Object.fromEntries(box.decls.map((d) => [d.prop, d.value]));
+    expect(values).toMatchObject({ appearance: 'none', '--choice-on': 'var(--primary)' });
+    const checked = base.filter((r) => /:(checked|indeterminate)/.test(r.selectorText));
+    expect(checked.length).toBeGreaterThanOrEqual(4);
+    for (const r of checked) {
+      const colours = r.decls.filter((d) => /^(border|background)-color$/.test(d.prop));
+      for (const d of colours) expect(d.value, r.selectorText).toBe('var(--choice-on)');
+    }
+  });
+
+  it.each(TONED)('data-tone="%s" sets --choice-on in base and in the Checkbox module', (tone) => {
+    const expected = [`var(--tone-${tone})`];
+    const inBase = decl(
+      base,
+      (r) => r.selectorText.includes(`[data-tone='${tone}']`),
+      '--choice-on',
+    );
+    expect([...new Set(inBase)]).toEqual(expected);
+    expect(
+      decl(choice, (r) => r.selectorText === `.box[data-tone='${tone}']`, '--choice-on'),
+    ).toEqual(expected);
+  });
+
+  it('no legacy rule sets accent-color on a control base draws itself', () => {
+    // accent-color is inherited, so a container rule counts too; only a
+    // range or progress control (which base leaves native) may use it.
+    const offenders = rules
+      .filter((r) => r.layer === 'legacy' && r.decls.some((d) => d.prop === 'accent-color'))
+      .filter((r) => !r.selectors.every((s) => /range|progress/.test(s)))
+      .map((r) => `${r.selectorText} (${r.file}:${r.line})`);
+    expect(offenders).toEqual([]);
+    expect(base.flatMap((r) => r.decls).some((d) => d.prop === 'accent-color')).toBe(false);
+  });
+
+  it.each([
+    ['followup-step-remove', 'danger'],
+    ['crawl-checkbox-row', 'live'],
+    ['bulk-select-all', 'live'],
+    ['row-select', 'live'],
+  ] as const)('.%s: a checked box takes the %s tone', (ctx, tone) => {
+    const $ = load(
+      `<ul class="bulk-selectable-list"><li><label class="${ctx}"><input type="checkbox" id="b" data-tone="${tone}" checked></label></li></ul>`,
+    );
+    expect(styleOf($, '#b', rules, 'appearance')).toBe('none');
+    expect(styleOf($, '#b', rules, '--choice-on')).toBe(`var(--tone-${tone})`);
+    expect(styleOf($, '#b', rules, 'background-color')).toBe('var(--choice-on)');
+    expect(styleOf($, '#b', rules, 'accent-color')).toBeUndefined();
+  });
+
+  it('the pages put the tone on those inputs', () => {
+    const src = (f: string) => readFileSync(path.join(ROOT, f), 'utf8');
+    const toned = (f: string, ctx: string, tone: string) =>
+      new RegExp(`className="${ctx}"[^>]*>\\s*<input\\b[^>]*data-tone="${tone}"`).test(src(f));
+    expect(toned('src/app/settings/outreach/page.tsx', 'followup-step-remove', 'danger')).toBe(
+      true,
+    );
+    expect(src('src/app/connectors/engine/page.tsx').match(/data-tone="live"/g)).toHaveLength(2);
+    expect(toned('src/components/SelectAllVisible.tsx', 'bulk-select-all', 'live')).toBe(true);
+    for (const f of [
+      'src/app/review/page.tsx',
+      'src/app/leads/page.tsx',
+      'src/app/learning/page.tsx',
+    ])
+      expect(toned(f, 'row-select', 'live'), f).toBe(true);
   });
 });
 

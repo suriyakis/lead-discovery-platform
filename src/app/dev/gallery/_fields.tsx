@@ -97,6 +97,8 @@ export function FieldSamples() {
         <Checkbox name="signature" label="Include signature" defaultChecked />
         <Checkbox name="cc" label="Copy me" />
         <Checkbox name="locked" label="Disabled" disabled />
+        <Checkbox name="pick" label="Select row (live tone)" tone="live" defaultChecked />
+        <Checkbox name="remove" label="Remove step (danger tone)" tone="danger" defaultChecked />
         <Checkbox
           name="learn"
           label="Learn from this decision"

@@ -234,6 +234,39 @@ test.describe('the signature preview is an isolated email document', () => {
   });
 });
 
+// base.css draws every checkbox itself (appearance: none), so a legacy
+// accent-color no longer colours one. The contexts that picked a colour
+// carry a tone instead: the destructive Remove step stays red, and the
+// row-selection checkboxes stay teal.
+test.describe('checked boxes keep their tone', () => {
+  const CASES = [
+    ['/settings/outreach', '.followup-step-remove input[type="checkbox"]', 'danger'],
+    ['/review', '.row-select input[type="checkbox"]', 'live'],
+  ] as const;
+  for (const [url, selector, tone] of CASES) {
+    test(`${url}: a checked ${selector} is the ${tone} tone, not the primary`, async ({ page }) => {
+      await open(page, url);
+      const box = page.locator(selector).first();
+      await box.check();
+      const colourOf = (token: string) =>
+        page.evaluate((t) => {
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = `var(${t})`;
+          document.body.append(probe);
+          const colour = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return colour;
+        }, token);
+      const expected = await colourOf(`--tone-${tone}`);
+      expect(expected).not.toBe(await colourOf('--primary'));
+      // Polled: the fill transitions in.
+      await expect
+        .poll(() => box.evaluate((el) => getComputedStyle(el).backgroundColor))
+        .toBe(expected);
+    });
+  }
+});
+
 /** axe-core (a devDependency), injected into the page as a script. */
 const AXE_SOURCE = readFileSync(
   path.join(process.cwd(), 'node_modules', 'axe-core', 'axe.min.js'),

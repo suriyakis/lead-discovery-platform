@@ -72,6 +72,7 @@
   }
 
   .box {
+    --choice-on: var(--primary);
     display: inline-block;
     flex: none;
     position: static;
@@ -93,19 +94,29 @@
       background-position var(--dur-1) var(--ease-out);
   }
 
+  /* The tone colours the checked state only (CHOICE_TONES in Checkbox.tsx;
+     base.css honours the same attribute on a bare checkbox). */
+  .box[data-tone='live'] {
+    --choice-on: var(--tone-live);
+  }
+
+  .box[data-tone='danger'] {
+    --choice-on: var(--tone-danger);
+  }
+
   .choice[data-described] > .box {
     margin-top: var(--space-0_5);
   }
 
   .box:checked {
-    border-color: var(--primary);
-    background-color: var(--primary);
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
     background-image: var(--glyph-check);
   }
 
   .box:indeterminate {
-    border-color: var(--primary);
-    background-color: var(--primary);
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
     background-image: var(--glyph-dash);
   }
 
@@ -133,8 +144,8 @@
   }
 
   .box.switch:checked {
-    border-color: var(--primary);
-    background-color: var(--primary);
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
     background-image: radial-gradient(circle, var(--on-primary) 0 6px, transparent 6.5px);
     background-position: 100% 50%;
   }

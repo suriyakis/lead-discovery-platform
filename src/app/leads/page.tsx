@@ -251,6 +251,7 @@ export default async function LeadsPage({
                         name="ids"
                         value={qualification.id.toString()}
                         form={BULK_FORM_ID}
+                        data-tone="live"
                         aria-label={`Select lead ${title}`}
                       />
                     </label>

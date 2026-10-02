@@ -217,6 +217,7 @@ export default async function ReviewPage({
                         name="ids"
                         value={item.id.toString()}
                         form={BULK_FORM_ID}
+                        data-tone="live"
                         aria-label={`Select review item ${title}`}
                       />
                     </label>

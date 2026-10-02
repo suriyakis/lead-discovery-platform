@@ -421,7 +421,12 @@ export default async function OutreachSettingsPage({
                     : STEP_DESCRIPTORS[i] ?? 'Follow-up'}
                 </span>
                 <label className="followup-step-remove">
-                  <input type="checkbox" name={STEP_REMOVE_FIELD} value={i} />
+                  <input
+                    type="checkbox"
+                    name={STEP_REMOVE_FIELD}
+                    value={i}
+                    data-tone="danger"
+                  />
                   <Trash2 className="lucide" aria-hidden="true" /> Remove
                 </label>
               </div>

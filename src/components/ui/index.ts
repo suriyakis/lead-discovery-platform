@@ -5,7 +5,7 @@
 //   Select       the native select with the drawn chevron
 //   Textarea     rows decide its height, never less than one control
 //   SearchInput  type=search with the glyph inside
-//   Checkbox     a native checkbox inside its own label
+//   Checkbox     a native checkbox inside its own label; tone info, live or danger
 //   Switch       role=switch on a native checkbox; submits "on"
 //   EmailPreview email HTML in a sandboxed iframe (client component)
 //
@@ -26,9 +26,11 @@ export { Textarea, type TextareaProps } from './Textarea';
 export { SearchInput, type SearchInputProps } from './SearchInput';
 export {
   Checkbox,
+  CHOICE_TONES,
   Switch,
   type CheckboxProps,
   type ChoiceName,
+  type ChoiceTone,
   type SwitchProps,
 } from './Checkbox';
 export { EmailPreview, type EmailPreviewProps } from './EmailPreview';

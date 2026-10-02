@@ -312,6 +312,7 @@ export default async function LearningPage({
                         name="ids"
                         value={l.id.toString()}
                         form={BULK_FORM_ID}
+                        data-tone="live"
                         aria-label={`Select lesson ${l.rule.slice(0, 60)}`}
                       />
                     </label>

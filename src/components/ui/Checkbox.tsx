@@ -11,11 +11,22 @@
 // like any checkbox, so server actions read it with no JavaScript. Either
 // a visible `label` or an `aria-label` is required (the type says so); a
 // description is announced through aria-describedby.
+//
+// `tone` colours the checked state: info (the primary, default), live
+// (teal: picking rows of a list) or danger (a destructive choice, such as
+// Remove step). It renders data-tone on the input; base.css reads the same
+// attribute on a bare checkbox, because base draws every box itself and
+// accent-color no longer reaches it.
 
 import { useId, type ComponentPropsWithRef, type ReactNode } from 'react';
+import type { Tone } from '@/lib/ui/tone';
 import { cx } from './Input';
 import { joinIds } from './Field';
 import styles from './choice.module.css';
+
+/** The tones a checkbox, radio or switch can take when checked. */
+export const CHOICE_TONES = ['info', 'live', 'danger'] as const satisfies ReadonlyArray<Tone>;
+export type ChoiceTone = (typeof CHOICE_TONES)[number];
 
 type NativeCheckboxProps = Omit<
   ComponentPropsWithRef<'input'>,
@@ -35,6 +46,8 @@ export type ChoiceProps = NativeCheckboxProps &
     position?: 'start' | 'end';
     /** The label row's class (the input keeps its own). */
     className?: string;
+    /** The checked colour: info (default), live or danger. */
+    tone?: ChoiceTone;
   };
 
 function Choice({
@@ -43,6 +56,7 @@ function Choice({
   description,
   position = 'start',
   className,
+  tone = 'info',
   id,
   'aria-describedby': describedBy,
   'aria-label': ariaLabel,
@@ -63,6 +77,7 @@ function Choice({
         type="checkbox"
         role={kind === 'switch' ? 'switch' : undefined}
         className={kind === 'switch' ? cx(styles.box, styles.switch) : styles.box}
+        data-tone={tone === 'info' ? undefined : tone}
         aria-label={ariaLabel}
         aria-describedby={joinIds(descriptionId, describedBy)}
       />
