@@ -12,9 +12,14 @@
 //   outreach.drain.tick     every 30 s   → for each active workspace, drain
 //                                           the send queue
 //   mail.imap.tick          every 2 min  → for each active mailbox with IMAP,
-//                                           mail.safeSyncOne(ctx, mb); failing
-//                                           mailboxes get a slow re-check
-//                                           instead (flow:F-04, runImapTick)
+//                                           mail.safeSyncOne(ctx, mb)
+//                                           (runImapTick; failing mailboxes
+//                                           are the probe tick's)
+//   mail.probe.tick         every 5 min  → PC-09 mailbox health: due
+//                                           credential-free probes, the daily
+//                                           login check and failing mailboxes'
+//                                           recovery by class (runMailProbeTick,
+//                                           services/mailbox-probes.ts)
 //   outreach.follow_up.tick every 1 h    → Phase 58: for each active
 //                                           workspace with follow-ups on,
 //                                           send follow-ups that are due
@@ -78,8 +83,16 @@
 // neither: the gate's refusal is not a tick failure. Cadences and labels
 // live in tick-catalog.ts; the schedule registration stamps registered_at
 // and boot_id on each tick's heartbeat.
+//
+// PC-12 (I064, I067): the work a tick starts runs under work leases
+// (services/work-leases.ts) — autopilot runOnce, the drain and the
+// follow-up pass per workspace, each mailbox sync and health probe per
+// mailbox — so a tick
+// never overlaps a Run now, a "Send due emails now", a manual Sync or its
+// own previous slot still running. A workspace (or mailbox) whose lease is
+// held is counted as `busy`: neither a failure nor a success.
 
-import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, isNull, lte, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
@@ -110,7 +123,7 @@ import {
   resolveOrphanedRunIncidents,
 } from '@/lib/services/stuck-work';
 import { runRetentionTick } from '@/lib/services/retention';
-import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
+import { listMailboxesDueForProbe, probeMailbox } from '@/lib/services/mailbox-probes';
 import { recordTickRegistration } from '@/lib/services/job-heartbeats';
 import {
   opsEventFingerprint,
@@ -160,17 +173,24 @@ function shouldRun(ws: TickWorkspacePolicy, tick: AutomationTick, onHeld: () => 
  */
 export async function runAutopilotTick(
   incidents: TickIncidents = NOOP_TICK_INCIDENTS,
-): Promise<{ workspaces: number; stepsRun: number; failed: number; held: number }> {
+): Promise<{ workspaces: number; stepsRun: number; failed: number; held: number; busy: number }> {
   const wss = await workspacesForTick();
   let ran = 0;
   let failed = 0;
   let held = 0;
+  let busy = 0;
   for (const ws of wss) {
     // Autopilot off: no run, and no 'autopilot_disabled' log row every
     // 5 minutes.
     if (!shouldRun(ws, 'autopilot.tick', () => held++)) continue;
     try {
-      const result = await runOnce(ws.ctx);
+      const result = await runOnce(ws.ctx, { purpose: 'tick' });
+      // PC-12: a run already in progress (Run now, the post-crawl hook, a
+      // tick still running) — neither a success nor a failure.
+      if (result.leaseHeld) {
+        busy++;
+        continue;
+      }
       ran += result.steps.length;
     } catch (err) {
       failed++;
@@ -183,7 +203,7 @@ export async function runAutopilotTick(
     }
     await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
-  return { workspaces: wss.length, stepsRun: ran, failed, held };
+  return { workspaces: wss.length, stepsRun: ran, failed, held, busy };
 }
 
 const handleAutopilotTick: InstrumentedHandler = (_payload, { incidents }) =>
@@ -198,16 +218,23 @@ export async function runDrainTick(
   totalSkipped: number;
   failed: number;
   held: number;
+  /** PC-12: workspaces whose send pass was already running (lease held). */
+  busy: number;
 }> {
   const wss = await workspacesForTick();
   let totalSent = 0;
   let totalSkipped = 0;
   let failed = 0;
   let held = 0;
+  let busy = 0;
   for (const ws of wss) {
     if (!shouldRun(ws, 'outreach.drain.tick', () => held++)) continue;
     try {
-      const r = await drainQueue(ws.ctx);
+      const r = await drainQueue(ws.ctx, { purpose: 'tick' });
+      if (r.blocked === 'send_pass_running') {
+        busy++;
+        continue;
+      }
       totalSent += r.sent;
       totalSkipped += r.skipped;
       if (r.heldReason) held++;
@@ -222,32 +249,30 @@ export async function runDrainTick(
     }
     await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
-  return { workspaces: wss.length, totalSent, totalSkipped, failed, held };
+  return { workspaces: wss.length, totalSent, totalSkipped, failed, held, busy };
 }
 
 const handleDrainTick: InstrumentedHandler = (_payload, { incidents }) =>
   runDrainTick(incidents);
 
 /**
- * mail.imap.tick. flow:F-04 makes it two passes:
+ * mail.imap.tick: workspaces with IMAP auto-sync on (P61-23: off means the
+ * operator only pulls via the manual Sync button), their ACTIVE mailboxes
+ * with IMAP whose sync gate has passed are synced through safeSyncOne, so
+ * every failure is classified and leaves a gate (flow:F-04, PC-09).
+ * PC-06: a workspace the automation gate holds for Inbox sync is skipped
+ * whole (X6: 0 messages synced under an Inbox-sync hold).
  *
- *  1. Every active workspace, also with IMAP auto-sync off: failing
- *     mailboxes with no re-check gate yet are adopted
- *     (adoptUntrackedFailingMailboxes, no network) — each gets its gate
- *     and the deduped mailbox.failing notification, so prod's two silent
- *     failing mailboxes (X7) are announced by the first tick after deploy.
- *  2. Workspaces with IMAP auto-sync on (P61-23: off means the operator
- *     only pulls via the manual Sync button), mailboxes whose gate has
- *     passed: active ones with IMAP are synced, failing ones (with or
- *     without IMAP) get their SMTP + IMAP re-check. Both through
- *     safeSyncOne, so every failure leaves a non-null gate.
- *     PC-06: a workspace the automation gate holds for Inbox sync is
- *     skipped whole (X6: 0 messages synced under an Inbox-sync hold).
+ * PC-09: a failing mailbox is no longer this tick's: its recovery follows
+ * its failure class in the mail.probe.tick (runMailProbeTick), and a
+ * mailbox failing since before PC-09 waits for the reviewed backfill
+ * (src/lib/remediation/mailbox-health-backfill.ts) — flow:F-04's automatic
+ * adoption pass is gone.
  *
- * PC-07: a workspace whose adoption pass throws, or a mailbox whose sync
- * crashes (a DB error, not a mailbox one), is an incident; its next clean
- * pass resolves it. Mailbox auth / connection failures are mailbox health,
- * not tick crashes — they stay with safeSyncOne (flow:F-04).
+ * PC-07: a mailbox whose sync crashes (a DB error, not a mailbox one) is
+ * an incident; its next clean sync resolves it. Mailbox auth / connection
+ * failures are mailbox health, not tick crashes — they become the
+ * mailbox's own incident (services/mailbox-health.ts).
  *
  * Exported for tests (deterministic, unlike enqueue-and-wait).
  */
@@ -259,40 +284,18 @@ export async function runImapTick(
   failed: number;
   skipped: number;
   markedFailing: number;
-  rechecked: number;
-  recovered: number;
-  adopted: number;
   held: number;
-  /** Workspaces whose adoption pass threw. */
-  workspacesFailed: number;
+  /** PC-12: mailboxes another sync or check was already working on. */
+  busy: number;
 }> {
   const tickWss = await workspacesForTick(now);
-
-  let adopted = 0;
-  let workspacesFailed = 0;
-  for (const ws of tickWss) {
-    const subject = { workspaceId: ws.workspaceId, part: 'adopt' };
-    try {
-      adopted += await adoptUntrackedFailingMailboxes(ws.ctx);
-    } catch (err) {
-      workspacesFailed++;
-      console.error(
-        `[imap.tick] workspace=${ws.workspaceId} adopting failing mailboxes failed:`,
-        err instanceof Error ? err.message : err,
-      );
-      await incidents.failed(subject, err);
-      continue;
-    }
-    await incidents.succeeded(subject);
-  }
 
   let synced = 0;
   let failed = 0;
   let skipped = 0;
   let markedFailing = 0;
-  let rechecked = 0;
-  let recovered = 0;
   let held = 0;
+  let busy = 0;
   for (const ws of tickWss) {
     // Auto-sync off (P61-23): the operator pulls by hand only — not
     // counted as held even when a hold also applies.
@@ -304,14 +307,14 @@ export async function runImapTick(
       .where(
         and(
           eq(mailboxes.workspaceId, ws.workspaceId),
-          inArray(mailboxes.status, ['active', 'failing']),
+          eq(mailboxes.status, 'active'),
           or(
             isNull(mailboxes.imapNextSyncAfter),
             lte(mailboxes.imapNextSyncAfter, now),
           ),
         ),
       );
-    const eligible = mbs.filter((m) => m.status === 'failing' || m.imapHost);
+    const eligible = mbs.filter((m) => m.imapHost);
     skipped += mbs.length - eligible.length;
     if (eligible.length === 0) continue;
     const ctx = ws.ctx;
@@ -325,7 +328,6 @@ export async function runImapTick(
         logGateSkip('imap.tick', ws.workspaceId, recheck);
         break;
       }
-      if (mb.status === 'failing') rechecked++;
       const subject = { workspaceId: ws.workspaceId, part: `mailbox:${mb.id}` };
       let outcome: Awaited<ReturnType<typeof safeSyncOne>>;
       try {
@@ -346,15 +348,24 @@ export async function runImapTick(
         await incidents.failed(subject, err);
         continue;
       }
+      // PC-12: a manual Sync, Test connection or health probe of this
+      // mailbox is running (its lease): not a failure, and not a success
+      // that would resolve an incident either. The next tick syncs it.
+      if (outcome.kind === 'busy') {
+        busy++;
+        continue;
+      }
       await incidents.succeeded(subject);
       if (outcome.kind === 'synced') {
         synced++;
-        if (outcome.recovered) recovered++;
+      } else if (outcome.kind === 'skipped') {
+        // It failed or was paused since the list was read.
+        skipped++;
       } else if (outcome.kind === 'failing') {
         failed++;
-        if (mb.status === 'active') markedFailing++;
+        markedFailing++;
         console.error(
-          `[imap.tick] workspace=${ws.workspaceId} mailbox=${mb.id} failing (next check ${outcome.nextSyncAfter?.toISOString() ?? 'n/a'}): ${outcome.message}`,
+          `[imap.tick] workspace=${ws.workspaceId} mailbox=${mb.id} failing (${outcome.failureClass ?? 'unclassified'}; next probe ${outcome.nextProbeAt?.toISOString() ?? 'none — waits for a person'}): ${outcome.message}`,
         );
       } else {
         failed++;
@@ -369,16 +380,118 @@ export async function runImapTick(
     failed,
     skipped,
     markedFailing,
-    rechecked,
-    recovered,
-    adopted,
     held,
-    workspacesFailed,
+    busy,
   };
 }
 
 const handleImapTick: InstrumentedHandler = (_payload, { incidents }) =>
   runImapTick(new Date(), incidents);
+
+/**
+ * PC-09: mail.probe.tick — mailbox health. Every 5 minutes, for every
+ * active workspace the gate lets talk to its mail servers (tickVerdict:
+ * the Inbox-sync capability, so the pause does not stop it and a hold
+ * does; auto-sync off does not, a send-only mailbox needs watching too):
+ * each active or failing mailbox with something due gets it
+ * (services/mailbox-probes.ts) — a credential-free SMTP probe every 30
+ * minutes, the authenticated SMTP verify once a day, and a failing
+ * mailbox's recovery by class (an 'auth' failure never; 'connection' by
+ * credential-free probes backing off to 6 h; 'ambiguous' at most four
+ * logins, 6 h apart). Every probe holds the mailbox's lease.
+ *
+ * PC-07: a workspace whose due-list read throws, or a mailbox whose probe
+ * crashes (a DB error — a mail-server failure is the mailbox's own
+ * incident, never the tick's), is an incident until its next clean pass.
+ *
+ * Exported for tests (the fake clock drives `now`).
+ */
+export async function runMailProbeTick(
+  now: Date = new Date(),
+  incidents: TickIncidents = NOOP_TICK_INCIDENTS,
+): Promise<{
+  workspaces: number;
+  probed: number;
+  verified: number;
+  rechecked: number;
+  /** Authenticated checks run (each a login per protocol checked). */
+  logins: number;
+  recovered: number;
+  markedFailing: number;
+  held: number;
+  busy: number;
+  failed: number;
+  workspacesFailed: number;
+}> {
+  const wss = await workspacesForTick(now);
+  const out = {
+    workspaces: wss.length,
+    probed: 0,
+    verified: 0,
+    rechecked: 0,
+    logins: 0,
+    recovered: 0,
+    markedFailing: 0,
+    held: 0,
+    busy: 0,
+    failed: 0,
+    workspacesFailed: 0,
+  };
+  for (const ws of wss) {
+    if (!shouldRun(ws, 'mail.probe.tick', () => out.held++)) continue;
+    let due: Awaited<ReturnType<typeof listMailboxesDueForProbe>>;
+    try {
+      due = await listMailboxesDueForProbe(ws.ctx, now);
+    } catch (err) {
+      out.workspacesFailed++;
+      console.error(
+        `[mail.probe.tick] workspace=${ws.workspaceId} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+      await incidents.failed({ workspaceId: ws.workspaceId }, err);
+      continue;
+    }
+    await incidents.succeeded({ workspaceId: ws.workspaceId });
+    for (const mb of due) {
+      // PC-06: re-check per mailbox — a hold placed mid-tick stops the
+      // rest of this workspace's probes.
+      const recheck = await checkGate(ws.ctx, 'inbox_sync', { manual: false, now });
+      if (!recheck.allowed) {
+        out.held++;
+        logGateSkip('mail.probe.tick', ws.workspaceId, recheck);
+        break;
+      }
+      const subject = { workspaceId: ws.workspaceId, part: `mailbox:${mb.id}` };
+      let outcome: Awaited<ReturnType<typeof probeMailbox>>;
+      try {
+        outcome = await probeMailbox(ws.ctx, mb.id, now);
+      } catch (err) {
+        out.failed++;
+        console.error(
+          `[mail.probe.tick] workspace=${ws.workspaceId} mailbox=${mb.id} probe crashed:`,
+          err instanceof Error ? err.message : err,
+        );
+        await incidents.failed(subject, err);
+        continue;
+      }
+      if (outcome.action === 'busy') {
+        out.busy++;
+        continue;
+      }
+      await incidents.succeeded(subject);
+      if (outcome.action === 'probe') out.probed++;
+      if (outcome.action === 'verify') out.verified++;
+      if (outcome.action === 'recheck') out.rechecked++;
+      out.logins += outcome.logins;
+      if (outcome.recovered) out.recovered++;
+      if (outcome.failing !== null && mb.status === 'active') out.markedFailing++;
+    }
+  }
+  return out;
+}
+
+const handleMailProbeTick: InstrumentedHandler = (_payload, { incidents }) =>
+  runMailProbeTick(new Date(), incidents);
 
 /** Follow-up tick body. Exported for tests (deterministic). */
 export async function runFollowUpTick(
@@ -390,6 +503,8 @@ export async function runFollowUpTick(
   skipped: number;
   failed: number;
   held: number;
+  /** PC-12: workspaces whose follow-up pass was already running. */
+  busy: number;
   workspacesFailed: number;
 }> {
   // Phase 58 / PC-13: every active workspace whose policy has follow-ups
@@ -400,11 +515,16 @@ export async function runFollowUpTick(
   let failed = 0;
   let checked = 0;
   let held = 0;
+  let busy = 0;
   let workspacesFailed = 0;
   for (const ws of wss) {
     if (!shouldRun(ws, 'outreach.follow_up.tick', () => held++)) continue;
     try {
-      const result = await processDueFollowUps(ws.ctx);
+      const result = await processDueFollowUps(ws.ctx, { purpose: 'tick' });
+      if (result.followUpPass) {
+        busy++;
+        continue;
+      }
       checked += result.checked;
       sent += result.sent;
       skipped += result.skipped;
@@ -421,7 +541,7 @@ export async function runFollowUpTick(
     }
     await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
-  return { workspaces: wss.length, checked, sent, skipped, failed, held, workspacesFailed };
+  return { workspaces: wss.length, checked, sent, skipped, failed, held, busy, workspacesFailed };
 }
 
 const handleFollowUpTick: InstrumentedHandler = (_payload, { incidents }) =>
@@ -643,7 +763,9 @@ const handleHealthCheckTick: InstrumentedHandler = (_payload, { incidents }) =>
 /**
  * PC-10: settle stuck work — sends stuck in 'sending' for more than 10
  * minutes, runs without progress for 15 (or pending for 60 with their job
- * gone from the queue). Every active workspace, plus any other workspace
+ * gone from the queue), PC-12: follow-up claims a dead pass left for 30
+ * (claims a live lease holder may own are left alone). Every active
+ * workspace, plus any other workspace
  * with stuck work (an archived one's stuck rows are settled too).
  * Platform maintenance, not automation: it sends nothing and starts
  * nothing, so it runs whatever the workspace's pause or holds say.
@@ -660,6 +782,9 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
   let sendsFailed = 0;
   let runsFailed = 0;
   let runsCancelled = 0;
+  let followUpsRequeued = 0;
+  let followUpsSettledSent = 0;
+  let followUpsFailed = 0;
   let workspacesFailed = 0;
   for (const workspaceId of wss.values()) {
     try {
@@ -668,6 +793,9 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
       sendsFailed += r.sendsFailed;
       runsFailed += r.runsFailed;
       runsCancelled += r.runsCancelled;
+      followUpsRequeued += r.followUpsRequeued;
+      followUpsSettledSent += r.followUpsSettledSent;
+      followUpsFailed += r.followUpsFailed;
     } catch (err) {
       workspacesFailed++;
       console.error(
@@ -696,6 +824,9 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
     sendsFailed,
     runsFailed,
     runsCancelled,
+    followUpsRequeued,
+    followUpsSettledSent,
+    followUpsFailed,
     workspacesFailed,
     runIncidentsClosed,
   };
@@ -723,6 +854,7 @@ const TICK_HANDLERS: Record<TickName, InstrumentedHandler> = {
   'autopilot.tick': handleAutopilotTick,
   'outreach.drain.tick': handleDrainTick,
   'mail.imap.tick': handleImapTick,
+  'mail.probe.tick': handleMailProbeTick,
   'outreach.follow_up.tick': handleFollowUpTick,
   'knowledge.compact.tick': handleKnowledgeCompactTick,
   'mail.trash.purge.tick': handleMailTrashPurgeTick,

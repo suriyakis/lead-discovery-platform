@@ -107,7 +107,7 @@ async function world(): Promise<World> {
 
 beforeEach(async () => {
   await truncateAll();
-  _resetRateLimitsForTests();
+  await _resetRateLimitsForTests();
   authMock.mockReset();
 });
 

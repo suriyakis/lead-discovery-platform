@@ -68,6 +68,8 @@ export const AUDIT_KINDS = [
   'review.bulk_archive',
   'review.bulk_delete',
   'qualification.reclassify_workspace',
+  /** PC-38: an admin asked for a background "Re-classify all" run. */
+  'qualification.reclassify_requested',
   'lead.bulk_archive',
   'lead.bulk_delete',
   'lead_research.run',
@@ -237,6 +239,8 @@ export const AUDIT_KINDS = [
   'connector_run.cancel',
   'connector_run.reaped',
   'outreach.queue.reaped',
+  /** PC-12: a follow-up claim whose pass died, settled by the reaper. */
+  'follow_up.reaped',
   'outreach.queue.requeue',
   'outreach.queue.retry',
   'outreach.queue.mark_delivered',

@@ -17,7 +17,9 @@ import {
   Zap,
 } from 'lucide-react';
 import { AppShell } from '@/components/AppShell';
+import { AutoRefresh } from '@/components/AutoRefresh';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
+import { reclassifyAllConfirm } from '@/lib/confirm-copy';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -41,6 +43,13 @@ function minutesToHoursDisplay(min: number): number {
 }
 import { listProductProfiles } from '@/lib/services/product-profile';
 import { autopilotFlow, resolveAutomationPolicy } from '@/lib/services/automation-policy';
+import { canAdminWorkspace } from '@/lib/services/context';
+import {
+  estimateReclassification,
+  isReclassificationLive,
+  latestQualificationRun,
+} from '@/lib/services/qualification-runs';
+import { describeReclassifyStatus } from './reclassify-status';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   createPlan,
@@ -80,13 +89,21 @@ export default async function CrawlEnginePage({
     throw err;
   }
 
-  const [plans, recipes, connectors, products, policy] = await Promise.all([
-    listCrawlPlans(ctx),
-    listRecipes(ctx),
-    listConnectors(ctx),
-    listProductProfiles(ctx, { includeArchived: false }),
-    resolveAutomationPolicy(ctx),
-  ]);
+  const isAdmin = canAdminWorkspace(ctx);
+  const [plans, recipes, connectors, products, policy, lastReclassify, reclassifyLive, estimate] =
+    await Promise.all([
+      listCrawlPlans(ctx),
+      listRecipes(ctx),
+      listConnectors(ctx),
+      listProductProfiles(ctx, { includeArchived: false }),
+      resolveAutomationPolicy(ctx),
+      latestQualificationRun(ctx),
+      isReclassificationLive(ctx),
+      // PC-38 (I028): the confirmation states records × products and a
+      // token estimate; only admins can start it.
+      isAdmin ? estimateReclassification(ctx) : Promise.resolve(null),
+    ]);
+  const reclassify = describeReclassifyStatus(lastReclassify, reclassifyLive);
   // PC-13 (I062): read-only status from the automation policy; the
   // workspace pause is a badge linking to its control.
   const paused = policy.state.pause !== null;
@@ -179,17 +196,39 @@ export default async function CrawlEnginePage({
               <Link href="/autopilot" className="ghost-btn">
                 <Settings2 className="lucide" /> Change on Autopilot
               </Link>
-              <form action={reclassifyAll}>
-                <button
-                  type="submit"
-                  className="ghost-btn"
-                  title="Re-run AI qualification on every source record in this workspace. Useful after changing the AI provider, model, or product profile."
-                >
-                  Re-classify all
-                </button>
-              </form>
+              {/* PC-38 (I028): admins only, confirmed with the count and a
+                  token estimate, and a background run (one at a time). */}
+              {estimate ? (
+                <form action={reclassifyAll}>
+                  <ConfirmFormButton
+                    className="ghost-btn"
+                    message={reclassifyAllConfirm(estimate)}
+                    disabled={reclassify?.active === true}
+                    title="Re-run AI qualification on every source record in this workspace, in the background. Useful after changing the AI provider, model, or product profile."
+                  >
+                    Re-classify all
+                  </ConfirmFormButton>
+                </form>
+              ) : null}
             </div>
           </header>
+          {reclassify ? (
+            <div aria-live="polite">
+              <p className={reclassify.tone === 'error' ? 'mail-flash error' : 'mail-flash info'}>
+                {reclassify.text}
+              </p>
+              {reclassify.active ? (
+                <>
+                  <progress
+                    value={reclassify.processed}
+                    max={Math.max(1, reclassify.total)}
+                    aria-label="Re-classification progress"
+                  />
+                  <AutoRefresh reason="reclassify" intervalMs={5_000} />
+                </>
+              ) : null}
+            </div>
+          ) : null}
           <ol className="pipeline-steps">
             <li className="pipeline-step is-on">
               <span className="pipeline-step-icon">

@@ -12,7 +12,7 @@ import { authErrorToResponse } from '@/lib/services/http';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { translateText } from '@/lib/services/translation';
 import { TokenError, assertTokens } from '@/lib/services/token-ledger';
-import { rateLimitAllow } from '@/lib/rate-limit';
+import { rateLimitCheck, retryAfterHeaders } from '@/lib/rate-limit';
 
 const InputSchema = z.object({
   subject: z.string().max(998).optional().default(''),
@@ -48,10 +48,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, subject: parsed.subject, body: parsed.body });
   }
 
-  if (!rateLimitAllow(`translate:ws:${ctx.workspaceId}`, 30, 60_000)) {
+  const limit = await rateLimitCheck(`translate:ws:${ctx.workspaceId}`, 30, 60_000);
+  if (!limit.allowed) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many translations — try again in a minute.' },
-      { status: 429 },
+      { status: 429, headers: retryAfterHeaders(limit) },
     );
   }
 

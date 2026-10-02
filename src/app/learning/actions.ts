@@ -9,6 +9,15 @@ import {
 } from '@/lib/services/learning';
 import { isLessonCategory } from '@/lib/services/learning-categories';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { guardAction } from '@/lib/services/action-guards';
+import {
+  assertCanCompactKnowledge,
+  compactWorkspaceKnowledge,
+} from '@/lib/services/knowledge-compaction';
+import {
+  assertCanSynthesizeLearning,
+  synthesizeWorkspaceLearning,
+} from '@/lib/services/learning-synthesis';
 
 function parseIds(formData: FormData): bigint[] {
   const ids: bigint[] = [];
@@ -82,4 +91,59 @@ export async function bulkDisableAction(formData: FormData): Promise<void> {
 
 export async function bulkEnableAction(formData: FormData): Promise<void> {
   await bulkSet(formData, true, 'Enabled');
+}
+
+// ---- Compact now / Synthesize now (PC-38) ----------------------------------
+//
+// Both are AI passes over the whole workspace. They used to be inline page
+// actions with no guard, so a double-click ran the pass twice. Now each is
+// single-flight in the workspace and rate-limited (services/action-guards.ts);
+// a refusal says why on the page. The service's own refusals (admins only,
+// the wallet, a hold) are asked first, so a refused click never uses up the
+// workspace's limit.
+
+function learningFlash(flash: { message?: string; error?: string }): string {
+  const params = new URLSearchParams();
+  if (flash.message) params.set('message', flash.message);
+  if (flash.error) params.set('error', flash.error);
+  const qs = params.toString();
+  return qs ? `/learning?${qs}` : '/learning';
+}
+
+export async function compactNowAction(): Promise<void> {
+  const c = await getWorkspaceContext();
+  try {
+    await guardAction(c, 'knowledge.compact', () => compactWorkspaceKnowledge(c), {
+      precheck: () => assertCanCompactKnowledge(c),
+    });
+  } catch (err) {
+    if (isNextRedirectError(err)) throw err;
+    // PC-06: a Background AI hold refuses compaction with a reason.
+    const m = err instanceof Error ? err.message : 'compaction failed';
+    redirect(learningFlash({ error: m }));
+  }
+  redirect('/learning');
+}
+
+export async function synthesizeNowAction(): Promise<void> {
+  const c = await getWorkspaceContext();
+  try {
+    const s = await guardAction(c, 'learning.synthesize', () => synthesizeWorkspaceLearning(c), {
+      precheck: () => assertCanSynthesizeLearning(c),
+    });
+    const msg = !s.ran
+      ? s.skippedReason === 'insufficient_events'
+        ? `Not enough recent activity to learn from yet (${s.eventsExamined} events in the last 14 days — need 10+).`
+        : s.skippedReason === 'held'
+          ? 'Skipped — Background AI is on hold for this workspace.'
+          : 'Skipped — no tokens left for the AI pass.'
+      : s.lessonsCreated > 0
+        ? `Learned ${s.lessonsCreated} new rule${s.lessonsCreated === 1 ? '' : 's'} from ${s.eventsExamined} recent events.`
+        : `Examined ${s.eventsExamined} recent events — no reliable new pattern found.`;
+    redirect(learningFlash({ message: msg }));
+  } catch (err) {
+    if (isNextRedirectError(err)) throw err;
+    const m = err instanceof Error ? err.message : 'synthesis failed';
+    redirect(learningFlash({ error: m }));
+  }
 }

@@ -519,6 +519,27 @@
       "when": 1790932921515,
       "tag": "0073_p1_knowledge_foundation_learning_knowledge",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1790944742534,
+      "tag": "0074_p1_workers_work_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1790950019499,
+      "tag": "0075_p1_workers_mailbox_health",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1790954046109,
+      "tag": "0076_p1_workers_ai_action_guards",
+      "breakpoints": true
     }
   ]
 }

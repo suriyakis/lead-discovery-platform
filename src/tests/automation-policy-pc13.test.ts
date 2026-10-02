@@ -1403,6 +1403,7 @@ function inputs(
     enabledCrawlPlans?: number;
     imapMailboxes?: number;
     failingMailboxes?: number;
+    activeMailboxes?: number;
   } = {},
 ): AutomationPolicyInputs {
   return {
@@ -1439,6 +1440,7 @@ function inputs(
     enabledCrawlPlans: over.enabledCrawlPlans ?? 1,
     imapMailboxes: over.imapMailboxes ?? 1,
     failingMailboxes: over.failingMailboxes ?? 0,
+    activeMailboxes: over.activeMailboxes ?? 1,
   };
 }
 

@@ -1,12 +1,20 @@
 # Production deployment stack. Runs on agregat (or any Linux host with Docker).
 #
-# Usage:
-#   docker compose -f docker-compose.prod.yml up -d --build
-#   docker compose -f docker-compose.prod.yml exec app node scripts/migrate.cjs
+# Usage (agregat has docker-compose v1, hyphenated; always both files):
+#   scripts/deploy/deploy-agregat.sh          # pull, build, recreate app + worker
+#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps
+#   host-side `pnpm db:migrate` for migrations (the image has no tsx)
 #
 # Reads secrets from .env (POSTGRES_PASSWORD, AUTH_SECRET, GOOGLE_*, OWNER_EMAIL).
-# Postgres is NOT exposed to the host network — only the app container reaches it.
+# Postgres is NOT exposed to the host network — only the app containers reach it.
 # App is exposed only on 127.0.0.1:3001 — nginx reverse proxies from there.
+#
+# PC-36 (I065): two services run the same image. `app` serves HTTP and only
+# enqueues jobs (ROLE=web); `worker` runs the background jobs on two BullMQ
+# lanes (ticks / runs) and schedules the ticks (ROLE=worker). Both get the
+# same environment except ROLE (src/tests/deploy-compose-pc36.test.ts keeps
+# it that way), and both pin JOB_QUEUE_PROVIDER=bullmq: the split needs the
+# Redis queue they share, whatever .env says.
 
 services:
   postgres:
@@ -55,6 +63,8 @@ services:
       # BUILD_SHA=$(git rev-parse --short HEAD) before building.
       args:
         BUILD_SHA: ${BUILD_SHA:-unknown}
+    # PC-36: one tag for both services; the worker runs this image too.
+    image: lead-discovery-platform-app:latest
     restart: unless-stopped
     depends_on:
       postgres:
@@ -64,6 +74,10 @@ services:
     env_file:
       - .env
     environment:
+      # PC-36: serve HTTP and enqueue; the worker service runs the jobs.
+      ROLE: web
+      NODE_ENV: production
+      JOB_QUEUE_PROVIDER: bullmq
       # Override DATABASE_URL + REDIS_URL to reach the docker-network
       # service hostnames. The .env's DATABASE_URL/REDIS_URL point at
       # localhost so host-side `pnpm db:migrate` and bullmq inspectors work.
@@ -74,6 +88,48 @@ services:
     # the container on multiple ports.
     ports:
       - '127.0.0.1:3001:3000'
+    volumes:
+      - app-storage:/app/storage
+
+  # PC-36 (I065): the background-job worker. Same image as `app`, its own
+  # process: the ticks lane (send-queue drain, inbox sync, probes, crawl
+  # engine, sweepers, reaper; concurrency JOB_TICKS_CONCURRENCY, default 4),
+  # the batch lane (the long AI ticks: autopilot, follow-ups, health check,
+  # compaction; JOB_BATCH_CONCURRENCY, default 3) and the runs lane
+  # (discovery runs, knowledge indexing, learning, Re-classify all;
+  # JOB_RUNS_CONCURRENCY, default 2), plus the repeatable tick schedule.
+  # It serves no HTTP: no `ports:` here, and none in docker-compose.yml
+  # either (compose merges port lists). The same storage volume, because
+  # knowledge indexing reads uploaded documents. On `docker stop` running
+  # jobs get 25 s to finish (src/lib/jobs/worker-process.ts), inside the
+  # 30 s grace below.
+  worker:
+    # The same profile as `app` (docker-compose.yml): the worker depends on
+    # redis, which sits in that profile, so it starts exactly like app —
+    # when named (`up -d app worker`) or with `--profile app`.
+    profiles: ['app']
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+    image: lead-discovery-platform-app:latest
+    command: ['node', 'worker/worker.cjs']
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      ROLE: worker
+      NODE_ENV: production
+      JOB_QUEUE_PROVIDER: bullmq
+      DATABASE_URL: postgres://lead:${POSTGRES_PASSWORD}@postgres:5432/lead
+      REDIS_URL: redis://redis:6379
     volumes:
       - app-storage:/app/storage
 

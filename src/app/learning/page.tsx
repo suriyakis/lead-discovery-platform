@@ -27,15 +27,15 @@ import {
   lessonPolarityLabel,
   type LessonCategory,
 } from '@/lib/services/learning-categories';
-import {
-  compactWorkspaceKnowledge,
-  lastCompactionRun,
-} from '@/lib/services/knowledge-compaction';
-import { synthesizeWorkspaceLearning } from '@/lib/services/learning-synthesis';
-import { isNextRedirectError } from '@/lib/server-redirect';
+import { lastCompactionRun } from '@/lib/services/knowledge-compaction';
 import { listProductProfiles } from '@/lib/services/product-profile';
 import type { LessonLifecycle } from '@/lib/db/schema/learning';
-import { bulkDisableAction, bulkEnableAction } from './actions';
+import {
+  bulkDisableAction,
+  bulkEnableAction,
+  compactNowAction,
+  synthesizeNowAction,
+} from './actions';
 
 const BULK_FORM_ID = 'learning-bulk-form';
 const PAGE_SIZE = 25;
@@ -187,42 +187,6 @@ export default async function LearningPage({
     throw err;
   }
 
-  async function runCompaction() {
-    'use server';
-    const c = await getWorkspaceContext();
-    try {
-      await compactWorkspaceKnowledge(c);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      // PC-06: a Background AI hold refuses compaction with a reason.
-      const m = err instanceof Error ? err.message : 'compaction failed';
-      redirect(`/learning?error=${encodeURIComponent(m)}`);
-    }
-    redirect('/learning');
-  }
-
-  async function runSynthesis() {
-    'use server';
-    const c = await getWorkspaceContext();
-    try {
-      const s = await synthesizeWorkspaceLearning(c);
-      const msg = !s.ran
-        ? s.skippedReason === 'insufficient_events'
-          ? `Not enough recent activity to learn from yet (${s.eventsExamined} events in the last 14 days — need 10+).`
-          : s.skippedReason === 'held'
-            ? 'Skipped — Background AI is on hold for this workspace.'
-            : 'Skipped — no tokens left for the AI pass.'
-        : s.lessonsCreated > 0
-          ? `Learned ${s.lessonsCreated} new rule${s.lessonsCreated === 1 ? '' : 's'} from ${s.eventsExamined} recent events.`
-          : `Examined ${s.eventsExamined} recent events — no reliable new pattern found.`;
-      redirect(`/learning?message=${encodeURIComponent(msg)}`);
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof Error ? err.message : 'synthesis failed';
-      redirect(`/learning?error=${encodeURIComponent(m)}`);
-    }
-  }
-
   const filterQuery = (overrides: { category?: string; scope?: string | null } = {}) => {
     const params = new URLSearchParams();
     const cat = overrides.category ?? categoryKey;
@@ -285,12 +249,12 @@ export default async function LearningPage({
           </div>
           {isAdmin ? (
             <div className="action-row" style={{ display: 'flex', gap: '0.5rem' }}>
-              <form action={runCompaction}>
+              <form action={compactNowAction}>
                 <button type="submit" className="ghost-btn">
                   Compact now
                 </button>
               </form>
-              <form action={runSynthesis}>
+              <form action={synthesizeNowAction}>
                 <button
                   type="submit"
                   className="ghost-btn"

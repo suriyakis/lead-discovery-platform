@@ -15,6 +15,12 @@
 //   job_heartbeats.retired       heartbeat rows of jobs no longer in the   90 d     updated_at
 //                                tick catalogue (retired / renamed ticks,
 //                                on-demand jobs that stopped running)
+//   work_leases.expired          PC-12: leases a dead holder left and no    7 d     expires_at
+//                                acquire took over since (a deleted
+//                                mailbox's or recipe's, mostly)
+//   rate_limit_buckets.expired   PC-38: limiter windows that ended and no   1 d     expires_at
+//                                request reopened (keys of deleted
+//                                workspaces and users, idle keys)
 //
 // Never deleted here: any other audit kind, unread notifications, open
 // incidents, the heartbeat of a catalogued tick, usage_log (it backs token
@@ -35,13 +41,15 @@
 // the run reports it (runRetentionTick then throws, which fails the tick's
 // heartbeat and raises its `tick.failed` incident).
 
-import { and, eq, inArray, isNotNull, lt, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, lt, notInArray, sql } from 'drizzle-orm';
 import type { PlatformAuditKind } from '@/lib/audit-scope';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { autopilotLog } from '@/lib/db/schema/autopilot';
 import { notifications } from '@/lib/db/schema/notifications';
 import { jobHeartbeats, opsAlertDeliveries, opsAlertState, opsEvents } from '@/lib/db/schema/ops';
+import { rateLimitBuckets } from '@/lib/db/schema/rate-limits';
+import { workLeases } from '@/lib/db/schema/work-leases';
 import { TICK_CATALOG } from '@/lib/jobs/tick-catalog';
 import { describeError } from '@/lib/ops/mask';
 import { recordPlatformAuditEvent } from './audit';
@@ -57,6 +65,12 @@ export const READ_NOTIFICATION_RETENTION_DAYS = 90;
 export const OPS_ALERT_RETENTION_DAYS = OPS_EVENTS_RETENTION_DAYS;
 /** Heartbeat rows of jobs that are no longer catalogued ticks. */
 export const RETIRED_HEARTBEAT_RETENTION_DAYS = 90;
+/** PC-12: work leases expired this long ago (a holder that died and whose
+ *  key nobody acquired since). A live key is overwritten long before. */
+export const EXPIRED_LEASE_RETENTION_DAYS = 7;
+/** PC-38: rate-limiter windows that ended this long ago. The next request
+ *  on a key reopens its window whether or not the row is still there. */
+export const EXPIRED_RATE_LIMIT_RETENTION_DAYS = 1;
 
 export const RETENTION_BATCH_SIZE = 5_000;
 export const RETENTION_MAX_BATCHES = 200;
@@ -190,6 +204,49 @@ export const RETENTION_POLICIES: readonly RetentionPolicy[] = [
         .delete(jobHeartbeats)
         .where(and(inArray(jobHeartbeats.name, due), lt(jobHeartbeats.updatedAt, cutoff)))
         .returning({ name: jobHeartbeats.name });
+      return rows.length;
+    },
+  },
+  {
+    name: 'work_leases.expired',
+    retentionDays: EXPIRED_LEASE_RETENTION_DAYS,
+    async deleteBatch(cutoff, limit) {
+      // Raw SQL: the key is three columns and drizzle has no tuple IN; the
+      // ctid sub-select bounds the batch like the other policies. The
+      // cutoff goes in as ISO text (no Date inside a raw template), and the
+      // delete re-checks it: a lease re-acquired in between stays.
+      const at = cutoff.toISOString();
+      const rows = (await db.execute(sql`
+        DELETE FROM ${workLeases}
+        WHERE ctid IN (
+          SELECT ctid FROM ${workLeases}
+          WHERE ${workLeases.expiresAt} < ${at}::timestamptz
+          LIMIT ${limit}
+        )
+        AND ${workLeases.expiresAt} < ${at}::timestamptz
+        RETURNING ${workLeases.kind}
+      `)) as unknown as Array<{ kind: string }>;
+      return rows.length;
+    },
+  },
+  {
+    name: 'rate_limit_buckets.expired',
+    retentionDays: EXPIRED_RATE_LIMIT_RETENTION_DAYS,
+    async deleteBatch(cutoff, limit) {
+      // Raw SQL for the ctid-bounded batch, like work_leases.expired; the
+      // cutoff goes in as ISO text and the delete re-checks it, so a window
+      // reopened in between stays.
+      const at = cutoff.toISOString();
+      const rows = (await db.execute(sql`
+        DELETE FROM ${rateLimitBuckets}
+        WHERE ctid IN (
+          SELECT ctid FROM ${rateLimitBuckets}
+          WHERE ${rateLimitBuckets.expiresAt} < ${at}::timestamptz
+          LIMIT ${limit}
+        )
+        AND ${rateLimitBuckets.expiresAt} < ${at}::timestamptz
+        RETURNING ${rateLimitBuckets.key}
+      `)) as unknown as Array<{ key: string }>;
       return rows.length;
     },
   },

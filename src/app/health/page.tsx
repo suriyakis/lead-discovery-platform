@@ -10,9 +10,7 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import {
-  HealthCheckError,
   listHealthReports,
-  runHealthCheckNow,
   type HealthFinding,
   type ThreadReview,
 } from '@/lib/services/health-check';
@@ -21,6 +19,7 @@ import { isNextRedirectError } from '@/lib/server-redirect';
 import { TableScroll } from '@/components/TableScroll';
 import { ScoreChip, StatusBadge } from '@/components/Badge';
 import { healthScoreTone } from '@/lib/ui/tone';
+import { runHealthCheckNowAction } from './actions';
 
 export default async function HealthPage({
   searchParams,
@@ -46,19 +45,6 @@ export default async function HealthPage({
   const latest = reports[0] ?? null;
   const isAdmin = canAdminWorkspace(ctx);
 
-  async function runNow() {
-    'use server';
-    const c = await getWorkspaceContext();
-    try {
-      await runHealthCheckNow(c);
-      redirect('/health?msg=Health+check+completed');
-    } catch (err) {
-      if (isNextRedirectError(err)) throw err;
-      const m = err instanceof HealthCheckError ? err.message : err instanceof Error ? err.message : 'failed';
-      redirect(`/health?err=${encodeURIComponent(m)}`);
-    }
-  }
-
   return (
     <AppShell>
       <div className="dashboard-wrap">
@@ -80,7 +66,7 @@ export default async function HealthPage({
         {sp.err ? <p className="form-error">{sp.err}</p> : null}
 
         {isAdmin ? (
-          <form action={runNow} className="action-row" style={{ marginBottom: '1.25rem' }}>
+          <form action={runHealthCheckNowAction} className="action-row" style={{ marginBottom: '1.25rem' }}>
             <button type="submit" className="primary-btn">
               <Play className="lucide" aria-hidden="true" /> Run check now
             </button>

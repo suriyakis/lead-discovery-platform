@@ -5,12 +5,15 @@
 // Returns the candidate HTML without persisting; the SignatureForm /
 // edit panel injects it into the bodyHtml textarea so the operator
 // previews then saves through the normal create / update path.
+//
+// PC-38: 429 rate_limited after 10 redesigns a minute per workspace.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { authErrorToResponse } from '@/lib/services/http';
+import { rateLimitCheck, retryAfterHeaders } from '@/lib/rate-limit';
 import {
   SignatureServiceError,
   redesignSignatureHtml,
@@ -57,6 +60,16 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json(
       { error: 'invalid_input', detail },
       { status: 400 },
+    );
+  }
+
+  // PC-38: every redesign is an AI call; cap it per workspace like the
+  // other AI routes (shared windows, src/lib/rate-limit.ts).
+  const limit = await rateLimitCheck(`signature-redesign:ws:${ctx.workspaceId}`, 10, 60_000);
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: 'rate_limited', detail: 'Too many redesigns — try again in a minute.' },
+      { status: 429, headers: retryAfterHeaders(limit) },
     );
   }
 

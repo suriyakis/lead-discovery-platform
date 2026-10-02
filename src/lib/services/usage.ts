@@ -72,18 +72,29 @@ export async function recordUsage(
   return inserted[0];
 }
 
+/**
+ * The tokens a usage row debits from a wallet that is not billing-exempt
+ * (0 for the rows recordUsage never bills: mock, BYOK, platform support,
+ * unbilled). PC-38: also the basis of token estimates (Re-classify all's
+ * confirmation), so an estimate bills exactly like the real thing.
+ */
+export function usageDebitTokens(
+  entry: Pick<UsageLogEntry, 'provider' | 'payload' | 'costEstimateCents'>,
+): number {
+  if (entry.provider === 'mock') return 0;
+  const payload = (entry.payload as Record<string, unknown> | null) ?? {};
+  const keySource = payload.keySource;
+  if (keySource === 'workspace' || keySource === 'mock') return 0;
+  if (payload.support === true) return 0;
+  if (payload.unbilled) return 0;
+  return costCentsToTokens(entry.costEstimateCents);
+}
+
 async function maybeDebitForUsage(
   workspaceId: bigint,
   entry: UsageLogEntry,
 ): Promise<void> {
-  if (entry.provider === 'mock') return;
-  const payload = (entry.payload as Record<string, unknown> | null) ?? {};
-  const keySource = payload.keySource;
-  if (keySource === 'workspace' || keySource === 'mock') return;
-  if (payload.support === true) return;
-  if (payload.unbilled) return;
-
-  const tokens = costCentsToTokens(entry.costEstimateCents);
+  const tokens = usageDebitTokens(entry);
   if (tokens <= 0) return;
 
   const ws = await db

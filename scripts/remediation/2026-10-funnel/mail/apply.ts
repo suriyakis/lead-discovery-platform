@@ -507,17 +507,22 @@ async function applyR3(scope: ChangeScope, ws: bigint, id: bigint): Promise<bool
   });
 }
 
+/** R7 recheck_now: the owner asked for one check of a failing mailbox.
+ *  PC-09: the mail.probe.tick runs it when next_probe_at is due (one
+ *  authenticated check, whatever the failure class); imap_next_sync_after
+ *  is kept for a database that has not deployed PC-09 yet. */
 async function applyR7(scope: ChangeScope, ws: bigint, id: bigint): Promise<boolean> {
+  const now = new Date();
   return updateLogged(scope, {
     table: 'mailboxes',
     workspaceId: ws,
     id,
-    cols: ['imap_next_sync_after'],
+    cols: ['imap_next_sync_after', 'next_probe_at'],
     mutate: async () =>
       (
         await scope.tx
           .update(mailboxes)
-          .set({ imapNextSyncAfter: new Date() })
+          .set({ imapNextSyncAfter: now, nextProbeAt: now })
           .where(
             and(
               eq(mailboxes.workspaceId, ws),

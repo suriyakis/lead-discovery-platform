@@ -11,7 +11,6 @@ import {
   MailboxServiceError,
   getMailbox,
   pauseMailbox,
-  reactivateMailbox,
   updateMailbox,
 } from '@/lib/services/mailbox';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -87,18 +86,26 @@ export default async function EditMailboxPage({
       });
       // Enabled toggle. Re-read the current status (could have
       // changed between render and submit) and route through the
-      // helper that matches the transition: failing→active resets
-      // counters via reactivateMailbox (admin-gated); paused→active
-      // is a cheap status flip; active/failing→paused is sticky.
+      // helper that matches the transition: paused→active is a cheap
+      // status flip; active/failing→paused is sticky. PC-09: saving a
+      // failing mailbox does NOT reactivate it — new connection settings
+      // schedule one check (updateMailbox), which makes it active when it
+      // passes; Reactivate on the mailbox page skips the check.
       const current = await getMailbox(c, id);
       if (current.status !== 'archived') {
         if (wantEnabled && current.status === 'paused') {
           await updateMailbox(c, id, { status: 'active' });
-        } else if (wantEnabled && current.status === 'failing') {
-          await reactivateMailbox(c, id);
         } else if (!wantEnabled && current.status !== 'paused') {
           await pauseMailbox(c, id);
         }
+      }
+      const after = await getMailbox(c, id);
+      if (after.status === 'failing') {
+        const checkSoon = after.nextProbeAt !== null && after.nextProbeAt.getTime() <= Date.now() + 60_000;
+        const note = checkSoon
+          ? 'Settings saved. One connection check runs within 5 minutes; click Test again to check now.'
+          : 'Settings saved. Nothing changed in how it connects, so no check was scheduled; click Test again to check now.';
+        redirect(`/mailbox/${id}?message=${encodeURIComponent(note)}#fix`);
       }
       redirect(`/mailbox/${id}`);
     } catch (err) {
@@ -141,7 +148,7 @@ export default async function EditMailboxPage({
                 {mailbox.status === 'paused' ? (
                   <em className="muted"> — currently paused (no sends, no IMAP sync)</em>
                 ) : mailbox.status === 'failing' ? (
-                  <em className="muted"> — currently failing; un-checking pauses it, saving with this checked re-activates and resets the failure counter</em>
+                  <em className="muted"> — currently failing; un-checking pauses it. Saving new connection settings runs one check, which makes it active again when it passes.</em>
                 ) : mailbox.status === 'archived' ? (
                   <em className="muted"> — archived mailboxes cannot be toggled here</em>
                 ) : (

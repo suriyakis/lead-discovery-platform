@@ -42,10 +42,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # NODE_ENV and APP_URL come from .env (.env.example: development,
+    # http://localhost:3000). PC-36: they are not set here because compose
+    # merges this file into production (docker-compose.prod.yml), where they
+    # used to override .env and give the app APP_URL=http://localhost:3000 —
+    # the base of the tracking-pixel and unsubscribe links in sent mail.
     environment:
-      NODE_ENV: development
       DATABASE_URL: postgres://lead:lead@postgres:5432/lead
-      APP_URL: http://localhost:3000
     env_file:
       - .env
     # No host port published in the base file. Prod (docker-compose.prod.yml)

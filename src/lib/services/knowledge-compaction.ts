@@ -95,14 +95,21 @@ export interface CompactionSummary {
  * `knowledge.compaction.run` audit event per call, plus per-merge /
  * per-retire detail events.
  */
+/**
+ * Would "Compact now" be refused? Workspace admins only; a Background AI
+ * hold (or scope 'all') refuses it. PC-05 (I110): merging clusters calls
+ * the AI, so an empty wallet refuses it up front instead of spending past
+ * zero. PC-38: the button asks this before its guard counts the click.
+ */
+export async function assertCanCompactKnowledge(ctx: WorkspaceContext): Promise<void> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('knowledge.compact');
+  await assertGate(ctx, 'background_ai', { spendsTokens: true });
+}
+
 export async function compactWorkspaceKnowledge(
   ctx: WorkspaceContext,
 ): Promise<CompactionSummary> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('knowledge.compact');
-  // PC-06: Background AI hold (or scope 'all'). PC-05 (I110): merging
-  // clusters calls the AI, so an empty wallet refuses it up front instead
-  // of spending past zero.
-  await assertGate(ctx, 'background_ai', { spendsTokens: true });
+  await assertCanCompactKnowledge(ctx);
   const startedAt = new Date();
 
   const retiredStaleCount = await retireStaleLessons(ctx);

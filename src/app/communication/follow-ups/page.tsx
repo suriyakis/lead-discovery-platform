@@ -34,7 +34,12 @@ import {
   labelFor,
 } from '@/lib/ui/labels';
 
-type FollowUpFilter = 'all' | FollowUpStatus;
+/** PC-12: 'processing' (a step a pass is writing or sending right now)
+ *  has no tab of its own — the Scheduled tab lists it, with its badge. */
+type TabStatus = Exclude<FollowUpStatus, 'processing'>;
+type FollowUpFilter = 'all' | TabStatus;
+
+const TAB_STATUSES = followUpStatus.filter((s): s is TabStatus => s !== 'processing');
 
 /** One tab per status, labelled and explained from the one vocabulary (DS-09). */
 const STATUS_TABS: ReadonlyArray<{
@@ -42,7 +47,7 @@ const STATUS_TABS: ReadonlyArray<{
   label: string;
   hint: string;
 }> = [
-  ...followUpStatus.map((id) => ({
+  ...TAB_STATUSES.map((id) => ({
     id,
     label: FOLLOW_UP_STATUS_LABEL[id],
     hint: FOLLOW_UP_STATUS_DESCRIPTION[id],

@@ -137,6 +137,91 @@ export function classifyConnectionFailure(message: string): ConnectionFailureCau
   return 'other';
 }
 
+// ---- PC-09: the failure class that drives recovery --------------------
+
+/**
+ * PC-09 — what a mailbox failure means for recovery (mailboxes.failure_class):
+ *
+ *   auth        the server refused our credentials (or one is missing).
+ *               Retrying cannot help and every retry is one more failed
+ *               login on what is often a shared host running fail2ban, so
+ *               nothing retries it automatically: the owner fixes the
+ *               settings (saving them runs one check) or clicks Test again.
+ *   connection  the server could not be reached: refused, timed out, DNS,
+ *               TLS, a dropped socket. No login happened, so probing is
+ *               safe: credential-free probes back off from 30 min to 6 h,
+ *               and one authenticated check follows once the host answers.
+ *   ambiguous   anything else (imapflow's bare "Command failed", an odd
+ *               reply): it may be a refused login in disguise, so at most
+ *               one authenticated attempt per 6 h and four in total.
+ */
+export const MAILBOX_FAILURE_CLASSES = ['auth', 'connection', 'ambiguous'] as const;
+export type MailboxFailureClass = (typeof MAILBOX_FAILURE_CLASSES)[number];
+
+/** Node / nodemailer / imapflow error codes that mean "never got a
+ *  usable connection" — no credentials were sent. */
+const CONNECTION_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ESOCKETTIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'EHOSTDOWN',
+  'ENETUNREACH',
+  'ENETDOWN',
+  'EPIPE',
+  'EPROTO',
+  // nodemailer
+  'ECONNECTION',
+  'ESOCKET',
+  'EDNS',
+  'ETLS',
+  // imapflow
+  'NoConnection',
+  'ConnectionClosed',
+  'ConnectionTimeout',
+  'GreetingTimeout',
+  'UpgradeTimeout',
+]);
+
+/** Texts of a connection that dropped or never came up (beyond the
+ *  refused / timeout / DNS / TLS causes classifyConnectionFailure names),
+ *  and SMTP 421 (service not available, closing the channel). */
+const CONNECTION_TEXT =
+  /socket hang up|connection (?:closed|lost|reset|ended)|unexpected close|closed unexpectedly|network is unreachable|host is unreachable|no route to host|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE|^421\b|\b421[ -]/i;
+
+/**
+ * PC-09: classify a mailbox failure for recovery. Takes what was thrown
+ * (its structured flags and codes win) or, for a stored / described error,
+ * only its text. Auth is checked first and biased toward "auth" (see
+ * AUTH_FAILURE_SIGNATURES): misreading a refused login as anything else
+ * would retry a login. A missing password is an auth failure too: only
+ * the owner can fix it.
+ */
+export function classifyMailboxFailure(input: {
+  error?: unknown;
+  message?: string | null;
+}): MailboxFailureClass {
+  const err = input.error;
+  if (err !== undefined && isAuthFailure(err)) return 'auth';
+  const text = (input.message ?? (err !== undefined ? describeConnectionError(err) : '')).trim();
+  if (looksLikeAuthFailure(text)) return 'auth';
+  if (/password missing|secret[_ ]missing/i.test(text)) return 'auth';
+  if (err && typeof err === 'object') {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === 'string' && CONNECTION_ERROR_CODES.has(code)) return 'connection';
+  }
+  const cause = classifyConnectionFailure(text);
+  if (cause === 'refused' || cause === 'timeout' || cause === 'dns' || cause === 'tls') {
+    return 'connection';
+  }
+  if (CONNECTION_TEXT.test(text)) return 'connection';
+  return 'ambiguous';
+}
+
 /** The port named in "connect ECONNREFUSED 1.2.3.4:587" style messages. */
 export function portFromMessage(message: string): number | null {
   // Greedy \S* so the LAST colon wins ("::1:465" is IPv6 ::1, port 465).
@@ -190,7 +275,7 @@ export function adviseConnectionFailure(
       return (
         `The ${label} server refused the login. Check the user name and password ${EDIT} ` +
         `(some providers require an app password), ${thenTest} ` +
-        'Automatic re-checks wait hours, so the server does not block us for repeated failed logins.'
+        'Nothing retries the login automatically, so the server does not block us for repeated failed logins; saving the settings runs one check.'
       );
     case 'refused':
       if (protocol === 'smtp' && port === 587) {

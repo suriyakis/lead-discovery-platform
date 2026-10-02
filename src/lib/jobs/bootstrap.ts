@@ -9,7 +9,7 @@ import { runConnectorRun } from '@/lib/connectors/runner';
 import { db } from '@/lib/db/client';
 import { connectorRuns } from '@/lib/db/schema/connectors';
 import { eq } from 'drizzle-orm';
-import { getJobQueue, type JobHandler } from './index';
+import { getJobQueue, NonRetryableJobError, type JobHandler } from './index';
 import { instrumented } from './instrumented';
 import {
   type WorkspaceContext,
@@ -26,6 +26,7 @@ import {
   KnowledgeIndexPayloadSchema,
 } from '@/lib/services/knowledge-index-queue';
 import { runKnowledgeIndexJob, summarizeIndexOutcome } from '@/lib/services/knowledge-indexing';
+import { RECLASSIFY_JOB, runReclassificationJob } from '@/lib/services/qualification-runs';
 
 export interface ConnectorRunJobPayload {
   runId: string;
@@ -44,7 +45,17 @@ function rehydrateCtx(payload: ConnectorRunJobPayload): WorkspaceContext {
   });
 }
 
-const handleConnectorRun: JobHandler<ConnectorRunJobPayload> = async (payload) => {
+/**
+ * connector.run. PC-36: BullMQ tries it up to 3 times with backoff
+ * (lanes.ts CONNECTOR_RUN_RETRY), which only helps a run that has not
+ * started: runConnectorRun executes a run only while its row is still
+ * 'pending' (conditional claim) and otherwise returns 'skipped'. A retry
+ * of a run that an earlier attempt claimed, that was cancelled, or that
+ * the stuck-work reaper failed meanwhile therefore changes nothing — it
+ * never races the reaper. A missing row or a payload naming another
+ * workspace is not retried.
+ */
+export const handleConnectorRun: JobHandler<ConnectorRunJobPayload> = async (payload) => {
   const ctx = rehydrateCtx(payload);
   const runId = BigInt(payload.runId);
 
@@ -52,9 +63,9 @@ const handleConnectorRun: JobHandler<ConnectorRunJobPayload> = async (payload) =
   // we expect (cancelled deletions or wrong-workspace replays should fail clean).
   const rows = await db.select().from(connectorRuns).where(eq(connectorRuns.id, runId));
   const run = rows[0];
-  if (!run) throw new Error(`connector_runs ${runId} missing at run time`);
+  if (!run) throw new NonRetryableJobError(`connector_runs ${runId} missing at run time`);
   if (run.workspaceId !== ctx.workspaceId) {
-    throw new Error(`connector_runs ${runId} workspaceId mismatch`);
+    throw new NonRetryableJobError(`connector_runs ${runId} workspaceId mismatch`);
   }
 
   return runConnectorRun(ctx, runId);
@@ -129,6 +140,16 @@ export function registerJobHandlers(): void {
       (payload, ctx) => handleKnowledgeIndex(payload, { jobId: ctx.jobId }),
       { kind: 'job', label: 'Knowledge indexing' },
     ),
+  );
+  // PC-38 (I028): a "Re-classify all" run. It records its own progress and
+  // outcome on its qualification_runs row; a throw (a database error) also
+  // marks the run failed before it reaches the heartbeat.
+  q.on(
+    RECLASSIFY_JOB,
+    instrumented(RECLASSIFY_JOB, (payload) => runReclassificationJob(payload), {
+      kind: 'job',
+      label: 'Re-classify all',
+    }),
   );
   registered = true;
 }

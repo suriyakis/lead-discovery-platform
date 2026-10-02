@@ -19,6 +19,7 @@ import {
 } from '@/lib/i18n/language';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
+import { assertTokens } from './token-ledger';
 import {
   createProductProfile,
   type CreateProductProfileInput,
@@ -569,13 +570,23 @@ export interface AutofillFromSourcesResult {
  * High-level: given a URL and/or PDFs, extract → synthesize → persist
  * an inactive draft product profile + audit-log the run.
  */
+/**
+ * Would "Generate product profile" be refused? Writers only, and PC-38
+ * (I184): an empty wallet refuses before the fetch and the AI call. The
+ * button asks this before its guard counts the click.
+ */
+export async function assertCanAutofillProduct(ctx: WorkspaceContext): Promise<void> {
+  if (!canWrite(ctx)) throw denied('product_autofill.run');
+  await assertTokens(ctx);
+}
+
 export async function autofillProductProfileFromSources(
   ctx: WorkspaceContext,
   input: AutofillFromSourcesInput,
 ): Promise<AutofillFromSourcesResult> {
-  if (!canWrite(ctx)) throw denied('product_autofill.run');
   const url = input.url?.trim();
   const pdfs = input.pdfs ?? [];
+  await assertCanAutofillProduct(ctx);
   if (!url && pdfs.length === 0) {
     throw invalid('provide at least one URL or one PDF');
   }

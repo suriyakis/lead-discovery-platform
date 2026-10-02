@@ -584,6 +584,8 @@ const CONFIRMED_ACTIONS: ReadonlyArray<{ file: string; actions: readonly string[
     ],
   },
   { file: 'src/app/autopilot/page.tsx', actions: ['clearOverlay'] },
+  // PC-38 (I028): states records × products and a token estimate.
+  { file: 'src/app/connectors/engine/page.tsx', actions: ['reclassifyAll'] },
   { file: 'src/app/settings/crm/[id]/page.tsx', actions: ['archive'] },
 ];
 

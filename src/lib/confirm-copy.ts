@@ -424,3 +424,32 @@ export function releaseGoLiveConfirm(ws: WorkspaceRef): string {
 export function revokeGoLiveConfirm(ws: WorkspaceRef): string {
   return `Put ${workspaceLabel(ws, { quoted: true })} back on the go-live hold?\n\nIts cold emails, follow-ups and AI reply drafts stop and wait in the queue (not failed) until it is released again. Email its members write themselves still sends. Its owners and admins are notified.`;
 }
+
+// ---- Re-classify all (PC-38, I028) -----------------------------------------
+
+/** What the confirmation needs from estimateReclassification. */
+export interface ReclassifyEstimateLike {
+  records: number;
+  products: number;
+  classifications: number;
+  billingExempt: boolean;
+  sampleSize: number;
+  estimatedTokens: number | null;
+}
+
+/** "1 record", "1,234 records". */
+function counted(n: number, one: string): string {
+  return `${numberFormat.format(n)} ${n === 1 ? one : `${one}s`}`;
+}
+
+/** States the record × product count and a token estimate (or why none). */
+export function reclassifyAllConfirm(e: ReclassifyEstimateLike): string {
+  const cost = e.billingExempt
+    ? 'This workspace is billing-exempt, so no tokens are charged.'
+    : e.estimatedTokens === null
+      ? 'No token estimate yet: this workspace has no recent AI classifications to go by.'
+      : e.estimatedTokens === 0
+        ? `Going by your last ${counted(e.sampleSize, 'classification')}, this uses no wallet tokens (they ran on your own AI key).`
+        : `Estimated cost: about ${numberFormat.format(e.estimatedTokens)} tokens, going by your last ${counted(e.sampleSize, 'classification')}.`;
+  return `Re-classify all ${counted(e.records, 'record')} against ${counted(e.products, 'active product')}?\n\nThat is up to ${counted(e.classifications, 'AI classification')}. ${cost}\n\nIt runs in the background in batches of 50, stops by itself if the wallet runs out, and shows its progress on this page. Your own review decisions are kept.`;
+}

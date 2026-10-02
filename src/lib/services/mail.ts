@@ -33,10 +33,10 @@ import {
 } from '@/lib/db/schema/mailing';
 import type { MailFolder } from './mail-folders';
 import {
-  classifyImapError,
+  classifySyncFailure,
   computeBackoffMs,
   nextSyncAfterEmpty,
-  TRANSIENT_FAILURE_PAUSE_THRESHOLD,
+  syncFailureThreshold,
 } from './imap-backoff';
 import { recordAuditEvent } from './audit';
 import {
@@ -89,7 +89,12 @@ import {
 } from '@/lib/mail/relevance';
 import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
-import { describeConnectionError } from '@/lib/mail/connection-errors';
+import {
+  classifyMailboxFailure,
+  describeConnectionError,
+  type MailboxFailureClass,
+} from '@/lib/mail/connection-errors';
+import { describeLeaseHolder, withWorkLease, type LeaseHolder } from './work-leases';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -490,11 +495,12 @@ async function sendAndRecord(
       }
     }
     if (failure.kind === 'auth') {
+      // PC-09: class 'auth' — nothing retries the login automatically.
       try {
         await markMailboxFailing(ctx, mailbox.id, {
           protocol: 'smtp',
           message: e?.message ?? String(err),
-          auth: true,
+          failureClass: 'auth',
         });
       } catch (markErr) {
         console.error('[mail.send] could not mark the mailbox failing:', markErr);
@@ -869,15 +875,45 @@ export interface SyncInboundResult {
   duplicates: number;
 }
 
+/** PC-12: the mailbox's sync lease is held by another sync or check. */
+export const MAILBOX_BUSY = 'mailbox_busy';
+
+/** "A sync or connection check of this mailbox is already running since …". */
+export function mailboxBusyMessage(held: LeaseHolder): string {
+  return `A sync or connection check of this mailbox is already running ${describeLeaseHolder(held)}. Try again when it has finished.`;
+}
+
+/**
+ * Fetch and store a mailbox's new inbound mail. PC-12 (I067): under the
+ * mailbox's 'mailbox.sync' lease, like every other sync and connection
+ * check of it; while another holds it this throws MAILBOX_BUSY and
+ * touches nothing. The IMAP tick and the Sync buttons go through
+ * safeSyncOne (backoff and failure bookkeeping); this is the bare sync.
+ */
 export async function syncInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   providerOverride?: IMailProvider,
 ): Promise<SyncInboundResult> {
   if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
-  // PC-06: an Inbox-sync hold stops the tick, manual Sync and autopilot's
-  // sync step alike (X6: the disabled feature flag stopped nothing).
+  // PC-06: an Inbox-sync hold stops the tick and manual Sync alike (X6:
+  // the disabled feature flag stopped nothing).
   await assertGate(ctx, 'inbox_sync');
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'mailbox.sync', resource: mailboxId, purpose: 'sync' },
+    () => syncInboundHeld(ctx, mailboxId, providerOverride),
+  );
+  if (leased.status === 'ran') return leased.value;
+  throw new MailServiceError(mailboxBusyMessage(leased.held), MAILBOX_BUSY);
+}
+
+/** syncInbound's work; the caller holds the mailbox's sync lease. */
+async function syncInboundHeld(
+  ctx: WorkspaceContext,
+  mailboxId: bigint,
+  providerOverride?: IMailProvider,
+): Promise<SyncInboundResult> {
   const { mailbox, provider } = await buildProviderFor(ctx, mailboxId, providerOverride);
   const since = mailbox.lastSyncedAt ?? undefined;
   const messages = await provider.fetchInbound({ since, limit: 100 });
@@ -940,13 +976,21 @@ type PersistInboundOutcome =
  * "classify" (analyseReply) also covers the outreach reply handler and
  * follow-up cancellation. A bounce's sender is the mailer daemon, so it is
  * never made a contact; lead.replied is for people answering us (I161).
+ *
+ * PC-12 (I067): the insert is ON CONFLICT (workspace, message_id) DO
+ * NOTHING. The same email can reach two of a workspace's mailboxes (CC'd
+ * to both) and their syncs run side by side; the one that stores it second
+ * used to hit the unique index, throw, and count a spurious IMAP failure
+ * against a healthy mailbox. Now it is a duplicate like any other, with no
+ * side effects.
  */
 async function persistInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   inbound: InboundMessage,
 ): Promise<PersistInboundOutcome> {
-  // Dedup by (workspace, message_id).
+  // Dedup by (workspace, message_id) — the cheap check; the insert below
+  // settles a race the check cannot see.
   const existing = await db
     .select()
     .from(mailMessages)
@@ -1036,12 +1080,16 @@ async function persistInbound(
     receivedAt: inbound.receivedAt,
     outreachRelevance: relevance,
     relevanceSignals: assessment.signals,
-  } satisfies NewMailMessage).returning({ id: mailMessages.id });
+  } satisfies NewMailMessage)
+    .onConflictDoNothing({ target: [mailMessages.workspaceId, mailMessages.messageId] })
+    .returning({ id: mailMessages.id });
+  // Another sync stored it between the check above and this insert.
+  if (!insertedRow) return { existed: true };
 
   await touchThread(thread.id);
 
   // Bulk and unrelated mail stops here: stored, threaded, no side effects.
-  if (!insertedRow || !isOutreachLinked(relevance)) {
+  if (!isOutreachLinked(relevance)) {
     return { existed: false, relevance };
   }
 
@@ -1596,7 +1644,7 @@ export async function permanentlyDelete(
   return { affected: deletedIds.length, ids: deletedIds };
 }
 
-// ---- safe-sync (P61-25, flow:F-04) ---------------------------------
+// ---- safe-sync (P61-25, flow:F-04, PC-09) --------------------------
 
 export type SafeSyncOutcome =
   | {
@@ -1604,25 +1652,44 @@ export type SafeSyncOutcome =
       fetched: number;
       inserted: number;
       duplicates: number;
-      /** A failing mailbox passed its re-check and is active again. */
+      /** A failing mailbox passed its check and is active again. */
       recovered: boolean;
     }
-  /** The mailbox is failing and nothing was synced: it was just paused
-   *  (a refused login, or TRANSIENT_FAILURE_PAUSE_THRESHOLD failures in a
-   *  row), or it was already failing and its re-check failed again. */
+  /** The mailbox is failing and nothing was synced: it was just marked
+   *  failing (a refused login, or too many failures in a row for its
+   *  class), or it was already failing and a person's check failed again. */
   | {
       kind: 'failing';
       message: string;
-      /** A new mailbox.failing notification was raised (deduped while unread). */
+      /** PC-09: why it fails (decides how it may recover). */
+      failureClass: MailboxFailureClass | null;
+      /** A new mailbox.failing notification was raised. */
       notified: boolean;
-      /** When the tick may re-check it (null when it was not marked). */
-      nextSyncAfter: Date | null;
+      /** When the health probes look at it next (null: nothing retries it
+       *  automatically, or it was not marked). */
+      nextProbeAt: Date | null;
     }
   | {
       kind: 'transient_failed';
       message: string;
       consecutiveFailures: number;
       nextSyncAfter: Date;
+    }
+  /** PC-12 (I067): another sync or check of this mailbox holds its lease
+   *  (the tick and a Sync button at once). Nothing was done and nothing is
+   *  recorded: not a failure, no backoff. */
+  | {
+      kind: 'busy';
+      message: string;
+      held: LeaseHolder;
+    }
+  /** PC-09: automatic work found the mailbox no longer active under its
+   *  lease (it failed, or was paused, since the tick listed it). Nothing
+   *  was done: a failing mailbox's recovery is the health probes', never
+   *  a sync's login. */
+  | {
+      kind: 'skipped';
+      message: string;
     };
 
 /** Wraps syncInbound + the cron's post-result mailbox bookkeeping into
@@ -1631,20 +1698,30 @@ export type SafeSyncOutcome =
  *  this, manual clicks bypass the fail2ban defense and a broken
  *  mailbox can rack up failed LOGINs from operator impatience.
  *
- *  flow:F-04 — every failure leaves a non-null imap_next_sync_after:
- *    - transient (below the threshold): 2 min doubling to 60 min, status
- *      stays active;
- *    - a refused login or the threshold: markMailboxFailing (status
- *      'failing', a 1 h / 6 h re-check gate growing to 24 h, one deduped
- *      mailbox.failing notification);
- *    - a mailbox that is already failing is NOT synced: it gets a full
- *      SMTP + IMAP re-check first (recordMailboxConnectionCheck). A pass
- *      makes it active and the sync runs; a failure refreshes the error,
- *      the gate and the (deduped) notification.
+ *  flow:F-04 / PC-09 — every failure is classified
+ *  (lib/mail/connection-errors.ts) and leaves a non-null gate:
+ *    - below its class's threshold (a network failure: 10 in a row; an
+ *      unclear error: 3 — syncFailureThreshold): 2 min doubling to
+ *      60 min, status stays active;
+ *    - a refused login, or the threshold: markMailboxFailing with the
+ *      class (its probe schedule, the incident, one notification);
+ *    - a mailbox that is already failing is NOT synced. A person's Sync
+ *      runs a full SMTP + IMAP check first (recordMailboxConnectionCheck):
+ *      a pass makes it active and the sync runs. Automatic work never
+ *      logs in to a failing mailbox: it is 'skipped' (the health probes
+ *      own its recovery, services/mailbox-probes.ts).
  *
  *  Caller passes the resolved mailbox row — this helper does NOT
  *  enforce the imap_next_sync_after cooldown gate; that's the cron's
- *  job. Manual sync is explicitly "do it now". */
+ *  job. Manual sync is explicitly "do it now".
+ *
+ *  PC-12 (I067): this is the one automatic inbound path (autopilot's own
+ *  sync step is gone, PC-13), and it runs under the mailbox's
+ *  'mailbox.sync' lease: a second sync or check of the same mailbox while
+ *  one is running returns `busy` without logging in, so the two can no
+ *  longer race on the message-id index and record a spurious failure.
+ *  The row is re-read under the lease — the caller's copy may predate the
+ *  sync that just finished (its counters, its failing status). */
 export async function safeSyncOne(
   ctx: WorkspaceContext,
   mailbox: Pick<Mailbox, 'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'>,
@@ -1656,19 +1733,65 @@ export async function safeSyncOne(
   // must neither count towards the auto-pause nor push the backoff.
   await assertGate(ctx, 'inbox_sync');
 
+  const leased = await withWorkLease(
+    ctx,
+    {
+      kind: 'mailbox.sync',
+      resource: mailbox.id,
+      purpose: isAutomatic(ctx) ? 'IMAP tick' : 'manual sync',
+    },
+    async () => safeSyncHeld(ctx, (await currentMailboxRow(ctx, mailbox.id)) ?? mailbox),
+  );
+  if (leased.status === 'ran') return leased.value;
+  return { kind: 'busy', message: mailboxBusyMessage(leased.held), held: leased.held };
+}
+
+type SyncableMailbox = Pick<
+  Mailbox,
+  'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'
+>;
+
+/** The mailbox's row as it is now (null when it is gone). */
+async function currentMailboxRow(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+): Promise<SyncableMailbox | null> {
+  const [row] = await db
+    .select({
+      id: mailboxes.id,
+      status: mailboxes.status,
+      imapHost: mailboxes.imapHost,
+      imapConsecutiveFailures: mailboxes.imapConsecutiveFailures,
+      imapEmptySyncs: mailboxes.imapEmptySyncs,
+    })
+    .from(mailboxes)
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** safeSyncOne's work; the caller holds the mailbox's sync lease. */
+async function safeSyncHeld(ctx: WorkspaceContext, mailbox: SyncableMailbox): Promise<SafeSyncOutcome> {
   let recovered = false;
+  if (isAutomatic(ctx) && mailbox.status !== 'active') {
+    return {
+      kind: 'skipped',
+      message: `the mailbox is ${mailbox.status}; automatic sync only reads active mailboxes`,
+    };
+  }
   if (mailbox.status === 'failing') {
     const check = await recheckFailingMailbox(ctx, mailbox);
     if (!check.ok) {
       return {
         kind: 'failing',
         message: check.lastError ?? 'failed',
+        failureClass: check.failureClass,
         notified: check.notified,
-        nextSyncAfter: check.nextSyncAfter,
+        nextProbeAt: check.nextProbeAt,
       };
     }
     recovered = check.recovered;
-    // Outbound-only mailbox: the re-check was the whole job.
+    // Outbound-only mailbox: the check was the whole job.
     if (!mailbox.imapHost) {
       return { kind: 'synced', fetched: 0, inserted: 0, duplicates: 0, recovered };
     }
@@ -1678,7 +1801,8 @@ export async function safeSyncOne(
   const scope = and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id));
 
   try {
-    const result = await syncInbound(ctx, mailbox.id);
+    // This call holds the lease already (syncInbound would find it held).
+    const result = await syncInboundHeld(ctx, mailbox.id);
     // Success — reset failure counters, apply adaptive empty-sync delay.
     const nextEmpty = result.fetched === 0 ? priorEmpty + 1 : 0;
     const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);
@@ -1704,26 +1828,26 @@ export async function safeSyncOne(
     // describeConnectionError keeps imapflow's response code and text —
     // its refused LOGIN is otherwise a bare "Command failed".
     const msg = describeConnectionError(err);
-    const cls = classifyImapError(err);
+    const failureClass = classifySyncFailure(err);
     const nextCount = priorFailures + 1;
 
-    // Auto-pause when:
-    //   - error signature matches an auth failure, OR
-    //   - we've crossed the transient-failure threshold without ever
-    //     getting a clean sync (slow-burn fail2ban defense).
-    if (cls === 'auth' || nextCount >= TRANSIENT_FAILURE_PAUSE_THRESHOLD) {
+    // Failing when the error is a refused login, or this class has failed
+    // too often in a row (slow-burn fail2ban defense; an unclear error
+    // sooner than a network one).
+    if (nextCount >= syncFailureThreshold(failureClass)) {
       const marked = await markMailboxFailing(ctx, mailbox.id, {
         protocol: 'imap',
         message: msg,
-        auth: cls === 'auth',
+        failureClass,
         consecutiveFailures: nextCount,
       });
       if (marked.marked) {
         return {
           kind: 'failing',
           message: msg,
+          failureClass: marked.failureClass,
           notified: marked.notified,
-          nextSyncAfter: marked.nextSyncAfter,
+          nextProbeAt: marked.nextProbeAt,
         };
       }
       // Paused / archived (a manual Sync): keep the operator's status and
@@ -1751,9 +1875,10 @@ export async function safeSyncOne(
   }
 }
 
-/** A failing mailbox is re-checked (SMTP + IMAP), never just synced: an
- *  IMAP sync passing says nothing about the SMTP login that may be what
- *  failed. Counts as one more consecutive failed check when it fails. */
+/** A person's Sync of a failing mailbox checks it first (SMTP + IMAP),
+ *  never just syncs it: an IMAP sync passing says nothing about the SMTP
+ *  login that may be what failed. Counts as one more consecutive failed
+ *  check when it fails. Never automatic (safeSyncHeld skips those). */
 async function recheckFailingMailbox(
   ctx: WorkspaceContext,
   mailbox: Pick<Mailbox, 'id' | 'imapConsecutiveFailures'>,
@@ -1770,6 +1895,7 @@ async function recheckFailingMailbox(
     const marked = await markMailboxFailing(ctx, mailbox.id, {
       protocol,
       message,
+      failureClass: classifyMailboxFailure({ error: err }),
       consecutiveFailures,
     });
     return {
@@ -1777,7 +1903,8 @@ async function recheckFailingMailbox(
       recovered: false,
       lastError: `${protocol === 'smtp' ? 'SMTP' : 'IMAP'}: ${message}`.slice(0, 2000),
       notified: marked.notified,
-      nextSyncAfter: marked.nextSyncAfter,
+      failureClass: marked.failureClass,
+      nextProbeAt: marked.nextProbeAt,
     };
   }
   const result = await runConnectionTest(built.provider);

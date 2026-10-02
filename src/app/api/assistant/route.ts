@@ -19,7 +19,7 @@ import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { AssistantError, askAssistant } from '@/lib/services/assistant';
 import { authErrorToResponse } from '@/lib/services/http';
-import { rateLimitAllow } from '@/lib/rate-limit';
+import { rateLimitCheck, retryAfterHeaders } from '@/lib/rate-limit';
 import { HISTORY_TURN_MAX_CHARS } from '@/lib/assistant/panel-state';
 
 const InputSchema = z.object({
@@ -61,14 +61,17 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // Cost-DoS guard: metering is post-hoc, so the wallet check alone can be
   // raced by concurrent floods (and billing-exempt tenants have no wallet
-  // gate at all). Cap per workspace AND per user.
-  if (
-    !rateLimitAllow(`assistant:ws:${ctx.workspaceId}`, 20, 60_000) ||
-    !rateLimitAllow(`assistant:user:${ctx.userId}`, 10, 60_000)
-  ) {
+  // gate at all). Cap per workspace AND per user. PC-38: the windows are
+  // shared (Postgres), so a deploy no longer resets them.
+  // The user's window is only counted when the workspace's lets it in.
+  const wsLimit = await rateLimitCheck(`assistant:ws:${ctx.workspaceId}`, 20, 60_000);
+  const limit = wsLimit.allowed
+    ? await rateLimitCheck(`assistant:user:${ctx.userId}`, 10, 60_000)
+    : wsLimit;
+  if (!limit.allowed) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many questions — try again in a minute.', retryable: true },
-      { status: 429 },
+      { status: 429, headers: retryAfterHeaders(limit) },
     );
   }
 

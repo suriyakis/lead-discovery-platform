@@ -146,6 +146,9 @@ export async function collectRuleFindings(
       lastError: mailboxes.lastError,
       lastErrorAt: mailboxes.lastErrorAt,
       failingSince: mailboxes.failingSince,
+      failureClass: mailboxes.failureClass,
+      nextProbeAt: mailboxes.nextProbeAt,
+      probeAttempts: mailboxes.probeAttempts,
       smtpHost: mailboxes.smtpHost,
       smtpPort: mailboxes.smtpPort,
       imapHost: mailboxes.imapHost,
@@ -262,6 +265,9 @@ export type MailboxFindingRow = Pick<
   | 'lastError'
   | 'lastErrorAt'
   | 'failingSince'
+  | 'failureClass'
+  | 'nextProbeAt'
+  | 'probeAttempts'
   | 'smtpHost'
   | 'smtpPort'
   | 'imapHost'
@@ -295,7 +301,7 @@ export function mailboxFindings(rows: ReadonlyArray<MailboxFindingRow>): HealthF
       severity: 'warning',
       code: 'mailbox.failing',
       message:
-        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice}` +
+        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice} ${summary.recovery}` +
         ` Last error${when}: ${(mb.lastError ?? 'unknown').slice(0, 300)}`,
       href: `/mailbox/${mb.id}`,
     });
@@ -505,12 +511,19 @@ export async function runWorkspaceHealthCheck(
 }
 
 /** Admin-triggered immediate check (the "Run now" button). */
-export async function runHealthCheckNow(
-  ctx: WorkspaceContext,
-): Promise<WorkspaceHealthReport> {
+/** Would "Run check now" be refused? Workspace admins only. (The AI part
+ *  is skipped, not refused, on an empty wallet or a hold.) PC-38: the
+ *  button asks this before its guard counts the click. */
+export function assertCanRunHealthCheckNow(ctx: WorkspaceContext): void {
   if (!canAdminWorkspace(ctx)) {
     throw new HealthCheckError('Permission denied: health.run', 'permission_denied');
   }
+}
+
+export async function runHealthCheckNow(
+  ctx: WorkspaceContext,
+): Promise<WorkspaceHealthReport> {
+  assertCanRunHealthCheckNow(ctx);
   const report = await runWorkspaceHealthCheck(ctx, { manual: true });
   await db
     .update(workspaces)

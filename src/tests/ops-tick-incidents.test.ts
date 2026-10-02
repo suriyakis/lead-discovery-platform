@@ -1,5 +1,5 @@
 // PC-07 acceptance (2): for each per-workspace repeatable tick (8, plus
-// PC-10's stuck-work reaper), a per-workspace
+// PC-10's stuck-work reaper and PC-09's mailbox-health probes), a per-workspace
 // error creates exactly one open ops_event per fingerprint with its
 // occurrences counted, and the workspace's next success resolves it.
 // (PC-35's ops.retention.tick is platform-wide, not per workspace: its
@@ -53,11 +53,13 @@ vi.mock('@/lib/services/outreach-queue', async (importOriginal) => ({
     return { picked: 0, sent: 0, failed: 0, skipped: 0, retrying: 0 };
   }),
 }));
-vi.mock('@/lib/services/mailbox', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/services/mailbox')>()),
-  adoptUntrackedFailingMailboxes: vi.fn(async (ctx: { workspaceId: bigint }) => {
-    check('adopt', ctx.workspaceId);
-    return 0;
+// PC-09: the mailbox-health tick's per-workspace step (the due list; the
+// IMAP tick's per-workspace adoption pass is gone).
+vi.mock('@/lib/services/mailbox-probes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/services/mailbox-probes')>()),
+  listMailboxesDueForProbe: vi.fn(async (ctx: { workspaceId: bigint }) => {
+    check('probe', ctx.workspaceId);
+    return [];
   }),
 }));
 vi.mock('@/lib/services/mail', async (importOriginal) => ({
@@ -80,7 +82,8 @@ vi.mock('@/lib/services/follow-up', async (importOriginal) => ({
 }));
 // Integration (PC-13): the crawl tick visits only workspaces whose policy
 // has an enabled crawl plan (tickVerdict). The stubbed processDueCrawlPlans
-// needs no real plan, so every workspace counts as having one here.
+// needs no real plan, so every workspace counts as having one here; the
+// mailbox-health tick likewise counts one mailbox to watch (PC-09).
 vi.mock('@/lib/services/automation-policy', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/services/automation-policy')>();
   return {
@@ -91,6 +94,7 @@ vi.mock('@/lib/services/automation-policy', async (importOriginal) => {
         policy: {
           ...ws.policy,
           discovery: { enabledPlans: Math.max(1, ws.policy.discovery.enabledPlans) },
+          inbox: { ...ws.policy.inbox, activeMailboxes: Math.max(1, ws.policy.inbox.activeMailboxes) },
         },
       })),
     ),
@@ -252,7 +256,7 @@ const CASES: TickCase[] = [
     beforeRun: enableAutopilotEverywhere,
   },
   { tick: 'outreach.drain.tick', step: 'drain', title: 'Send queue' },
-  { tick: 'mail.imap.tick', step: 'adopt', part: 'adopt', title: 'Inbox sync' },
+  { tick: 'mail.probe.tick', step: 'probe', title: 'Mailbox health' },
   { tick: 'outreach.follow_up.tick', step: 'follow_up', title: 'Follow-ups' },
   {
     tick: 'knowledge.compact.tick',

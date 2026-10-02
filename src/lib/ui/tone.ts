@@ -34,6 +34,7 @@ import type {
 } from '@/lib/db/schema/documents';
 import type { FollowUpSkipReason, FollowUpStatus } from '@/lib/db/schema/follow-ups';
 import type {
+  MailboxFailureClassValue,
   MailboxStatus,
   MailDirection,
   MailOutreachRelevance,
@@ -259,6 +260,14 @@ export const MAILBOX_STATUS_TONE = {
   archived: 'muted',
 } as const satisfies Record<MailboxStatus, Tone>;
 
+/** PC-09: why a failing mailbox fails. A refused login waits for a person;
+ *  the other two recover on their own when they can. */
+export const MAILBOX_FAILURE_CLASS_TONE = {
+  auth: 'danger',
+  connection: 'attention',
+  ambiguous: 'attention',
+} as const satisfies Record<MailboxFailureClassValue, Tone>;
+
 export const OUTREACH_RELEVANCE_TONE = {
   prospect_reply: 'info',
   auto_reply: 'neutral',
@@ -376,6 +385,7 @@ export const REPLY_TRIAGE_TRUSTED = false;
 
 export const FOLLOW_UP_STATUS_TONE = {
   pending: 'neutral',
+  processing: 'info',
   awaiting_approval: 'attention',
   sent: 'success',
   skipped: 'neutral',
@@ -402,6 +412,7 @@ export const NOTIFICATION_KIND_TONE = {
   'support.reply': 'info',
   'run.failed': 'danger',
   'mailbox.failing': 'danger',
+  'mailbox.recovered': 'success',
   'learning.synthesis': 'ai',
   'tokens.low': 'attention',
   'tokens.empty': 'danger',
@@ -574,6 +585,7 @@ export const TONE_MAPS = {
   mail_direction: MAIL_DIRECTION_TONE,
   mail_status: MAIL_STATUS_TONE,
   mailbox_status: MAILBOX_STATUS_TONE,
+  mailbox_failure_class: MAILBOX_FAILURE_CLASS_TONE,
   outreach_relevance: OUTREACH_RELEVANCE_TONE,
   suppression_kind: SUPPRESSION_KIND_TONE,
   suppression_reason: SUPPRESSION_REASON_TONE,

@@ -28,6 +28,7 @@ import type {
 } from '@/lib/db/schema/documents';
 import type { FollowUpSkipReason, FollowUpStatus } from '@/lib/db/schema/follow-ups';
 import type {
+  MailboxFailureClassValue,
   MailboxStatus,
   MailDirection,
   MailOutreachRelevance,
@@ -226,6 +227,13 @@ export const MAILBOX_STATUS_LABEL = {
   archived: 'Archived',
 } as const satisfies Record<MailboxStatus, string>;
 
+/** PC-09: why a failing mailbox fails (and so how it may recover). */
+export const MAILBOX_FAILURE_CLASS_LABEL = {
+  auth: 'Login refused',
+  connection: 'Server unreachable',
+  ambiguous: 'Unclear error',
+} as const satisfies Record<MailboxFailureClassValue, string>;
+
 /** Which inbound mail answers our outreach (the X1 relevance gate). */
 export const OUTREACH_RELEVANCE_LABEL = {
   prospect_reply: 'Prospect reply',
@@ -324,9 +332,11 @@ export const REPLY_CLASS_LABEL = {
   bounce: 'Bounce',
 } as const satisfies Record<ReplyClass, string>;
 
-/** 'pending' is a scheduled follow-up waiting for its send time. */
+/** 'pending' is a scheduled follow-up waiting for its send time;
+ *  'processing' (PC-12) one a follow-up pass is writing or sending now. */
 export const FOLLOW_UP_STATUS_LABEL = {
   pending: 'Scheduled',
+  processing: 'Being sent',
   awaiting_approval: 'Awaiting approval',
   sent: 'Sent',
   skipped: 'Skipped',
@@ -353,6 +363,7 @@ export const NOTIFICATION_KIND_LABEL = {
   'support.reply': 'Support reply',
   'run.failed': 'Search failed',
   'mailbox.failing': 'Mailbox failing',
+  'mailbox.recovered': 'Mailbox back online',
   'learning.synthesis': 'New lessons',
   'tokens.low': 'Tokens low',
   'tokens.empty': 'Out of tokens',
@@ -515,6 +526,7 @@ export const LABEL_MAPS = {
   mail_direction: MAIL_DIRECTION_LABEL,
   mail_status: MAIL_STATUS_LABEL,
   mailbox_status: MAILBOX_STATUS_LABEL,
+  mailbox_failure_class: MAILBOX_FAILURE_CLASS_LABEL,
   outreach_relevance: OUTREACH_RELEVANCE_LABEL,
   suppression_kind: SUPPRESSION_KIND_LABEL,
   suppression_reason: SUPPRESSION_REASON_LABEL,
@@ -567,6 +579,7 @@ export const USER_ROLE_DESCRIPTION = {
 
 export const FOLLOW_UP_STATUS_DESCRIPTION = {
   pending: 'Scheduled, waiting for its send time.',
+  processing: 'Its send time has come: it is being written or sent right now.',
   awaiting_approval: 'Written by AI, waiting for you to approve or reject it.',
   sent: 'Delivered to the prospect.',
   skipped: 'Cancelled: a reply arrived, the lead closed, or someone stopped it.',
@@ -634,6 +647,7 @@ export const AUDIT_KIND_LABEL = {
   'review.bulk_archive': 'Records archived in bulk',
   'review.bulk_delete': 'Records deleted in bulk',
   'qualification.reclassify_workspace': 'Records requalified',
+  'qualification.reclassify_requested': 'Re-classification requested',
   'lead.bulk_archive': 'Matches archived in bulk',
   'lead.bulk_delete': 'Matches deleted in bulk',
   'lead_research.run': 'Lead research run',
@@ -805,6 +819,7 @@ export const AUDIT_KIND_LABEL = {
   'connector_run.cancel': 'Search run cancelled',
   'connector_run.reaped': 'Stuck search run closed',
   'outreach.queue.reaped': 'Stuck send settled',
+  'follow_up.reaped': 'Stuck follow-up settled',
   'outreach.queue.requeue': 'Email put back in the queue',
   'outreach.queue.retry': 'Email retried',
   'outreach.queue.mark_delivered': 'Email marked as delivered',

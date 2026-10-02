@@ -506,6 +506,10 @@ describe('(3) retention: only rows past their window, only the listed kinds', ()
       ops_alert_deliveries: 1,
       ops_alert_state: 1,
       'job_heartbeats.retired': 1,
+      // PC-12: no lease rows in these fixtures (work-leases-pc12.test.ts).
+      'work_leases.expired': 0,
+      // PC-38: no limiter windows either (rate-limits-pc38.test.ts).
+      'rate_limit_buckets.expired': 0,
     });
     expect(summary.deleted).toBe(12);
     expect(summary.policies.autopilot_log!.cutoff).toBe(daysAgo(30).toISOString());

@@ -229,31 +229,10 @@ export async function classifySourceRecord(
   return inserted;
 }
 
-/** Re-classify every active source record in the workspace. Useful after
-    product-profile edits. Returns the number of qualifications written. */
-export async function reclassifyWorkspace(
-  ctx: WorkspaceContext,
-): Promise<{ recordCount: number; qualificationCount: number }> {
-  const records = await db
-    .select()
-    .from(sourceRecords)
-    .where(eq(sourceRecords.workspaceId, ctx.workspaceId));
-
-  let qualificationCount = 0;
-  for (const record of records) {
-    const created = await classifySourceRecord(ctx, record.id);
-    qualificationCount += created.length;
-  }
-
-  await recordAuditEvent(ctx, {
-    kind: 'qualification.reclassify_workspace',
-    entityType: 'workspace',
-    entityId: ctx.workspaceId,
-    payload: { recordCount: records.length, qualificationCount },
-  });
-
-  return { recordCount: records.length, qualificationCount };
-}
+// PC-38 (I028): re-classifying every record is a background job now —
+// services/qualification-runs.ts (requestReclassification and the
+// qualification.reclassify job). The synchronous reclassifyWorkspace that
+// ran records × products AI calls inside one request is gone.
 
 // ---- read -----------------------------------------------------------
 

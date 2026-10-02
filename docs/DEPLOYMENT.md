@@ -38,6 +38,8 @@ Visit `http://localhost:3000`. Sign in with Google. The first sign-in creates a 
 | `pnpm dev` | Next.js dev server with hot reload |
 | `pnpm build` | Production build |
 | `pnpm start` | Run the production build |
+| `pnpm build:worker` | Bundle the background-job worker into `dist/worker/worker.cjs` (PC-36) |
+| `pnpm worker` / `pnpm worker:dev` | Run the worker bundle / run `src/worker.ts` with tsx (needs `JOB_QUEUE_PROVIDER=bullmq` and Redis) |
 | `pnpm test` | Vitest test suite |
 | `pnpm test:watch` | Vitest watch mode |
 | `pnpm typecheck` | tsc --noEmit |
@@ -67,7 +69,9 @@ See `.env.example` for the full list. Notable ones:
 - **`AI_PROVIDER`** — `mock` in dev/test, real provider id in production when wired.
 - **`SEARCH_PROVIDER`** — same pattern.
 - **`STORAGE_PROVIDER`** — `local` (the default) in dev **and in production today**. The Phase 9 deploy note (TODO.md P9-06) kept prod on `local`, and `docker-compose.prod.yml` mounts the `app-storage` volume at `/app/storage` for it (`STORAGE_LOCAL_ROOT` defaults to `./storage`). Check `.env` on the server before relying on this. `s3` (any S3-compatible bucket, `S3_*` vars in `.env.example`) is supported. Switching is an env change, but copy the existing objects into the bucket under the same keys first, or every stored document and export goes missing. Either way, browsers download through the authenticated routes `/api/documents/[id]/download` and `/api/crm/exports/[file]`, which check the workspace and stream from storage. No storage URL (file:// or presigned) ever reaches a page.
-- **`JOB_QUEUE_PROVIDER`** — `memory` in dev, `bullmq` once Redis is up.
+- **`JOB_QUEUE_PROVIDER`** — `memory` in dev, `bullmq` once Redis is up. Production pins `bullmq` in `docker-compose.prod.yml` for both services (the split below needs the shared queue), whatever `.env` says.
+- **`ROLE`** (PC-36) — what a process does: `web` serves HTTP and only enqueues jobs, `worker` (the `node worker/worker.cjs` entry) runs the background jobs and schedules the ticks and serves no HTTP, `all` (the default, unset) does both in one process, as in local development. Production sets `ROLE` per service in `docker-compose.prod.yml` (`app` = web, `worker` = worker). A web server started with `ROLE=worker`, or any other value, refuses to start; the worker entry refuses anything but `worker` and refuses the in-memory queue. `ROLE=web` with the in-memory queue runs the jobs itself, with a warning.
+- **`JOB_TICKS_CONCURRENCY`** / **`JOB_BATCH_CONCURRENCY`** / **`JOB_RUNS_CONCURRENCY`** (PC-36) — how many jobs of each lane one worker runs at once: the ticks lane (the short repeatable ticks: send-queue drain, inbox sync, mailbox probes, crawl engine, sweepers, reaper; default 4), the batch lane (the long AI ticks: autopilot, follow-ups, knowledge compaction, health check; default 3) and the runs lane (discovery runs, knowledge indexing, learning, Re-classify all; default 2). An integer 1–32; anything else stops the worker at boot.
 - **`OPS_READY_TOKEN`**: unlocks the full `/api/ready` report (at least 16 characters). **`BUILD_SHA`**: build argument naming the deployed commit (`BUILD_SHA=$(git rev-parse --short HEAD)` before `docker-compose ... build app`). See `docs/OPS_MONITORING.md`.
 - **Owner alerts (PC-08)**: pushed to an [ntfy](https://ntfy.sh) topic. **`NTFY_TOPIC`** enables them (unset = alerts off, logged once at startup; letters, digits, `-` and `_`, at most 64). On ntfy.sh the topic name is the password, so use a long random one (`leadsonar-$(openssl rand -hex 12)`) or reserve it and set **`NTFY_TOKEN`** (access token, sent as a bearer token). **`NTFY_URL`** is the server, default `https://ntfy.sh` (a self-hosted base URL works; never put credentials in it). **`OPS_ALERT_MIN_SEVERITY`** is the lowest incident severity that alerts: `warning`, `error` (default) or `critical`. `APP_URL` makes each notification open the platform console. The topic and token are never shown, logged or stored; check the setup with **Send test alert** under Platform console → Providers → Owner alerts. Rules (dedupe, 6-hour reminders, digest, hourly budget, daily digest) are in [`docs/OPS_MONITORING.md`](OPS_MONITORING.md#owner-alerts-ntfy).
 
@@ -75,10 +79,21 @@ See `.env.example` for the full list. Notable ones:
 
 ### Topology
 
-- One Hetzner VPS (`agregat`) running Docker Compose.
+- One Hetzner VPS (`agregat`, 2 CPUs) running Docker Compose. It has **docker-compose v1 only** (the hyphenated `docker-compose`; `docker compose` is not installed), and every command names both files: `docker-compose -f docker-compose.yml -f docker-compose.prod.yml …`.
 - Nginx in front handling TLS via Let's Encrypt and proxying to the app container.
-- PostgreSQL: Hetzner-managed Postgres if available, otherwise a Postgres container with a dedicated volume + backups.
-- Redis (Phase 6+): a Redis container for BullMQ.
+- PostgreSQL: a Postgres container (`postgres`) with a dedicated volume + backups, on host port 5433 (loopback).
+- Redis: a Redis 7 container (`redis`) for BullMQ.
+- **Two app containers from one image (PC-36):**
+  - `app` (`node server.js`, `ROLE=web`, 127.0.0.1:3001) serves pages and API routes and only enqueues jobs. The ops watchdog (owner alerts, PC-08) runs here, independent of the worker.
+  - `worker` (`node worker/worker.cjs`, `ROLE=worker`, no ports) runs every background job on three BullMQ queues and schedules the repeatable ticks:
+
+    | Lane | Redis queue | Jobs | Concurrency |
+    |---|---|---|---|
+    | ticks | `lead-platform-ticks` | the short repeatable ticks (`src/lib/jobs/tick-catalog.ts`): send-queue drain (30 s), inbox sync (2 min), mailbox probes, crawl engine (it only starts runs), trash purge, reaper, retention, the learning and indexing sweepers | 4 (`JOB_TICKS_CONCURRENCY`) |
+    | batch | `lead-platform-batch` | the long AI ticks (`BATCH_TICKS` in `src/lib/jobs/lanes.ts`): autopilot (5 min), follow-ups (1 h), workspace health check, knowledge compaction | 3 (`JOB_BATCH_CONCURRENCY`) |
+    | runs | `lead-platform-runs` | on-demand work: `connector.run` (discovery runs; 3 attempts, backoff 30 s / 60 s), `knowledge.index`, `learning.process`, `qualification.reclassify` | 2 (`JOB_RUNS_CONCURRENCY`) |
+
+    A crawl plan that fires five long discovery runs fills the runs lane, and long autopilot or follow-up passes fill the batch lane; the drain tick still starts every 30 s. The worker shares the `app-storage` volume (knowledge indexing reads uploaded documents). On `docker stop` it stops taking jobs and gives running ones 25 s to finish (`stop_grace_period: 30s`); a discovery run cut off there is failed by the stuck-work reaper (PC-10) within 15 minutes and can be started again.
 
 ### First deploy
 
@@ -92,8 +107,9 @@ cd lead-discovery-platform
 cp .env.example .env
 $EDITOR .env
 
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-docker compose exec app pnpm db:migrate
+export BUILD_SHA=$(git rev-parse --short HEAD)
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml --profile app up -d --build
+pnpm install --frozen-lockfile && pnpm db:migrate   # host-side: the image has no tsx
 
 # Nginx vhost (managed outside the repo, alongside other apps)
 $EDITOR /etc/nginx/sites-available/discover.nulife.pl
@@ -106,16 +122,62 @@ certbot --nginx -d discover.nulife.pl
 
 ### Routine deploy
 
+From the operator's machine (WSL), with the change merged to `main`:
+
 ```bash
-ssh root@agregat
-cd /opt/lead-discovery-platform
-git pull
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-# DB migrations only when schema changed:
-docker compose exec app pnpm db:migrate
+scripts/deploy/deploy-agregat.sh              # pull, validate, build, recreate app + worker
+scripts/deploy/deploy-agregat.sh --migrate    # the same, plus host-side `pnpm db:migrate`
+scripts/deploy/deploy-agregat.sh --dry-run    # print the remote command sequence, run nothing
 ```
 
-That's the whole deploy. **No manual editing on the server.** If you need to debug, copy logs out, fix in the repo, push, redeploy.
+The script is versioned (PC-00 / PC-36), so every deploy change is reviewed in a PR. Over one SSH session to `root@195.201.16.169` it runs, each step on its own line under `set -euo pipefail` (the first failure stops the deploy with the old containers still running):
+
+0. with `--migrate`: `command -v pnpm`, so a server without pnpm on its PATH fails the deploy before the pull and the image build (the remote shell is a login shell, `bash -l -s`, so a pnpm from the profile, such as corepack or nvm, is found);
+1. `git pull origin main` in `/opt/lead-discovery-platform`, and `BUILD_SHA=$(git rev-parse --short HEAD)` for `/api/ready`;
+2. `docker-compose … --profile app config -q`: the server's own docker-compose validates the merged files before anything is built or stopped;
+3. `docker-compose … build app`: one image, tagged `lead-discovery-platform-app:latest`, which the worker runs too;
+4. with `--migrate`: host-side `pnpm db:migrate`, before the new code starts (migrations are additive). If `pnpm-lock.yaml` changed, run `pnpm install --frozen-lockfile` on the host first;
+5. `docker-compose … up -d --no-build --force-recreate --no-deps app worker`: postgres and redis are left alone;
+6. the status of both containers, the worker's first log lines (`[worker] running; no HTTP is served by this process.`), and `/api/health` on 127.0.0.1:3001.
+
+`DEPLOY_HOST`, `DEPLOY_DIR` and `DEPLOY_BRANCH` override the defaults. The old WSL script `~/deploy-discover.sh` becomes a one-line wrapper in the same release that brings PC-36 to `main` (release step 0 below; before that, `main` has no `worker` service and the new script would fail at step 5):
+
+```bash
+#!/usr/bin/env bash
+exec ~/projects/lead-discovery-platform/scripts/deploy/deploy-agregat.sh "$@"
+```
+
+The same by hand on the server:
+
+```bash
+cd /opt/lead-discovery-platform
+git pull origin main
+export BUILD_SHA=$(git rev-parse --short HEAD)
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml --profile app config -q
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml build app
+pnpm db:migrate          # only when the schema changed
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build --force-recreate --no-deps app worker
+```
+
+That's the whole deploy. **No manual editing on the server.** If you need to debug, copy logs out, fix in the repo, push, redeploy. Logs: `docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=200 app` (web, `[startup]`) and `… logs --tail=200 worker` (background jobs, `[worker]`, `[jobs]`, the ticks).
+
+### Release steps: Phase 1 dedicated worker (PC-36)
+
+The release that adds the `worker` service:
+
+0. **Before the deploy: switch the operator's deploy script (required, same release).** The WSL script `~/deploy-discover.sh` recreates `app` only (`up -d --force-recreate --no-deps app`). From this release `app` runs `ROLE=web` and only enqueues, so a deploy with the old script leaves **no worker at all**: the send queue, inbox sync, follow-ups, autopilot, discovery runs and the reaper all stop. Once this release is on `main`, and before deploying it, replace the old script with the wrapper:
+
+   ```bash
+   cp ~/deploy-discover.sh ~/deploy-discover.sh.pre-pc36
+   printf '%s\n' '#!/usr/bin/env bash' 'exec ~/projects/lead-discovery-platform/scripts/deploy/deploy-agregat.sh "$@"' > ~/deploy-discover.sh
+   chmod +x ~/deploy-discover.sh
+   ~/deploy-discover.sh --dry-run | grep -q 'up -d --no-build --force-recreate --no-deps app worker' && echo OK
+   ```
+
+   Check: the last line prints `OK`. If the old script runs by mistake anyway, the web process notices: from 3 minutes after its boot, two consecutive watchdog checks with no worker on a lane open the critical `worker.absent` incident (an ntfy alert at once when `NTFY_TOPIC` is set) and log `[ops] CRITICAL: no background worker consumes …` every minute; `docker-compose … up -d worker` fixes it.
+1. **Before the deploy.** Redis runs (`docker-compose … ps redis`). `.env` has `APP_URL` set to the public URL (`https://discover.nulife.pl`): the base compose file used to override it with `http://localhost:3000` in production, which was the base of the tracking-pixel and unsubscribe links in sent mail; from this release the app and the worker take it from `.env`. Nothing in `.env` needs `ROLE` or `JOB_QUEUE_PROVIDER` (the prod compose file sets both per service).
+2. **Deploy** with the script above. The first run creates the `worker` container. At its boot the worker moves what still waits on the old single queue (`lead-platform`) onto the lanes and removes the old tick schedules (log line `Pre-lane queue migrated: …`); a job that was running in the old app container when it stopped is settled by the reaper (discovery runs) or the outbox sweepers (learning, indexing).
+3. **Check.** `docker-compose … ps` shows `app` and `worker` up; `docker-compose … logs app | grep ROLE=web` shows the web role; within about 2 minutes the token-protected `/api/ready` detail lists every tick `ok` or `pending` with the worker's `bootId` (docs/OPS_MONITORING.md); after 5 minutes `docker-compose … logs app | grep 'no background worker'` prints nothing and no `worker.absent` incident is open.
 
 ### Release steps: Phase 1 automation control (PC-05, PC-06, PC-13, flow:F-07)
 
@@ -139,6 +201,48 @@ The release that brings the workspace pause, holds, the accountable-owner rule a
 
    `pnpm db:migrate` does not run this import. It must run, and the owner must review the rows, before the release that drops `feature_flags`.
 
+### Release steps: Phase 1 mailbox health (PC-09)
+
+The release that classifies mailbox failures and adds the `mail.probe.tick`. `pnpm db:migrate` adds the mailbox health columns; the probes start on their own. One step needs the owner:
+
+1. **After the deploy: the reviewed backfill (required).** Mailboxes that were already failing before this release (prod had two: workspace 1's since 2026-05-08 on a refused SMTP 587, workspace 2's after 13 failed syncs) are neither announced nor probed until the owner has reviewed them. Run the dry run (read only; ids, failing since, side, class, host:port, no addresses or error text) and give the report to the owner:
+
+   ```bash
+   DATABASE_URL=... pnpm exec tsx scripts/remediation/mailbox-health-backfill.ts
+   ```
+
+2. **After the owner signs off that exact list**, apply it with the fingerprint the dry run printed. It refuses if the list changed meanwhile (run the dry run again), and it is idempotent:
+
+   ```bash
+   DATABASE_URL=... pnpm exec tsx scripts/remediation/mailbox-health-backfill.ts --apply --expect <fingerprint>
+   ```
+
+   Each listed mailbox gets its failure class, one `mailbox.failing` incident (the ntfy alert follows) and one notification to its workspace's owners and admins; the audit rows are system events. None of them is probed automatically afterwards: they recover when someone fixes the settings, clicks Test again or Reactivate.
+3. **Check.** The dry run now prints `Nothing to backfill.`; `SELECT id, failure_class, next_probe_at FROM mailboxes WHERE status = 'failing'` shows a class on every row.
+
+### Release steps: Phase 1 shared rate limits (PC-38)
+
+The release that moves the rate limiter into Postgres and makes "Re-classify all" a background job. `pnpm db:migrate` creates `rate_limit_buckets` and `qualification_runs` and widens the `work_leases` checks; nothing else is needed for the app. The API thresholds are unchanged; their windows now survive deploys.
+
+**nginx (owner, on agregat, once).** The app limits AI work per workspace; nginx limits requests per client address in front of it, for `/api/` and server-action POSTs (a POST with a `Next-Action` header: scanners probe these, X10). The snippet is versioned in `scripts/deploy/nginx/`:
+
+```bash
+cd /opt/lead-discovery-platform
+cp scripts/deploy/nginx/leadsonar-rate-limit-zones.conf /etc/nginx/conf.d/
+cp scripts/deploy/nginx/leadsonar-rate-limit.conf /etc/nginx/snippets/
+# inside the discover.nulife.pl TLS server { }, above the location blocks:
+#     include snippets/leadsonar-rate-limit.conf;
+$EDITOR /etc/nginx/sites-available/discover.nulife.pl
+nginx -t && systemctl reload nginx
+```
+
+- `/api/` gets 5 requests a second per address with a burst of 30; `/api/track`, `/api/unsubscribe`, `/api/stripe/webhook`, `/api/health`, `/api/ready` and `/api/auth` are exempt (mail clients, image proxies, Stripe, monitors and sign-in call them, often from one address).
+- Server actions get 2 a second per address with a burst of 20. Page views, navigations and assets are never limited.
+- Past the burst nginx answers 429 at once and logs a `limiting requests` warning in the vhost's error log.
+- Check: `nginx -t` passes; a page still loads and a form still submits; `for i in $(seq 60); do curl -s -o /dev/null -w '%{http_code}\n' -X POST https://discover.nulife.pl/api/translate; done | sort | uniq -c` shows 401s, then 429s.
+- If nginx ever sits behind a proxy or CDN, set `real_ip_header` / `set_real_ip_from` first, or every client shares the proxy's address.
+- To remove: delete the `include` line and both files, then `nginx -t && systemctl reload nginx`.
+
 ### Backups
 
 - **Postgres:** `pg_dump` once a day, written to a local backups directory and uploaded to off-host storage. Retention: 30 days. Script lives at `scripts/backup-postgres.sh`.
@@ -154,8 +258,20 @@ ssh root@agregat
 cd /opt/lead-discovery-platform
 git log --oneline -10           # find the last good commit
 git checkout <sha>
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml build app
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build --force-recreate --no-deps app worker
 ```
+
+**Rolling back to a commit before PC-36** (its compose file has no `worker` service): stop and remove the worker *first*, while the current compose file is still checked out, or it keeps running ticks on the lane queues next to the old app's single queue:
+
+```bash
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml stop worker
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml rm -f worker
+git checkout <sha>
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build app
+```
+
+The lane schedules stay in Redis unread; rolling forward again reuses them.
 
 If a migration is the problem, **reverting code is not enough**. Revert the schema with the previous-migration SQL (kept in `drizzle/` history) and `pnpm db:migrate` to the desired state. Coordinate with anyone using the system before destructive rollbacks.
 
@@ -163,11 +279,13 @@ If a migration is the problem, **reverting code is not enough**. Revert the sche
 
 - `GET /api/health`: liveness. Returns 200 `{ ok: true }` whenever the process answers and does no I/O (no database, Redis or queue check), so container and nginx checks never flap on a slow dependency.
 - `GET /api/ready`: readiness (PC-07). Returns 200 or 503 after checking the database, Redis (with `JOB_QUEUE_PROVIDER=bullmq`), applied migrations and every background tick's heartbeat (the expected-slot rule, with a 10-minute grace after a deploy). Point the external uptime monitor here. The full report needs `Authorization: Bearer $OPS_READY_TOKEN`. Setup, the staleness table and the incident stream (`ops_events`) are in [`docs/OPS_MONITORING.md`](OPS_MONITORING.md).
+- The worker serves no HTTP and has no endpoint of its own. A worker that is down, stuck or cut off from Redis shows as stale ticks: `/api/ready` turns 503 (after the boot grace) and the watchdog in the web process sends a `tick.stale` owner alert. A worker that is not running at all (the container stopped, or never created) also opens the critical `worker.absent` incident within about 5 minutes of the web process booting. `docker-compose … logs --tail=200 worker` is the first step.
 - Nginx `proxy_read_timeout` is generous because some background jobs are long; user-facing endpoints stay snappy. Run heavy work as jobs.
 
 ### What goes where on the server
 
 - App code: `/opt/lead-discovery-platform`
+- Containers: `app` (web, port 127.0.0.1:3001) and `worker` (background jobs, no port), one image `lead-discovery-platform-app:latest`; `postgres`, `redis`.
 - Local file storage (until S3): the docker volume `lead-discovery-platform_app-storage` (`/var/lib/docker/volumes/lead-discovery-platform_app-storage/_data`), mounted into the app container at `/app/storage`.
 - Postgres data (until managed): `/var/lib/docker/volumes/lead-discovery-platform_postgres-data`.
 - Backups: `/var/backups/lead-discovery-platform/`.

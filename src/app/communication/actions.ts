@@ -177,6 +177,7 @@ export async function syncMailbox(formData: FormData): Promise<void> {
   let totalInserted = 0;
   const failures: string[] = [];
   const failing: string[] = [];
+  const busy: string[] = [];
   for (const mb of targets) {
     let outcome: Awaited<ReturnType<typeof safeSyncOne>>;
     try {
@@ -190,6 +191,10 @@ export async function syncMailbox(formData: FormData): Promise<void> {
       syncedName = mb.name;
       totalFetched += outcome.fetched;
       totalInserted += outcome.inserted;
+    } else if (outcome.kind === 'busy') {
+      // PC-12: the IMAP tick (or another Sync) is on it right now; its
+      // new mail shows up when that sync finishes.
+      busy.push(mb.name);
     } else if (outcome.kind === 'failing') {
       // flow:F-04: a failing mailbox is re-checked, not just synced; the
       // mailbox page explains the error and how to fix it.
@@ -211,12 +216,20 @@ export async function syncMailbox(formData: FormData): Promise<void> {
         : `Synced ${synced} mailbox(es) — fetched ${totalFetched}, new ${totalInserted}`,
     );
   }
+  if (busy.length > 0) {
+    parts.push(
+      `${parts.length === 0 ? 'Already' : 'already'} syncing right now, new mail shows up when it finishes: ${busy.join('; ')}`,
+    );
+  }
   if (failing.length > 0) {
     parts.push(`failing, open the mailbox to fix: ${failing.join('; ')}`);
   }
   if (failures.length > 0) parts.push(`failed: ${failures.join('; ')}`);
 
-  if (synced === 0) {
+  if (synced === 0 && busy.length > 0 && failing.length === 0 && failures.length === 0) {
+    // Not an error: a sync of every target is already running.
+    backToFolder(formData, `${parts.join(' · ')}.`);
+  } else if (synced === 0) {
     backToFolderError(
       formData,
       parts.length > 0 ? parts.join(' · ') : 'Nothing to sync.',

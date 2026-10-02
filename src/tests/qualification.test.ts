@@ -8,9 +8,12 @@ import { classifyRecord } from '@/lib/services/qualification-engine';
 import {
   classifySourceRecord,
   listQualificationsForRecord,
-  reclassifyWorkspace,
   topQualification,
 } from '@/lib/services/qualification';
+import { requestReclassification } from '@/lib/services/qualification-runs';
+import { getJobQueue } from '@/lib/jobs';
+import { registerJobHandlers } from '@/lib/jobs/bootstrap';
+import { qualificationRuns } from '@/lib/db/schema/qualification-runs';
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { createProductProfile, updateProductProfile } from '@/lib/services/product-profile';
 import { createLesson } from '@/lib/services/learning';
@@ -395,16 +398,23 @@ describe('classifySourceRecord (DB-backed)', () => {
     }
   });
 
-  it('reclassifyWorkspace re-evaluates every record', async () => {
+  it('a Re-classify all run re-evaluates every record (PC-38: in the background)', async () => {
+    registerJobHandlers();
     const s = await setup();
     await createProductProfile(ctx(s.workspaceA, s.ownerA), {
       name: 'P1',
       includeKeywords: ['mock'],
     });
     const records = await seedRecordViaConnectorRun(s.workspaceA, s.ownerA);
-    const result = await reclassifyWorkspace(ctx(s.workspaceA, s.ownerA));
-    expect(result.recordCount).toBe(records.length);
-    expect(result.qualificationCount).toBe(records.length);
+    const run = await requestReclassification(ctx(s.workspaceA, s.ownerA));
+    expect(run.totalRecords).toBe(records.length);
+    await getJobQueue().drain?.();
+    const [done] = await db.select().from(qualificationRuns).where(eq(qualificationRuns.id, run.id));
+    expect(done).toMatchObject({
+      status: 'succeeded',
+      processedRecords: records.length,
+      qualificationCount: records.length,
+    });
   });
 
   it('does not leak across workspaces', async () => {

@@ -1,7 +1,8 @@
 // flow:F-04 — pure helpers behind failing-mailbox visibility: describing
 // and classifying connection errors, the operator advice (a refused 587
-// points at 465), the failing re-check schedule, the SMTP transport
-// options for implicit TLS, and the Alert primitive's markup.
+// points at 465), the SMTP transport options for implicit TLS, and the
+// Alert primitive's markup. (PC-09 replaced the failing re-check schedule
+// with recovery by failure class: src/tests/mailbox-health-pc09.test.ts.)
 
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
@@ -17,15 +18,7 @@ import {
   type MailboxEndpoints,
 } from '@/lib/mail/connection-errors';
 import { resolveImapSecure, resolveSmtpSecure, smtpTransportOptions } from '@/lib/mail/smtp-imap';
-import {
-  FAILING_RECHECK_AUTH_BASE_MS,
-  FAILING_RECHECK_BASE_MS,
-  FAILING_RECHECK_CAP_MS,
-  classifyImapError,
-  failingRecheckDelayMs,
-} from '@/lib/services/imap-backoff';
-
-const HOUR = 60 * 60 * 1000;
+import { classifyImapError } from '@/lib/services/imap-backoff';
 
 const ENDPOINTS: MailboxEndpoints = {
   smtpHost: 'mail.kensington-green.pl',
@@ -139,33 +132,6 @@ describe('parseStoredMailboxError', () => {
     // Prod mailbox 2: the old IMAP auto-pause stored the bare message.
     expect(parseStoredMailboxError('Command failed')).toEqual({ protocol: 'imap', message: 'Command failed' });
     expect(parseStoredMailboxError(null).protocol).toBe('imap');
-  });
-});
-
-describe('failingRecheckDelayMs', () => {
-  it('waits as long as the mailbox has been failing, from 1 h (6 h after a refused login) to a 24 h cap', () => {
-    expect(failingRecheckDelayMs(0, false)).toBe(FAILING_RECHECK_BASE_MS);
-    expect(failingRecheckDelayMs(0, true)).toBe(FAILING_RECHECK_AUTH_BASE_MS);
-    expect(FAILING_RECHECK_BASE_MS).toBe(HOUR);
-    expect(FAILING_RECHECK_AUTH_BASE_MS).toBe(6 * HOUR);
-    expect(failingRecheckDelayMs(4 * HOUR, false)).toBe(4 * HOUR);
-    expect(failingRecheckDelayMs(4 * HOUR, true)).toBe(6 * HOUR);
-    expect(failingRecheckDelayMs(30 * 24 * HOUR, false)).toBe(FAILING_RECHECK_CAP_MS);
-    expect(FAILING_RECHECK_CAP_MS).toBe(24 * HOUR);
-    expect(failingRecheckDelayMs(-5, false)).toBe(HOUR);
-    expect(failingRecheckDelayMs(Number.NaN, false)).toBe(HOUR);
-  });
-
-  it('doubles the interval between failed re-checks', () => {
-    // Episode starts at t=0; each re-check happens when its gate passes.
-    let t = 0;
-    const waits: number[] = [];
-    for (let i = 0; i < 7; i++) {
-      const wait = failingRecheckDelayMs(t, false);
-      waits.push(wait / HOUR);
-      t += wait;
-    }
-    expect(waits).toEqual([1, 1, 2, 4, 8, 16, 24]);
   });
 });
 

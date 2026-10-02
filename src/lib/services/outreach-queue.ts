@@ -24,6 +24,7 @@ import {
   outreachQueue,
   outreachSendSettings,
   type NewOutreachQueueEntry,
+  type OutreachDraftStatus,
   type OutreachQueueEntry,
   type OutreachQueueStatus,
   type OutreachSendSettings,
@@ -76,6 +77,12 @@ import {
   getOrCreateMailboxSendingLimits,
   recordSendCounter,
 } from './sending-policy';
+import {
+  withWorkLease,
+  type LeaseHolder,
+  type WorkLease,
+  type WorkLeaseSpec,
+} from './work-leases';
 import type { IMailProvider } from '@/lib/mail';
 
 export class OutreachQueueError extends Error {
@@ -414,10 +421,14 @@ export async function listQueueEntries(
 
 /**
  * Why the gate keeps the queue from sending now. All but 'daily_limit'
- * are the automation gate's workspace-wide refusals for Sending
- * (services/automation-gate.ts decideGate): the workspace pause, a hold
- * covering Sending, the platform-wide outbound stop, no accountable owner
- * (automatic sends only) and an archived workspace (automatic only).
+ * and 'send_pass_running' are the automation gate's workspace-wide
+ * refusals for Sending (services/automation-gate.ts decideGate): the
+ * workspace pause, a hold covering Sending, the platform-wide outbound
+ * stop, no accountable owner (automatic sends only) and an archived
+ * workspace (automatic only). PC-12 (I064): 'send_pass_running' — another
+ * send pass holds the workspace's drain lease (the 30 s tick, "Send due
+ * emails now" or a Retry now), and only the lease holder counts the daily
+ * cap and sends.
  */
 export const SEND_GATE_REFUSALS = [
   'paused',
@@ -426,6 +437,7 @@ export const SEND_GATE_REFUSALS = [
   'no_accountable_owner',
   'workspace_archived',
   'daily_limit',
+  'send_pass_running',
 ] as const;
 export type SendGateRefusal = (typeof SEND_GATE_REFUSALS)[number];
 
@@ -479,7 +491,9 @@ export function _setSendGateForTests(gate: SendGate | null): void {
  *  reasons (go-live, mailbox, wallet) and the autopilot plan never refuse
  *  a workspace-wide Sending check; they fall back to 'hold' so a future
  *  gate rule still stops the queue rather than being ignored. */
-export function sendGateRefusalOf(reason: GateBlockReason): Exclude<SendGateRefusal, 'daily_limit'> {
+export function sendGateRefusalOf(
+  reason: GateBlockReason,
+): Exclude<SendGateRefusal, 'daily_limit' | 'send_pass_running'> {
   switch (reason) {
     case 'paused':
     case 'hold':
@@ -559,6 +573,13 @@ export interface DrainResult {
    *  stop, no accountable owner). The rows it did not reach stay queued,
    *  untouched. Absent for the daily limit, which is not a hold. */
   heldReason?: string;
+  /** PC-12: blocked 'send_pass_running' — the pass holding the
+   *  workspace's drain lease, and since when. */
+  sendPass?: LeaseHolder;
+  /** PC-12: this pass stopped before its last row because it no longer
+   *  held the drain lease (held past its maximum, or taken over after a
+   *  stall). The rows it did not reach stay queued for the next pass. */
+  leaseLost?: true;
 }
 
 export interface DrainOptions {
@@ -568,6 +589,10 @@ export interface DrainOptions {
   providerOverride?: IMailProvider;
   /** Test seam — pretend "now" is this Date. */
   now?: Date;
+  /** PC-12: what started the pass, shown on its lease ('tick', 'manual'). */
+  purpose?: string;
+  /** Test seam: overrides of the drain lease's TTL / maximum hold. */
+  lease?: Pick<WorkLeaseSpec, 'ttlMs' | 'maxHoldMs' | 'autoRenew'>;
 }
 
 /** What one attempt at an entry came to. 'deferred' = held by the gate
@@ -613,15 +638,38 @@ const EMPTY_DRAIN: DrainResult = {
  * workspace row, which the pause has to wait for), so a pause committed
  * while row k is being sent leaves every later row queued and untouched,
  * and no row is claimed after the pause time.
+ *
+ * PC-12 (I064): one send pass per workspace at a time. The pass holds the
+ * workspace's 'outreach.drain' lease (which Retry now takes too), and the
+ * daily cap is counted under it, so overlapping passes can no longer each
+ * count the same headroom and together send past the cap. A pass that
+ * finds the lease held returns at once (blocked 'send_pass_running'); one
+ * that loses it mid-way stops before its next claim.
  */
 export async function drainQueue(
   ctx: WorkspaceContext,
   options: DrainOptions = {},
 ): Promise<DrainResult> {
   if (!canWrite(ctx)) throw denied('outreach.queue.drain');
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'outreach.drain', purpose: options.purpose ?? 'send pass', ...options.lease },
+    (lease) => drainUnderLease(ctx, options, lease),
+  );
+  if (leased.status === 'ran') return leased.value;
+  return { ...EMPTY_DRAIN, blocked: 'send_pass_running', sendPass: leased.held };
+}
+
+async function drainUnderLease(
+  ctx: WorkspaceContext,
+  options: DrainOptions,
+  lease: WorkLease,
+): Promise<DrainResult> {
   const settings = await getSendSettings(ctx);
   const now = options.now ?? new Date();
 
+  // The cap is counted here, under the lease: no other pass sends until
+  // this one is done.
   const gate = await evaluateSendGate(ctx, settings, now);
   if (!gate.open) {
     return {
@@ -651,6 +699,12 @@ export async function drainQueue(
 
   const result: DrainResult = { ...EMPTY_DRAIN, picked: due.length };
   for (const entry of due) {
+    // PC-12: still this pass's lease? Otherwise another pass may be
+    // sending (and counting the cap) now: leave the rest to it.
+    if (!(await lease.checkpoint())) {
+      result.leaseLost = true;
+      break;
+    }
     const origin = origins.get(entry.id.toString()) ?? 'cold';
     // PC-05: re-check before every claim — the pause, holds, the platform
     // stop, the owner, this row's origin (go-live) and its mailbox.
@@ -774,6 +828,52 @@ async function mailboxStatusOf(
   return row?.status;
 }
 
+/** PC-12 (I064): why a claimed entry's draft may no longer be sent, by
+ *  the draft's status now (approved = it may). */
+export function unapprovedDraftMessage(status: OutreachDraftStatus | null): string | null {
+  switch (status) {
+    case 'approved':
+      return null;
+    case 'superseded':
+      return 'Not sent: a newer draft replaced this one after it was queued, and only an approved draft is sent. Approve and queue the new draft instead.';
+    case 'rejected':
+      return 'Not sent: its draft was rejected after it was queued.';
+    case 'draft':
+    case 'needs_edit':
+      return 'Not sent: its draft went back for editing after it was queued. Approve it again to send it.';
+    case null:
+      return 'Not sent: its draft no longer exists.';
+  }
+}
+
+/**
+ * The claimed entry's draft is no longer approved: settle the claim as
+ * 'skipped' with why (true), or leave it (false). Never sends, never
+ * fails the row: the operator can approve the draft again and Requeue it.
+ */
+async function skipUnapprovedDraft(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  entry: OutreachQueueEntry,
+): Promise<boolean> {
+  if (!entry.draftId) return false;
+  const [draft] = await db
+    .select({ status: outreachDrafts.status })
+    .from(outreachDrafts)
+    .where(
+      and(eq(outreachDrafts.workspaceId, ctx.workspaceId), eq(outreachDrafts.id, entry.draftId)),
+    )
+    .limit(1);
+  const message = unapprovedDraftMessage(draft?.status ?? null);
+  if (message === null) return false;
+  await settleClaimed(entry.id, {
+    status: 'skipped',
+    nextAttemptAt: null,
+    lastFailureKind: null,
+    lastError: message,
+  });
+  return true;
+}
+
 /**
  * Claim the row — 'queued' → 'sending', stamped claimed_at from the
  * database clock (PC-10: the reaper compares it with the real time, never
@@ -874,6 +974,10 @@ async function processEntry(
         });
         return { kind: 'skipped' };
       }
+      // PC-12 (I064): only approved content goes out. A draft regenerated
+      // (superseded), rejected or sent back for edits after its email was
+      // queued is not sent.
+      if (await skipUnapprovedDraft(ctx, entry)) return { kind: 'skipped' };
     }
 
     // Suppression check (any recipient).
@@ -1110,6 +1214,9 @@ async function processEntry(
     if (entry.inReplyTo) sendInput.inReplyTo = entry.inReplyTo;
     if (entry.references.length > 0) sendInput.references = entry.references;
 
+    // PC-12: asked again right before the hand-over — the translation
+    // above can take a while, and a regenerate may land meanwhile.
+    if (draftId && (await skipUnapprovedDraft(ctx, entry))) return { kind: 'skipped' };
     await sendMessage(ctx, sendInput);
     if (reapedMidSend) await resolveReapedMidSend(ctx, entry.id);
     // Phase 43: bump the per-mailbox counters so subsequent canSendNow
@@ -1377,6 +1484,11 @@ export interface RetryQueueEntryOptions extends DrainOptions {
  * cooldown. Retry now is a person's send: under the workspace pause it
  * goes out only with their explicit confirmation (confirmPaused). When
  * the gate refuses, it stays queued.
+ *
+ * PC-12: the attempt sends under the workspace's drain lease, like a
+ * drain pass, so it counts the daily cap with no pass sending beside it.
+ * While a pass holds the lease, the email is only put back (outcome
+ * 'queued', reason 'send_pass_running'): the next pass sends it.
  */
 export async function retryQueueEntry(
   ctx: WorkspaceContext,
@@ -1386,6 +1498,22 @@ export async function retryQueueEntry(
   if (!canWrite(ctx)) throw denied('outreach.queue.retry');
   const now = options.now ?? new Date();
   const requeued = await putBack(ctx, id, 'retry', now);
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'outreach.drain', purpose: 'Retry now', ...options.lease },
+    () => retryUnderLease(ctx, id, requeued, options, now),
+  );
+  if (leased.status === 'ran') return leased.value;
+  return { outcome: 'queued', reason: 'send_pass_running', entry: requeued };
+}
+
+async function retryUnderLease(
+  ctx: WorkspaceContext,
+  id: bigint,
+  requeued: OutreachQueueEntry,
+  options: RetryQueueEntryOptions,
+  now: Date,
+): Promise<RetryQueueEntryResult> {
   const settings = await getSendSettings(ctx);
   const sendAs: SendAs = { manual: true, confirmPaused: options.confirmPaused === true };
   const gate = await evaluateSendGate(ctx, settings, now, sendAs);

@@ -434,7 +434,10 @@ export async function enqueueDecisionProcessing(
       userId: ctx.userId,
       role: ctx.role,
     };
-    await getJobQueue().enqueue(LEARNING_PROCESS_JOB, payload, { tag: `learning:${decisionId}` });
+    // PC-36: deduplicated while a job for the decision still waits or runs
+    // (the runs lane can be busy with long discovery runs).
+    const key = `learning:${decisionId}`;
+    await getJobQueue().enqueue(LEARNING_PROCESS_JOB, payload, { tag: key, dedupeKey: key });
   } catch (err) {
     console.error(
       `[learning-decisions] enqueue ${LEARNING_PROCESS_JOB} failed for ${decisionId}:`,

@@ -6,7 +6,6 @@ import { AppShell } from '@/components/AppShell';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { mailboxSendingLimits } from '@/lib/db/schema/mailing';
-import { workspaces } from '@/lib/db/schema/workspaces';
 import {
   AuthRequiredError,
   NoWorkspaceError,
@@ -36,6 +35,7 @@ import {
 } from '@/lib/i18n/holidays';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { formatUtc } from '@/lib/format-utc';
+import { MAILBOX_FAILURE_CLASS_LABEL } from '@/lib/ui/labels';
 import {
   deleteMailboxMessages,
   restoreMailboxMessages,
@@ -120,6 +120,11 @@ export default async function MailboxDetail({
           (outcome.recovered ? 'The connection works again — the mailbox is active. ' : '') +
           `Synced — fetched ${outcome.fetched}, new ${outcome.inserted}, deduped ${outcome.duplicates}.`;
         redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
+      }
+      // PC-12: the IMAP tick (or someone's Sync / Test / a health probe)
+      // is on it right now.
+      if (outcome.kind === 'busy' || outcome.kind === 'skipped') {
+        redirect(`/mailbox/${id}?message=${encodeURIComponent(outcome.message)}`);
       }
       const m =
         outcome.kind === 'failing'
@@ -258,18 +263,9 @@ export default async function MailboxDetail({
     ? await getOrCreateMailboxSendingLimits(ctx.workspaceId, id)
     : null;
 
-  // flow:F-04: what a failing mailbox stops doing and how to fix it, and
-  // whether the IMAP tick will re-check it on its own.
+  // flow:F-04 / PC-09: what a failing mailbox stops doing, how to fix it,
+  // and what the health probes do on their own for its failure class.
   const failure = mailbox.status === 'failing' ? summarizeMailboxFailure(mailbox) : null;
-  const autoSync = failure
-    ? ((
-        await db
-          .select({ on: workspaces.imapAutoSyncEnabled })
-          .from(workspaces)
-          .where(eq(workspaces.id, ctx.workspaceId))
-          .limit(1)
-      )[0]?.on ?? true)
-    : true;
 
   return (
     <AppShell>
@@ -297,64 +293,66 @@ export default async function MailboxDetail({
         {sp.error ? <p className="form-error">{sp.error}</p> : null}
 
         {failure ? (
-          <Alert
-            tone="danger"
-            title={
-              mailbox.failingSince ? (
+          <div id="fix">
+            <Alert
+              tone="danger"
+              title={
+                mailbox.failingSince ? (
+                  <>
+                    This mailbox has been failing since{' '}
+                    <time dateTime={mailbox.failingSince.toISOString()}>
+                      {formatUtc(mailbox.failingSince)}
+                    </time>
+                  </>
+                ) : (
+                  'This mailbox is failing'
+                )
+              }
+              action={
                 <>
-                  This mailbox has been failing since{' '}
-                  <time dateTime={mailbox.failingSince.toISOString()}>
-                    {formatUtc(mailbox.failingSince)}
-                  </time>
-                </>
-              ) : (
-                'This mailbox is failing'
-              )
-            }
-            action={
-              <>
-                <form action={runTest}>
-                  <button type="submit" className="primary-btn">
-                    Test again
-                  </button>
-                </form>
-                {canAdminWorkspace(ctx) ? (
-                  <form action={reactivate}>
-                    <button type="submit" className="ghost-btn">
-                      Reactivate
+                  <form action={runTest}>
+                    <button type="submit" className="primary-btn">
+                      Test again
                     </button>
                   </form>
-                ) : null}
-              </>
-            }
-          >
-            <p>{failure.impact}</p>
-            <p>
-              <strong>Last error</strong>
-              {mailbox.lastErrorAt ? (
-                <>
-                  {' '}
-                  at{' '}
-                  <time dateTime={mailbox.lastErrorAt.toISOString()}>
-                    {formatUtc(mailbox.lastErrorAt)}
-                  </time>
+                  {canAdminWorkspace(ctx) ? (
+                    <form action={reactivate}>
+                      <button type="submit" className="ghost-btn">
+                        Reactivate
+                      </button>
+                    </form>
+                  ) : null}
                 </>
-              ) : null}
-              : <code>{mailbox.lastError ?? 'not recorded'}</code>
-            </p>
-            <p>
-              {failure.advice} <Link href={`/mailbox/${id}/edit`}>Edit settings</Link>
-            </p>
-            <p className="muted small">
-              {autoSync
-                ? mailbox.imapNextSyncAfter
-                  ? `The next automatic check is after ${formatUtc(mailbox.imapNextSyncAfter)}. `
-                  : 'It is checked again on the next IMAP tick. '
-                : 'IMAP auto-sync is off for this workspace, so nothing re-checks it automatically. '}
-              Test again checks SMTP and IMAP now and makes the mailbox active when both pass;
-              Reactivate makes it active without checking.
-            </p>
-          </Alert>
+              }
+            >
+              <p>{failure.impact}</p>
+              <p>
+                <strong>Last error</strong>
+                {mailbox.lastErrorAt ? (
+                  <>
+                    {' '}
+                    at{' '}
+                    <time dateTime={mailbox.lastErrorAt.toISOString()}>
+                      {formatUtc(mailbox.lastErrorAt)}
+                    </time>
+                  </>
+                ) : null}
+                : <code>{mailbox.lastError ?? 'not recorded'}</code>
+              </p>
+              <p>
+                {failure.advice} <Link href={`/mailbox/${id}/edit`}>Edit settings</Link>
+              </p>
+              <p className="muted small">
+                {mailbox.failureClass ? (
+                  <>
+                    <strong>{MAILBOX_FAILURE_CLASS_LABEL[mailbox.failureClass]}.</strong>{' '}
+                  </>
+                ) : null}
+                {failure.recovery} Test again checks SMTP and IMAP now and makes the mailbox
+                active when both pass; Reactivate makes it active without checking.
+              </p>
+            </Alert>
+          </div>
         ) : null}
 
         <section>
@@ -380,6 +378,28 @@ export default async function MailboxDetail({
                     <dd>{formatUtc(mailbox.lastSyncedAt)}</dd>
                   </>
                 ) : null}
+              </>
+            ) : null}
+            {mailbox.status === 'active' ? (
+              <>
+                <dt>Health</dt>
+                <dd>
+                  {mailbox.smtpVerifiedAt ? (
+                    <>
+                      Login checked{' '}
+                      <time dateTime={mailbox.smtpVerifiedAt.toISOString()}>
+                        {formatUtc(mailbox.smtpVerifiedAt)}
+                      </time>
+                    </>
+                  ) : (
+                    'Login not checked yet'
+                  )}
+                  <span className="muted">
+                    {' '}
+                    · server checked every 30 min without logging in, the login once a day
+                    {mailbox.nextProbeAt ? ` · next check after ${formatUtc(mailbox.nextProbeAt)}` : ''}
+                  </span>
+                </dd>
               </>
             ) : null}
             {mailbox.lastError ? (

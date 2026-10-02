@@ -7,17 +7,23 @@
 //      'tick.stale' incident; one stale observation is not enough (a slow
 //      run at a slot boundary). The incident resolves when a check sees the
 //      tick running again;
-//   2. dispatches owner alerts for due incidents (services/ops-alerts.ts);
-//   3. sends the daily digest when it is due.
+//   2. PC-36: checks that some worker consumes every job lane
+//      (ops/worker-presence.ts): after the boot grace, a lane with no
+//      worker on two consecutive checks raises a critical 'worker.absent'
+//      incident (the web server only enqueues; without the worker service
+//      nothing in the background runs);
+//   3. dispatches owner alerts for due incidents (services/ops-alerts.ts);
+//   4. sends the daily digest when it is due.
 //
 // It is NOT a queued job on purpose: it keeps watching when Redis or the
 // BullMQ worker is what broke. It is not independent of the app process,
-// though: if the process dies or hangs, the watchdog goes with it. Until the
-// dedicated worker (PC-36) the external uptime monitor on /api/ready is the
-// independent check (docs/OPS_MONITORING.md).
+// though: if the process dies or hangs, the watchdog goes with it; the
+// external uptime monitor on /api/ready is the independent check
+// (docs/OPS_MONITORING.md).
 
 import type { JobHeartbeat } from '@/lib/db/schema/ops';
 import { getBootInfo } from '@/lib/jobs/boot';
+import { getJobQueue } from '@/lib/jobs';
 import { BOOT_GRACE_MS } from '@/lib/jobs/tick-schedule';
 import { formatUtc } from '@/lib/format-utc';
 import {
@@ -34,6 +40,7 @@ import {
 } from '@/lib/services/ops-events';
 import { logAlertsDisabledOnce, readAlertConfig } from './alert-config';
 import { describeError } from './mask';
+import { WorkerPresence, checkWorkerPresence, type WorkerPresenceResult } from './worker-presence';
 
 export const WATCHDOG_INTERVAL_MS = 60 * 1000;
 /** First check after boot: let the schedule registration finish first. */
@@ -101,7 +108,14 @@ export interface WatchdogDeps {
   resolve: typeof resolveOpsEvent;
   dispatch: () => Promise<unknown>;
   dailyDigest: () => Promise<unknown>;
+  /** Workers per job lane, or null when the queue cannot tell (PC-36). */
+  workerCounts: () => Promise<Readonly<Record<string, number>> | null>;
   log: (message: string) => void;
+}
+
+async function queueWorkerCounts(): Promise<Readonly<Record<string, number>> | null> {
+  const queue = getJobQueue();
+  return queue.laneWorkerCounts ? queue.laneWorkerCounts() : null;
 }
 
 const DEFAULT_DEPS: WatchdogDeps = {
@@ -113,6 +127,7 @@ const DEFAULT_DEPS: WatchdogDeps = {
   resolve: resolveOpsEvent,
   dispatch: () => dispatchOpsAlerts(),
   dailyDigest: () => sendDailyDigestIfDue(),
+  workerCounts: queueWorkerCounts,
   log: (message) => console.error(message),
 };
 
@@ -121,21 +136,29 @@ export interface WatchdogPassResult {
   stale: string[];
   /** Ticks whose tick.stale incident this pass resolved. */
   recovered: string[];
+  /** The worker-presence check (null when the pass was given no state). */
+  workers: WorkerPresenceResult | null;
   dispatch: unknown;
   dailyDigest: unknown;
   /** Steps that threw (masked); the other steps still ran. */
   errors: string[];
 }
 
-/** One watchdog check. Each step is isolated: one failing never skips the next. */
+/**
+ * One watchdog check. Each step is isolated: one failing never skips the
+ * next. The worker-presence step runs when `presence` (its state between
+ * checks) is given; startOpsWatchdog always gives it.
+ */
 export async function runWatchdogPass(
   streaks: StaleTickStreaks,
   overrides: Partial<WatchdogDeps> = {},
+  presence?: WorkerPresence,
 ): Promise<WatchdogPassResult> {
   const d: WatchdogDeps = { ...DEFAULT_DEPS, ...overrides };
   const out: WatchdogPassResult = {
     stale: [],
     recovered: [],
+    workers: null,
     dispatch: null,
     dailyDigest: null,
     errors: [],
@@ -193,14 +216,30 @@ export async function runWatchdogPass(
     fail('stale-tick check', err);
   }
 
-  // 2. owner alerts for due incidents (the stale ones just raised included)
+  // 2. PC-36: a worker consumes every lane
+  if (presence) {
+    try {
+      out.workers = await checkWorkerPresence(presence, {
+        now: d.now(),
+        processBootedAt: d.processBootedAt(),
+        workerCounts: d.workerCounts,
+        raise: d.raise,
+        resolve: d.resolve,
+        log: d.log,
+      });
+    } catch (err) {
+      fail('worker check', err);
+    }
+  }
+
+  // 3. owner alerts for due incidents (the ones just raised included)
   try {
     out.dispatch = await d.dispatch();
   } catch (err) {
     fail('alert dispatch', err);
   }
 
-  // 3. daily digest
+  // 4. daily digest
   try {
     out.dailyDigest = await d.dailyDigest();
   } catch (err) {
@@ -237,7 +276,8 @@ export function startOpsWatchdog(
   const log = options.log ?? ((m: string) => console.error(m));
   const intervalMs = options.intervalMs ?? WATCHDOG_INTERVAL_MS;
   const streaks = new StaleTickStreaks();
-  const runPass = options.runPass ?? (() => runWatchdogPass(streaks));
+  const presence = new WorkerPresence();
+  const runPass = options.runPass ?? (() => runWatchdogPass(streaks, {}, presence));
 
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;

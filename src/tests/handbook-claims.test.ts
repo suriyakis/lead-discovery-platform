@@ -755,8 +755,9 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     // The post-crawl hook (skipped under Vitest, so pinned at source). PC-10:
     // a 'partial' run (some queries failed) that found records counts too.
+    // PC-12: under the autopilot lease like every run, labelled post-crawl.
     expect(readSrc('lib/connectors/runner.ts')).toMatch(
-      /\(finalStatus === 'succeeded' \|\| finalStatus === 'partial'\) &&\s+recordCount > 0[\s\S]{0,400}await runOnce\(ctx\)/,
+      /\(finalStatus === 'succeeded' \|\| finalStatus === 'partial'\) &&\s+recordCount > 0[\s\S]{0,400}await runOnce\(ctx, \{ purpose: 'post-crawl' \}\)/,
     );
 
     const s = await setup();
@@ -1042,7 +1043,7 @@ describe('follow-up service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 // ---- mail service: mailbox status ----------------------------------
 
 describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () => {
-  it('[handbook H-16] a failing mailbox holds its queued email, tells the owners and admins once, and is re-checked only after its delay', async () => {
+  it('[handbook H-16] a failing mailbox holds its queued email, tells the owners and admins once, and is re-checked by cause, never by a sync', async () => {
     const s = await setup();
     const { mailbox } = await queuedEmail(s, { imap: true });
     await markMailboxFailing(ctx(s), mailbox.id, { protocol: 'imap', message: 'Socket timed out' });
@@ -1067,12 +1068,16 @@ describe('mail service — mailbox status', { timeout: DB_TEST_TIMEOUT_MS }, () 
       );
     expect(notes.map((n) => n.userId).sort()).toEqual([s.adminId, s.ownerId].sort());
 
-    // Background sync leaves it alone until its re-check delay has passed.
+    // Background sync leaves it alone; the health probes wait for its
+    // class's schedule (an unreachable server: 30 minutes, no login).
     const tick = await runTick('mail.imap.tick');
-    expect(tick).toMatchObject({ mailboxesSynced: 0, rechecked: 0 });
+    expect(tick).toMatchObject({ mailboxesSynced: 0 });
+    const probes = await runTick('mail.probe.tick');
+    expect(probes).toMatchObject({ probed: 0, rechecked: 0, logins: 0 });
     const [row] = await db.select().from(mailboxes).where(eq(mailboxes.id, mailbox.id));
     expect(row!.status).toBe('failing');
-    expect(row!.imapNextSyncAfter!.getTime() - Date.now()).toBeGreaterThan(50 * 60 * 1000);
+    expect(row!.failureClass).toBe('connection');
+    expect(row!.nextProbeAt!.getTime() - Date.now()).toBeGreaterThan(25 * 60 * 1000);
   });
 
   it('[handbook H-23] a paused mailbox sends nothing and holds its due email (queued with the reason, never failed)', async () => {
