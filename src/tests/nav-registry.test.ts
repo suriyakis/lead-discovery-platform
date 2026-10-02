@@ -12,7 +12,7 @@ import path from 'node:path';
 import { createElement, isValidElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { load } from 'cheerio';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { appRoutePatterns, SEEDED_PATHS } from '../../e2e/routes';
 import {
   ACCOUNT_MENU,
@@ -29,6 +29,7 @@ import {
   areaById,
   areaHref,
   detailPatternRegExp,
+  hasNavCapability,
   paletteRoutes,
   resolveNavCount,
   resolveNavLocation,
@@ -39,6 +40,13 @@ import {
 } from '@/lib/nav/resolve';
 import { routeTable } from '@/lib/nav/route-table';
 import { LEGACY_REDIRECTS, legacyRedirectTarget } from '@/lib/nav/redirects';
+import {
+  canAdminWorkspace,
+  canRead,
+  canWrite,
+  WORKSPACE_ROLES,
+  type WorkspaceRole,
+} from '@/lib/services/context';
 
 const nav = vi.hoisted(() => ({ pathname: '/today', search: '' }));
 vi.mock('next/navigation', async (importOriginal) => ({
@@ -295,6 +303,36 @@ describe('resolveNavLocation', () => {
   it('pages outside the app areas have no location', () => {
     expect(resolveNavLocation('/')).toBeNull();
     expect(resolveNavLocation('/pending')).toBeNull();
+  });
+});
+
+// ---- capabilities -----------------------------------------------------------
+
+describe('nav capabilities follow the service role matrix (services/context.ts)', () => {
+  const ctx = (role: WorkspaceRole) => ({ workspaceId: 1n, userId: 'u', role });
+
+  it.each(WORKSPACE_ROLES)(
+    '%s: write and admin entries show exactly when the page allows',
+    (role) => {
+      const viewer: NavViewer = { role, isSuperAdmin: false };
+      expect(hasNavCapability('read', viewer)).toBe(canRead(ctx(role)));
+      expect(hasNavCapability('write', viewer)).toBe(canWrite(ctx(role)));
+      expect(hasNavCapability('admin', viewer)).toBe(canAdminWorkspace(ctx(role)));
+    },
+  );
+
+  it('the loop covers every role (pnpm typecheck fails when one is missing)', () => {
+    expectTypeOf<Exclude<WorkspaceRole, (typeof WORKSPACE_ROLES)[number]>>().toEqualTypeOf<never>();
+    expect(new Set(WORKSPACE_ROLES).size).toBe(WORKSPACE_ROLES.length);
+  });
+
+  it('a viewer with no workspace sees read entries only; a super-admin sees everything', () => {
+    const none: NavViewer = { role: null, isSuperAdmin: false };
+    expect(hasNavCapability('read', none)).toBe(true);
+    expect(hasNavCapability('write', none)).toBe(false);
+    expect(hasNavCapability('admin', none)).toBe(false);
+    for (const cap of ['read', 'write', 'admin'] as const)
+      expect(hasNavCapability(cap, { role: null, isSuperAdmin: true })).toBe(true);
   });
 });
 

@@ -3,7 +3,7 @@
 // functions — the Sidebar, AreaNav, CommandPalette, AdminShell and the
 // route table all call these, so they cannot disagree.
 
-import type { WorkspaceRole } from '@/lib/services/context';
+import { roleCanAdminWorkspace, roleCanWrite, type WorkspaceRole } from '@/lib/services/context';
 import {
   DETAIL_ROUTES,
   NAV_ACTIONS,
@@ -25,16 +25,12 @@ export interface NavViewer {
   isSuperAdmin: boolean;
 }
 
-const WRITE_ROLES: ReadonlySet<WorkspaceRole> = new Set([
-  'owner',
-  'admin',
-  'manager',
-  'member',
-  'super_admin',
-]);
-const ADMIN_ROLES: ReadonlySet<WorkspaceRole> = new Set(['owner', 'admin', 'super_admin']);
-
-/** Same matrix as services/context.ts canRead / canWrite / canAdminWorkspace. */
+/**
+ * The role matrix of services/context.ts itself (roleCanWrite and
+ * roleCanAdminWorkspace are what canWrite and canAdminWorkspace call), so
+ * the nav cannot show an entry to a role its page refuses, or hide it from
+ * one the page serves. Every role may read.
+ */
 export function hasNavCapability(
   capability: NavCapability | undefined,
   viewer: NavViewer,
@@ -44,9 +40,9 @@ export function hasNavCapability(
     case 'read':
       return true;
     case 'write':
-      return viewer.role !== null && WRITE_ROLES.has(viewer.role);
+      return viewer.role !== null && roleCanWrite(viewer.role);
     case 'admin':
-      return viewer.role !== null && ADMIN_ROLES.has(viewer.role);
+      return viewer.role !== null && roleCanAdminWorkspace(viewer.role);
   }
 }
 

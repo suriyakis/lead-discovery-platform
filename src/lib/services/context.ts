@@ -10,14 +10,17 @@ import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
  */
 export type WorkspaceRole = WorkspaceMemberRole | 'super_admin';
 
-const ALL_ROLES = new Set<WorkspaceRole>([
+/** Every role. The client-safe navigation tests loop over it. */
+export const WORKSPACE_ROLES = [
   'owner',
   'admin',
   'manager',
   'member',
   'viewer',
   'super_admin',
-]);
+] as const satisfies ReadonlyArray<WorkspaceRole>;
+
+const ALL_ROLES: ReadonlySet<WorkspaceRole> = new Set<WorkspaceRole>(WORKSPACE_ROLES);
 
 /**
  * The runtime context every service function receives as its first argument.
@@ -75,6 +78,11 @@ export function makeWorkspaceContext(input: {
 // These are deliberately small. Service functions call them by intent
 // (`canWrite`, `canAdminWorkspace`) rather than checking role names inline.
 // When the role matrix grows, the change is local.
+//
+// The role* predicates take a bare role, so code without a context reads
+// the same matrix: the navigation (src/lib/nav/resolve.ts) shows or hides
+// admin-only entries with them. This module has type imports only, so
+// client components can import it.
 
 // Every workspace role, viewer included, may read the workspace's data.
 // Spelled out (not ALL_ROLES) so a future role has to be added here on
@@ -100,19 +108,31 @@ const ADMIN_ROLES: ReadonlySet<WorkspaceRole> = new Set(['owner', 'admin', 'supe
 
 const OWNER_ROLES: ReadonlySet<WorkspaceRole> = new Set(['owner', 'super_admin']);
 
+export function roleCanRead(role: WorkspaceRole): boolean {
+  return READ_ROLES.has(role);
+}
+
+export function roleCanWrite(role: WorkspaceRole): boolean {
+  return WRITE_ROLES.has(role);
+}
+
+export function roleCanAdminWorkspace(role: WorkspaceRole): boolean {
+  return ADMIN_ROLES.has(role);
+}
+
 /** True if the role can read tenant data (pages, document downloads). */
 export function canRead(ctx: WorkspaceContext): boolean {
-  return READ_ROLES.has(ctx.role);
+  return roleCanRead(ctx.role);
 }
 
 /** True if the role can write tenant data (drafts, comments, approvals). */
 export function canWrite(ctx: WorkspaceContext): boolean {
-  return WRITE_ROLES.has(ctx.role);
+  return roleCanWrite(ctx.role);
 }
 
 /** True if the role can manage workspace settings, members, and connectors. */
 export function canAdminWorkspace(ctx: WorkspaceContext): boolean {
-  return ADMIN_ROLES.has(ctx.role);
+  return roleCanAdminWorkspace(ctx.role);
 }
 
 /** True if the role can transfer ownership or delete the workspace. */
