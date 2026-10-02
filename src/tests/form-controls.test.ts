@@ -278,6 +278,19 @@ describe('EmailPreview', () => {
       expect(tokens).not.toContain(t);
   });
 
+  it('drops <meta http-equiv> from the pasted HTML, so a refresh cannot navigate the frame', () => {
+    const pasted =
+      '<p>Hi</p><META http-equiv="refresh" content="0;url=https://x.example">' +
+      `<meta HTTP-EQUIV='Content-Security-Policy' content="default-src *">` +
+      '<meta name="x" content="y">';
+    const doc = load(emailPreviewDocument(pasted));
+    expect(doc('meta[http-equiv]')).toHaveLength(1);
+    expect(doc('meta[http-equiv]').attr('content')).toBe(EMAIL_PREVIEW_CSP);
+    expect(doc('body').html()).not.toMatch(/refresh/i);
+    expect(doc('body p').text()).toBe('Hi');
+    expect(doc('meta[name="x"]')).toHaveLength(1);
+  });
+
   it('is its own document: a light canvas, a policy that loads images only, no app CSS', () => {
     const doc = load(emailPreviewDocument(html));
     expect(doc('meta[http-equiv="Content-Security-Policy"]').attr('content')).toBe(

@@ -22,8 +22,20 @@ const CANVAS_CSS = [
   'img{max-width:100%;height:auto}',
 ].join('');
 
-/** The whole document the frame shows for `html`. */
+/**
+ * <meta http-equiv> tags in the pasted HTML: a refresh would navigate the
+ * frame away (the sandbox and the CSP do not stop a frame navigating
+ * itself), and a second policy or a cookie has no business in a preview.
+ */
+const HTTP_EQUIV_META = /<meta\b[^>]*\bhttp-equiv\b[^>]*>/gi;
+
+/**
+ * The whole document the frame shows for `html`. Remote images
+ * (img-src http: https:) load on purpose: the preview shows what the
+ * recipient's mail client shows.
+ */
 export function emailPreviewDocument(html: string): string {
+  const body = html.replace(HTTP_EQUIV_META, '');
   return (
     '<!doctype html><html><head><meta charset="utf-8">' +
     `<meta http-equiv="Content-Security-Policy" content="${EMAIL_PREVIEW_CSP}">` +
@@ -31,6 +43,6 @@ export function emailPreviewDocument(html: string): string {
     // Links open nowhere: with no allow-popups a _blank target is blocked,
     // so a click cannot navigate the preview away either.
     '<base target="_blank">' +
-    `<style>${CANVAS_CSS}</style></head><body>${html}</body></html>`
+    `<style>${CANVAS_CSS}</style></head><body>${body}</body></html>`
   );
 }
