@@ -5,15 +5,16 @@
 // outage in the learning layer must never break a review decision, a
 // reply, or a draft edit):
 //
-//   1. Review decisions   → reinforce/weaken the lessons that were applied
-//                           to the record's qualifications (hooked in
-//                           review.ts; the lesson ids live in
-//                           qualifications.evidence.matchedLessonIds).
+//   1. Review decisions   → recorded as decision events in the decision's
+//                           own transaction and learned from by the
+//                           learning.process job (learning-decisions.ts,
+//                           KL-02) — no longer a hook here.
 //   2. Reply outcomes     → a lead's classified reply judges the last
 //                           outbound draft: positive intent reinforces the
 //                           draft's matched lessons, negative weakens them.
 //                           Also appends a learning_event so the weekly
-//                           synthesizer can mine reply patterns.
+//                           synthesizer can mine reply patterns. OFF unless
+//                           the workspace switched learn_from_replies on.
 //   3. Draft edits        → when an operator materially rewrites an AI
 //                           draft, an AI diff extracts a generalized
 //                           outreach_style lesson (source='draft_edit').
@@ -67,11 +68,19 @@ export interface ReplyOutcomeResult {
   recorded: boolean;
   direction: 'up' | 'down' | null;
   reinforcedCount: number;
+  /** Set when the outcome was deliberately not learned from. */
+  skippedReason?: 'learn_from_replies_off';
 }
 
 /**
  * Feed a classified inbound reply back into the learning layer. Neutral
  * classes (out_of_office, bounce, irrelevant) are ignored. Never throws.
+ *
+ * KL-02: hard-disabled behind the workspace switch learn_from_replies
+ * (default off). Reply classes are keyword guesses today (I088) and a
+ * mislabelled reply would move rule confidence with no person behind it;
+ * KL-15 adds the remaining gates (our outbound mail on the thread, a fixed
+ * classifier version) before this is offered to owners.
  */
 export async function learnFromReplyOutcome(
   ctx: WorkspaceContext,
@@ -85,6 +94,15 @@ export async function learnFromReplyOutcome(
   if (!direction) return { recorded: false, direction: null, reinforcedCount: 0 };
 
   try {
+    const { getLearnFromReplies } = await import('./workspace');
+    if (!(await getLearnFromReplies(ctx))) {
+      return {
+        recorded: false,
+        direction,
+        reinforcedCount: 0,
+        skippedReason: 'learn_from_replies_off',
+      };
+    }
     // Raw event for the weekly synthesizer — reply outcomes per product are
     // exactly the pattern material it mines ("consultancies never reply").
     await db.insert(learningEvents).values({

@@ -64,17 +64,23 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    send-time check. {H-20}
 4. REVIEW QUEUE ([/review]): you approve, reject or comment. Approving a
    geo-unverified item confirms it is inside the target country.
-   Comments teach the system — lessons are extracted automatically and
-   influence future qualification. @mentions (write @user@email) notify
-   teammates. Approving does NOT create a pipeline lead, a draft or an
-   email: it records your decision and trains the learning memory.
-   {H-01} Review items cannot be assigned to a teammate; pipeline leads
-   can, on the lead's page. {H-03} When autopilot's auto-approve is on,
-   some approvals are made by autopilot, not by a person (see Autopilot).
+   Comments teach the system — lessons are extracted automatically, a
+   moment after you post, and influence future qualification. @mentions
+   (write @user@email) notify teammates. Approving does NOT create a
+   pipeline lead, a draft or an email: it records your decision and trains
+   the learning memory. {H-01} A decision counts for the products the AI
+   found the company relevant to: rejecting, ignoring or archiving an item
+   marks it Not a fit for each of them, and from then on Promote, drafting
+   and autopilot's generate + enqueue refuse that company for those
+   products. {H-32} Review items cannot be assigned to a teammate;
+   pipeline leads can, on the lead's page. {H-03} When autopilot's
+   auto-approve is on, some approvals are made by autopilot, not by a
+   person (see Autopilot).
 5. LEADS ([/leads]) lists the relevant matches from discovery, whatever
    their review state (archived ones are hidden). "Promote to pipeline"
    on a lead creates the pipeline lead; it does not need an approval
-   first. {H-02}
+   first. {H-02} It is not offered for a company marked Not a fit for
+   that product (see Review queue).
 6. PIPELINE ([/pipeline]): open a lead there to set its contact name and
    CONTACT EMAIL, assign it to a teammate, add notes, set its own
    outreach language and move it through the stages. Nothing fills in
@@ -172,9 +178,10 @@ admin turns it on:
 - Sync inbound mail.
 - Auto-approve: review items still in "new" whose relevance score
   reaches the threshold (default 70) are approved and recorded as
-  approved by the workspace owner (or by whoever started the run that
-  triggered it), although no person looked at them. needs_review
-  (geo-unverified) items are never auto-approved. {H-07}
+  approved by autopilot — no person's name, reason "autopilot" — and
+  never teach the learning memory. Items a person already gave a verdict
+  on, and needs_review (geo-unverified) items, are never auto-approved,
+  and each item is approved at most once. {H-07}
 - Generate + enqueue: for approved items, writes a draft, approves it
   in the workspace owner's name and puts it in the send queue; nobody
   reviews those emails. It still needs a pipeline lead with a contact
@@ -273,14 +280,17 @@ message instead (restore it first). {H-28} The CSV export on
 
 ## Learning memory (/learning) — the platform teaches itself
 Lessons are rules qualification and outreach follow. They come from
-four channels: (1) operator review comments, auto-extracted; (2) the
+four channels: (1) operator review comments and the reasons given when
+approving or rejecting, auto-extracted in the background — one rule
+per decision, for the products the decision was about; (2) the
 operator's edits to AI drafts — a material rewrite is diffed and
 distilled into a style rule (badge "from your edits"); (3) reply
-outcomes — a positive reply raises the confidence of the lessons that
-shaped the email, a decline lowers it; (4) a weekly AI synthesis pass
-that mines the recent decision/reply stream for patterns and proposes
-new rules (badge "auto-learned", modest starting confidence). Admins
-can trigger "Synthesize now" and "Compact now" on [/learning].
+outcomes — switched off for every workspace for now, so replies teach
+nothing (reply classes are still keyword guesses, see I088); {H-33}
+(4) a weekly AI synthesis pass that mines people's recent decisions
+(never autopilot's, never one that was later changed) for patterns and
+proposes new rules (badge "auto-learned", modest starting confidence).
+Admins can trigger "Synthesize now" and "Compact now" on [/learning].
 Confidence self-adjusts from outcomes; persistently contradicted
 lessons retire automatically. Any lesson can be edited or disabled.
 Repeating the same feedback does NOT create duplicate rules — a repeat

@@ -6,6 +6,7 @@ import { and, asc, desc, eq, ne, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
+import { qualifications } from '@/lib/db/schema/qualifications';
 import { reviewItems, type ReviewItem } from '@/lib/db/schema/review';
 import {
   pipelineEvents,
@@ -95,6 +96,28 @@ export async function ensureQualifiedLead(
   initialState: PipelineState = 'relevant',
 ): Promise<QualifiedLead> {
   if (!canWrite(ctx)) throw permissionDenied('pipeline.ensure');
+
+  // KL-02: the operator's Not a fit for this (record, product) binds —
+  // no pipeline lead for that pair, whoever asks.
+  const verdict = await db
+    .select({ verdict: qualifications.operatorVerdict, productName: productProfiles.name })
+    .from(reviewItems)
+    .innerJoin(
+      qualifications,
+      and(
+        eq(qualifications.workspaceId, reviewItems.workspaceId),
+        eq(qualifications.sourceRecordId, reviewItems.sourceRecordId),
+        eq(qualifications.productProfileId, productProfileId),
+      ),
+    )
+    .innerJoin(productProfiles, eq(productProfiles.id, qualifications.productProfileId))
+    .where(and(eq(reviewItems.workspaceId, ctx.workspaceId), eq(reviewItems.id, reviewItemId)))
+    .limit(1);
+  if (verdict[0]?.verdict === 'not_fit') {
+    throw conflict(
+      `This company was marked Not a fit for ${verdict[0].productName}, so it cannot become a pipeline lead for that product.`,
+    );
+  }
 
   const existing = await db
     .select()

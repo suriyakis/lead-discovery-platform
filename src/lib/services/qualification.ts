@@ -420,53 +420,43 @@ export async function bulkArchiveLeads(
   if (!canAdminWorkspace(ctx)) throw permissionDenied('archive leads');
   const cappedIds = qualificationIds.slice(0, BULK_LIMIT);
   if (cappedIds.length === 0) return { archived: 0, requested: qualificationIds.length };
-  return db.transaction(async (tx) => {
-    // Find review_items via source_records joined through the qualifications.
-    const rows = await tx
-      .select({
-        reviewItemId: reviewItems.id,
-      })
-      .from(qualifications)
-      .innerJoin(
-        reviewItems,
-        and(
-          eq(reviewItems.sourceRecordId, qualifications.sourceRecordId),
-          eq(reviewItems.workspaceId, qualifications.workspaceId),
-        ),
-      )
-      .where(
-        and(
-          eq(qualifications.workspaceId, ctx.workspaceId),
-          inArray(qualifications.id, cappedIds as bigint[]),
-        ),
-      );
-    const riIds = Array.from(new Set(rows.map((r) => r.reviewItemId)));
-    if (riIds.length === 0) {
-      return { archived: 0, requested: qualificationIds.length };
-    }
-    const updated = await tx
-      .update(reviewItems)
-      .set({ state: 'archived', updatedAt: new Date() })
-      .where(
-        and(
-          eq(reviewItems.workspaceId, ctx.workspaceId),
-          inArray(reviewItems.id, riIds),
-        ),
-      )
-      .returning({ id: reviewItems.id });
-    if (updated.length > 0) {
-      await recordAuditEvent(ctx, {
-        kind: 'lead.bulk_archive',
-        entityType: 'qualification',
-        entityId: null,
-        payload: {
-          qualificationIds: cappedIds.map((id) => id.toString()),
-          archivedReviewItems: updated.map((u) => u.id.toString()),
-        },
-      });
-    }
-    return { archived: updated.length, requested: qualificationIds.length };
+  // Find review_items via source_records joined through the qualifications.
+  const rows = await db
+    .select({
+      reviewItemId: reviewItems.id,
+    })
+    .from(qualifications)
+    .innerJoin(
+      reviewItems,
+      and(
+        eq(reviewItems.sourceRecordId, qualifications.sourceRecordId),
+        eq(reviewItems.workspaceId, qualifications.workspaceId),
+      ),
+    )
+    .where(
+      and(
+        eq(qualifications.workspaceId, ctx.workspaceId),
+        inArray(qualifications.id, cappedIds as bigint[]),
+      ),
+    );
+  const riIds = Array.from(new Set(rows.map((r) => r.reviewItemId.toString()))).map((s) =>
+    BigInt(s),
+  );
+  if (riIds.length === 0) {
+    return { archived: 0, requested: qualificationIds.length };
+  }
+  // KL-02: archiving is a review decision (a half-weight Not a fit), so it
+  // goes through the review service: state, decision record and audit in
+  // one transaction. Items already archived are skipped.
+  const { bulkArchiveReviewItems } = await import('./review');
+  const r = await bulkArchiveReviewItems(ctx, riIds, {
+    audit: {
+      kind: 'lead.bulk_archive',
+      entityType: 'qualification',
+      payload: { qualificationIds: cappedIds.map((id) => id.toString()) },
+    },
   });
+  return { archived: r.archived, requested: qualificationIds.length };
 }
 
 /**
@@ -587,6 +577,9 @@ async function upsertQualification(
     geoStatus: geo.status,
   };
 
+  // The conflict set never names operator_verdict / operator_decided_* /
+  // operator_event_id / geo_confirmed_*: re-classification refreshes the
+  // AI's verdict, never the operator's (KL-02).
   await db
     .insert(qualifications)
     .values(row)

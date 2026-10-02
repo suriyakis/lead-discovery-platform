@@ -160,6 +160,8 @@ Sketch only — full shape decided when the module is built.
 ### `qualifications` (Phase 7)
 One row per `(sourceRecordId, productProfileId)` with the explainable classification.
 
+KL-02 adds the operator's verdict as domain state: `operator_verdict` (`fit` | `not_fit`, CHECK), `operator_decided_by`, `operator_decided_at` (set iff a verdict is, CHECK), `operator_event_id` (FK `learning_events`, SET NULL) and the human location confirmation `geo_confirmed_by` / `geo_confirmed_at`. Only an operator decision (review.ts, inside the decision's transaction) writes them; re-classification never does. `not_fit` blocks Promote, `ensureQualifiedLead`, `generateOutreachDraft` and autopilot's auto-enqueue for the pair.
+
 ### `review_items` (Phase 4)
 The review queue. State, assigned user, comments (separate `review_comments` table for history).
 
@@ -179,6 +181,11 @@ KL-01 shape of `learning_lessons`:
 `lesson_scopes(lesson_id, workspace_id, product_profile_id)`, PK `(lesson_id, product_profile_id)`. Both FKs are composite on `workspace_id`: `(workspace_id, lesson_id) -> learning_lessons(workspace_id, id)` and `(workspace_id, product_profile_id) -> product_profiles(workspace_id, id)`, both `ON DELETE CASCADE`. The database itself refuses a scope row joining a rule to another tenant's product; deleting a product drops its scope rows instead of the rules. `product_profiles` carries `UNIQUE (workspace_id, id)` for this.
 
 Every reader filters through `lessonInScope(pid)` in `src/lib/services/learning.ts`: `scope_kind = 'workspace' OR EXISTS (lesson_scopes row [for pid])`. Rollback of the KL-01 migrations: `drizzle/rollback/p1_knowledge_foundation_lesson_scopes.down.sql`.
+
+### `learning_decisions` and the decision columns of `learning_events` (KL-02)
+`learning_decisions`: one row per decision — `id uuid`, `workspace_id`, `decision_key` (`UNIQUE (workspace_id, decision_key)`: a form nonce, or `autopilot:<run>:<item>`; a repeat records nothing), `kind` (`review.approve` / `reject` / `ignore` / `archive` / `comment`), `origin` (`operator` | `autopilot` | `system`, CHECK), generic `subject_type` / `subject_id` (NULL for a bulk decision), `user_id` (NULL for machines). `UNIQUE (workspace_id, id)` is the target of the events' composite FK.
+
+`learning_events` is the decision log and the learning outbox: `decision_id` (composite FK `(workspace_id, decision_id)`, CASCADE), `origin`, `verdict` (`fit` / `not_fit` / NULL for an unscoped event or a comment), `polarity`, `weight` numeric(3,2) (1, or 0.5 for an untouched default and for archive / ignore), `explicit`, `reason_codes`, `context` jsonb (record snapshot: normalized domain — never a Vertex redirect — countries, per-product AI verdict / method / score / threshold / reason / cited rules, evidence quality, connector and recipe ids, product names), outbox state `processing_status` (`pending` → `processing` → `done` / `no_rule` / `below_floor` / `skipped_no_tokens` / `skipped` / `failed`), `attempts`, `next_attempt_at`, `last_error`, `processed_at`, and supersession `voided_at`, `voided_by_event_id` (self-FK), `void_reason` (`changed_mind` / `undo` / `autopilot_override`), `overrides_autopilot`. All written in the transaction of the state change (`recordDecision`, `src/lib/services/learning-decisions.ts`). Rows from before KL-02 keep `decision_id` NULL and `processing_status` `done`. Rollback: `drizzle/rollback/p1_knowledge_foundation_decision_record.down.sql`.
 
 ### `remediation_runs`, `remediation_log` (Phase 0, flow:F-06)
 Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`). Not tenant-owned: a run spans workspaces and is driven by a platform super admin.

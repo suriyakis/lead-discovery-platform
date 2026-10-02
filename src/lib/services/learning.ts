@@ -156,6 +156,8 @@ function validateRule(input: string): string {
 export type LessonSource = 'operator' | 'draft_edit' | 'synthesis';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** An open transaction on the shared client (KL-02 writes inside it). */
+export type LearningTx = Tx;
 
 // ---- scope -----------------------------------------------------------------
 //
@@ -353,22 +355,13 @@ export async function recordFeedback(
   ctx: WorkspaceContext,
   input: FeedbackInput,
 ): Promise<{ event: LearningEvent; lesson: LearningLesson | null }> {
-  // Extraction first (outside tx) so a slow / failing AI call doesn't hold
-  // a transaction open. extractLesson never throws — it falls back to the
-  // deterministic heuristic on any error.
-  const draft = await extractLesson(ctx, input.originalComment ?? null);
-  const scope = normalizeScope(scopeForProduct(input.productProfileId));
-  // Dedup check also outside the tx (may make an embedding call). A
-  // repeat of an already-known rule reinforces the existing lesson
-  // instead of planting a near-identical sibling.
-  const duplicate = draft
-    ? await findNearDuplicateLesson(ctx, {
-        category: draft.category,
-        rule: draft.rule,
-        polarity: draft.polarity,
-        scope,
-      })
-    : null;
+  // Extraction + dedup lookup first (outside tx) so a slow / failing AI
+  // call doesn't hold a transaction open.
+  const prepared = await prepareLessonFromText(
+    ctx,
+    input.originalComment ?? null,
+    scopeForProduct(input.productProfileId),
+  );
 
   let result: { event: LearningEvent; lesson: LearningLesson | null; dedupReinforced: boolean };
   try {
@@ -387,63 +380,14 @@ export async function recordFeedback(
       const insertedEvent = (await tx.insert(learningEvents).values(eventRow).returning())[0];
       if (!insertedEvent) throw invariant('learning_events insert returned no row');
 
-      let lesson: LearningLesson | null = null;
-      let dedupReinforced = false;
-      if (draft && duplicate) {
-        // Reinforce inside the tx so event-link + confidence bump are atomic.
-        const evidence = Array.from(
-          new Set<bigint>([...duplicate.evidenceEventIds, insertedEvent.id]),
-        );
-        const [updated] = await tx
-          .update(learningLessons)
-          .set({
-            confidence: sql`LEAST(${learningLessons.confidence} + ${DEDUP_REINFORCE_STEP}, ${DEDUP_CONFIDENCE_CEILING})`,
-            evidenceEventIds: evidence,
-            reinforcedAt: new Date(),
-            updatedAt: new Date(),
-            updatedBy: ctx.userId,
-          })
-          .where(
-            and(
-              eq(learningLessons.workspaceId, ctx.workspaceId),
-              eq(learningLessons.id, duplicate.id),
-            ),
-          )
-          .returning();
-        if (updated) {
-          lesson = updated;
-          dedupReinforced = true;
-          await tx
-            .update(learningEvents)
-            .set({ extractedLessonId: updated.id })
-            .where(eq(learningEvents.id, insertedEvent.id));
-          insertedEvent.extractedLessonId = updated.id;
-        }
-      } else if (draft) {
-        const insertedLesson = await insertLessonWithScope(
-          tx,
-          {
-            workspaceId: ctx.workspaceId,
-            category: draft.category,
-            rule: draft.rule,
-            polarity: draft.polarity,
-            evidenceEventIds: [insertedEvent.id],
-            lifecycle: 'active',
-            confidence: draft.confidence,
-            createdBy: ctx.userId,
-            updatedBy: ctx.userId,
-          },
-          scope,
-        );
-        lesson = insertedLesson;
-        await tx
-          .update(learningEvents)
-          .set({ extractedLessonId: insertedLesson.id })
-          .where(eq(learningEvents.id, insertedEvent.id));
-        // Reflect the FK on the returned object — the post-INSERT snapshot
-        // doesn't see the subsequent UPDATE.
-        insertedEvent.extractedLessonId = insertedLesson.id;
-      }
+      const written = prepared
+        ? await writePreparedLesson(tx, ctx, prepared, [insertedEvent.id])
+        : { lesson: null, dedupReinforced: false };
+      const lesson = written.lesson;
+      const dedupReinforced = written.dedupReinforced;
+      // Reflect the FK on the returned object — the post-INSERT snapshot
+      // doesn't see the subsequent UPDATE.
+      if (lesson) insertedEvent.extractedLessonId = lesson.id;
 
       await recordAuditEvent(ctx, {
         kind: 'learning.feedback',
@@ -468,6 +412,119 @@ export async function recordFeedback(
     scheduleLessonEmbedding(ctx, result.lesson.id);
   }
   return { event: result.event, lesson: result.lesson };
+}
+
+/** A rule extracted from a piece of operator text, ready to be written:
+ *  either a brand-new rule or the near-duplicate it repeats. */
+export interface PreparedLesson {
+  draft: LessonDraft;
+  scope: { kind: LessonScopeKind; productProfileIds: bigint[] };
+  /** The existing rule this one repeats; writing then reinforces it. */
+  duplicate: LearningLesson | null;
+}
+
+/**
+ * Extract a rule from operator text and look for a near-duplicate in the
+ * same scope. Runs OUTSIDE any transaction (it may call the AI provider
+ * and the embedder). Never throws for extraction trouble — extractLesson
+ * falls back to the heuristic — and returns null when the text carries no
+ * reusable rule. Shared by recordFeedback and the decision processor
+ * (learning-decisions.ts), so a decision's reason is extracted ONCE however
+ * many products it covers (I032).
+ */
+export async function prepareLessonFromText(
+  ctx: WorkspaceContext,
+  text: string | null,
+  /** The rule's scope, or a function choosing it from the extracted draft
+   *  (e.g. by its polarity); returning null means "no rule". */
+  scopeInput:
+    | LessonScopeInput
+    | ((draft: LessonDraft) => Promise<LessonScopeInput | null> | LessonScopeInput | null),
+): Promise<PreparedLesson | null> {
+  const draft = await extractLesson(ctx, text);
+  if (!draft) return null;
+  const chosen = typeof scopeInput === 'function' ? await scopeInput(draft) : scopeInput;
+  if (!chosen) return null;
+  const scope = normalizeScope(chosen);
+  // A repeat of an already-known rule reinforces the existing lesson
+  // instead of planting a near-identical sibling.
+  const duplicate = await findNearDuplicateLesson(ctx, {
+    category: draft.category,
+    rule: draft.rule,
+    polarity: draft.polarity,
+    scope,
+  });
+  return { draft, scope, duplicate };
+}
+
+/**
+ * Write a prepared rule inside the caller's transaction and link the
+ * evidence events to it: a duplicate is reinforced (+5, evidence merged),
+ * otherwise a new active rule is inserted with its scope rows. The caller
+ * maps a scope FK violation (mapScopeError) and schedules the embedding
+ * for a new rule after commit.
+ */
+export async function writePreparedLesson(
+  tx: LearningTx,
+  ctx: WorkspaceContext,
+  prepared: PreparedLesson,
+  evidenceEventIds: readonly bigint[],
+): Promise<{ lesson: LearningLesson | null; dedupReinforced: boolean }> {
+  const { draft, duplicate } = prepared;
+  const linkEvents = async (lessonId: bigint) => {
+    if (evidenceEventIds.length === 0) return;
+    await tx
+      .update(learningEvents)
+      .set({ extractedLessonId: lessonId })
+      .where(
+        and(
+          eq(learningEvents.workspaceId, ctx.workspaceId),
+          inArray(learningEvents.id, [...evidenceEventIds]),
+        ),
+      );
+  };
+  if (duplicate) {
+    // Reinforce inside the tx so event-link + confidence bump are atomic.
+    const evidence = Array.from(
+      new Set<bigint>([...duplicate.evidenceEventIds, ...evidenceEventIds]),
+    );
+    const [updated] = await tx
+      .update(learningLessons)
+      .set({
+        confidence: sql`LEAST(${learningLessons.confidence} + ${DEDUP_REINFORCE_STEP}, ${DEDUP_CONFIDENCE_CEILING})`,
+        evidenceEventIds: evidence,
+        reinforcedAt: new Date(),
+        updatedAt: new Date(),
+        updatedBy: ctx.userId,
+      })
+      .where(
+        and(
+          eq(learningLessons.workspaceId, ctx.workspaceId),
+          eq(learningLessons.id, duplicate.id),
+        ),
+      )
+      .returning();
+    if (!updated) return { lesson: null, dedupReinforced: false };
+    await linkEvents(updated.id);
+    return { lesson: updated, dedupReinforced: true };
+  }
+  const inserted = await insertLessonWithScope(
+    tx,
+    {
+      workspaceId: ctx.workspaceId,
+      category: draft.category,
+      rule: draft.rule,
+      polarity: draft.polarity,
+      evidenceEventIds: [...evidenceEventIds],
+      lifecycle: 'active',
+      confidence: draft.confidence,
+      createdBy: ctx.userId,
+      updatedBy: ctx.userId,
+    },
+    prepared.scope,
+  );
+  await linkEvents(inserted.id);
+  return { lesson: inserted, dedupReinforced: false };
 }
 
 // ---- extractor (AI first, heuristic fallback) -------------------------

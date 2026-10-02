@@ -5,6 +5,7 @@ import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { sourceRecords } from '@/lib/db/schema/connectors';
 import { reviewComments, reviewItems } from '@/lib/db/schema/review';
+import { getJobQueue } from '@/lib/jobs';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import {
@@ -342,7 +343,7 @@ describe('assignment + dashboard counts', () => {
 // ---- learning feedback (P60-01) ---------------------------------------
 
 describe('approve/reject feeds the learning layer', () => {
-  it('reject with reason emits per-product learning events for every matched qualification', async () => {
+  it('reject with reason emits one event per AI-relevant product, none for the product the AI ruled out (I032)', async () => {
     const { createProductProfile } = await import('@/lib/services/product-profile');
     const { qualifications } = await import('@/lib/db/schema/qualifications');
     const { learningEvents } = await import('@/lib/db/schema/learning');
@@ -358,8 +359,12 @@ describe('approve/reject feeds the learning layer', () => {
       ctx(s.workspaceA, s.ownerA, 'owner'),
       { name: 'Beta' },
     );
+    const productC = await createProductProfile(
+      ctx(s.workspaceA, s.ownerA, 'owner'),
+      { name: 'Gamma' },
+    );
 
-    // Engine matched this record against two products.
+    // The AI matched this record against A and B and ruled C out.
     await db.insert(qualifications).values([
       {
         workspaceId: s.workspaceA,
@@ -368,7 +373,7 @@ describe('approve/reject feeds the learning layer', () => {
         isRelevant: true,
         relevanceScore: 80,
         confidence: 70,
-        method: 'rules',
+        method: 'ai',
       },
       {
         workspaceId: s.workspaceA,
@@ -377,7 +382,16 @@ describe('approve/reject feeds the learning layer', () => {
         isRelevant: true,
         relevanceScore: 60,
         confidence: 65,
-        method: 'rules',
+        method: 'ai',
+      },
+      {
+        workspaceId: s.workspaceA,
+        sourceRecordId: sr[0].id,
+        productProfileId: productC.id,
+        isRelevant: false,
+        relevanceScore: 10,
+        confidence: 65,
+        method: 'ai',
       },
     ]);
 
@@ -392,7 +406,9 @@ describe('approve/reject feeds the learning layer', () => {
       .from(learningEvents)
       .where(eq(learningEvents.workspaceId, s.workspaceA));
     expect(events).toHaveLength(2);
-    expect(events.every((e) => e.actionType === 'qualification_negative')).toBe(true);
+    // The AI said relevant, the operator said no: false positives.
+    expect(events.every((e) => e.actionType === 'false_positive')).toBe(true);
+    expect(events.every((e) => e.verdict === 'not_fit')).toBe(true);
     expect(events.every((e) => e.entityType === 'review_item')).toBe(true);
     const productIds = events.map((e) => e.productProfileId).sort();
     expect(productIds).toEqual([productA.id, productB.id].sort());
@@ -418,7 +434,7 @@ describe('approve/reject feeds the learning layer', () => {
       isRelevant: true,
       relevanceScore: 75,
       confidence: 70,
-      method: 'rules',
+      method: 'ai',
     });
 
     const approved = await approveReviewItem(
@@ -441,9 +457,11 @@ describe('approve/reject feeds the learning layer', () => {
     expect(events[0]?.originalComment).toBe(
       'exact ICP — head of procurement, active RFP',
     );
+    expect(events[0]?.verdict).toBe('fit');
+    expect(events[0]?.origin).toBe('operator');
   });
 
-  it('falls back to workspace-scoped event when no qualifications exist for the record', async () => {
+  it('records one unscoped event (no product, no verdict) when no qualifications exist for the record', async () => {
     const { learningEvents } = await import('@/lib/db/schema/learning');
     const s = await setup();
     const { items } = await seedDiscovery(s, 1);
@@ -461,6 +479,7 @@ describe('approve/reject feeds the learning layer', () => {
       .where(eq(learningEvents.workspaceId, s.workspaceA));
     expect(events).toHaveLength(1);
     expect(events[0]?.productProfileId).toBeNull();
+    expect(events[0]?.verdict).toBeNull();
     expect(events[0]?.actionType).toBe('qualification_negative');
   });
 
@@ -524,16 +543,17 @@ describe('approve/reject feeds the learning layer', () => {
       rule: 'Group branches count as one company.',
       confidence: 60,
     });
-    // A rules_fallback verdict that matched all three (as the rules engine
-    // serialises them: id strings).
+    // An AI verdict that used all three (serialised as id strings). Only
+    // AI-method rows reinforce (KL-02, plan section 5: rules-fallback rows
+    // never do).
     await db.insert(qualifications).values({
       workspaceId: s.workspaceA,
       sourceRecordId: sr[0].id,
       productProfileId: product.id,
-      isRelevant: false,
-      relevanceScore: 35,
+      isRelevant: true,
+      relevanceScore: 70,
       confidence: 60,
-      method: 'rules_fallback',
+      method: 'ai',
       evidence: {
         contributions: [],
         matchedLessonIds: [avoid.id, prefer.id, neutral.id].map((id) => id.toString()),
@@ -544,7 +564,8 @@ describe('approve/reject feeds the learning layer', () => {
 
     const confidenceOf = async (id: bigint) =>
       (await db.select().from(learningLessons).where(eq(learningLessons.id, id)))[0]!.confidence;
-    // Reinforcement is fire-and-forget after the decision commits.
+    // Reinforcement runs in the learning.process job after the commit.
+    await getJobQueue().drain?.();
     await vi.waitFor(async () => {
       expect(await confidenceOf(avoid.id)).toBe(62);
     });

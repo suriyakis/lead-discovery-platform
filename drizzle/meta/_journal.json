@@ -477,6 +477,13 @@
       "when": 1790899968437,
       "tag": "0067_p1_knowledge_foundation_lesson_scopes_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1790904510638,
+      "tag": "0068_p1_knowledge_foundation_decision_record",
+      "breakpoints": true
     }
   ]
 }

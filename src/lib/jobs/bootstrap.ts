@@ -15,6 +15,11 @@ import {
   type WorkspaceRole,
   makeWorkspaceContext,
 } from '@/lib/services/context';
+import {
+  LEARNING_PROCESS_JOB,
+  LearningProcessPayloadSchema,
+  processDecision,
+} from '@/lib/services/learning-decisions';
 
 export interface ConnectorRunJobPayload {
   runId: string;
@@ -49,12 +54,28 @@ const handleConnectorRun: JobHandler<ConnectorRunJobPayload> = async (payload) =
   return runConnectorRun(ctx, runId);
 };
 
+/**
+ * KL-02: work one decision's learning outbox. The payload is untrusted
+ * queue data — validated before use; the decision's events already sit in
+ * the database as 'pending', so a malformed or lost job only delays them.
+ */
+const handleLearningProcess: JobHandler = async (payload) => {
+  const p = LearningProcessPayloadSchema.parse(payload);
+  const ctx = makeWorkspaceContext({
+    workspaceId: BigInt(p.workspaceId),
+    userId: p.userId,
+    role: p.role,
+  });
+  return processDecision(ctx, p.decisionId);
+};
+
 let registered = false;
 
 export function registerJobHandlers(): void {
   if (registered) return;
   const q = getJobQueue();
   q.on<ConnectorRunJobPayload>('connector.run', handleConnectorRun);
+  q.on(LEARNING_PROCESS_JOB, handleLearningProcess);
   registered = true;
 }
 

@@ -52,6 +52,7 @@ import {
 } from '@/lib/db/schema/outreach';
 import { pipelineState, qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { qualifications } from '@/lib/db/schema/qualifications';
+import { learningEvents } from '@/lib/db/schema/learning';
 import { reviewItems } from '@/lib/db/schema/review';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
@@ -535,7 +536,7 @@ describe('send queue', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 // ---- autopilot service ---------------------------------------------
 
 describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
-  it('[handbook H-07] the background tick auto-approves "new" items at the threshold in the owner\'s name, never needs_review ones', async () => {
+  it('[handbook H-07] the background tick auto-approves "new" items at the threshold as autopilot (no person), never needs_review ones', async () => {
     const s = await setup();
     const { items } = await discover(s, { count: 2 });
     expect(items).toHaveLength(2);
@@ -555,8 +556,19 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     const approved = await reviewItem(fresh.id);
     expect(approved.state).toBe('approved');
-    expect(approved.approvedByUserId).toBe(s.ownerId);
+    // KL-02 (I034): a machine approval carries no person's name.
+    expect(approved.approvedByUserId).toBeNull();
+    expect(approved.approvalReason).toBe('autopilot');
     expect((await reviewItem(geoHeld.id)).state).toBe('needs_review');
+    // ...and teaches nothing: its learning events are autopilot's, never processed.
+    const events = await db
+      .select()
+      .from(learningEvents)
+      .where(eq(learningEvents.workspaceId, s.workspaceId));
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((e) => e.origin === 'autopilot' && e.processingStatus === 'skipped')).toBe(
+      true,
+    );
   });
 
   it('[handbook H-08] generate + enqueue writes, approves (as the owner) and queues a draft with no human step', async () => {

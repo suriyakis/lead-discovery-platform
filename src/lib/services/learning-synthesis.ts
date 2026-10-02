@@ -16,7 +16,7 @@
 // Runs unattended on the weekly knowledge tick (after compaction, so it
 // mines a deduplicated base) and on demand from /learning (admin button).
 
-import { and, desc, eq, gte } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import { learningEvents, learningLessons } from '@/lib/db/schema/learning';
@@ -167,6 +167,10 @@ async function runSynthesis(ctx: WorkspaceContext): Promise<SynthesisSummary> {
       and(
         eq(learningEvents.workspaceId, ctx.workspaceId),
         gte(learningEvents.createdAt, since),
+        // KL-02: machines never teach (I034) and a decision that was
+        // superseded or undone is never mined.
+        eq(learningEvents.origin, 'operator'),
+        isNull(learningEvents.voidedAt),
       ),
     )
     .orderBy(desc(learningEvents.createdAt))

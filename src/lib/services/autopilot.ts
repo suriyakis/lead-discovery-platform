@@ -7,9 +7,23 @@
 // orchestrator: it never reaches into the DB to do work that already has
 // a service entry point.
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  notExists,
+  or,
+  sql,
+} from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import { db } from '@/lib/db/client';
+import { productProfiles } from '@/lib/db/schema/products';
 import {
   autopilotLog,
   autopilotProductSettings,
@@ -31,7 +45,7 @@ import {
   canWrite,
   type WorkspaceContext,
 } from './context';
-import { approveReviewItem } from './review';
+import { autopilotApproveReviewItem } from './review';
 import { approveOutreachDraft, generateOutreachDraft } from './outreach';
 import {
   drainQueue,
@@ -502,15 +516,52 @@ async function stepAutoSyncInbound(
   };
 }
 
-async function stepAutoApproveProjects(
-  ctx: WorkspaceContext,
-  runId: string,
-  settings: AutopilotSettings,
-): Promise<AutopilotRunResult['steps'][number]> {
-  // Find review items in 'new' state whose top qualification crosses the
-  // threshold + workspace's autoApproveThreshold.
-  const candidates = await db
-    .select({ ri: reviewItems, q: qualifications })
+/**
+ * The qualifications that make a 'new' review item eligible for an
+ * autopilot approval, as SQL (I018) — so LIMIT only ever counts eligible
+ * rows: relevant; the product's auto-approve not switched off by its
+ * overlay; the score at or above the effective threshold (overlay, else
+ * the workspace's); and no operator verdict on ANY product of the record
+ * (a person already decided — autopilot never second-guesses them). The
+ * per-product master / emergency-pause overlays are not applied here, as
+ * before (I020, handbook H-13).
+ */
+function autoApproveEligibility(ctx: WorkspaceContext, settings: AutopilotSettings) {
+  const decided = alias(qualifications, 'q_decided');
+  return and(
+    eq(reviewItems.workspaceId, ctx.workspaceId),
+    eq(reviewItems.state, 'new'),
+    eq(qualifications.isRelevant, true),
+    or(
+      isNull(autopilotProductSettings.enableAutoApproveProjects),
+      eq(autopilotProductSettings.enableAutoApproveProjects, true),
+    ),
+    gte(
+      qualifications.relevanceScore,
+      sql<number>`coalesce(${autopilotProductSettings.autoApproveThreshold}, ${settings.autoApproveThreshold})`,
+    ),
+    notExists(
+      db
+        .select({ one: sql`1` })
+        .from(decided)
+        .where(
+          and(
+            eq(decided.workspaceId, reviewItems.workspaceId),
+            eq(decided.sourceRecordId, reviewItems.sourceRecordId),
+            isNotNull(decided.operatorVerdict),
+          ),
+        ),
+    ),
+  );
+}
+
+function eligibleQualifications() {
+  return db
+    .select({
+      reviewItemId: reviewItems.id,
+      productProfileId: qualifications.productProfileId,
+      score: qualifications.relevanceScore,
+    })
     .from(reviewItems)
     .innerJoin(
       qualifications,
@@ -519,34 +570,78 @@ async function stepAutoApproveProjects(
         eq(qualifications.sourceRecordId, reviewItems.sourceRecordId),
       ),
     )
-    .where(
+    .leftJoin(
+      autopilotProductSettings,
       and(
-        eq(reviewItems.workspaceId, ctx.workspaceId),
-        eq(reviewItems.state, 'new'),
-        eq(qualifications.isRelevant, true),
+        eq(autopilotProductSettings.workspaceId, qualifications.workspaceId),
+        eq(autopilotProductSettings.productProfileId, qualifications.productProfileId),
       ),
     )
-    .orderBy(desc(qualifications.relevanceScore))
-    .limit(settings.maxApprovalsPerRun);
+    .$dynamic();
+}
+
+async function stepAutoApproveProjects(
+  ctx: WorkspaceContext,
+  runId: string,
+  settings: AutopilotSettings,
+): Promise<AutopilotRunResult['steps'][number]> {
+  const cap = settings.maxApprovalsPerRun;
+  if (cap <= 0) {
+    return { step: 'auto_approve_projects', outcome: 'success', detail: 'approved=0/0' };
+  }
+  // An item relevant to N products yields N rows; over-fetch cap × the
+  // workspace's product count so the cap counts ITEMS, then de-duplicate
+  // (best score first) and keep `cap` items.
+  const [{ products } = { products: 1 }] = await db
+    .select({ products: sql<number>`count(*)::int` })
+    .from(productProfiles)
+    .where(eq(productProfiles.workspaceId, ctx.workspaceId));
+  const rows = await eligibleQualifications()
+    .where(autoApproveEligibility(ctx, settings))
+    .orderBy(desc(qualifications.relevanceScore), asc(reviewItems.id))
+    .limit(Math.min(cap * Math.max(1, products), 50_000));
+  const best = new Map<string, { id: bigint; score: number }>();
+  for (const r of rows) {
+    const key = r.reviewItemId.toString();
+    if (!best.has(key)) best.set(key, { id: r.reviewItemId, score: r.score });
+  }
+  const selected = [...best.values()].slice(0, cap);
+  if (selected.length === 0) {
+    return { step: 'auto_approve_projects', outcome: 'success', detail: 'approved=0/0' };
+  }
+  // Every eligible product of each selected item: the approval is FOR
+  // those products (one autopilot event each).
+  const productRows = await eligibleQualifications().where(
+    and(
+      autoApproveEligibility(ctx, settings),
+      inArray(
+        reviewItems.id,
+        selected.map((s) => s.id),
+      ),
+    ),
+  );
+  const productsByItem = new Map<string, bigint[]>();
+  for (const r of productRows) {
+    const key = r.reviewItemId.toString();
+    productsByItem.set(key, [...(productsByItem.get(key) ?? []), r.productProfileId]);
+  }
 
   let approved = 0;
-  for (const row of candidates) {
-    // Per-product overlay: if the product disables auto-approve or sets a
-    // higher threshold, honor that.
-    const eff = await getEffectiveAutopilotSettings(ctx, row.q.productProfileId);
-    if (!eff.enableAutoApproveProjects) continue;
-    if (row.q.relevanceScore < eff.autoApproveThreshold) continue;
+  for (const item of selected) {
+    const productIds = productsByItem.get(item.id.toString()) ?? [];
     try {
-      await approveReviewItem(ctx, row.ri.id);
-      approved++;
+      const r = await autopilotApproveReviewItem(ctx, item.id, { runId, productProfileIds: productIds });
+      if (r.approved) approved++;
       await recordStep(
         ctx,
         runId,
         'auto_approve_projects',
-        'success',
-        `score=${row.q.relevanceScore} product=${row.q.productProfileId}`,
+        r.approved ? 'success' : 'skipped',
+        r.approved
+          ? `score=${item.score} products=${productIds.join(',')}`
+          : 'no longer new — left for the operator',
         'review_item',
-        row.ri.id.toString(),
+        item.id.toString(),
       );
     } catch (err) {
       await recordStep(
@@ -556,14 +651,14 @@ async function stepAutoApproveProjects(
         'error',
         err instanceof Error ? err.message : String(err),
         'review_item',
-        row.ri.id.toString(),
+        item.id.toString(),
       );
     }
   }
   return {
     step: 'auto_approve_projects',
     outcome: 'success',
-    detail: `approved=${approved}/${candidates.length}`,
+    detail: `approved=${approved}/${selected.length}`,
   };
 }
 
@@ -600,6 +695,9 @@ async function stepAutoEnqueueOutreach(
         eq(reviewItems.workspaceId, ctx.workspaceId),
         eq(reviewItems.state, 'approved'),
         eq(qualifications.isRelevant, true),
+        // KL-02: a pair the operator marked Not a fit is never drafted
+        // (an approved item can carry mixed verdicts).
+        or(isNull(qualifications.operatorVerdict), eq(qualifications.operatorVerdict, 'fit')),
       ),
     )
     .limit(settings.maxEnqueuesPerRun);

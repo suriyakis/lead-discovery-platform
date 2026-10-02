@@ -34,6 +34,7 @@ import { createProductProfile } from '@/lib/services/product-profile';
 import { createConnector, createRecipe, startRun } from '@/lib/services/connector-run';
 import { reviewItems } from '@/lib/db/schema/review';
 import { generateOutreachDraft } from '@/lib/services/outreach';
+import { updateLearnFromReplies } from '@/lib/services/workspace';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
 class StubJson implements IAIProvider {
@@ -243,9 +244,39 @@ describe('learnFromReplyOutcome', () => {
     return { c, product, lesson, draft };
   }
 
+  it('KL-02: off by default — a reply records no event and moves no rule', async () => {
+    const s = await setup();
+    const { c, product, lesson, draft } = await seedDraftWithLessons(s);
+    const r = await learnFromReplyOutcome(c, {
+      messageId: 122n,
+      replyClass: 'interest',
+      classifierConfidence: 80,
+      productProfileId: product.id,
+      precedingDraftId: draft.id,
+    });
+    expect(r).toEqual({
+      recorded: false,
+      direction: 'up',
+      reinforcedCount: 0,
+      skippedReason: 'learn_from_replies_off',
+    });
+    expect((await lessonRow(lesson.id)).confidence).toBe(50);
+    const events = await db
+      .select()
+      .from(learningEvents)
+      .where(
+        and(
+          eq(learningEvents.workspaceId, s.workspaceA),
+          eq(learningEvents.actionType, 'reply_positive'),
+        ),
+      );
+    expect(events).toHaveLength(0);
+  });
+
   it('positive reply records an event and reinforces the draft lessons up', async () => {
     const s = await setup();
     const { c, product, lesson, draft } = await seedDraftWithLessons(s);
+    await updateLearnFromReplies(c, true);
 
     const r = await learnFromReplyOutcome(c, {
       messageId: 123n,
@@ -273,6 +304,7 @@ describe('learnFromReplyOutcome', () => {
   it('negative reply weakens; neutral classes are ignored', async () => {
     const s = await setup();
     const { c, product, lesson, draft } = await seedDraftWithLessons(s);
+    await updateLearnFromReplies(c, true);
 
     const neg = await learnFromReplyOutcome(c, {
       messageId: 124n,
