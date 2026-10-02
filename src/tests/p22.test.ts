@@ -347,6 +347,7 @@ describe('knowledge_sources.purposeCategory', () => {
   it('defaults to general when omitted', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'text',
       title: 'Pricing notes',
       textExcerpt: 'pricing details here',
@@ -357,6 +358,7 @@ describe('knowledge_sources.purposeCategory', () => {
   it('persists the supplied category', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'text',
       title: 'Datasheet',
       textExcerpt: 'voltage 5V, current 2A',
@@ -374,6 +376,7 @@ describe('knowledge_sources.purposeCategory', () => {
   it('rejects unknown values via service typing — falls back through default', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'text',
       title: 'Case',
       textExcerpt: 'rolled out in 30 days',

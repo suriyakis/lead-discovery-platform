@@ -11,7 +11,13 @@ import {
   listDocuments,
   uploadDocument,
 } from '@/lib/services/documents';
+import { NO_PRODUCT_TICKED_COPY, knowledgeScopeFromTicks } from '@/lib/services/knowledge-scope';
+import {
+  createKnowledgeSource,
+  knowledgeSourceErrorMessage,
+} from '@/lib/services/knowledge-sources';
 import { listProductProfiles } from '@/lib/services/product-profile';
+import { isNextRedirectError } from '@/lib/server-redirect';
 import type { Document } from '@/lib/db/schema/documents';
 import type { ProductProfile } from '@/lib/db/schema/products';
 
@@ -48,10 +54,12 @@ export default async function DocumentsPage({
   // One form does the whole journey that used to take four manual steps
   // (upload → open doc → "Index now" → /knowledge/new → attach → index):
   //   1. upload (byte-identical re-uploads dedupe to the existing row)
-  //   2. products selected → auto-create a knowledge source scoped to
-  //      them and index THAT (product-scoped retrieval chunks)
-  //   3. no products → auto-index the document directly (workspace-wide
-  //      chunks) when the type is indexable
+  //   2. create the document's ONE knowledge source with an explicit
+  //      scope (KL-05): the ticked products, or — no product ticked —
+  //      every product (scope_kind 'workspace')
+  //   3. index that source when the type is indexable
+  // There are no document-level chunks any more: they were workspace-wide
+  // even after the document was scoped to a product (I039).
   // Indexing failures never lose the upload — the doc lands in the
   // library and the redirect carries the warning.
   async function upload(formData: FormData) {
@@ -88,45 +96,49 @@ export default async function DocumentsPage({
       );
     }
 
-    const { indexDocument, indexKnowledgeSource, isIndexableDocument } =
-      await import('@/lib/services/rag');
+    const { indexKnowledgeSource, isIndexableDocument } = await import('@/lib/services/rag');
     const indexable = isIndexableDocument({
       mimeType: result.document.mimeType,
       filename: result.document.filename,
     });
+    const scope = knowledgeScopeFromTicks(productIds);
+    const where =
+      scope.kind === 'products'
+        ? `attached to ${productIds.length} product${productIds.length === 1 ? '' : 's'}`
+        : 'available to every product';
 
-    let outcome = 'Uploaded.';
+    let ks: Awaited<ReturnType<typeof createKnowledgeSource>>;
     try {
-      if (productIds.length > 0) {
-        const { createKnowledgeSource } = await import(
-          '@/lib/services/knowledge-sources'
-        );
-        const ks = await createKnowledgeSource(c, {
-          kind: 'document',
-          title: result.document.name,
-          documentId: result.document.id,
-          url: null,
-          textExcerpt: null,
-          summary: null,
-          language: 'en',
-          purposeCategory: 'general',
-          tags,
-          productProfileIds: productIds,
-        });
-        if (indexable) {
-          const idx = await indexKnowledgeSource(c, ks.id);
-          outcome = `Uploaded, attached to ${productIds.length} product${productIds.length === 1 ? '' : 's'} and indexed (${idx.chunkCount} chunks).`;
-        } else {
-          outcome = `Uploaded and attached to ${productIds.length} product${productIds.length === 1 ? '' : 's'}. Not auto-indexed — the file type has no extractable text.`;
-        }
-      } else if (indexable) {
-        const idx = await indexDocument(c, result.document.id);
-        outcome = `Uploaded and indexed (${idx.chunkCount} chunks, workspace-wide).`;
+      ks = await createKnowledgeSource(c, {
+        kind: 'document',
+        title: result.document.name,
+        documentId: result.document.id,
+        language: 'en',
+        purposeCategory: 'general',
+        tags,
+        scope,
+      });
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m =
+        knowledgeSourceErrorMessage(err) ?? (err instanceof Error ? err.message : 'unknown error');
+      redirect(
+        `/documents/${result.document.id}?error=${encodeURIComponent(
+          `Uploaded, but not added to the knowledge base: ${m.slice(0, 300)}`,
+        )}`,
+      );
+    }
+
+    let outcome: string;
+    try {
+      if (indexable) {
+        const idx = await indexKnowledgeSource(c, ks.id);
+        outcome = `Uploaded, ${where} and indexed (${idx.chunkCount} chunks).`;
       } else {
-        outcome =
-          'Uploaded. Not auto-indexed — the file type has no extractable text; use "Index now" on the document page to force an attempt.';
+        outcome = `Uploaded and ${where}. Not auto-indexed — the file type has no extractable text; use "Index now" on the document page to force an attempt.`;
       }
     } catch (err) {
+      if (isNextRedirectError(err)) throw err;
       const m = err instanceof Error ? err.message : 'indexing failed';
       redirect(
         `/documents/${result.document.id}?error=${encodeURIComponent(
@@ -184,10 +196,12 @@ export default async function DocumentsPage({
                   Attach to products{' '}
                   <span className="muted small">
                     (optional — scopes the knowledge to those products&apos;
-                    outreach &amp; replies; unattached uploads are available
-                    workspace-wide)
+                    outreach &amp; replies)
                   </span>
                 </legend>
+                <p className="muted small" data-testid="scope-rule">
+                  {`${NO_PRODUCT_TICKED_COPY}.`}
+                </p>
                 {products.map((p) => (
                   <label
                     key={p.id.toString()}

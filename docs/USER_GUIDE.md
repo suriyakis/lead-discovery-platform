@@ -147,13 +147,17 @@ MinIO, R2 all need path style). For native AWS, leave it false.
 
 ### Knowledge curation
 
-1. Upload sources into `/documents` (PDFs, text, etc. — only text-based mime
-   types index out of the box; for PDFs convert to text first or wait for
-   the PDF extractor upgrade).
-2. Or paste a URL or text excerpt at `/knowledge/new`, attach to one or
-   more product profiles.
-3. Click **Index now** on each. A successful run populates
-   `document_chunks` + the HNSW vector index.
+1. Upload sources into `/documents` (text, PDF and DOCX index on upload).
+   Tick the products the file is about; **no product ticked = available to
+   every product**. The upload creates the document's knowledge source with
+   that scope and indexes it.
+2. Or paste a URL or text excerpt at `/knowledge/new`, with the same rule
+   for products.
+3. To change who may use a source later, edit its products on
+   `/knowledge/<id>` — no re-index needed. A source whose products were all
+   deleted shows **Needs a scope** and is used nowhere until you re-scope
+   it. Archiving a document stops its use at once; restoring brings it
+   back.
 4. The reply assistant on `/mailbox/threads/<id>` is now grounded.
 
 ## 6. Admin operations (super-admin only)

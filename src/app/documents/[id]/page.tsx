@@ -15,9 +15,11 @@ import {
   restoreDocument,
   updateDocument,
 } from '@/lib/services/documents';
-import { listKnowledgeSources } from '@/lib/services/knowledge-sources';
+import { listDocumentSources } from '@/lib/services/knowledge-sources';
+import { listProductProfiles } from '@/lib/services/product-profile';
 import { indexDocument, listIndexingJobs } from '@/lib/services/rag';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ScopeChip } from '@/app/knowledge/scope-chip';
 
 export default async function DocumentDetail({
   params,
@@ -59,12 +61,18 @@ export default async function DocumentDetail({
   // Storage key and checksum are operator detail: admins only.
   const isAdmin = canAdminWorkspace(ctx);
 
-  // Knowledge sources that reference this document
-  const allKs = await listKnowledgeSources(ctx, { kind: 'document', limit: 1000 });
-  const referencingKs = allKs.filter(
-    (r) => r.source.documentId !== null && r.source.documentId === document.id,
-  );
-  const indexJobs = await listIndexingJobs(ctx, { documentId: document.id, limit: 5 });
+  // KL-05: a document reaches retrieval only through the knowledge
+  // source(s) wrapping it, so this page shows those sources (with their
+  // scope) and THEIR indexing runs. Before KL-05 it listed runs by
+  // document id only, missed the source's runs, offered "Index now" on an
+  // indexed document and the click wrote a second, unscoped copy (I039).
+  const [referencingKs, indexJobs, products] = await Promise.all([
+    listDocumentSources(ctx, document.id),
+    listIndexingJobs(ctx, { documentId: document.id, limit: 5 }),
+    listProductProfiles(ctx, { includeArchived: true }),
+  ]);
+  const productNames = new Map(products.map((p) => [p.id.toString(), p.name]));
+  const hasSource = referencingKs.length > 0;
 
   async function saveEdits(formData: FormData) {
     'use server';
@@ -101,8 +109,11 @@ export default async function DocumentDetail({
     const c = await getWorkspaceContext();
     try {
       const result = await indexDocument(c, id);
+      const what = result.createdSourceId
+        ? 'Added to the knowledge base for every product and indexed'
+        : 'Re-indexed';
       redirect(
-        `/documents/${id}?message=Indexed+${result.chunkCount}+chunks`,
+        `/documents/${id}?message=${encodeURIComponent(`${what} (${result.chunkCount} chunks).`)}`,
       );
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
@@ -215,15 +226,30 @@ export default async function DocumentDetail({
         {!isArchived ? (
           <section>
             <h2>RAG indexing</h2>
-            <p className="muted">
-              Indexing chunks the document content and embeds it for retrieval.
-              Re-index whenever the bytes change or you want to refresh embeddings.
-            </p>
+            {hasSource ? (
+              <p className="muted">
+                Indexing chunks the document content and embeds it for retrieval
+                through its knowledge source{referencingKs.length === 1 ? '' : 's'} below,
+                which decide which products may use it. Re-indexing refreshes them in
+                place; it never changes their products.
+              </p>
+            ) : (
+              <p className="muted">
+                This document is not in the knowledge base yet. Indexing adds it for
+                every product; to limit it to some products,{' '}
+                <Link href={`/knowledge/new?document=${document.id}`}>
+                  attach it to products
+                </Link>{' '}
+                instead.
+              </p>
+            )}
             <form action={reindex}>
               <button type="submit">
-                {indexJobs.some((j) => j.status === 'succeeded')
-                  ? 'Re-index'
-                  : 'Index now'}
+                {!hasSource
+                  ? 'Index for every product'
+                  : indexJobs.some((j) => j.status === 'succeeded')
+                    ? 'Re-index'
+                    : 'Index now'}
               </button>
             </form>
             {indexJobs.length > 0 ? (
@@ -247,13 +273,14 @@ export default async function DocumentDetail({
           {referencingKs.length === 0 ? (
             <p className="muted">
               No knowledge sources reference this document yet.{' '}
-              <Link href="/knowledge/new">Create one</Link>.
+              <Link href={`/knowledge/new?document=${document.id}`}>Create one</Link>.
             </p>
           ) : (
             <ul className="profile-list">
-              {referencingKs.map(({ source }) => (
+              {referencingKs.map(({ source, scope }) => (
                 <li key={source.id.toString()}>
-                  <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
+                  <Link href={`/knowledge/${source.id}`}>{source.title}</Link>{' '}
+                  <ScopeChip scope={scope} productNames={productNames} />
                   {source.summary ? <p className="muted">{source.summary}</p> : null}
                 </li>
               ))}

@@ -3017,19 +3017,36 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   const ksRows = await db
     .insert(s.knowledgeSources)
     .values([
-      { workspaceId: A, kind: 'document', documentId: doc(0).id, title: 'AG10 datasheet', summary: 'Thermal conductivity, temperature range, thickness tables and installation notes for NW-AG10.', language: 'en', purposeCategory: 'technical', tags: ['datasheet'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(33), createdBy: MEMBER_ID, createdAt: ago(33), updatedAt: ago(33) },
-      { workspaceId: A, kind: 'document', documentId: doc(1).id, title: 'Karta techniczna NW-MW Facade', summary: 'Parametry płyt 70/90/110 kg/m³, klasyfikacje ogniowe, zalecenia montażowe.', language: 'pl', purposeCategory: 'technical', tags: ['karta-techniczna'], productProfileIds: [P.wool], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(31), createdBy: MEMBER_ID, createdAt: ago(31), updatedAt: ago(31) },
-      { workspaceId: A, kind: 'document', documentId: doc(2).id, title: 'EN 1366-3 test configurations', summary: 'Tested penetration configurations (cables, PVC/PE pipes, metal pipes) with EI ratings.', language: 'en', purposeCategory: 'technical', tags: ['test-report'], productProfileIds: [P.sealant], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(28), createdBy: ADMIN_ID, createdAt: ago(28), updatedAt: ago(28) },
-      { workspaceId: A, kind: 'document', documentId: doc(3).id, title: 'Teesside retrofit case study', summary: '600 m of cold lines re-insulated in half the usual time using 10 mm AG10.', language: 'en', purposeCategory: 'case_study', tags: ['case-study'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(21), createdBy: MEMBER_ID, createdAt: ago(21), updatedAt: ago(21) },
-      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/products/aerogel-blankets', title: 'Aerogel blankets — product page', summary: 'Public product page with applications and FAQs.', language: 'en', purposeCategory: 'marketing', tags: ['website'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(19), createdBy: ADMIN_ID, createdAt: ago(19), updatedAt: ago(19) },
-      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/guides/fire-stopping-installation', title: 'Fire stopping installation guide', summary: null, language: 'en', purposeCategory: 'technical', tags: ['guide'], productProfileIds: [P.sealant], externalProviderId: 'pgvector', externalStatus: 'failed', externalError: 'Fetch failed: HTTP 404 Not Found', createdBy: MEMBER_ID, createdAt: ago(6), updatedAt: ago(6) },
-      { workspaceId: A, kind: 'text', textExcerpt: 'Objection: "Aerogel is too expensive." Answer: compare installed cost per metre, not material cost — thinner insulation saves scaffolding days and avoids re-spacing lines. Typical payback via labour alone on congested racks.', title: 'Objection handling — price', summary: 'How to answer the "too expensive" objection.', language: 'en', purposeCategory: 'objection_handling', tags: ['sales'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(12), createdBy: MEMBER_ID, createdAt: ago(12), updatedAt: ago(12) },
-      { workspaceId: A, kind: 'text', textExcerpt: 'Internal: we do not yet hold a German abZ for the sealant range; quote EN 1366-3 classification only. Expected abZ Q2 2027.', title: 'Internal note — DE approvals', summary: null, language: 'en', purposeCategory: 'internal_note', tags: ['internal', 'de'], productProfileIds: [P.sealant], externalStatus: 'pending', createdBy: ADMIN_ID, createdAt: ago(0, 6), updatedAt: ago(0, 6) },
+      { workspaceId: A, kind: 'document', documentId: doc(0).id, title: 'AG10 datasheet', summary: 'Thermal conductivity, temperature range, thickness tables and installation notes for NW-AG10.', language: 'en', purposeCategory: 'technical', tags: ['datasheet'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(33), createdBy: MEMBER_ID, createdAt: ago(33), updatedAt: ago(33) },
+      { workspaceId: A, kind: 'document', documentId: doc(1).id, title: 'Karta techniczna NW-MW Facade', summary: 'Parametry płyt 70/90/110 kg/m³, klasyfikacje ogniowe, zalecenia montażowe.', language: 'pl', purposeCategory: 'technical', tags: ['karta-techniczna'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(31), createdBy: MEMBER_ID, createdAt: ago(31), updatedAt: ago(31) },
+      { workspaceId: A, kind: 'document', documentId: doc(2).id, title: 'EN 1366-3 test configurations', summary: 'Tested penetration configurations (cables, PVC/PE pipes, metal pipes) with EI ratings.', language: 'en', purposeCategory: 'technical', tags: ['test-report'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(28), createdBy: ADMIN_ID, createdAt: ago(28), updatedAt: ago(28) },
+      { workspaceId: A, kind: 'document', documentId: doc(3).id, title: 'Teesside retrofit case study', summary: '600 m of cold lines re-insulated in half the usual time using 10 mm AG10.', language: 'en', purposeCategory: 'case_study', tags: ['case-study'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(21), createdBy: MEMBER_ID, createdAt: ago(21), updatedAt: ago(21) },
+      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/products/aerogel-blankets', title: 'Aerogel blankets — product page', summary: 'Public product page with applications and FAQs.', language: 'en', purposeCategory: 'marketing', tags: ['website'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(19), createdBy: ADMIN_ID, createdAt: ago(19), updatedAt: ago(19) },
+      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/guides/fire-stopping-installation', title: 'Fire stopping installation guide', summary: null, language: 'en', purposeCategory: 'technical', tags: ['guide'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'failed', externalError: 'Fetch failed: HTTP 404 Not Found', createdBy: MEMBER_ID, createdAt: ago(6), updatedAt: ago(6) },
+      { workspaceId: A, kind: 'text', textExcerpt: 'Objection: "Aerogel is too expensive." Answer: compare installed cost per metre, not material cost — thinner insulation saves scaffolding days and avoids re-spacing lines. Typical payback via labour alone on congested racks.', title: 'Objection handling — price', summary: 'How to answer the "too expensive" objection.', language: 'en', purposeCategory: 'objection_handling', tags: ['sales'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(12), createdBy: MEMBER_ID, createdAt: ago(12), updatedAt: ago(12) },
+      { workspaceId: A, kind: 'text', textExcerpt: 'Internal: we do not yet hold a German abZ for the sealant range; quote EN 1366-3 classification only. Expected abZ Q2 2027.', title: 'Internal note — DE approvals', summary: null, language: 'en', purposeCategory: 'internal_note', tags: ['internal', 'de'], scopeKind: 'products', externalStatus: 'pending', createdBy: ADMIN_ID, createdAt: ago(0, 6), updatedAt: ago(0, 6) },
     ])
     .returning();
-  await db.update(s.productProfiles).set({ documentSourceIds: [doc(0).id, doc(3).id] }).where(eqId(s.productProfiles.id, P.aerogel));
-  await db.update(s.productProfiles).set({ documentSourceIds: [doc(1).id] }).where(eqId(s.productProfiles.id, P.wool));
-  await db.update(s.productProfiles).set({ documentSourceIds: [doc(2).id] }).where(eqId(s.productProfiles.id, P.sealant));
+  // KL-05: scope rows (knowledge_source_products), one list per source above.
+  const KS_PRODUCTS: bigint[][] = [
+    [P.aerogel],
+    [P.wool],
+    [P.sealant],
+    [P.aerogel],
+    [P.aerogel],
+    [P.sealant],
+    [P.aerogel],
+    [P.sealant],
+  ];
+  await db.insert(s.knowledgeSourceProducts).values(
+    ksRows.flatMap((ks, i) =>
+      must(KS_PRODUCTS[i], `ks products ${i}`).map((productProfileId) => ({
+        sourceId: ks.id,
+        workspaceId: A,
+        productProfileId,
+      })),
+    ),
+  );
 
   const chunkRows: s.NewDocumentChunk[] = [];
   const jobRows: s.NewIndexingJob[] = [];
@@ -3044,7 +3061,6 @@ async function seedRest(ctx: RestCtx): Promise<void> {
       const content = `${ks.title} — part ${i + 1}. ${base} ${i === 0 ? '' : 'See section ' + (i + 1) + ' for installation details, tolerances and worked examples.'}`.trim();
       chunkRows.push({
         workspaceId: A,
-        documentId: ks.documentId,
         knowledgeSourceId: ks.id,
         chunkIndex: i,
         startChar: i * 1800,
@@ -3058,7 +3074,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
         createdAt: ks.createdAt,
       });
     }
-    jobRows.push({ workspaceId: A, documentId: ks.documentId, knowledgeSourceId: ks.id, status: 'succeeded', chunkCount: n, embeddingModel: 'text-embedding-3-small', startedAt: ks.createdAt, finishedAt: plus(ks.createdAt, between(3, 40) * 1000), triggeredBy: ks.createdBy, createdAt: ks.createdAt });
+    jobRows.push({ workspaceId: A, knowledgeSourceId: ks.id, status: 'succeeded', chunkCount: n, embeddingModel: 'text-embedding-3-small', startedAt: ks.createdAt, finishedAt: plus(ks.createdAt, between(3, 40) * 1000), triggeredBy: ks.createdBy, createdAt: ks.createdAt });
   }
   jobRows.push({ workspaceId: A, documentId: doc(4).id, status: 'running', startedAt: ago(0, 0, 1), triggeredBy: ADMIN_ID, createdAt: ago(0, 0, 1) });
   await db.insert(s.documentChunks).values(chunkRows);

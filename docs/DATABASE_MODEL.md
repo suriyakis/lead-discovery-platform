@@ -132,7 +132,6 @@ Reserved fields are present but optional from day 1 so future modules don't requ
 | forbiddenPhrases | text[] | default '{}' |
 | language | text | default 'en' |
 | active | boolean | NOT NULL default true |
-| documentSourceIds | bigint[] | reserved for Phase 9, default '{}' |
 | pricingSnapshotId | bigint | reserved, nullable |
 | crmMapping | jsonb | reserved, default '{}' |
 | createdBy | bigint | FK users.id |
@@ -192,6 +191,17 @@ Every reader filters through `lessonInScope(pid)` in `src/lib/services/learning.
 
 `lesson_reinforcements` is the reinforcement ledger: one row per confidence change a decision causes on a rule — `workspace_id`, `lesson_id` (composite FK `(workspace_id, lesson_id) -> learning_lessons`, CASCADE), `event_id` (FK `learning_events`, CASCADE), `kind` (`cited` | `dedup_match` | `compensation`, CHECK), `delta_requested`, `delta_applied`, `confidence_before`, `confidence_after` (CHECK `after − before = delta_applied`, both 0..100), `compensates_id` (self-FK, `UNIQUE`; set iff `kind = 'compensation'`, CHECK), `reason`, `created_at`. A partial `UNIQUE (event_id, lesson_id) WHERE compensates_id IS NULL` keeps one forward row per (event, rule), so a re-run never moves a rule twice; a compensation row reverses one forward row exactly. Written only by `src/lib/services/learning-ledger.ts`, in the transaction that changes `learning_lessons.confidence`. Rollback: `drizzle/rollback/p1_knowledge_foundation_learning_processor.down.sql`.
 
+### `knowledge_sources`, `knowledge_source_products`, `document_chunks` (KL-05)
+A knowledge source wraps a document (`kind = 'document'`, `document_id`), a URL or a text excerpt. A document is only the bytes; it reaches retrieval through the source wrapping it, and a document is wrapped by at most one source (`createKnowledgeSource` refuses a second one with `document_has_source`).
+
+- `knowledge_sources.scope_kind` (`workspace` | `products`, no default — every writer states it). `workspace` = every product. `products` = exactly the `knowledge_source_products` rows; one with no row left (its products were deleted) "Needs a scope" and is retrieved nowhere. `UNIQUE (workspace_id, id)` is the target of the composite FKs below. The FK-less `product_profile_ids` array and `product_profiles.document_source_ids` were dropped.
+- `knowledge_source_products(source_id, workspace_id, product_profile_id)`, PK `(source_id, product_profile_id)`. Both FKs are composite on `workspace_id` and `ON DELETE CASCADE`: `(workspace_id, source_id) -> knowledge_sources(workspace_id, id)` and `(workspace_id, product_profile_id) -> product_profiles(workspace_id, id)`. The database refuses another tenant's product; deleting a product drops its rows.
+- `document_chunks.knowledge_source_id` is `NOT NULL` with the composite FK `(workspace_id, knowledge_source_id) -> knowledge_sources(workspace_id, id)` (CASCADE): every chunk has exactly one owner in its own workspace. `document_chunks.document_id` is legacy and no longer written — before KL-05 a NULL source meant "workspace-wide", which is how a product-scoped document leaked into every product (I039).
+
+One predicate decides whether a chunk may reach a prompt — `knowledgeSourceRetrievable` in `src/lib/services/knowledge-scope.ts`, used by `retrieve()`, `getProductKnowledgeCoverage` (product and workspace-wide counts separately), Suggest reply (the thread's lead product) and the pgvector provider query: `ks.workspace_id = $ws AND NOT EXISTS (archived document of ks) AND (ks.scope_kind = 'workspace' OR EXISTS (knowledge_source_products row [for $pid]))`. Archiving a document excludes its sources at once; restoring brings them back without re-indexing. url / text sources have no document and stay retrievable.
+
+Migration (`p1_knowledge_foundation_knowledge_scope` + `_contract`): deletes the document-level chunks of documents that have a source with products ticked, backfills the scope rows from the array (own-workspace products only), turns every remaining document with document-level chunks into one workspace-wide source (chunks moved, not re-embedded), then sets `NOT NULL` and drops the arrays. `scripts/remediation/knowledge-scope-report.ts` (read-only) prints the counts and the owner-review list before the deploy. Rollback: `drizzle/rollback/p1_knowledge_foundation_knowledge_scope.down.sql`.
+
 ### `remediation_runs`, `remediation_log` (Phase 0, flow:F-06)
 Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`). Not tenant-owned: a run spans workspaces and is driven by a platform super admin.
 
@@ -203,7 +213,6 @@ Bookkeeping for the versioned data-remediation scripts (`scripts/remediation/`).
 
 These columns / tables are reserved on Phase-1-and-Phase-2 tables so later phases can attach without an "alter table" parade:
 
-- `product_profiles.documentSourceIds bigint[]` (Phase 9)
 - `product_profiles.pricingSnapshotId bigint` (Phase 8/optional commercial)
 - `product_profiles.crmMapping jsonb` (Phase 13)
 - `learning_lessons.embedding vector(1536)` — added when pgvector is enabled in Phase 12; column is nullable

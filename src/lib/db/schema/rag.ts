@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -44,16 +45,18 @@ const vector = customType<{ data: number[]; default: false; driverData: string }
 
 /**
  * `document_chunks` — output of the indexing job. Each chunk is a slice of a
- * document body (or a knowledge_source's text/url-extracted body), embedded
- * once and reused for retrieval.
+ * knowledge source's body (a document's extracted text, a URL's text, or a
+ * text excerpt), embedded once and reused for retrieval.
  *
- * Lifecycle:
- *   - On document upload, the indexer extracts plain text, splits into
- *     ~500-token chunks, and embeds each. One row per chunk.
- *   - When a document is re-indexed (e.g., model upgrade), we delete its
- *     chunks and re-embed.
- *   - Knowledge sources of kind `text` and `url` are also chunked here, with
- *     `document_id` null and `knowledge_source_id` set.
+ * KL-05 ownership: every chunk belongs to exactly one knowledge source
+ * (knowledge_source_id NOT NULL, composite FK on workspace_id, cascading).
+ * Retrieval decides scope from that source (scope_kind +
+ * knowledge_source_products) and reaches the document through
+ * knowledge_sources.document_id. document_id is legacy: the indexer no
+ * longer writes it (before KL-05, a NULL source meant "workspace-wide",
+ * which is how product-scoped documents leaked — I039).
+ *
+ * Re-indexing a source replaces its chunks in one transaction.
  */
 export const documentChunks = pgTable(
   'document_chunks',
@@ -67,10 +70,8 @@ export const documentChunks = pgTable(
       () => documents.id,
       { onDelete: 'cascade' },
     ),
-    knowledgeSourceId: bigint('knowledge_source_id', { mode: 'bigint' }).references(
-      () => knowledgeSources.id,
-      { onDelete: 'cascade' },
-    ),
+    /** The owning knowledge source (KL-05). FK: document_chunks_knowledge_source_fk. */
+    knowledgeSourceId: bigint('knowledge_source_id', { mode: 'bigint' }).notNull(),
 
     /** 0-based chunk index within the source. */
     chunkIndex: integer('chunk_index').notNull().default(0),
@@ -105,6 +106,12 @@ export const documentChunks = pgTable(
       table.workspaceId,
       table.knowledgeSourceId,
     ),
+    /** KL-05: a chunk can only belong to a source of its own workspace. */
+    knowledgeSourceFk: foreignKey({
+      name: 'document_chunks_knowledge_source_fk',
+      columns: [table.workspaceId, table.knowledgeSourceId],
+      foreignColumns: [knowledgeSources.workspaceId, knowledgeSources.id],
+    }).onDelete('cascade'),
     // The vector index is created out-of-band in the migration SQL so we can
     // pick HNSW vs IVFFlat per environment. Drizzle's index() builder does
     // not yet support `USING hnsw (embedding vector_cosine_ops)`.

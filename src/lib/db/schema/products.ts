@@ -21,9 +21,10 @@ import { workspaces } from './workspaces';
  * sector. Sector-specific behavior comes from the field values (keywords,
  * sectors, criteria), never from special tables.
  *
- * Reserved fields (`documentSourceIds`, `pricingSnapshotId`, `crmMapping`)
- * are present from day 1 so future phases can attach without migrations:
- *   - documentSourceIds → Phase 9 (Document Storage)
+ * Reserved fields (`pricingSnapshotId`, `crmMapping`) are present from
+ * day 1 so future phases can attach without migrations (the dead
+ * `document_source_ids` array went in KL-05: knowledge reaches a product
+ * through knowledge_source_products):
  *   - pricingSnapshotId → optional commercial module (Quote/Pricing)
  *   - crmMapping        → Phase 13 (CRM/Export)
  */
@@ -104,10 +105,6 @@ export const productProfiles = pgTable(
       ),
 
     // ---- reserved for future phases (nullable / default-empty) ----
-    documentSourceIds: bigint('document_source_ids', { mode: 'bigint' })
-      .array()
-      .notNull()
-      .default(sql`'{}'::bigint[]`),
     pricingSnapshotId: bigint('pricing_snapshot_id', { mode: 'bigint' }),
     crmMapping: jsonb('crm_mapping').notNull().default(sql`'{}'::jsonb`),
 

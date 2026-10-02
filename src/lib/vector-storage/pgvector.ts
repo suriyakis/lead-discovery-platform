@@ -88,6 +88,9 @@ export class PgvectorVectorStorageProvider implements IVectorStorageProvider {
     options: VectorQueryOptions = {},
   ): Promise<VectorSearchResult> {
     const limit = Math.min(options.topK ?? 8, 50);
+    // KL-05: retrieve() applies THE scope predicate (knowledge-scope.ts) —
+    // workspace-wide sources plus this product's, never another product's
+    // and never an archived document's.
     const rows = await retrieve(ctx, question, {
       productProfileId,
       limit,
@@ -96,11 +99,11 @@ export class PgvectorVectorStorageProvider implements IVectorStorageProvider {
     const chunks: VectorSearchChunk[] = rows
       .filter((r) => r.similarity >= minSim)
       .map((r) => ({
-        knowledgeSourceId: r.knowledgeSource?.id ?? null,
+        knowledgeSourceId: r.knowledgeSource.id,
         documentId: r.document?.id ?? null,
         content: r.chunk.content,
         similarity: r.similarity,
-        citationFilename: r.document?.filename ?? r.knowledgeSource?.title,
+        citationFilename: r.document?.filename ?? r.knowledgeSource.title,
       }));
     return {
       chunks,

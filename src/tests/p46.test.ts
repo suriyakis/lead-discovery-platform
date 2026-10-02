@@ -111,7 +111,6 @@ describe('composeAiDraft (research context)', () => {
       discoveryAngle: null,
       engagementAngle: null,
       pitchAngle: null,
-      documentSourceIds: [],
       pricingSnapshotId: null,
       crmMapping: {} as never,
       createdBy: null,

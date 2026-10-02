@@ -3,9 +3,12 @@
 // lessons, build a structured prompt, and ask the IAIProvider to draft a
 // reply. Phase 12 — RAG-grounded reply generation.
 
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
+import { contactAssociations } from '@/lib/db/schema/contacts';
 import { mailMessages, mailThreads, type MailMessage } from '@/lib/db/schema/mailing';
+import { outreachThreadState } from '@/lib/db/schema/outreach';
+import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
 import { retrieve, retrieveLessons } from './rag';
@@ -84,26 +87,28 @@ export async function suggestReply(
     || lastInbound.subject
     || messages.map((m) => m.subject).join(' ');
 
-  // Phase 12 technical reply assistant: workspace-wide retrieval — no
-  // product scope (the operator may be answering a generic technical
-  // question that touches multiple products). The Phase 50 vector-
-  // storage provider abstraction REQUIRES a productProfileId, so this
-  // path intentionally bypasses it and calls retrieve() directly. As
-  // long as the workspace stays on pgvector (the default), both code
-  // paths land in the same underlying tables. retrieveLessons() likewise
-  // operates on learning_lessons and isn't part of the provider abstraction.
-  // Rules: only the categories the registry routes to reply suggestions
-  // (reply_quality, outreach_style, general_instruction) — before KL-01
-  // nothing ever asked for reply_quality and every qualification rule
-  // competed for these slots (I038).
+  // KL-05: knowledge for the thread's lead product plus workspace-wide
+  // knowledge, through the same scope predicate as every other path
+  // (knowledge-scope.ts) — a thread about product B never sees a source
+  // scoped to product A. A thread with no single lead product (a generic
+  // inbound inquiry) gets workspace-wide sources plus every source that
+  // still has a product, as lessonInScope() does for rules. This path calls
+  // retrieve() directly: the vector-storage provider abstraction requires
+  // a product. Rules: only the categories the registry routes to reply
+  // suggestions (reply_quality, outreach_style, general_instruction) —
+  // before KL-01 nothing ever asked for reply_quality and every
+  // qualification rule competed for these slots (I038).
+  const productProfileId = (await resolveThreadProduct(ctx, input.threadId)) ?? undefined;
   const [chunks, lessons] = await Promise.all([
     retrieve(ctx, queryText, {
       limit: input.chunkLimit ?? 6,
+      productProfileId,
       embedder: input.embedder,
     }),
     retrieveLessons(ctx, queryText, {
       limit: input.lessonLimit ?? 4,
       taskType: 'reply',
+      productProfileId,
       embedder: input.embedder,
     }),
   ]);
@@ -121,6 +126,7 @@ export async function suggestReply(
     entityId: input.threadId,
     payload: {
       lastInboundId: lastInbound.id.toString(),
+      productProfileId: productProfileId?.toString() ?? null,
       chunkIds: chunks.map((c) => c.chunk.id.toString()),
       lessonIds: lessons.map((l) => l.lesson.id.toString()),
       model: result.model,
@@ -135,6 +141,86 @@ export async function suggestReply(
       lessonIds: lessons.map((l) => l.lesson.id),
     },
   };
+}
+
+/**
+ * The one product a mail thread is about, or null when there is none or
+ * more than one. Walks, in order: the outreach conversation state for the
+ * thread, leads whose active thread it is, and the leads of the contacts
+ * linked to the thread. Only a single distinct product counts — a guess
+ * between two products would scope the reply to the wrong one.
+ */
+export async function resolveThreadProduct(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  threadId: bigint,
+): Promise<bigint | null> {
+  const single = (ids: readonly bigint[]): bigint | null => {
+    const distinct = Array.from(new Set(ids.map((id) => id.toString())));
+    return distinct.length === 1 ? BigInt(distinct[0]!) : null;
+  };
+  const leadProducts = async (leadIds: readonly bigint[]): Promise<bigint[]> => {
+    if (leadIds.length === 0) return [];
+    const rows = await db
+      .select({ productProfileId: qualifiedLeads.productProfileId })
+      .from(qualifiedLeads)
+      .where(
+        and(eq(qualifiedLeads.workspaceId, ctx.workspaceId), inArray(qualifiedLeads.id, [...leadIds])),
+      );
+    return rows.map((r) => r.productProfileId);
+  };
+
+  const states = await db
+    .select({ leadId: outreachThreadState.qualifiedLeadId })
+    .from(outreachThreadState)
+    .where(
+      and(
+        eq(outreachThreadState.workspaceId, ctx.workspaceId),
+        eq(outreachThreadState.threadId, threadId),
+      ),
+    );
+  const fromState = single(await leadProducts(states.map((s) => s.leadId)));
+  if (fromState !== null) return fromState;
+
+  const current = await db
+    .select({ productProfileId: qualifiedLeads.productProfileId })
+    .from(qualifiedLeads)
+    .where(
+      and(
+        eq(qualifiedLeads.workspaceId, ctx.workspaceId),
+        eq(qualifiedLeads.currentThreadId, threadId),
+      ),
+    );
+  if (current.length > 0) return single(current.map((r) => r.productProfileId));
+
+  const threadContacts = await db
+    .select({ contactId: contactAssociations.contactId })
+    .from(contactAssociations)
+    .where(
+      and(
+        eq(contactAssociations.workspaceId, ctx.workspaceId),
+        eq(contactAssociations.entityType, 'mail_thread'),
+        eq(contactAssociations.entityId, threadId.toString()),
+      ),
+    );
+  if (threadContacts.length === 0) return null;
+  const leadLinks = await db
+    .select({ entityId: contactAssociations.entityId })
+    .from(contactAssociations)
+    .where(
+      and(
+        eq(contactAssociations.workspaceId, ctx.workspaceId),
+        eq(contactAssociations.entityType, 'qualified_lead'),
+        inArray(
+          contactAssociations.contactId,
+          threadContacts.map((c) => c.contactId),
+        ),
+      ),
+    );
+  const leadIds = leadLinks
+    .map((l) => l.entityId)
+    .filter((id) => /^\d+$/.test(id))
+    .map((id) => BigInt(id));
+  return single(await leadProducts(leadIds));
 }
 
 interface PromptParts {

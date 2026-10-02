@@ -14,11 +14,14 @@ import {
   attachKnowledgeSourceViaProvider,
   deleteKnowledgeSource,
   getKnowledgeSource,
+  knowledgeSourceErrorMessage,
   updateKnowledgeSource,
 } from '@/lib/services/knowledge-sources';
+import { NO_PRODUCT_TICKED_COPY, knowledgeScopeFromTicks } from '@/lib/services/knowledge-scope';
 import { listIndexingJobs } from '@/lib/services/rag';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { ScopeChip } from '../scope-chip';
 
 export default async function KnowledgeSourceDetail({
   params,
@@ -55,9 +58,14 @@ export default async function KnowledgeSourceDetail({
     throw err;
   }
 
-  const { source, document } = detail;
-  const allProducts: ProductProfile[] = await listProductProfiles(ctx, { includeArchived: false });
-  const attachedSet = new Set(source.productProfileIds.map((id) => id.toString()));
+  const { source, document, scope } = detail;
+  const attachedSet = new Set(scope.productProfileIds.map((pid) => pid.toString()));
+  // Active products, plus any archived one the source is still scoped to:
+  // leaving it out of the select would silently drop it on the next save.
+  const allProducts: ProductProfile[] = (
+    await listProductProfiles(ctx, { includeArchived: true })
+  ).filter((p) => p.active || attachedSet.has(p.id.toString()));
+  const productNames = new Map(allProducts.map((p) => [p.id.toString(), p.name]));
   const indexJobs = await listIndexingJobs(ctx, { knowledgeSourceId: source.id, limit: 5 });
 
   async function saveEdits(formData: FormData) {
@@ -97,12 +105,21 @@ export default async function KnowledgeSourceDetail({
       language,
       purposeCategory,
       tags,
-      productProfileIds: productIds,
+      // KL-05: no product ticked = available to every product (said on
+      // the form). Re-scoping needs no re-index.
+      scope: knowledgeScopeFromTicks(productIds),
     };
     if (source.kind === 'url' && url) patch.url = url;
     if (source.kind === 'text') patch.textExcerpt = textExcerpt;
 
-    await updateKnowledgeSource(c, id, patch);
+    try {
+      await updateKnowledgeSource(c, id, patch);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      const m = knowledgeSourceErrorMessage(err);
+      if (m === null) throw err;
+      redirect(`/knowledge/${id}?error=${encodeURIComponent(m)}`);
+    }
     redirect(`/knowledge/${id}`);
   }
 
@@ -123,7 +140,8 @@ export default async function KnowledgeSourceDetail({
       );
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
-      const m = err instanceof Error ? err.message : 'index failed';
+      const m =
+        knowledgeSourceErrorMessage(err) ?? (err instanceof Error ? err.message : 'index failed');
       redirect(`/knowledge/${id}?error=${encodeURIComponent(m)}`);
     }
   }
@@ -136,8 +154,16 @@ export default async function KnowledgeSourceDetail({
         </p>
         <h1>{source.title}</h1>
         <p>
-          <span className="badge">{source.kind}</span>
+          <span className="badge">{source.kind}</span>{' '}
+          <ScopeChip scope={scope} productNames={productNames} />
         </p>
+        {scope.needsScope ? (
+          <p className="form-error" data-testid="needs-scope">
+            Needs a scope: the products this source was attached to were deleted, so no
+            draft or reply uses it. Tick products below, or save with none ticked to make
+            it available to every product.
+          </p>
+        ) : null}
 
         <section>
           <h2>Source</h2>
@@ -145,6 +171,16 @@ export default async function KnowledgeSourceDetail({
             <dt>Kind</dt>
             <dd>
               <code>{source.kind}</code>
+            </dd>
+            <dt>Used for</dt>
+            <dd>
+              {scope.kind === 'workspace'
+                ? 'Every product'
+                : scope.needsScope
+                  ? 'No product (needs a scope)'
+                  : scope.productProfileIds
+                      .map((pid) => productNames.get(pid.toString()) ?? `product ${pid}`)
+                      .join(', ')}
             </dd>
             {source.kind === 'document' && document ? (
               <>
@@ -232,8 +268,10 @@ export default async function KnowledgeSourceDetail({
                   <span className="muted">
                     {' '}
                     — click <strong>Index now</strong> to push to the active
-                    provider. (Sources without product associations stay
-                    pending; attach them to a product first.)
+                    provider.
+                    {scope.kind === 'workspace'
+                      ? ' Sources available to every product are indexed locally.'
+                      : ''}
                   </span>
                 </>
               )}
@@ -309,6 +347,9 @@ export default async function KnowledgeSourceDetail({
               <span>Tags (comma-separated)</span>
               <input type="text" name="tags" defaultValue={source.tags.join(', ')} maxLength={400} />
             </label>
+            <p className="muted small" data-testid="scope-rule">
+              {`${NO_PRODUCT_TICKED_COPY}.`}
+            </p>
             <label>
               <span>Attached products</span>
               <select
@@ -319,7 +360,7 @@ export default async function KnowledgeSourceDetail({
               >
                 {allProducts.map((p) => (
                   <option key={p.id.toString()} value={p.id.toString()}>
-                    {p.name}
+                    {p.active ? p.name : `${p.name} (archived)`}
                   </option>
                 ))}
               </select>

@@ -12,7 +12,9 @@ import { listDocuments } from '@/lib/services/documents';
 import {
   KnowledgeSourceServiceError,
   createKnowledgeSource,
+  knowledgeSourceErrorMessage,
 } from '@/lib/services/knowledge-sources';
+import { NO_PRODUCT_TICKED_COPY, knowledgeScopeFromTicks } from '@/lib/services/knowledge-scope';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import type { Document, KnowledgeSourceKind } from '@/lib/db/schema/documents';
 import { isNextRedirectError } from '@/lib/server-redirect';
@@ -104,7 +106,8 @@ export default async function NewKnowledgeSourcePage({
         language,
         purposeCategory,
         tags,
-        productProfileIds: productIds,
+        // KL-05: stated explicitly; no product ticked = every product.
+        scope: knowledgeScopeFromTicks(productIds),
       });
       // Auto-index so the source is retrievable immediately — creating
       // and then having to find the separate "Index" button was how
@@ -126,9 +129,18 @@ export default async function NewKnowledgeSourcePage({
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
       if (err instanceof KnowledgeSourceServiceError) {
+        // The document already has its source (one per document, KL-05):
+        // its products are changed there, not by adding a second copy.
+        if (err.code === 'document_has_source' && err.existingSourceId !== null) {
+          redirect(
+            `/knowledge/${err.existingSourceId}?error=${encodeURIComponent(
+              `${err.message} Change its products below instead of adding it again.`,
+            )}`,
+          );
+        }
         const params = new URLSearchParams({
           kind,
-          error: err.message,
+          error: knowledgeSourceErrorMessage(err) ?? err.message,
         });
         if (documentId) params.set('document', documentId.toString());
         redirect(`/knowledge/new?${params.toString()}`);
@@ -221,6 +233,9 @@ export default async function NewKnowledgeSourcePage({
             <input type="text" name="tags" maxLength={400} />
           </label>
 
+          <p className="muted small" data-testid="scope-rule">
+            {`${NO_PRODUCT_TICKED_COPY}.`}
+          </p>
           <label>
             <span>Attach to products (Ctrl/Cmd-click for multiple)</span>
             <select

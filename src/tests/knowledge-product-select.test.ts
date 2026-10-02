@@ -69,7 +69,7 @@ describe('knowledge product select', () => {
       kind: 'text',
       title: 'Spec sheet',
       textExcerpt: 'Thermal conductivity 0.021 W/mK.',
-      productProfileIds: [alpha.id],
+      scope: { kind: 'products', productProfileIds: [alpha.id] },
     });
 
     const tree = await KnowledgeSourceDetail({

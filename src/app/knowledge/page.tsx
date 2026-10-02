@@ -14,6 +14,7 @@ import {
 } from '@/lib/services/knowledge-sources';
 import type { ProductProfile } from '@/lib/db/schema/products';
 import type { KnowledgeSourceKind } from '@/lib/db/schema/documents';
+import { ScopeChip } from './scope-chip';
 
 const KIND_FILTERS: ReadonlyArray<{ key: 'all' | KnowledgeSourceKind; label: string }> = [
   { key: 'all', label: 'All' },
@@ -39,10 +40,13 @@ export default async function KnowledgePage({
     sp.product && /^\d+$/.test(sp.product) ? BigInt(sp.product) : null;
 
   let products: ProductProfile[] = [];
+  let productNames = new Map<string, string>();
   let sources: KnowledgeSourceRow[] = [];
   try {
     const ctx = await getWorkspaceContext();
-    products = await listProductProfiles(ctx, { includeArchived: false });
+    const allProducts = await listProductProfiles(ctx, { includeArchived: true });
+    productNames = new Map(allProducts.map((p) => [p.id.toString(), p.name]));
+    products = allProducts.filter((p) => p.active);
     sources = await listKnowledgeSources(ctx, {
       kind: kindKey === 'all' ? undefined : (kindKey as KnowledgeSourceKind),
       productProfileId: productFilter ?? undefined,
@@ -111,11 +115,12 @@ export default async function KnowledgePage({
             </p>
           ) : (
             <ul className="lead-list">
-              {sources.map(({ source, document }) => (
+              {sources.map(({ source, document, scope }) => (
                 <li key={source.id.toString()}>
                   <div className="lead-row">
                     <Link href={`/knowledge/${source.id}`}>{source.title}</Link>
                     <span className="badge">{source.kind}</span>
+                    <ScopeChip scope={scope} productNames={productNames} />
                   </div>
                   {source.summary ? <p className="muted">{source.summary}</p> : null}
                   <div className="lead-meta">

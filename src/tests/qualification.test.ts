@@ -74,7 +74,6 @@ describe('classifyRecord (pure engine)', () => {
       discoveryAngle: null,
       engagementAngle: null,
       pitchAngle: null,
-      documentSourceIds: [],
       pricingSnapshotId: null,
       crmMapping: {} as never,
       createdBy: null,

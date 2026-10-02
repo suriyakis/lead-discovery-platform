@@ -1,11 +1,21 @@
 // Knowledge-sources service. A knowledge source wraps either a document, a
-// URL, or a free-text excerpt, optionally attached to one or more product
-// profiles. Future RAG phases will read these rows.
+// URL, or a free-text excerpt. Its chunks (rag.ts) are what retrieval reads.
+//
+// KL-05 scope: a source is either workspace-wide (scope_kind 'workspace',
+// every product) or scoped to exactly the products in
+// knowledge_source_products (scope_kind 'products'). Callers state the
+// scope explicitly; the composite FK refuses another tenant's product (the
+// old pre-filter that silently dropped such ids is gone — a bad id is an
+// error), and deleting a product cascades its rows, leaving a source with
+// none "Needs a scope". A document is wrapped by at most one source: a
+// second source for the same document would either duplicate its passages
+// or keep it workspace-wide after the operator scoped it (I039).
 
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   documents,
+  knowledgeSourceProducts,
   knowledgeSources,
   type Document,
   type KnowledgeSource,
@@ -19,13 +29,40 @@ import {
   canWrite,
   type WorkspaceContext,
 } from './context';
+import {
+  describeScope,
+  knowledgeSourceForProduct,
+  knowledgeSourceNeedsScope,
+  knowledgeSourceWorkspaceWide,
+  loadSourceProductIds,
+  type KnowledgeScopeInput,
+  type KnowledgeSourceScope,
+} from './knowledge-scope';
+
+export type KnowledgeSourceErrorCode =
+  | 'permission_denied'
+  | 'not_found'
+  | 'invariant_violation'
+  | 'invalid_input'
+  | 'attach_failed'
+  | 'product_not_found'
+  | 'scope_required'
+  | 'needs_scope'
+  | 'document_has_source';
 
 export class KnowledgeSourceServiceError extends Error {
-  public readonly code: string;
-  constructor(message: string, code: string) {
+  public readonly code: KnowledgeSourceErrorCode;
+  /** document_has_source: the source that already wraps the document. */
+  public readonly existingSourceId: bigint | null;
+  constructor(
+    message: string,
+    code: KnowledgeSourceErrorCode,
+    existingSourceId: bigint | null = null,
+  ) {
     super(message);
     this.name = 'KnowledgeSourceServiceError';
     this.code = code;
+    this.existingSourceId = existingSourceId;
   }
 }
 
@@ -42,6 +79,115 @@ const MAX_TITLE_LEN = 240;
 const MAX_SUMMARY_LEN = 4000;
 const MAX_TEXT_LEN = 200_000;
 const MAX_TAGS = 32;
+const MAX_SCOPE_PRODUCTS = 100;
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+const KNOWLEDGE_SOURCE_ERROR_MESSAGES: Partial<Record<KnowledgeSourceErrorCode, string>> = {
+  product_not_found: 'One of the ticked products no longer exists. Reload the page and try again.',
+  scope_required:
+    'Tick at least one product, or leave them all unticked to make it available to every product.',
+  needs_scope:
+    'This source needs a scope: its products were deleted. Tick products, or save with none ticked to make it available to every product.',
+};
+
+/** Human sentence for a service error a page caught; null when the error
+ *  has no operator-facing explanation (the caller shows its own). */
+export function knowledgeSourceErrorMessage(err: unknown): string | null {
+  if (!(err instanceof KnowledgeSourceServiceError)) return null;
+  if (err.code === 'document_has_source') {
+    return `${err.message} Change its products on that knowledge source instead of adding it again.`;
+  }
+  if (err.code === 'invalid_input') return err.message;
+  return KNOWLEDGE_SOURCE_ERROR_MESSAGES[err.code] ?? null;
+}
+
+// ---- scope -----------------------------------------------------------------
+
+interface NormalizedScope {
+  kind: 'workspace' | 'products';
+  productProfileIds: bigint[];
+}
+
+function normalizeScope(scope: KnowledgeScopeInput | null | undefined): NormalizedScope {
+  if (!scope) {
+    throw new KnowledgeSourceServiceError(
+      KNOWLEDGE_SOURCE_ERROR_MESSAGES.scope_required!,
+      'scope_required',
+    );
+  }
+  if (scope.kind === 'workspace') return { kind: 'workspace', productProfileIds: [] };
+  if (scope.kind !== 'products') throw invalid('unknown scope kind');
+  const ids = Array.from(new Set(scope.productProfileIds.map((id) => id.toString())))
+    .map((s) => BigInt(s))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  if (ids.length === 0) {
+    throw new KnowledgeSourceServiceError(
+      KNOWLEDGE_SOURCE_ERROR_MESSAGES.scope_required!,
+      'scope_required',
+    );
+  }
+  if (ids.length > MAX_SCOPE_PRODUCTS) throw invalid('too many products in one scope');
+  return { kind: 'products', productProfileIds: ids };
+}
+
+/** Postgres FK violation on knowledge_source_products → product (composite
+ *  on workspace_id): the product is another tenant's or does not exist. */
+function isScopeProductFkViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 4 && cur && typeof cur === 'object'; depth++) {
+    const e = cur as {
+      code?: unknown;
+      constraint_name?: unknown;
+      constraint?: unknown;
+      cause?: unknown;
+    };
+    if (
+      e.code === '23503' &&
+      (e.constraint_name === 'knowledge_source_products_product_fk' ||
+        e.constraint === 'knowledge_source_products_product_fk')
+    ) {
+      return true;
+    }
+    cur = e.cause;
+  }
+  return false;
+}
+
+function mapScopeError(err: unknown): unknown {
+  return isScopeProductFkViolation(err)
+    ? new KnowledgeSourceServiceError(
+        KNOWLEDGE_SOURCE_ERROR_MESSAGES.product_not_found!,
+        'product_not_found',
+      )
+    : err;
+}
+
+/** Replace a source's scope rows inside the caller's transaction. The
+ *  composite FK refuses another tenant's (or a deleted) product. */
+async function writeScopeRows(
+  tx: Tx,
+  workspaceId: bigint,
+  sourceId: bigint,
+  scope: NormalizedScope,
+): Promise<void> {
+  await tx
+    .delete(knowledgeSourceProducts)
+    .where(
+      and(
+        eq(knowledgeSourceProducts.workspaceId, workspaceId),
+        eq(knowledgeSourceProducts.sourceId, sourceId),
+      ),
+    );
+  if (scope.kind !== 'products' || scope.productProfileIds.length === 0) return;
+  await tx.insert(knowledgeSourceProducts).values(
+    scope.productProfileIds.map((productProfileId) => ({
+      sourceId,
+      workspaceId,
+      productProfileId,
+    })),
+  );
+}
 
 // ---- create ---------------------------------------------------------
 
@@ -62,7 +208,8 @@ export interface CreateKnowledgeSourceInput {
     | 'objection_handling'
     | 'general';
   tags?: ReadonlyArray<string>;
-  productProfileIds?: ReadonlyArray<bigint>;
+  /** KL-05: required. { kind: 'workspace' } = every product. */
+  scope: KnowledgeScopeInput;
 }
 
 export async function createKnowledgeSource(
@@ -80,7 +227,6 @@ export async function createKnowledgeSource(
   // Kind-specific shape enforcement.
   if (input.kind === 'document') {
     if (!documentId) throw invalid('kind=document requires documentId');
-    await assertDocumentInWorkspace(ctx, documentId);
   } else if (input.kind === 'url') {
     if (!url) throw invalid('kind=url requires url');
     if (!/^https?:\/\//i.test(url)) throw invalid('url must start with http(s)://');
@@ -92,13 +238,13 @@ export async function createKnowledgeSource(
   const summary = (input.summary ?? '').trim();
   if (summary.length > MAX_SUMMARY_LEN) throw invalid('summary too long');
 
-  const productIds = await sanitizeProductIds(ctx, input.productProfileIds);
+  const scope = normalizeScope(input.scope);
   const tags = sanitizeTags(input.tags);
 
   const row: NewKnowledgeSource = {
     workspaceId: ctx.workspaceId,
     kind: input.kind,
-    documentId,
+    documentId: input.kind === 'document' ? documentId : null,
     url,
     textExcerpt,
     title,
@@ -106,12 +252,24 @@ export async function createKnowledgeSource(
     language: (input.language ?? 'en').slice(0, 8),
     purposeCategory: input.purposeCategory ?? 'general',
     tags,
-    productProfileIds: productIds,
+    scopeKind: scope.kind,
     createdBy: ctx.userId,
   };
 
-  const [created] = await db.insert(knowledgeSources).values(row).returning();
-  if (!created) throw invariant('knowledge_source insert returned no row');
+  let created: KnowledgeSource;
+  try {
+    created = await db.transaction(async (tx) => {
+      if (input.kind === 'document' && documentId) {
+        await lockDocumentWithoutSource(tx, ctx.workspaceId, documentId);
+      }
+      const [inserted] = await tx.insert(knowledgeSources).values(row).returning();
+      if (!inserted) throw invariant('knowledge_source insert returned no row');
+      await writeScopeRows(tx, ctx.workspaceId, inserted.id, scope);
+      return inserted;
+    });
+  } catch (err) {
+    throw mapScopeError(err);
+  }
 
   await recordAuditEvent(ctx, {
     kind: 'knowledge_source.create',
@@ -120,17 +278,18 @@ export async function createKnowledgeSource(
     payload: {
       kind: input.kind,
       documentId: documentId?.toString() ?? null,
-      productProfileIds: productIds.map((id) => id.toString()),
+      scopeKind: scope.kind,
+      productProfileIds: scope.productProfileIds.map((id) => id.toString()),
     },
   });
 
   // Phase 50: auto-attach to the workspace's active Vector Storage
   // provider as soon as the row exists. Best-effort — failure does NOT
   // undo the create (the operator can re-trigger from /knowledge/[id]).
-  // Sources with zero product associations stay 'pending' until the
-  // operator attaches them to a product, since there's no per-product
-  // vector store to push them into yet.
-  if (productIds.length > 0) {
+  // A workspace-wide source has no per-product store to push into: the
+  // callers index it (rag.indexKnowledgeSource) and retrieval reads its
+  // chunks for every product.
+  if (scope.kind === 'products') {
     try {
       await attachKnowledgeSourceViaProvider(ctx, created.id);
     } catch (err) {
@@ -147,14 +306,53 @@ export async function createKnowledgeSource(
   return refreshed ?? created;
 }
 
+/** Locks the document row (serialising concurrent creates for it) and
+ *  refuses a second source for the same document. */
+async function lockDocumentWithoutSource(
+  tx: Tx,
+  workspaceId: bigint,
+  documentId: bigint,
+): Promise<void> {
+  const [doc] = await tx
+    .select({ id: documents.id })
+    .from(documents)
+    .where(and(eq(documents.workspaceId, workspaceId), eq(documents.id, documentId)))
+    .for('update')
+    .limit(1);
+  if (!doc) throw invalid('documentId does not belong to this workspace');
+  const [existing] = await tx
+    .select({ id: knowledgeSources.id, title: knowledgeSources.title })
+    .from(knowledgeSources)
+    .where(
+      and(
+        eq(knowledgeSources.workspaceId, workspaceId),
+        eq(knowledgeSources.documentId, documentId),
+      ),
+    )
+    .orderBy(knowledgeSources.id)
+    .limit(1);
+  if (existing) {
+    throw new KnowledgeSourceServiceError(
+      `This document is already in the knowledge base as “${existing.title}”.`,
+      'document_has_source',
+      existing.id,
+    );
+  }
+}
+
 // ---- attach (Phase 50) ---------------------------------------------
 
 /**
  * Push the source through the workspace's active Vector Storage
- * provider — one attach per product the source is associated with.
+ * provider — one attach per product the source is scoped to.
  * Idempotent: re-running detaches first when the source is already
  * indexed, so callers can use this as both "first attach" and
  * "re-index".
+ *
+ * KL-05: a workspace-wide source is tied to no product store, so it is
+ * indexed locally (its chunks are what retrieval reads for every product)
+ * instead of being refused (I104); a 'products' source with no product
+ * left is refused as 'needs_scope'.
  *
  * Writes the aggregate state back to the row:
  *   - external_provider_id = the provider id that performed the attach
@@ -169,19 +367,17 @@ export async function attachKnowledgeSourceViaProvider(
   knowledgeSourceId: bigint,
 ): Promise<KnowledgeSource> {
   if (!canWrite(ctx)) throw permissionDenied('knowledge_source.attach');
-  const [source] = await db
-    .select()
-    .from(knowledgeSources)
-    .where(
-      and(
-        eq(knowledgeSources.workspaceId, ctx.workspaceId),
-        eq(knowledgeSources.id, knowledgeSourceId),
-      ),
-    )
-    .limit(1);
-  if (!source) throw notFound();
-  if (source.productProfileIds.length === 0) {
-    throw invalid('cannot attach: source has no product associations');
+  const source = await loadKs(ctx, knowledgeSourceId);
+  if (source.scopeKind === 'workspace') {
+    return indexWorkspaceSourceLocally(ctx, source);
+  }
+  const productIds =
+    (await loadSourceProductIds(ctx.workspaceId, [source.id])).get(source.id.toString()) ?? [];
+  if (productIds.length === 0) {
+    throw new KnowledgeSourceServiceError(
+      KNOWLEDGE_SOURCE_ERROR_MESSAGES.needs_scope!,
+      'needs_scope',
+    );
   }
 
   const { getVectorStorageProviderForCtx } = await import('@/lib/vector-storage');
@@ -211,7 +407,9 @@ export async function attachKnowledgeSourceViaProvider(
     const [doc] = await db
       .select()
       .from(documents)
-      .where(eq(documents.id, source.documentId))
+      .where(
+        and(eq(documents.workspaceId, ctx.workspaceId), eq(documents.id, source.documentId)),
+      )
       .limit(1);
     if (doc) {
       const { getStorage } = await import('@/lib/storage');
@@ -233,7 +431,7 @@ export async function attachKnowledgeSourceViaProvider(
 
   const errors: string[] = [];
   let firstFileId: string | null = null;
-  for (const productId of source.productProfileIds) {
+  for (const productId of productIds) {
     try {
       const r = await provider.attachKnowledgeSource(ctx, productId, {
         knowledgeSource: source,
@@ -250,25 +448,13 @@ export async function attachKnowledgeSourceViaProvider(
     }
   }
 
-  const allFailed = errors.length === source.productProfileIds.length;
-  const [updated] = await db
-    .update(knowledgeSources)
-    .set({
-      externalProviderId: provider.id,
-      externalFileId: firstFileId,
-      externalStatus: allFailed ? 'failed' : 'indexed',
-      externalError: errors.length > 0 ? errors.join('; ') : null,
-      externalIndexedAt: allFailed ? null : new Date(),
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(knowledgeSources.workspaceId, ctx.workspaceId),
-        eq(knowledgeSources.id, source.id),
-      ),
-    )
-    .returning();
-  if (!updated) throw invariant('knowledge_source update lost row');
+  const allFailed = errors.length === productIds.length;
+  const updated = await writeExternalStatus(ctx, source.id, {
+    providerId: provider.id,
+    fileId: firstFileId,
+    failed: allFailed,
+    error: errors.length > 0 ? errors.join('; ') : null,
+  });
 
   await recordAuditEvent(ctx, {
     kind: 'knowledge_source.attach',
@@ -278,16 +464,68 @@ export async function attachKnowledgeSourceViaProvider(
       providerId: provider.id,
       status: updated.externalStatus,
       errorCount: errors.length,
-      productCount: source.productProfileIds.length,
+      productCount: productIds.length,
     },
   });
 
   if (allFailed) {
     throw new KnowledgeSourceServiceError(
-      `attach failed for all ${source.productProfileIds.length} product(s): ${errors.join('; ')}`,
+      `attach failed for all ${productIds.length} product(s): ${errors.join('; ')}`,
       'attach_failed',
     );
   }
+  return updated;
+}
+
+async function indexWorkspaceSourceLocally(
+  ctx: WorkspaceContext,
+  source: KnowledgeSource,
+): Promise<KnowledgeSource> {
+  // indexKnowledgeSource records the outcome on the row (external_status
+  // 'indexed' / 'failed', provider 'pgvector') for a workspace-wide source.
+  const { indexKnowledgeSource } = await import('./rag');
+  let error: string | null = null;
+  try {
+    await indexKnowledgeSource(ctx, source.id);
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+  const updated = await loadKs(ctx, source.id);
+  await recordAuditEvent(ctx, {
+    kind: 'knowledge_source.attach',
+    entityType: 'knowledge_source',
+    entityId: source.id,
+    payload: { providerId: 'pgvector', status: updated.externalStatus, scopeKind: 'workspace' },
+  });
+  if (error !== null) {
+    throw new KnowledgeSourceServiceError(`indexing failed: ${error}`, 'attach_failed');
+  }
+  return updated;
+}
+
+async function writeExternalStatus(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  sourceId: bigint,
+  input: { providerId: string; fileId: string | null; failed: boolean; error: string | null },
+): Promise<KnowledgeSource> {
+  const [updated] = await db
+    .update(knowledgeSources)
+    .set({
+      externalProviderId: input.providerId,
+      externalFileId: input.fileId,
+      externalStatus: input.failed ? 'failed' : 'indexed',
+      externalError: input.error,
+      externalIndexedAt: input.failed ? null : new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(knowledgeSources.workspaceId, ctx.workspaceId),
+        eq(knowledgeSources.id, sourceId),
+      ),
+    )
+    .returning();
+  if (!updated) throw invariant('knowledge_source update lost row');
   return updated;
 }
 
@@ -295,13 +533,19 @@ export async function attachKnowledgeSourceViaProvider(
 
 export interface ListKnowledgeSourcesFilter {
   kind?: KnowledgeSourceKind;
+  /** Sources scoped to this product. Workspace-wide sources are not
+   *  included (list them with scope: 'workspace'). */
   productProfileId?: bigint;
+  scope?: 'workspace' | 'needs_scope';
+  /** Sources wrapping this document. */
+  documentId?: bigint;
   limit?: number;
 }
 
 export interface KnowledgeSourceRow {
   source: KnowledgeSource;
   document: Document | null;
+  scope: KnowledgeSourceScope;
 }
 
 export async function listKnowledgeSources(
@@ -311,19 +555,45 @@ export async function listKnowledgeSources(
   const conditions: SQL[] = [eq(knowledgeSources.workspaceId, ctx.workspaceId)];
   if (filter.kind) conditions.push(eq(knowledgeSources.kind, filter.kind));
   if (filter.productProfileId !== undefined) {
-    conditions.push(
-      sql`${filter.productProfileId} = ANY(${knowledgeSources.productProfileIds})`,
-    );
+    conditions.push(knowledgeSourceForProduct(filter.productProfileId));
+  }
+  if (filter.scope === 'workspace') conditions.push(knowledgeSourceWorkspaceWide());
+  if (filter.scope === 'needs_scope') conditions.push(knowledgeSourceNeedsScope());
+  if (filter.documentId !== undefined) {
+    conditions.push(eq(knowledgeSources.documentId, filter.documentId));
   }
   const limit = Math.min(filter.limit ?? 200, 1000);
   const rows = await db
     .select({ source: knowledgeSources, document: documents })
     .from(knowledgeSources)
-    .leftJoin(documents, eq(documents.id, knowledgeSources.documentId))
+    .leftJoin(
+      documents,
+      and(
+        eq(documents.id, knowledgeSources.documentId),
+        eq(documents.workspaceId, knowledgeSources.workspaceId),
+      ),
+    )
     .where(and(...conditions))
-    .orderBy(desc(knowledgeSources.createdAt))
+    .orderBy(desc(knowledgeSources.createdAt), desc(knowledgeSources.id))
     .limit(limit);
-  return rows;
+  const products = await loadSourceProductIds(
+    ctx.workspaceId,
+    rows.map((r) => r.source.id),
+  );
+  return rows.map((r) => ({
+    ...r,
+    scope: describeScope(r.source.scopeKind, products.get(r.source.id.toString()) ?? []),
+  }));
+}
+
+/** The sources wrapping a document (normally one; data from before KL-05
+ *  may hold more), oldest first. */
+export async function listDocumentSources(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  documentId: bigint,
+): Promise<KnowledgeSourceRow[]> {
+  const rows = await listKnowledgeSources(ctx, { documentId, kind: 'document', limit: 1000 });
+  return rows.reverse();
 }
 
 export async function getKnowledgeSource(
@@ -333,7 +603,13 @@ export async function getKnowledgeSource(
   const rows = await db
     .select({ source: knowledgeSources, document: documents })
     .from(knowledgeSources)
-    .leftJoin(documents, eq(documents.id, knowledgeSources.documentId))
+    .leftJoin(
+      documents,
+      and(
+        eq(documents.id, knowledgeSources.documentId),
+        eq(documents.workspaceId, knowledgeSources.workspaceId),
+      ),
+    )
     .where(
       and(
         eq(knowledgeSources.workspaceId, ctx.workspaceId),
@@ -342,19 +618,21 @@ export async function getKnowledgeSource(
     )
     .limit(1);
   if (!rows[0]) throw notFound();
+  const ids = (await loadSourceProductIds(ctx.workspaceId, [id])).get(id.toString()) ?? [];
   const products =
-    rows[0].source.productProfileIds.length > 0
+    ids.length > 0
       ? await db
           .select()
           .from(productProfiles)
           .where(
             and(
               eq(productProfiles.workspaceId, ctx.workspaceId),
-              inArray(productProfiles.id, [...rows[0].source.productProfileIds]),
+              inArray(productProfiles.id, ids),
             ),
           )
+          .orderBy(productProfiles.name)
       : [];
-  return { ...rows[0], products };
+  return { ...rows[0], scope: describeScope(rows[0].source.scopeKind, ids), products };
 }
 
 // ---- mutate ---------------------------------------------------------
@@ -373,7 +651,9 @@ export interface UpdateKnowledgeSourceInput {
     | 'objection_handling'
     | 'general';
   tags?: ReadonlyArray<string>;
-  productProfileIds?: ReadonlyArray<bigint>;
+  /** KL-05: replaces the scope. Chunks are untouched — scope lives on the
+   *  source, so re-scoping needs no re-index. */
+  scope?: KnowledgeScopeInput;
 }
 
 export async function updateKnowledgeSource(
@@ -413,26 +693,40 @@ export async function updateKnowledgeSource(
   if (input.language !== undefined) updates.language = input.language.slice(0, 8);
   if (input.purposeCategory !== undefined) updates.purposeCategory = input.purposeCategory;
   if (input.tags !== undefined) updates.tags = sanitizeTags(input.tags);
-  if (input.productProfileIds !== undefined) {
-    updates.productProfileIds = await sanitizeProductIds(ctx, input.productProfileIds);
-  }
+  const scope = input.scope !== undefined ? normalizeScope(input.scope) : null;
+  if (scope) updates.scopeKind = scope.kind;
 
-  const [updated] = await db
-    .update(knowledgeSources)
-    .set(updates)
-    .where(
-      and(
-        eq(knowledgeSources.workspaceId, ctx.workspaceId),
-        eq(knowledgeSources.id, id),
-      ),
-    )
-    .returning();
-  if (!updated) throw invariant('knowledge_source update returned no row');
+  let updated: KnowledgeSource;
+  try {
+    updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(knowledgeSources)
+        .set(updates)
+        .where(
+          and(
+            eq(knowledgeSources.workspaceId, ctx.workspaceId),
+            eq(knowledgeSources.id, id),
+          ),
+        )
+        .returning();
+      if (!row) throw invariant('knowledge_source update returned no row');
+      if (scope) await writeScopeRows(tx, ctx.workspaceId, id, scope);
+      return row;
+    });
+  } catch (err) {
+    throw mapScopeError(err);
+  }
 
   await recordAuditEvent(ctx, {
     kind: 'knowledge_source.update',
     entityType: 'knowledge_source',
     entityId: id,
+    payload: scope
+      ? {
+          scopeKind: scope.kind,
+          productProfileIds: scope.productProfileIds.map((p) => p.toString()),
+        }
+      : {},
   });
 
   return updated;
@@ -477,51 +771,6 @@ async function loadKs(
     .limit(1);
   if (!rows[0]) throw notFound();
   return rows[0];
-}
-
-async function assertDocumentInWorkspace(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  documentId: bigint,
-): Promise<void> {
-  const rows = await db
-    .select()
-    .from(documents)
-    .where(
-      and(
-        eq(documents.workspaceId, ctx.workspaceId),
-        eq(documents.id, documentId),
-      ),
-    )
-    .limit(1);
-  if (!rows[0]) throw invalid('documentId does not belong to this workspace');
-}
-
-async function sanitizeProductIds(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  ids: ReadonlyArray<bigint> | undefined,
-): Promise<bigint[]> {
-  if (!ids || ids.length === 0) return [];
-  const rows = await db
-    .select({ id: productProfiles.id })
-    .from(productProfiles)
-    .where(
-      and(
-        eq(productProfiles.workspaceId, ctx.workspaceId),
-        inArray(productProfiles.id, [...ids]),
-      ),
-    );
-  // Preserve ordering + dedup; only ids that actually exist in the workspace.
-  const valid = new Set(rows.map((r) => r.id.toString()));
-  const seen = new Set<string>();
-  const out: bigint[] = [];
-  for (const id of ids) {
-    const key = id.toString();
-    if (valid.has(key) && !seen.has(key)) {
-      seen.add(key);
-      out.push(id);
-    }
-  }
-  return out;
 }
 
 function sanitizeTags(input: ReadonlyArray<string> | undefined): string[] {

@@ -382,9 +382,10 @@ export async function batchCountProductProfileDependencies(
  * Force (force=true): cascades. The FK from qualifications,
  * outreach_drafts, qualified_leads, hint_signals, vector_stores all
  * have ON DELETE CASCADE — those rows go with it. learning_examples
- * FK is set-null so workspace-level memory stays. document
- * product_profile_ids arrays don't FK and become harmless orphan
- * id entries.
+ * FK is set-null so workspace-level memory stays. Knowledge-source scope
+ * rows (knowledge_source_products, KL-05) cascade too: a source shared
+ * with another product keeps that product, and a source left with no
+ * product "Needs a scope" and is retrieved nowhere until re-scoped.
  *
  * Audit log captures the dependency counts at delete time for
  * forensics.

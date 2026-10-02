@@ -2,14 +2,18 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
+  foreignKey,
   index,
   integer,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
+  unique,
 } from 'drizzle-orm/pg-core';
 import { users } from './auth';
+import { productProfiles } from './products';
 import { workspaces } from './workspaces';
 
 /**
@@ -92,10 +96,12 @@ export type DocumentStatus = (typeof documentStatus.enumValues)[number];
  *   - a URL       (kind='url',      url set)
  *   - a text blob (kind='text',     text_excerpt set)
  *
- * Phase 9 ships document + url; text is reserved for later but the schema
- * accepts it from day one. A knowledge source can be linked to multiple
- * product profiles via `product_profile_ids`. Future phases (RAG) will
- * read these rows and chunk/embed them.
+ * KL-05: every retrievable chunk belongs to exactly one source
+ * (document_chunks.knowledge_source_id NOT NULL); a document is only a
+ * blob that a document-kind source wraps. Scope is explicit:
+ * scope_kind 'workspace' (every product) or 'products' (exactly the rows
+ * in knowledge_source_products). A 'products' source with no rows left
+ * (its products were deleted) "Needs a scope" and is retrieved nowhere.
  */
 export const knowledgeSourceKind = pgEnum('knowledge_source_kind', [
   'document',
@@ -116,6 +122,11 @@ export const knowledgePurposeCategory = pgEnum('knowledge_purpose_category', [
   'objection_handling',
   'general',
 ]);
+
+/** KL-05: where a knowledge source applies. 'workspace' = every product;
+ *  'products' = exactly the knowledge_source_products rows. */
+export const knowledgeScopeKind = pgEnum('knowledge_scope_kind', ['workspace', 'products']);
+export type KnowledgeScopeKind = (typeof knowledgeScopeKind.enumValues)[number];
 
 export const knowledgeSources = pgTable(
   'knowledge_sources',
@@ -143,10 +154,9 @@ export const knowledgeSources = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
-    productProfileIds: bigint('product_profile_ids', { mode: 'bigint' })
-      .array()
-      .notNull()
-      .default(sql`'{}'::bigint[]`),
+    /** KL-05: 'workspace' (every product) or 'products' (exactly the
+     *  knowledge_source_products rows). No default: every writer states it. */
+    scopeKind: knowledgeScopeKind('scope_kind').notNull(),
 
     /** Phase 50: which vector-storage provider indexed this source, e.g.
      *  'pgvector' (chunks live in `document_chunks`) or 'openai' (file
@@ -181,9 +191,58 @@ export const knowledgeSources = pgTable(
       table.workspaceId,
       table.kind,
     ),
+    /** KL-05: target of the composite (workspace_id, id) FKs from
+     *  knowledge_source_products and document_chunks — a scope row or a
+     *  chunk can only belong to a source of its own workspace. */
+    workspaceIdUnique: unique('knowledge_sources_workspace_id_id_unique').on(
+      table.workspaceId,
+      table.id,
+    ),
+    documentIdx: index('knowledge_sources_document_idx').on(table.documentId),
   }),
 );
 
 export type KnowledgeSource = typeof knowledgeSources.$inferSelect;
 export type NewKnowledgeSource = typeof knowledgeSources.$inferInsert;
 export type KnowledgeSourceKind = (typeof knowledgeSourceKind.enumValues)[number];
+
+/**
+ * KL-05 (I039, I109): the products a 'products'-scoped knowledge source
+ * applies to. Both FKs are composite on workspace_id, so the database
+ * refuses a row joining a source to another tenant's product, and
+ * deleting a product (or the source) cascades its rows. Replaces the
+ * FK-less knowledge_sources.product_profile_ids array.
+ */
+export const knowledgeSourceProducts = pgTable(
+  'knowledge_source_products',
+  {
+    sourceId: bigint('source_id', { mode: 'bigint' }).notNull(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' }).notNull(),
+    productProfileId: bigint('product_profile_id', { mode: 'bigint' }).notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      name: 'knowledge_source_products_pk',
+      columns: [table.sourceId, table.productProfileId],
+    }),
+    sourceFk: foreignKey({
+      name: 'knowledge_source_products_source_fk',
+      columns: [table.workspaceId, table.sourceId],
+      foreignColumns: [knowledgeSources.workspaceId, knowledgeSources.id],
+    }).onDelete('cascade'),
+    productFk: foreignKey({
+      name: 'knowledge_source_products_product_fk',
+      columns: [table.workspaceId, table.productProfileId],
+      foreignColumns: [productProfiles.workspaceId, productProfiles.id],
+    }).onDelete('cascade'),
+    workspaceProductIdx: index('knowledge_source_products_ws_product_idx').on(
+      table.workspaceId,
+      table.productProfileId,
+    ),
+  }),
+);
+
+export type KnowledgeSourceProduct = typeof knowledgeSourceProducts.$inferSelect;

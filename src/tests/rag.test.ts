@@ -265,6 +265,7 @@ describe('indexKnowledgeSource', () => {
   it('indexes a kind=text source', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'text',
       title: 'Tone guide',
       textExcerpt: 'Be concise. Avoid superlatives. Reference local case studies.',
@@ -281,6 +282,7 @@ describe('indexKnowledgeSource', () => {
   it('indexes a kind=url source via title + summary + url serialization', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'url',
       title: 'Industry overview',
       summary: 'Useful link about cross-border logistics in 2026.',
@@ -320,7 +322,9 @@ describe('retrieve', () => {
     );
     expect(top.length).toBeGreaterThan(0);
     // Order asserts: chunks from doc A should be before chunks from doc C.
-    const docIds = top.map((r) => r.chunk.documentId?.toString());
+    // KL-05: chunks are owned by the document's knowledge source; the
+    // document comes from that source.
+    const docIds = top.map((r) => r.document?.id.toString());
     expect(docIds[0]).toBe(a.id.toString());
     // Similarity in [-1, 1]; top result should be very high (mock is
     // deterministic so the exact-match query returns ~cos=1).
@@ -345,13 +349,13 @@ describe('retrieve', () => {
       kind: 'text',
       title: 'P1 doc',
       textExcerpt: 'Acoustic glass for office towers.',
-      productProfileIds: [p1.id],
+      scope: { kind: 'products', productProfileIds: [p1.id] },
     });
     const ks2 = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
       kind: 'text',
       title: 'P2 doc',
       textExcerpt: 'Acoustic glass for office towers.',
-      productProfileIds: [p2.id],
+      scope: { kind: 'products', productProfileIds: [p2.id] },
     });
     await indexKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks1.id);
     await indexKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks2.id);
@@ -438,12 +442,16 @@ describe('isolation + jobs', () => {
     await indexDocument(ctx(s.workspaceA, s.ownerA), a.id);
     await indexDocument(ctx(s.workspaceB, s.ownerB), b.id);
 
+    const chunksA = await listChunksForDocument(ctx(s.workspaceA, s.ownerA), a.id);
+    const chunksB = await listChunksForDocument(ctx(s.workspaceB, s.ownerB), b.id);
+    expect(chunksA.length).toBeGreaterThan(0);
+    expect(chunksB.length).toBeGreaterThan(0);
+    expect(chunksA.every((c) => c.workspaceId === s.workspaceA)).toBe(true);
+    expect(chunksB.every((c) => c.workspaceId === s.workspaceB)).toBe(true);
+    // Neither workspace sees the other's document's chunks.
+    expect(await listChunksForDocument(ctx(s.workspaceA, s.ownerA), b.id)).toEqual([]);
     const allChunks = await db.select().from(documentChunks);
-    for (const c of allChunks) {
-      const expectedWs =
-        c.documentId?.toString() === a.id.toString() ? s.workspaceA : s.workspaceB;
-      expect(c.workspaceId).toBe(expectedWs);
-    }
+    expect(allChunks).toHaveLength(chunksA.length + chunksB.length);
 
     const jobsA = await db
       .select()
