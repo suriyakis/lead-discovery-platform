@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
+import { outreachQueue } from '@/lib/db/schema/outreach';
 import {
   AIOutputError,
   _setAIProviderForTests,
@@ -171,9 +172,18 @@ describe('askAssistant', () => {
     _setAIProviderForTests(stub);
     const owner = ctx(s.workspaceA, s.ownerA);
 
-    // Running normally: the state line and "live".
+    // Running normally: the queue counts, the state line and "live".
+    const row = { workspaceId: s.workspaceA, mailboxId: 1n, toAddresses: ['a@x.test'], subject: 'Hi' };
+    await db.insert(outreachQueue).values([
+      { ...row, status: 'queued' },
+      { ...row, status: 'queued', lastError: 'Held: the mailbox is paused.' },
+      { ...row, status: 'failed', lastError: '550 no such user' },
+    ]);
     await askAssistant(owner, 'why is nothing sending?');
     let prompt = stub.lastInput!.prompt;
+    expect(prompt).toContain(
+      'Send queue: 2 queued (1 held or waiting to retry; each entry on [/mailbox/queue] says why), 1 failed in the last 7 days',
+    );
     expect(prompt).toMatch(/^Automation: Manual: /m);
     expect(prompt).toContain('Go-live: live');
     expect(stub.lastInput!.system).toContain('the workspace not live yet');

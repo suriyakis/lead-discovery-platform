@@ -23,7 +23,7 @@ import { connectorRecipes, connectors } from '@/lib/db/schema/connectors';
 import { mailboxes, type MailboxStatus } from '@/lib/db/schema/mailing';
 import { productProfiles } from '@/lib/db/schema/products';
 import { reviewItems } from '@/lib/db/schema/review';
-import { outreachDrafts } from '@/lib/db/schema/outreach';
+import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { AIOutputError, getAIProviderForCtx, type AIGenOptions } from '@/lib/ai';
 import { PLATFORM_HANDBOOK } from '@/lib/assistant/handbook';
 import { BRAND_NAME } from '@/lib/brand';
@@ -121,6 +121,17 @@ async function workspaceSnapshot(
         .where(eq(mailboxes.workspaceId, wsId))
         .groupBy(mailboxes.status),
     ]);
+  // F-07: the send queue's counts, so "why is nothing sending?" can say how
+  // much waits. A queued entry with a note was held by the gate (or waits
+  // to retry); the note on /mailbox/queue says which.
+  const [queue] = await db
+    .select({
+      queued: sql<number>`count(*) filter (where ${outreachQueue.status} = 'queued')::int`,
+      withNote: sql<number>`count(*) filter (where ${outreachQueue.status} = 'queued' and ${outreachQueue.lastError} is not null)::int`,
+      failedRecently: sql<number>`count(*) filter (where ${outreachQueue.status} = 'failed' and ${outreachQueue.updatedAt} >= now() - interval '7 days')::int`,
+    })
+    .from(outreachQueue)
+    .where(eq(outreachQueue.workspaceId, wsId));
 
   const recipeRow = recipes[0] ?? { total: 0, withCountry: 0 };
   const mailboxCount = (status: MailboxStatus) =>
@@ -138,6 +149,7 @@ async function workspaceSnapshot(
     // it works again or is re-enabled — nothing fails (PC-05). Neither is
     // read — the model needs the split to diagnose either.
     `Mailboxes: ${mailboxCount('active')} active, ${mailboxCount('failing')} failing (queued sends held, not read), ${mailboxCount('paused')} paused (not sending, due sends held, not failed, not read)`,
+    `Send queue: ${Number(queue?.queued ?? 0)} queued (${Number(queue?.withNote ?? 0)} held or waiting to retry; each entry on [/mailbox/queue] says why), ${Number(queue?.failedRecently ?? 0)} failed in the last 7 days`,
     ...(await automationSnapshot(ctx)),
   ].join('\n');
 }
