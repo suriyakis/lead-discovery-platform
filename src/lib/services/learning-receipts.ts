@@ -28,6 +28,7 @@ import { decisionSourceLabel } from './learning-extraction';
 export type ReceiptState =
   | 'learning'
   | 'learned'
+  | 'needs_scope'
   | 'strengthened'
   | 'not_recreated'
   | 'too_uncertain'
@@ -41,6 +42,7 @@ export type ReceiptState =
 export const RECEIPT_HEADLINES: Record<ReceiptState, string> = {
   learning: 'Learning from this decision…',
   learned: 'Learned a new rule',
+  needs_scope: 'Suggested a rule — choose which products it applies to',
   strengthened: 'Matched an existing rule — strengthened it',
   not_recreated: 'This matches a rule you rejected — it was not recreated',
   too_uncertain: 'Nothing learned: the suggested rule was too uncertain',
@@ -285,6 +287,15 @@ export async function getDecisionReceipt(
   }
 
   const has = (pred: (e: (typeof events)[number]) => boolean) => events.some(pred);
+  // Rules this decision only PROPOSED: its record named no product, so the
+  // operator chooses where they apply ("Needs a scope").
+  const proposed = new Set(
+    events.flatMap((e) =>
+      e.processingNote === 'rule_proposed_needs_scope' && e.extractedLessonId
+        ? [e.extractedLessonId.toString()]
+        : [],
+    ),
+  );
   let state: ReceiptState;
   if (events.length === 0) state = decision.origin === 'operator' ? 'nothing_new' : 'recorded_only';
   else if (events.every((e) => e.voidedAt !== null)) state = 'changed_later';
@@ -295,7 +306,9 @@ export async function getDecisionReceipt(
     state = has((e) => e.processingNote === 'no_ai_provider')
       ? 'waiting_for_ai'
       : 'waiting_for_tokens';
-  } else if (rules.some((r) => r.outcome === 'created')) state = 'learned';
+  } else if (rules.some((r) => r.outcome === 'created' && !proposed.has(r.lessonId))) {
+    state = 'learned';
+  } else if (proposed.size > 0) state = 'needs_scope';
   else if (rules.some((r) => r.outcome === 'strengthened')) state = 'strengthened';
   else if (has((e) => e.processingNote === 'matches_rejected_rule')) state = 'not_recreated';
   else if (has((e) => e.processingStatus === 'below_floor')) state = 'too_uncertain';

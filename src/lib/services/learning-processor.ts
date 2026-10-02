@@ -23,7 +23,12 @@
 //          rules learned only from them);
 //        - the rule: a new one (source 'decision', scoped to every product
 //          sharing the verdict), or +5 on the active rule it repeats, or
-//          nothing when it repeats a rule the operator rejected;
+//          nothing when it repeats a rule the operator rejected. Scope is
+//          never widened implicitly: an UNSCOPED event (no
+//          relevant product, no explicit choice) speaks for the products
+//          the record was qualified against (its context snapshot) — with
+//          none left, the rule is only PROPOSED and "Needs a scope". Only
+//          an explicit "every product" comment makes a workspace rule;
 //        - reinforcement of the rules the AI cited (operator, method 'ai',
 //          at or above the threshold), via the ledger;
 //        - every claimed event closed: done | no_rule | below_floor |
@@ -72,6 +77,7 @@ import {
   type LearningEvent,
   type LearningLesson,
   type LearningProcessingStatus,
+  type LessonLifecycle,
 } from '@/lib/db/schema/learning';
 import { notifications } from '@/lib/db/schema/notifications';
 import { productProfiles } from '@/lib/db/schema/products';
@@ -107,13 +113,13 @@ import {
   type ForwardEntry,
 } from './learning-ledger';
 import {
+  NEEDS_SCOPE,
   findNearDuplicateLesson,
   findRejectedRuleMatch,
   insertLessonWithScope,
-  normalizeScope,
   scheduleLessonEmbedding,
   type LearningTx,
-  type LessonScopeInput,
+  type NormalizedScope,
 } from './learning';
 import { notify } from './notifications';
 import { hasTokens } from './token-ledger';
@@ -131,6 +137,9 @@ const SWEEP_BATCH = 200;
 export const LEARNING_PROCESSING_NOTES = [
   'rule_created',
   'rule_created_from_verdict',
+  /** An unscoped event whose record was qualified against no (existing)
+   *  product: the rule is 'proposed' and "Needs a scope" (KL-03). */
+  'rule_proposed_needs_scope',
   'rule_strengthened',
   'matches_rejected_rule',
   'nothing_to_learn',
@@ -203,6 +212,24 @@ interface EventFacts {
   aiAvailable: boolean;
   disagreement: boolean;
   override: boolean;
+  /** An explicit "every product" choice (a comment posted with
+   *  appliesTo 'workspace'): the only way to a workspace-wide rule. */
+  workspaceWide: boolean;
+  /** For an UNSCOPED event (no product, no explicit choice): the products
+   *  the record was qualified against when it was decided. What the
+   *  decision teaches is scoped to them — never widened to the workspace. */
+  candidates: DecisionProductSnapshot[];
+  /** The candidates whose available AI verdict the operator's direction
+   *  contradicts (e.g. an approve of a record the AI judged not relevant
+   *  for them: a false_negative, §5) — the scope of a verdict-only rule. */
+  disagreeing: DecisionProductSnapshot[];
+}
+
+/** The AI verdict counts as the AI's view (§5): method 'ai' and, when it
+ *  said relevant, at or above the threshold. */
+function aiCounts(p: DecisionProductSnapshot | null | undefined): boolean {
+  const ai = p?.ai ?? null;
+  return !!ai && ai.method === 'ai' && !ai.belowThreshold;
 }
 
 const DISMISSAL_KINDS = new Set(['review.ignore', 'review.archive']);
@@ -216,18 +243,36 @@ const VERB: Record<string, string> = {
 function factsOf(event: LearningEvent, dismissal: boolean): EventFacts {
   const parsed = DecisionContextSchema.safeParse(event.context);
   const context = parsed.success ? parsed.data : null;
+  const scoped = event.productProfileId !== null;
   const product =
-    context && event.productProfileId !== null
+    context && scoped
       ? (context.products.find((p) => p.id === event.productProfileId!.toString()) ?? null)
       : null;
-  const ai = product?.ai ?? null;
-  const aiAvailable = !!ai && ai.method === 'ai' && !ai.belowThreshold;
-  const disagreement =
-    !dismissal &&
-    aiAvailable &&
-    event.verdict !== null &&
-    (event.verdict === 'fit') !== ai!.relevant;
-  return { event, context, product, aiAvailable, disagreement, override: event.overridesAutopilot };
+  const aiAvailable = aiCounts(product);
+  // An event with no product and an explicit choice is the operator's
+  // "every product"; without the choice it is unscoped.
+  const workspaceWide = !scoped && event.explicit;
+  const candidates = scoped || workspaceWide ? [] : (context?.products ?? []);
+  const direction = event.verdict !== null ? event.verdict === 'fit' : event.polarity > 0;
+  const directional = event.verdict !== null || (!scoped && event.polarity !== 0);
+  const disagreeing =
+    dismissal || !directional
+      ? []
+      : candidates.filter((p) => aiCounts(p) && p.ai!.relevant !== direction);
+  const disagreement = scoped
+    ? !dismissal && aiAvailable && event.verdict !== null && direction !== product!.ai!.relevant
+    : disagreeing.length > 0;
+  return {
+    event,
+    context,
+    product,
+    aiAvailable,
+    disagreement,
+    override: event.overridesAutopilot,
+    workspaceWide,
+    candidates,
+    disagreeing,
+  };
 }
 
 type Trigger = 'note' | 'chips' | 'override' | 'disagreement';
@@ -318,14 +363,28 @@ function planGroups(
   });
 }
 
+function cleanName(p: DecisionProductSnapshot | null | undefined): string {
+  return p?.name?.replace(/\s+/g, ' ').trim().slice(0, 120) || 'a product';
+}
+
 function productName(f: EventFacts): string {
-  return f.product?.name?.replace(/\s+/g, ' ').trim().slice(0, 120) || 'a product';
+  return cleanName(f.product);
+}
+
+function joinNames(names: readonly string[]): string {
+  const list = distinct(names);
+  if (list.length <= 1) return list[0] ?? 'a product';
+  return `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
 }
 
 function nameList(facts: readonly EventFacts[]): string {
-  const names = distinct(facts.map(productName));
-  if (names.length <= 1) return names[0] ?? 'a product';
-  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  return joinNames(facts.map(productName));
+}
+
+/** The products the unscoped events among `facts` were qualified against. */
+function candidateNames(facts: readonly EventFacts[]): string | null {
+  const names = facts.flatMap((f) => f.candidates.map(cleanName));
+  return names.length > 0 ? joinNames(names) : null;
 }
 
 /** What the operator did, in plain sentences, from trusted data only. */
@@ -334,10 +393,17 @@ function statementsFor(decision: LearningDecision, group: ExtractionGroup): stri
   const what = subjects.length > 1 ? `${subjects.length} records` : 'this record';
   if (group.instruction) {
     const scoped = group.events.filter((f) => f.event.productProfileId !== null);
-    const target =
-      scoped.length === group.events.length && scoped.length > 0
+    const unscoped = group.events.filter(
+      (f) => f.event.productProfileId === null && !f.workspaceWide,
+    );
+    const checked = candidateNames(unscoped);
+    const target = group.events.some((f) => f.workspaceWide)
+      ? 'every product'
+      : scoped.length > 0
         ? nameList(scoped)
-        : 'every product';
+        : checked
+          ? `the products it was checked against (${checked})`
+          : 'a product the operator has not chosen yet';
     return [`The operator wrote a note about ${what}; it applies to ${target}.`];
   }
   const out: string[] = [];
@@ -345,16 +411,25 @@ function statementsFor(decision: LearningDecision, group: ExtractionGroup): stri
   const notFit = group.events.filter((f) => verdictPolarity(f.event) < 0);
   const scopedFit = fit.filter((f) => f.event.productProfileId !== null);
   const scopedNot = notFit.filter((f) => f.event.productProfileId !== null);
+  const checkedFit = candidateNames(fit.filter((f) => f.event.productProfileId === null));
+  const checkedNot = candidateNames(notFit.filter((f) => f.event.productProfileId === null));
   if (fit.length > 0) {
     out.push(
       scopedFit.length > 0
         ? `The operator APPROVED ${what} for ${nameList(scopedFit)}.`
-        : `The operator APPROVED ${what}; it was not matched to any product.`,
+        : checkedFit
+          ? `The operator APPROVED ${what} without choosing a product; it had been checked against ${checkedFit}.`
+          : `The operator APPROVED ${what}; it was not matched to any product.`,
     );
   }
   if (notFit.length > 0) {
     const verb = VERB[decision.kind] ?? 'REJECTED';
-    const forWhat = scopedNot.length > 0 ? ` for ${nameList(scopedNot)}` : '';
+    const forWhat =
+      scopedNot.length > 0
+        ? ` for ${nameList(scopedNot)}`
+        : checkedNot
+          ? ` (it had been checked against ${checkedNot})`
+          : '';
     if (decision.kind === 'review.approve') {
       out.push(`The operator marked ${what} NOT A FIT${forWhat}.`);
     } else if (DISMISSAL_KINDS.has(decision.kind)) {
@@ -370,9 +445,19 @@ function statementsFor(decision: LearningDecision, group: ExtractionGroup): stri
   const disagreements = group.events.filter((f) => f.disagreement);
   if (disagreements.length > 0 && subjects.length <= 1) {
     for (const f of disagreements) {
-      out.push(
-        `The AI had judged it ${f.product!.ai!.relevant ? 'relevant' : 'not relevant'} for ${productName(f)}; the operator disagreed.`,
-      );
+      if (f.product) {
+        out.push(
+          `The AI had judged it ${f.product.ai!.relevant ? 'relevant' : 'not relevant'} for ${productName(f)}; the operator disagreed.`,
+        );
+        continue;
+      }
+      for (const relevant of [true, false]) {
+        const names = f.disagreeing.filter((p) => p.ai!.relevant === relevant).map(cleanName);
+        if (names.length === 0) continue;
+        out.push(
+          `The AI had judged it ${relevant ? 'relevant' : 'not relevant'} for ${joinNames(names)}; the operator disagreed.`,
+        );
+      }
     }
   } else if (disagreements.length > 0) {
     out.push("For some of these records the AI's verdict differed from the operator's.");
@@ -401,15 +486,19 @@ function sampleRecords(group: ExtractionGroup): { records: ExtractionRecord[]; t
   const records = picks.map((subject) => {
     const facts = bySubject.get(subject)!;
     const record = facts.find((f) => f.context?.record)?.context?.record ?? null;
+    // A scoped event's product; an unscoped one's qualified-against
+    // products (the verdicts the operator's decision answered).
+    const seen = new Set<string>();
     const aiVerdicts = facts
-      .filter((f) => f.product?.ai)
-      .map((f) => ({
-        product: productName(f),
-        relevant: f.product!.ai!.relevant,
-        score: f.product!.ai!.score,
-        threshold: f.product!.ai!.threshold,
-        method: f.product!.ai!.method,
-        reason: f.product!.ai!.reason,
+      .flatMap((f) => (f.product ? [f.product] : f.candidates))
+      .filter((p) => p.ai && !seen.has(p.id) && seen.add(p.id))
+      .map((p) => ({
+        product: cleanName(p),
+        relevant: p.ai!.relevant,
+        score: p.ai!.score,
+        threshold: p.ai!.threshold,
+        method: p.ai!.method,
+        reason: p.ai!.reason,
       }));
     return {
       title: record?.title ?? null,
@@ -433,7 +522,11 @@ type GroupOutcome =
       rule: ExtractedRule;
       confidence: number;
       targets: EventFacts[];
-      scope: LessonScopeInput;
+      /** NEEDS_SCOPE (products, none) for a proposed rule. */
+      scope: NormalizedScope;
+      /** 'proposed' when the scope could not be inferred (an unscoped
+       *  record qualified against no existing product). */
+      lifecycle: Extract<LessonLifecycle, 'active' | 'proposed'>;
       duplicate: LearningLesson | null;
       rejectedTwin: LearningLesson | null;
     };
@@ -481,17 +574,9 @@ async function resolveGroup(
     ? group.events
     : group.events.filter((f) => verdictPolarity(f.event) === rule.polarity);
   if (targets.length === 0) return { kind: 'rejected', group, note: 'rejected:polarity_mismatch' };
-  let scope: LessonScopeInput;
-  if (targets.some((f) => f.event.productProfileId === null)) {
-    scope = { kind: 'workspace' };
-  } else {
-    const wanted = distinct(targets.map((f) => f.event.productProfileId!.toString())).map((s) =>
-      BigInt(s),
-    );
-    const found = await existingProducts(ctx, wanted);
-    if (found.length === 0) return { kind: 'no_scope', group };
-    scope = { kind: 'products', productProfileIds: found };
-  }
+  const resolved = await resolveScope(ctx, targets, group.textless);
+  if (!resolved) return { kind: 'no_scope', group };
+  const { scope, lifecycle } = resolved;
   const confidence = group.textless
     ? TEXTLESS_RULE_CONFIDENCE
     : Math.min(rule.confidence, EXTRACTED_CONFIDENCE_CEILING);
@@ -500,6 +585,8 @@ async function resolveGroup(
     rule: rule.rule,
     polarity: rule.polarity,
     scope,
+    // A proposed "Needs a scope" rule repeats an earlier proposed one.
+    lifecycles: lifecycle === 'proposed' ? ['proposed'] : ['active'],
   });
   const rejectedTwin = duplicate
     ? null
@@ -509,7 +596,56 @@ async function resolveGroup(
         polarity: rule.polarity,
         scope,
       });
-  return { kind: 'rule', group, rule, confidence, targets, scope, duplicate, rejectedTwin };
+  return {
+    kind: 'rule',
+    group,
+    rule,
+    confidence,
+    targets,
+    scope,
+    lifecycle,
+    duplicate,
+    rejectedTwin,
+  };
+}
+
+/**
+ * Where a rule learned from these target events applies. Never wider than
+ * the decision said (I032, contract §2.3 / §5):
+ *   - a scoped event speaks for its product;
+ *   - an explicit "every product" comment, and only that, for the
+ *     workspace;
+ *   - an UNSCOPED event (no relevant product, no explicit choice) for the
+ *     products the record was qualified against — for a verdict-only rule
+ *     just those whose AI verdict the operator contradicted.
+ * Products deleted since are dropped. Nothing left: null (no rule) when
+ * every target named its products, or a PROPOSED rule that "Needs a scope"
+ * when the scope had to be inferred — the operator chooses it on /learning.
+ */
+async function resolveScope(
+  ctx: WorkspaceContext,
+  targets: readonly EventFacts[],
+  textless: boolean,
+): Promise<{ scope: NormalizedScope; lifecycle: 'active' | 'proposed' } | null> {
+  if (targets.some((f) => f.workspaceWide)) {
+    return { scope: { kind: 'workspace', productProfileIds: [] }, lifecycle: 'active' };
+  }
+  const wanted = new Set<string>();
+  let inferred = false;
+  for (const f of targets) {
+    if (f.event.productProfileId !== null) {
+      wanted.add(f.event.productProfileId.toString());
+      continue;
+    }
+    inferred = true;
+    for (const p of textless ? f.disagreeing : f.candidates) wanted.add(p.id);
+  }
+  const ids = [...wanted].filter((s) => /^\d{1,19}$/.test(s)).map((s) => BigInt(s));
+  const found = (await existingProducts(ctx, ids)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  if (found.length > 0) {
+    return { scope: { kind: 'products', productProfileIds: found }, lifecycle: 'active' };
+  }
+  return inferred ? { scope: NEEDS_SCOPE, lifecycle: 'proposed' } : null;
 }
 
 /** Rules a product verdict cited, with the direction each argued. Without
@@ -754,7 +890,9 @@ async function writeOutcome(
     const dup = o.duplicate ? locked.get(o.duplicate.id.toString()) : undefined;
     let lessonId: bigint;
     let note: LearningProcessingNote;
-    if (dup && dup.lifecycle === 'active') {
+    // Strengthen the rule this one repeats while it is still what dedup
+    // matched: in service (or, for a proposed rule, still proposed).
+    if (dup && dup.lifecycle === o.lifecycle) {
       lessonId = dup.id;
       note = 'rule_strengthened';
       dedupReinforced = true;
@@ -811,7 +949,7 @@ async function writeOutcome(
         tx,
       );
     } else {
-      const scope = normalizeScope(o.scope);
+      const scope = o.scope;
       const inserted = await insertLessonWithScope(
         tx,
         {
@@ -821,7 +959,7 @@ async function writeOutcome(
           polarity: o.rule.polarity,
           source: 'decision',
           evidenceEventIds: targets.map((f) => f.event.id),
-          lifecycle: 'active',
+          lifecycle: o.lifecycle,
           confidence: o.confidence,
           createdBy: decision.userId,
           updatedBy: decision.userId,
@@ -829,7 +967,12 @@ async function writeOutcome(
         scope,
       );
       lessonId = inserted.id;
-      note = o.group.textless ? 'rule_created_from_verdict' : 'rule_created';
+      note =
+        o.lifecycle === 'proposed'
+          ? 'rule_proposed_needs_scope'
+          : o.group.textless
+            ? 'rule_created_from_verdict'
+            : 'rule_created';
       newLessonIds.push(lessonId);
       await recordAuditEvent(
         ctx,
@@ -844,8 +987,14 @@ async function writeOutcome(
             polarity: inserted.polarity,
             confidence: inserted.confidence,
             trigger: o.group.trigger,
+            lifecycle: o.lifecycle,
             scopeKind: scope.kind,
             productProfileIds: scope.productProfileIds.map((id) => id.toString()),
+            // The scope came from the products the record was qualified
+            // against (an unscoped decision), not from the decision itself.
+            scopeInferred: o.targets.some(
+              (f) => f.event.productProfileId === null && !f.workspaceWide,
+            ),
           },
         },
         tx,

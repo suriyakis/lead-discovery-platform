@@ -822,8 +822,10 @@ export interface CommentOptions {
   /** Idempotency key — the form's nonce. A repeat posts nothing. */
   decisionKey?: string | null;
   /** Which products the instruction applies to. Default: the products the
-   *  AI found the record relevant to (none → an unscoped event). 'workspace'
-   *  = every product, chosen explicitly. */
+   *  AI found the record relevant to (none → an unscoped event, which the
+   *  processor scopes to the products the record was qualified against, or
+   *  proposes as "Needs a scope" — never workspace-wide). 'workspace' =
+   *  every product, chosen explicitly (the only way to a workspace rule). */
   appliesTo?: 'workspace' | readonly bigint[];
 }
 
@@ -831,8 +833,11 @@ export interface CommentOptions {
  * Post a comment. A teachable comment (more than an @mention) is also a
  * decision: an 'instruction' event per product it applies to, recorded in
  * the same transaction and learned from by learning.process (one rule,
- * scoped to those products — no longer a workspace-wide rule for every
- * comment). Comments never supersede verdicts.
+ * scoped to those products). With no relevant product and no explicit
+ * choice the event is unscoped and the rule is scoped to the products the
+ * record was qualified against (none: a proposed rule that "Needs a
+ * scope"); only an explicit appliesTo 'workspace' makes a workspace-wide
+ * rule. Comments never supersede verdicts.
  */
 export async function commentOnReviewItem(
   ctx: WorkspaceContext,

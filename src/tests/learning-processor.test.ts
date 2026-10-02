@@ -1305,6 +1305,180 @@ describe('reinforcement follows the citation and the verdict (§6, I098)', () =>
   });
 });
 
+// ---- unscoped decisions never widen to the workspace (review fix, I032 / §2.3 / §5) ----------
+
+describe('an unscoped decision teaches only the products the record was qualified against', () => {
+  async function scopeOf(lessonId: bigint): Promise<bigint[]> {
+    const rows = await db.select().from(lessonScopes).where(eq(lessonScopes.lessonId, lessonId));
+    return rows.map((x) => x.productProfileId).sort((x, y) => (x < y ? -1 : 1));
+  }
+
+  it('a reject with a note on a record relevant to no product scopes the rule to its qualified products, not the workspace', async () => {
+    const s = await setup();
+    const a = await product(s, 'Alpha');
+    const b = await product(s, 'Beta');
+    const later = await product(s, 'Gamma'); // never qualified against: must stay untouched
+    const r = await record(s);
+    await qualify(s, r.sourceRecordId, a.id, { relevant: false, score: 20 });
+    await qualify(s, r.sourceRecordId, b.id, { relevant: false, score: 15 });
+    const ai = stubAi(
+      rule({
+        category: 'qualification_negative',
+        rule: 'Local councils are not buyers for these products.',
+        confidence: 80,
+      }),
+    );
+    _setAIProviderForTests(ai);
+
+    await rejectReviewItem(ownerCtx(s), r.itemId, 'Councils never buy from us');
+    await drainLearning();
+
+    const [event] = await eventsOf(s);
+    expect(event).toMatchObject({
+      productProfileId: null,
+      verdict: null,
+      processingNote: 'rule_created',
+    });
+    expect(ai.calls[0]!.prompt).toContain(
+      'The operator REJECTED this record (it had been checked against Alpha and Beta).',
+    );
+    const lessons = await lessonsOf(s);
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]).toMatchObject({ scopeKind: 'products', lifecycle: 'active', polarity: -1 });
+    expect(await scopeOf(lessons[0]!.id)).toEqual([a.id, b.id].sort((x, y) => (x < y ? -1 : 1)));
+    expect(await scopeOf(lessons[0]!.id)).not.toContain(later.id);
+  });
+
+  it('a comment-less approve of a record the AI rejected teaches a false_negative for those products only (§5 always extract)', async () => {
+    const s = await setup();
+    const a = await product(s, 'Alpha');
+    const b = await product(s, 'Beta');
+    const r = await record(s);
+    // The AI rejected it for Alpha; Beta only has a rules-fallback verdict,
+    // which never counts as the AI's view.
+    await qualify(s, r.sourceRecordId, a.id, { relevant: false, score: 20 });
+    await qualify(s, r.sourceRecordId, b.id, { relevant: false, score: 10, method: 'rules' });
+    const ai = stubAi(
+      rule({
+        category: 'false_negative',
+        rule: 'Roofing contractors with their own van fleet are a fit.',
+        confidence: 80,
+      }),
+    );
+    _setAIProviderForTests(ai);
+
+    await approveReviewItem(ownerCtx(s), r.itemId);
+    await drainLearning();
+
+    expect(ai.calls).toHaveLength(1);
+    expect(ai.calls[0]!.prompt).toContain(
+      'The operator APPROVED this record without choosing a product; it had been checked against Alpha and Beta.',
+    );
+    expect(ai.calls[0]!.prompt).toContain(
+      'The AI had judged it not relevant for Alpha; the operator disagreed.',
+    );
+    const lessons = await lessonsOf(s);
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]).toMatchObject({
+      category: 'false_negative',
+      polarity: 1,
+      confidence: 50,
+      scopeKind: 'products',
+      lifecycle: 'active',
+    });
+    expect(await scopeOf(lessons[0]!.id)).toEqual([a.id]);
+    expect((await eventsOf(s))[0]!.processingNote).toBe('rule_created_from_verdict');
+  });
+
+  it('an unscoped reject without a note agrees with the AI and teaches nothing', async () => {
+    const s = await setup();
+    const a = await product(s, 'Alpha');
+    const r = await record(s);
+    await qualify(s, r.sourceRecordId, a.id, { relevant: false, score: 20 });
+    const ai = stubAi(rule({ category: 'qualification_negative', rule: 'x', confidence: 80 }));
+    _setAIProviderForTests(ai);
+    await rejectReviewItem(ownerCtx(s), r.itemId);
+    await drainLearning();
+    expect(ai.calls).toHaveLength(0);
+    expect(await lessonsOf(s)).toHaveLength(0);
+    expect((await eventsOf(s))[0]).toMatchObject({
+      processingStatus: 'no_rule',
+      processingNote: 'nothing_to_learn',
+    });
+  });
+
+  it('a default comment on such a record is scoped to its qualified products; only an explicit "every product" is workspace-wide', async () => {
+    const s = await setup();
+    const a = await product(s, 'Alpha');
+    const r = await record(s);
+    await qualify(s, r.sourceRecordId, a.id, { relevant: false, score: 20 });
+    const ai = stubAi(
+      rule({ category: 'outreach_style', rule: 'Open with the tender reference.', confidence: 70 }),
+    );
+    _setAIProviderForTests(ai);
+
+    await commentOnReviewItem(ownerCtx(s), r.itemId, 'Always mention the tender number first');
+    await drainLearning();
+    expect(ai.calls[0]!.prompt).toContain(
+      'The operator wrote a note about this record; it applies to the products it was checked against (Alpha).',
+    );
+    const [scoped] = await lessonsOf(s);
+    expect(scoped).toMatchObject({ scopeKind: 'products', lifecycle: 'active' });
+    expect(await scopeOf(scoped!.id)).toEqual([a.id]);
+
+    ai.calls.length = 0;
+    await commentOnReviewItem(ownerCtx(s), r.itemId, 'Always sign off with the phone number', {
+      appliesTo: 'workspace',
+    });
+    await drainLearning();
+    expect(ai.calls[0]!.prompt).toContain('it applies to every product.');
+    const wide = (await lessonsOf(s)).find((l) => l.id !== scoped!.id);
+    expect(wide).toMatchObject({ scopeKind: 'workspace' });
+  });
+
+  it('a record qualified against no product gives a PROPOSED rule that needs a scope and reaches no prompt', async () => {
+    const s = await setup();
+    const a = await product(s, 'Alpha');
+    const r = await record(s); // never qualified
+    _setAIProviderForTests(
+      stubAi(
+        rule({
+          category: 'qualification_negative',
+          rule: 'Local councils are not buyers for these products.',
+          confidence: 80,
+        }),
+      ),
+    );
+    await rejectReviewItem(ownerCtx(s), r.itemId, 'Councils never buy from us');
+    await drainLearning();
+
+    const lessons = await lessonsOf(s);
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]).toMatchObject({ scopeKind: 'products', lifecycle: 'proposed' });
+    expect(await scopeOf(lessons[0]!.id)).toEqual([]);
+    expect((await eventsOf(s))[0]).toMatchObject({
+      processingStatus: 'done',
+      processingNote: 'rule_proposed_needs_scope',
+      extractedLessonId: lessons[0]!.id,
+    });
+    const receipt = await getDecisionReceipt(ownerCtx(s), await decisionIdOf(s, 'review.reject'));
+    expect(receipt?.state).toBe('needs_scope');
+    expect(receipt?.headline).toBe(RECEIPT_HEADLINES.needs_scope);
+    const { getRelevantLessons } = await import('@/lib/services/learning');
+    expect(
+      await getRelevantLessons(ownerCtx(s), { productProfileId: a.id, taskType: 'classification' }),
+    ).toEqual([]);
+
+    // The same note on another such record repeats the proposal, it does
+    // not mint a second one.
+    const r2 = await record(s);
+    await rejectReviewItem(ownerCtx(s), r2.itemId, 'Councils never buy from us either');
+    await drainLearning();
+    expect(await lessonsOf(s)).toHaveLength(1);
+    expect((await eventsOf(s)).at(-1)!.processingNote).toBe('rule_strengthened');
+  });
+});
+
 // ---- comments and the sweeper ----------------------------------------------------------------
 
 describe('comments and the sweeper', () => {

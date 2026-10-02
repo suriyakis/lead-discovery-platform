@@ -181,6 +181,20 @@ export interface NormalizedScope {
   productProfileIds: bigint[];
 }
 
+/** 'products' with no product: a rule that applies nowhere until an
+ *  operator chooses ("Needs a scope"). Only the learning processor writes
+ *  one directly — for a PROPOSED rule whose decision named no product and
+ *  whose record was qualified against none (KL-03); normalizeScope()
+ *  refuses it from forms. */
+export const NEEDS_SCOPE: NormalizedScope = Object.freeze({
+  kind: 'products',
+  productProfileIds: [],
+}) as NormalizedScope;
+
+function isNeedsScope(scope: LessonScopeInput | NormalizedScope): boolean {
+  return scope.kind === 'products' && scope.productProfileIds.length === 0;
+}
+
 const MAX_SCOPE_PRODUCTS = 100;
 
 export function normalizeScope(scope: LessonScopeInput | null | undefined): NormalizedScope {
@@ -499,8 +513,9 @@ function sameIds(a: readonly bigint[], b: readonly bigint[]): boolean {
 }
 
 /**
- * Find an active lesson with the same category, polarity and EXACT scope
- * (workspace-wide, or the identical product set) that says the same thing
+ * Find a lesson in service (`lifecycles`, default active) with the same
+ * category, polarity and EXACT scope (workspace-wide, the identical product
+ * set, or — for NEEDS_SCOPE — no product at all) that says the same thing
  * as `rule`. Exact (case-insensitive) text match is checked first — free;
  * then embedding similarity when an embedding provider is available.
  * Returns null on any failure — dedup is an optimization, never a gate.
@@ -512,27 +527,32 @@ export async function findNearDuplicateLesson(
     rule: string;
     polarity?: LessonPolarity;
     scope: LessonScopeInput | NormalizedScope;
+    lifecycles?: readonly LessonLifecycle[];
   },
 ): Promise<LearningLesson | null> {
   try {
-    const scope = normalizeScope(input.scope as LessonScopeInput);
+    const needsScope = isNeedsScope(input.scope);
+    const scope = needsScope ? NEEDS_SCOPE : normalizeScope(input.scope as LessonScopeInput);
+    const lifecycles: readonly LessonLifecycle[] =
+      input.lifecycles && input.lifecycles.length > 0 ? input.lifecycles : ['active'];
     const conds: SQL[] = [
       eq(learningLessons.workspaceId, ctx.workspaceId),
       eq(learningLessons.category, input.category),
-      eq(learningLessons.lifecycle, 'active'),
+      inArray(learningLessons.lifecycle, [...lifecycles]),
       eq(learningLessons.scopeKind, scope.kind),
     ];
     if (input.polarity !== undefined) conds.push(eq(learningLessons.polarity, input.polarity));
     // In scope for the first product (or anywhere, for a workspace rule);
-    // the exact product set is compared below.
-    conds.push(lessonInScope(scope.productProfileIds[0]));
+    // the exact product set is compared below. A NEEDS_SCOPE rule only
+    // repeats another rule with no product.
+    conds.push(needsScope ? lessonNeedsScope() : lessonInScope(scope.productProfileIds[0]));
     let candidates = await db
       .select()
       .from(learningLessons)
       .where(and(...conds))
       .orderBy(desc(learningLessons.confidence))
       .limit(200);
-    if (scope.kind === 'products' && candidates.length > 0) {
+    if (scope.kind === 'products' && !needsScope && candidates.length > 0) {
       const scopes = await getLessonScopeProducts(
         ctx,
         candidates.map((c) => c.id),
@@ -585,8 +605,9 @@ async function bestRuleMatch(
  * KL-03: a rule the operator REJECTED (retired 'operator_rejected') that
  * says the same thing as `rule`, in the same category and direction, and
  * whose scope overlaps this one (either is workspace-wide, or they share a
- * product). Extraction never recreates such a rule (§6: rejected rules are
- * kept as negative examples). Returns null on any failure.
+ * product; a NEEDS_SCOPE candidate overlaps any scope). Extraction never
+ * recreates such a rule (§6: rejected rules are kept as negative
+ * examples). Returns null on any failure.
  */
 export async function findRejectedRuleMatch(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -598,7 +619,9 @@ export async function findRejectedRuleMatch(
   },
 ): Promise<LearningLesson | null> {
   try {
-    const scope = normalizeScope(input.scope as LessonScopeInput);
+    const scope = isNeedsScope(input.scope)
+      ? { kind: 'workspace' as const, productProfileIds: [] }
+      : normalizeScope(input.scope as LessonScopeInput);
     const conds: SQL[] = [
       eq(learningLessons.workspaceId, ctx.workspaceId),
       eq(learningLessons.category, input.category),

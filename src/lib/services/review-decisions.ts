@@ -13,7 +13,11 @@
 //     product an autopilot approval is live on (so overturning autopilot
 //     always reaches the product it approved);
 //   - with neither, one unscoped event with no verdict: the decision is
-//     kept, but it is not pinned on a product the AI never matched.
+//     kept, but it is not pinned on a product the AI never matched (no
+//     operator verdict is written). What learning.process learns from it is
+//     scoped to the products the record was qualified against (its context
+//     snapshot), or proposed as "Needs a scope" when there are none — an
+//     unscoped event never mints a workspace-wide rule (KL-03).
 
 import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { sourceRecords, type SourceRecord } from '@/lib/db/schema/connectors';
