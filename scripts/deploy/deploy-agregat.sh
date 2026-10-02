@@ -67,6 +67,13 @@ set -euo pipefail
 cd ${APP_DIR}
 COMPOSE="docker-compose -f docker-compose.yml -f docker-compose.prod.yml"
 REMOTE
+  # APP_URL is the base of the tracking-pixel and unsubscribe links in sent
+  # mail; compose no longer sets it, so a missing or non-https value in the
+  # server's .env would silently fall back to localhost links.
+  cat <<'REMOTE'
+echo "=== preflight: APP_URL in .env ==="
+grep -q '^APP_URL=https://' .env || { echo "APP_URL is missing or not https in .env; mail links would point at localhost. Nothing was built or stopped." >&2; exit 1; }
+REMOTE
   if [ "$MIGRATE" = 1 ]; then
     cat <<'REMOTE'
 echo "=== preflight: pnpm (for --migrate) ==="
