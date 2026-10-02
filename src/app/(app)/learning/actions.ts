@@ -10,6 +10,7 @@ import {
 import { isLessonCategory } from '@/lib/services/learning-categories';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { guardAction } from '@/lib/services/action-guards';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 import {
   assertCanCompactKnowledge,
   compactWorkspaceKnowledge,
@@ -100,7 +101,8 @@ export async function bulkEnableAction(formData: FormData): Promise<void> {
 // single-flight in the workspace and rate-limited (services/action-guards.ts);
 // a refusal says why on the page. The service's own refusals (admins only,
 // the wallet, a hold) are asked first, so a refused click never uses up the
-// workspace's limit.
+// workspace's limit. MOB-06: both spend AI tokens, so a tab still showing
+// another workspace is refused before anything runs.
 
 function learningFlash(flash: { message?: string; error?: string }): string {
   const params = new URLSearchParams();
@@ -110,7 +112,7 @@ function learningFlash(flash: { message?: string; error?: string }): string {
   return qs ? `/learning?${qs}` : '/learning';
 }
 
-export async function compactNowAction(): Promise<void> {
+async function compactNowForm(_formData?: FormData): Promise<void> {
   const c = await getWorkspaceContext();
   try {
     await guardAction(c, 'knowledge.compact', () => compactWorkspaceKnowledge(c), {
@@ -125,7 +127,7 @@ export async function compactNowAction(): Promise<void> {
   redirect('/learning');
 }
 
-export async function synthesizeNowAction(): Promise<void> {
+async function synthesizeNowForm(_formData?: FormData): Promise<void> {
   const c = await getWorkspaceContext();
   try {
     const s = await guardAction(c, 'learning.synthesize', () => synthesizeWorkspaceLearning(c), {
@@ -147,3 +149,6 @@ export async function synthesizeNowAction(): Promise<void> {
     redirect(learningFlash({ error: m }));
   }
 }
+
+export const compactNowAction = withWorkspaceGuard('learning.compact_now', compactNowForm);
+export const synthesizeNowAction = withWorkspaceGuard('learning.synthesize_now', synthesizeNowForm);

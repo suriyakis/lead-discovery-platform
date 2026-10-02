@@ -999,7 +999,7 @@ describe('an empty wallet refuses before any AI call (PC-38 (3))', { timeout: 60
     const s = await setup(0);
     await setBalance(s.ws, 0n);
     actAs(s.owner);
-    const url = await redirectOf(learningActions.synthesizeNowAction());
+    const url = await redirectOf(learningActions.synthesizeNowAction(form()));
     expect(url.pathname).toBe('/learning');
     expect(url.searchParams.get('error')).toBe(
       'No tokens left — a workspace admin can buy a token pack in Settings → Billing.',
@@ -1036,7 +1036,7 @@ describe('every AI button is guarded', { timeout: 60_000 }, () => {
     const s = await setup(0);
     await holdAction(s.ws, 'learning.synthesize');
     actAs(s.owner);
-    const url = await redirectOf(learningActions.synthesizeNowAction());
+    const url = await redirectOf(learningActions.synthesizeNowAction(form()));
     expect(url.searchParams.get('error')).toMatch(
       /^Synthesize now is already running in this workspace/,
     );
@@ -1047,7 +1047,7 @@ describe('every AI button is guarded', { timeout: 60_000 }, () => {
     const s = await setup(0);
     await fillLimit(s.ws, 'learning.synthesize');
     actAs(s.owner);
-    const url = await redirectOf(learningActions.synthesizeNowAction());
+    const url = await redirectOf(learningActions.synthesizeNowAction(form()));
     expect(url.searchParams.get('error')).toMatch(
       /^Synthesize now was used 6 times in the last hour/,
     );
@@ -1057,7 +1057,7 @@ describe('every AI button is guarded', { timeout: 60_000 }, () => {
     const s = await setup(0);
     await holdAction(s.ws, 'knowledge.compact');
     actAs(s.owner);
-    const url = await redirectOf(learningActions.compactNowAction());
+    const url = await redirectOf(learningActions.compactNowAction(form()));
     expect(url.searchParams.get('error')).toMatch(
       /^Compact now is already running in this workspace/,
     );
@@ -1157,9 +1157,9 @@ describe('a click the service refuses never uses up the limit', { timeout: 120_0
     for (const who of [s.viewer, s.member]) {
       actAs(who);
       for (let i = 0; i < limit + 1; i++) {
-        const compact = await redirectOf(learningActions.compactNowAction());
+        const compact = await redirectOf(learningActions.compactNowAction(form()));
         expect(compact.searchParams.get('error')).toMatch(/permission/i);
-        const synth = await redirectOf(learningActions.synthesizeNowAction());
+        const synth = await redirectOf(learningActions.synthesizeNowAction(form()));
         expect(synth.searchParams.get('error')).toMatch(/permission/i);
         const health = await redirectOf(healthActions.runHealthCheckNowAction(form()));
         // /health says who may run it (AP-06's wording) instead of the code.
@@ -1174,7 +1174,7 @@ describe('a click the service refuses never uses up the limit', { timeout: 120_0
     // The owner's clicks all go through.
     actAs(s.owner);
     for (let i = 0; i < limit; i++) {
-      expect((await redirectOf(learningActions.compactNowAction())).searchParams.get('error')).toBeNull();
+      expect((await redirectOf(learningActions.compactNowAction(form()))).searchParams.get('error')).toBeNull();
       expect((await redirectOf(healthActions.runHealthCheckNowAction(form()))).searchParams.get('err')).toBeNull();
     }
     expect(await used(s.ws, 'knowledge.compact')).toBe(limit);
@@ -1187,7 +1187,7 @@ describe('a click the service refuses never uses up the limit', { timeout: 120_0
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     actAs(s.owner);
     for (let i = 0; i < GUARDED_ACTIONS['learning.synthesize'].limit + 1; i++) {
-      const url = await redirectOf(learningActions.synthesizeNowAction());
+      const url = await redirectOf(learningActions.synthesizeNowAction(form()));
       expect(url.searchParams.get('error')).toMatch(/^No tokens left/);
       const auto = await redirectOf(
         autofillActions.autofillAction(form({ url: 'https://example.com/products/glass' })),
@@ -1209,7 +1209,7 @@ describe('a click the service refuses never uses up the limit', { timeout: 120_0
     });
     actAs(s.owner);
     for (let i = 0; i < 3; i++) {
-      expect((await redirectOf(learningActions.compactNowAction())).searchParams.get('error')).toMatch(/hold/i);
+      expect((await redirectOf(learningActions.compactNowAction(form()))).searchParams.get('error')).toMatch(/hold/i);
       expect(
         (await redirectOf(engineActions.runPlanAction(form({ id: '42' })))).searchParams.get('error'),
       ).toMatch(/hold/i);

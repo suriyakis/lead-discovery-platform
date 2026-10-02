@@ -36,6 +36,7 @@ import {
   synthesizeNowAction,
 } from './actions';
 import { NoWorkspaceState } from '@/components/NoWorkspaceState';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 
 const BULK_FORM_ID = 'learning-bulk-form';
 const PAGE_SIZE = 25;
@@ -241,11 +242,13 @@ export default async function LearningPage({
           {isAdmin ? (
             <div className="action-row" style={{ display: 'flex', gap: '0.5rem' }}>
               <form action={compactNowAction}>
+                <ExpectedWorkspaceField />
                 <button type="submit" className="ghost-btn">
                   Compact now
                 </button>
               </form>
               <form action={synthesizeNowAction}>
+                <ExpectedWorkspaceField />
                 <button
                   type="submit"
                   className="ghost-btn"

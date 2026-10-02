@@ -56,6 +56,10 @@ export const GUARDED_ACTIONS = {
   'discovery.reclassify_all': 'Re-classify every record',
   // Health (the AI conversation review spends tokens)
   'health.run_check': 'Run the health check now',
+  // Learning and products (AI passes over the workspace, PC-38's buttons)
+  'learning.compact_now': 'Compact the learned rules now',
+  'learning.synthesize_now': 'Learn new rules from recent activity now',
+  'products.autofill': 'Draft a product profile with AI',
   'health.save_settings': 'Change the scheduled health check',
   // Billing (spend)
   'billing.buy_tokens': 'Buy a token pack',
@@ -120,6 +124,9 @@ export const GUARDED_ACTION_CHROME: Readonly<Record<GuardedActionId, 'refresh' |
   'settings.reply_auto_actions': 'refresh',
   'discovery.reclassify_all': 'refresh',
   'health.run_check': 'refresh',
+  'learning.compact_now': 'refresh',
+  'learning.synthesize_now': 'refresh',
+  'products.autofill': 'refresh',
   'health.save_settings': 'refresh',
   'billing.buy_tokens': 'refresh',
   'billing.subscribe': 'refresh',

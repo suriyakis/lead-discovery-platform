@@ -11,6 +11,7 @@ import {
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { autofillAction } from './actions';
 import { NoWorkspaceState } from '@/components/NoWorkspaceState';
+import { ExpectedWorkspaceField } from '@/components/WorkspaceGuard';
 
 export default async function AutofillPage({
   searchParams,
@@ -55,6 +56,7 @@ export default async function AutofillPage({
         ) : null}
 
         <form action={autofillAction} className="edit-draft-form">
+          <ExpectedWorkspaceField />
           <fieldset className="ks-kind-fields">
             <legend className="muted">Source 1 — Website (optional)</legend>
             <label>

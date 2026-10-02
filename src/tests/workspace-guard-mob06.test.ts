@@ -48,6 +48,8 @@ import * as pauseActions from '@/lib/automation-pause-actions';
 import * as autopilotActions from '@/app/(app)/autopilot/actions';
 import * as engineActions from '@/app/(app)/connectors/engine/actions';
 import * as healthActions from '@/app/(app)/health/actions';
+import * as learningActions from '@/app/(app)/learning/actions';
+import * as autofillActions from '@/app/(app)/products/autofill/actions';
 import * as replyAutoActions from '@/app/(app)/settings/outreach/actions';
 import { POST as replyPOST } from '@/app/api/communication/reply/route';
 import { POST as assistantPOST } from '@/app/api/assistant/route';
@@ -160,6 +162,9 @@ const WRAPPED: ReadonlyArray<readonly [GuardedActionId, string, string]> = [
   ['discovery.reclassify_all', 'src/app/(app)/connectors/engine/actions', 'reclassifyAll'],
   ['health.run_check', 'src/app/(app)/health/actions', 'runHealthCheckNowAction'],
   ['health.save_settings', 'src/app/(app)/health/actions', 'saveHealthCheckSettingsAction'],
+  ['learning.compact_now', 'src/app/(app)/learning/actions', 'compactNowAction'],
+  ['learning.synthesize_now', 'src/app/(app)/learning/actions', 'synthesizeNowAction'],
+  ['products.autofill', 'src/app/(app)/products/autofill/actions', 'autofillAction'],
   ['billing.buy_tokens', 'src/app/api/stripe/buy-tokens/route', 'POST'],
   ['billing.subscribe', 'src/app/(app)/settings/billing/actions', 'subscribeToPlanAction'],
   ['billing.auto_topup', 'src/app/(app)/settings/billing/actions', 'saveAutoTopupAction'],
@@ -593,6 +598,26 @@ describe('a stale tab after a workspace switch (MOB-06)', () => {
         ),
       () =>
         replyAutoActions.saveReplyAutoActions(claimedForm(one, { autoSuppressUnsubscribe: 'on' })),
+    ]) {
+      expect((await expectRedirect(run)).startsWith(`/workspace-changed?ws=${one}`)).toBe(true);
+    }
+    expect(await snapshot(w)).toEqual(before);
+  });
+
+  it('Compact now, Synthesize now and product autofill are refused the same way (PC-38 buttons)', async () => {
+    // The workers lane's AI passes over a whole workspace: a stale tab must
+    // not spend another workspace's tokens on them.
+    const w = await world();
+    await switchInAnotherTab(w);
+    const before = await snapshot(w);
+    const one = w.one.toString();
+    for (const run of [
+      () => learningActions.compactNowAction(claimedForm(one)),
+      () => learningActions.synthesizeNowAction(claimedForm(one)),
+      () =>
+        autofillActions.autofillAction(
+          claimedForm(one, { url: 'https://example.com/products/glass' }),
+        ),
     ]) {
       expect((await expectRedirect(run)).startsWith(`/workspace-changed?ws=${one}`)).toBe(true);
     }

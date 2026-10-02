@@ -6,7 +6,8 @@
 // single-flight in the workspace and rate-limited
 // (services/action-guards.ts), and the service refuses an empty wallet
 // before the fetch — asked before the guard, so a refused click never uses
-// up the workspace's limit.
+// up the workspace's limit. MOB-06: it spends AI tokens, so a tab still
+// showing another workspace is refused before anything is fetched.
 
 import { redirect } from 'next/navigation';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
@@ -17,8 +18,9 @@ import {
   autofillProductProfileFromSources,
 } from '@/lib/services/product-autofill';
 import { isNextRedirectError } from '@/lib/server-redirect';
+import { withWorkspaceGuard } from '@/lib/workspace-guard/server';
 
-export async function autofillAction(formData: FormData): Promise<void> {
+async function autofillForm(formData: FormData): Promise<void> {
   const c = await getWorkspaceContext();
   const url = String(formData.get('url') ?? '').trim() || null;
   const pdfFiles: Array<{ filename: string; buffer: Buffer }> = [];
@@ -73,3 +75,5 @@ export async function autofillAction(formData: FormData): Promise<void> {
     redirect(`/products/autofill?error=${encodeURIComponent(message)}`);
   }
 }
+
+export const autofillAction = withWorkspaceGuard('products.autofill', autofillForm);
