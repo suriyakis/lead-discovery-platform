@@ -13,7 +13,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { appUrl, configuredAppOrigin, requestOrigin } from '@/lib/app-origin';
+import { appOrigin, appUrl, configuredAppOrigin, requestOrigin } from '@/lib/app-origin';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const read = (f: string) => readFileSync(path.join(ROOT, f), 'utf8');
@@ -51,6 +51,46 @@ describe('appUrl (I155)', () => {
     );
     expect(appUrl('/x', { env: none, headers: headersOf({}) })).toBe('http://localhost:3000/x');
     expect(appUrl('/x', { env: none })).toBe('http://localhost:3000/x');
+  });
+
+  it('a loopback APP_URL (the base compose default) never beats a real origin', () => {
+    // docker-compose.yml sets APP_URL=http://localhost:3000 and compose
+    // merges it into the prod container; AUTH_URL names the public host.
+    const prod = {
+      NODE_ENV: 'production',
+      APP_URL: 'http://localhost:3000',
+      AUTH_URL: 'https://discover.example.com',
+    };
+    expect(configuredAppOrigin(prod)?.href).toBe('https://discover.example.com/');
+    expect(appOrigin(prod).href).toBe('https://discover.example.com/');
+    expect(appUrl('/settings/billing?stripe=success', { env: prod })).toBe(
+      'https://discover.example.com/settings/billing?stripe=success',
+    );
+    // Outside production too, a real configured origin wins.
+    const mixed = { APP_URL: 'http://127.0.0.1:3000', NEXTAUTH_URL: 'https://a.example.com' };
+    expect(configuredAppOrigin(mixed)?.href).toBe('https://a.example.com/');
+    // In production a lone loopback value is ignored: the request's origin is used.
+    const lone = { NODE_ENV: 'production', APP_URL: 'http://localhost:3000' };
+    expect(configuredAppOrigin(lone)).toBeNull();
+    expect(
+      appUrl('/onboarding', {
+        env: lone,
+        headers: headersOf({
+          host: '127.0.0.1:3001',
+          'x-forwarded-host': 'discover.example.com',
+          'x-forwarded-proto': 'https',
+        }),
+      }),
+    ).toBe('https://discover.example.com/onboarding');
+    // In development a loopback value gives way to a real request host,
+    // and is kept over a loopback one.
+    const dev = { APP_URL: 'http://[::1]:3000' };
+    expect(appUrl('/x', { env: dev, headers: headersOf({ host: 'preview.example.com' }) })).toBe(
+      'https://preview.example.com/x',
+    );
+    expect(appUrl('/x', { env: dev, headers: headersOf({ host: 'localhost:3200' }) })).toBe(
+      'http://[::1]:3000/x',
+    );
   });
 
   it('reads the first proxy hop and refuses a host that is not one', () => {
