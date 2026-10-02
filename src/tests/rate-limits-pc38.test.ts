@@ -34,8 +34,8 @@ import {
   PostgresRateLimitStore,
   RateLimiter,
   _resetRateLimitsForTests,
-  rateLimitAllow,
   rateLimitCheck,
+  retryAfterHeaders,
   type RateLimitStore,
 } from '@/lib/rate-limit';
 import { RETENTION_POLICIES } from '@/lib/services/retention';
@@ -124,6 +124,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** One check through a limiter instance: was it let in? */
+async function allowed(l: RateLimiter, key: string, limit: number, windowMs: number) {
+  return (await l.check(key, limit, windowMs)).allowed;
+}
+
 afterAll(async () => {
   await (db.$client as unknown as { end: () => Promise<void> }).end();
 });
@@ -133,8 +138,8 @@ afterAll(async () => {
 describe('the limiter state lives in Postgres (PC-38 (1))', () => {
   it('two limiter instances share one window: a "restarted" process sees the old count', async () => {
     const before = new RateLimiter(new PostgresRateLimitStore());
-    for (let i = 0; i < 3; i++) expect(await before.allow('t:restart', 3, 60_000)).toBe(true);
-    expect(await before.allow('t:restart', 3, 60_000)).toBe(false);
+    for (let i = 0; i < 3; i++) expect(await allowed(before, 't:restart', 3, 60_000)).toBe(true);
+    expect(await allowed(before, 't:restart', 3, 60_000)).toBe(false);
 
     // A new process (after a deploy): a fresh instance with fresh memory.
     const after = new RateLimiter(new PostgresRateLimitStore());
@@ -152,19 +157,19 @@ describe('the limiter state lives in Postgres (PC-38 (1))', () => {
   it('the two instances count together while the window is open', async () => {
     const web = new RateLimiter(new PostgresRateLimitStore());
     const worker = new RateLimiter(new PostgresRateLimitStore());
-    expect(await web.allow('t:pair', 4, 60_000)).toBe(true);
-    expect(await worker.allow('t:pair', 4, 60_000)).toBe(true);
-    expect(await web.allow('t:pair', 4, 60_000)).toBe(true);
-    expect(await worker.allow('t:pair', 4, 60_000)).toBe(true);
-    expect(await web.allow('t:pair', 4, 60_000)).toBe(false);
-    expect(await worker.allow('t:pair', 4, 60_000)).toBe(false);
+    expect(await allowed(web, 't:pair', 4, 60_000)).toBe(true);
+    expect(await allowed(worker, 't:pair', 4, 60_000)).toBe(true);
+    expect(await allowed(web, 't:pair', 4, 60_000)).toBe(true);
+    expect(await allowed(worker, 't:pair', 4, 60_000)).toBe(true);
+    expect(await allowed(web, 't:pair', 4, 60_000)).toBe(false);
+    expect(await allowed(worker, 't:pair', 4, 60_000)).toBe(false);
   });
 
   it('concurrent checks across instances let exactly `limit` through', async () => {
     const a = new RateLimiter(new PostgresRateLimitStore());
     const b = new RateLimiter(new PostgresRateLimitStore());
     const results = await Promise.all(
-      Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? a : b).allow('t:race', 5, 60_000)),
+      Array.from({ length: 20 }, (_, i) => allowed(i % 2 === 0 ? a : b, 't:race', 5, 60_000)),
     );
     expect(results.filter(Boolean)).toHaveLength(5);
     expect((await bucket('t:race'))?.count).toBe(5);
@@ -172,34 +177,48 @@ describe('the limiter state lives in Postgres (PC-38 (1))', () => {
 
   it('a rejected request is not counted, and a new window opens when the old one ends', async () => {
     const l = new RateLimiter(new PostgresRateLimitStore());
-    expect(await l.allow('t:window', 2, 400)).toBe(true);
-    expect(await l.allow('t:window', 2, 400)).toBe(true);
-    for (let i = 0; i < 5; i++) expect(await l.allow('t:window', 2, 400)).toBe(false);
+    expect(await allowed(l, 't:window', 2, 400)).toBe(true);
+    expect(await allowed(l, 't:window', 2, 400)).toBe(true);
+    for (let i = 0; i < 5; i++) expect(await allowed(l, 't:window', 2, 400)).toBe(false);
     expect((await bucket('t:window'))?.count).toBe(2);
     await sleep(450);
-    expect(await l.allow('t:window', 2, 400)).toBe(true);
+    expect(await allowed(l, 't:window', 2, 400)).toBe(true);
     expect((await bucket('t:window'))?.count).toBe(1);
   });
 
   it('keys are independent', async () => {
-    expect(await rateLimitAllow('t:a', 1, 60_000)).toBe(true);
-    expect(await rateLimitAllow('t:a', 1, 60_000)).toBe(false);
-    expect(await rateLimitAllow('t:b', 1, 60_000)).toBe(true);
+    expect((await rateLimitCheck('t:a', 1, 60_000)).allowed).toBe(true);
+    expect((await rateLimitCheck('t:a', 1, 60_000)).allowed).toBe(false);
+    expect((await rateLimitCheck('t:b', 1, 60_000)).allowed).toBe(true);
   });
 
-  it('the module functions use the shared table and say how long to wait', async () => {
-    expect(await rateLimitAllow('t:module', 1, 120_000)).toBe(true);
+  it('the module function uses the shared table and says how long to wait', async () => {
+    expect(await rateLimitCheck('t:module', 1, 120_000)).toEqual({ allowed: true, retryAfterMs: 0 });
     expect(await bucket('t:module')).not.toBeNull();
     const d = await rateLimitCheck('t:module', 1, 120_000);
     expect(d.allowed).toBe(false);
     expect(d.retryAfterMs).toBeGreaterThan(110_000);
+    expect(Number(retryAfterHeaders(d)['Retry-After'])).toBeGreaterThan(110);
+    expect(retryAfterHeaders({ retryAfterMs: 0 })).toEqual({ 'Retry-After': '1' });
+    expect(retryAfterHeaders({ retryAfterMs: 1001 })).toEqual({ 'Retry-After': '2' });
+  });
+
+  it('a call written the synchronous way does not compile (review: a Promise is always truthy)', () => {
+    // Never called: this is a typecheck assertion (`pnpm typecheck` covers
+    // the tests). If rateLimitCheck ever answered a bare boolean Promise
+    // again, `!rateLimitCheck(...)` would compile and never limit; reading
+    // `.allowed` off the un-awaited Promise is a type error instead.
+    const staleCallSite = () =>
+      // @ts-expect-error -- .allowed is not a property of Promise<RateLimitDecision>
+      rateLimitCheck('t:stale', 1, 1000).allowed;
+    expect(typeof staleCallSite).toBe('function');
   });
 
   it('rejects malformed input instead of writing a bad row', async () => {
-    await expect(rateLimitAllow('', 1, 1000)).rejects.toThrow();
-    await expect(rateLimitAllow('t:x', 0, 1000)).rejects.toThrow();
-    await expect(rateLimitAllow('t:x', 1, 0)).rejects.toThrow();
-    await expect(rateLimitAllow('k'.repeat(201), 1, 1000)).rejects.toThrow();
+    await expect(rateLimitCheck('', 1, 1000)).rejects.toThrow();
+    await expect(rateLimitCheck('t:x', 0, 1000)).rejects.toThrow();
+    await expect(rateLimitCheck('t:x', 1, 0)).rejects.toThrow();
+    await expect(rateLimitCheck('k'.repeat(201), 1, 1000)).rejects.toThrow();
   });
 
   it('the CHECK constraints guard the table for any writer', async () => {
@@ -222,9 +241,9 @@ describe('the limiter state lives in Postgres (PC-38 (1))', () => {
     };
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const l = new RateLimiter(broken);
-    expect(await l.allow('t:down', 2, 60_000)).toBe(true);
-    expect(await l.allow('t:down', 2, 60_000)).toBe(true);
-    expect(await l.allow('t:down', 2, 60_000)).toBe(false);
+    expect(await allowed(l, 't:down', 2, 60_000)).toBe(true);
+    expect(await allowed(l, 't:down', 2, 60_000)).toBe(true);
+    expect(await allowed(l, 't:down', 2, 60_000)).toBe(false);
     // Logged once, not per request.
     expect(errors).toHaveBeenCalledTimes(1);
     expect(String(errors.mock.calls[0]?.[0])).toMatch(/limiting in-process/);
@@ -273,6 +292,7 @@ describe('the API thresholds are unchanged (PC-38 (4))', { timeout: 120_000 }, (
     const res = await assistantPOST(post('/api/assistant', { question: 'one more' }));
     expect(res.status).toBe(429);
     expect((await res.json()).error).toBe('rate_limited');
+    expect(res.headers.get('Retry-After')).toMatch(/^\d+$/);
     expect((await bucket(`assistant:user:${w.ownerId}`))?.count).toBe(10);
   });
 
@@ -294,6 +314,8 @@ describe('the API thresholds are unchanged (PC-38 (4))', { timeout: 120_000 }, (
     expect(res.status).toBe(429);
     const ws = await bucket(`assistant:ws:${w.workspaceId}`);
     expect(ws?.count).toBe(20);
+    // The workspace said no first: m2's own window was never opened.
+    expect(await bucket(`assistant:user:${m2}`)).toBeNull();
     expect(ws!.expiresAt.getTime() - ws!.windowStart.getTime()).toBe(60_000);
   });
 
@@ -311,6 +333,10 @@ describe('the API thresholds are unchanged (PC-38 (4))', { timeout: 120_000 }, (
       post('/api/translate', { body: 'hello', targetLanguage: 'de' }),
     );
     expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: 'rate_limited' });
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThanOrEqual(1);
+    expect(Number(res.headers.get('Retry-After'))).toBeLessThanOrEqual(60);
+    // A rejected request is not counted.
     expect((await bucket(`translate:ws:${w.workspaceId}`))?.count).toBe(30);
   });
 
@@ -327,6 +353,9 @@ describe('the API thresholds are unchanged (PC-38 (4))', { timeout: 120_000 }, (
     }
     const res = await suggestReplyPOST(post('/api/communication/suggest-reply', { threadId: '1' }));
     expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: 'rate_limited' });
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThanOrEqual(1);
+    expect(Number(res.headers.get('Retry-After'))).toBeLessThanOrEqual(60);
     expect((await bucket(`suggest-reply:ws:${w.workspaceId}`))?.count).toBe(20);
   });
 
@@ -336,7 +365,7 @@ describe('the API thresholds are unchanged (PC-38 (4))', { timeout: 120_000 }, (
     signIn(w.ownerId);
     // Ten questions counted by "the old process" straight into the table.
     const old = new RateLimiter(new PostgresRateLimitStore());
-    for (let i = 0; i < 10; i++) await old.allow(`assistant:user:${w.ownerId}`, 10, 60_000);
+    for (let i = 0; i < 10; i++) await allowed(old, `assistant:user:${w.ownerId}`, 10, 60_000);
     const res = await assistantPOST(post('/api/assistant', { question: 'after the deploy' }));
     expect(res.status).toBe(429);
   });

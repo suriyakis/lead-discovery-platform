@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { authErrorToResponse } from '@/lib/services/http';
-import { rateLimitAllow } from '@/lib/rate-limit';
+import { rateLimitCheck, retryAfterHeaders } from '@/lib/rate-limit';
 import {
   SignatureServiceError,
   redesignSignatureHtml,
@@ -65,10 +65,11 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // PC-38: every redesign is an AI call; cap it per workspace like the
   // other AI routes (shared windows, src/lib/rate-limit.ts).
-  if (!(await rateLimitAllow(`signature-redesign:ws:${ctx.workspaceId}`, 10, 60_000))) {
+  const limit = await rateLimitCheck(`signature-redesign:ws:${ctx.workspaceId}`, 10, 60_000);
+  if (!limit.allowed) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many redesigns — try again in a minute.' },
-      { status: 429 },
+      { status: 429, headers: retryAfterHeaders(limit) },
     );
   }
 

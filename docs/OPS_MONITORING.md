@@ -348,7 +348,8 @@ Postgres:
   `/api/assistant` 20 a minute per workspace and 10 per user,
   `/api/translate` 30 and `/api/communication/suggest-reply` 20 a minute
   per workspace (unchanged), `/api/signatures/redesign` 10 a minute per
-  workspace (new). Over the limit: 429 `rate_limited`. If the database is
+  workspace (new). Over the limit: 429 `rate_limited` with `Retry-After`
+  (seconds until the window ends). If the database is
   unreachable the limiter falls back to an in-process window and logs
   `[rate-limit] postgres store unavailable` once a minute.
 - **AI buttons** (`src/lib/services/action-guards.ts`): each start counts

@@ -1,11 +1,11 @@
 // PC-38 (I184, X10): the shared rate limiter.
 //
 // A fixed window per key: at most `limit` requests per `windowMs`; the
-// first request after the window ends opens a new one. Callers keep the
-// same three arguments as before (rateLimitAllow(key, limit, windowMs)),
-// but the answer is now a Promise, because the state lives in Postgres
-// (rate_limit_buckets, schema/rate-limits.ts) instead of a Map in the web
-// process:
+// first request after the window ends opens a new one. The check takes the
+// same three arguments as the old synchronous rateLimitAllow(key, limit,
+// windowMs), but it is rateLimitCheck now and answers a Promise of a
+// decision, because the state lives in Postgres (rate_limit_buckets,
+// schema/rate-limits.ts) instead of a Map in the web process:
 //
 //   - a deploy or a restart no longer hands every key a fresh quota;
 //   - the web server and the worker process count against the same window
@@ -23,6 +23,14 @@
 // algorithm) for that check and logs it at most once a minute, so a flood
 // during an outage is still capped per process. The request itself will
 // most likely fail on its own database work anyway.
+//
+// Why the old name is gone (review of PC-38): a boolean Promise is always
+// truthy, so a call written the synchronous way — `if (!rateLimitAllow(…))`
+// — compiled cleanly and never limited (TypeScript raises nothing for a
+// negated Promise, and lint has no type-aware no-misused-promises). The
+// answer is an object now: forgetting the await reads `.allowed` off a
+// Promise, which does not compile, and a call site of the old name (another
+// lane, a bad merge) fails the typecheck instead of turning the limiter off.
 //
 // Keys: '<area>:<scope>:<id>', e.g. 'assistant:ws:12', 'assistant:user:u1',
 // 'action:learning.synthesize:ws:12' (services/action-guards.ts). Callers
@@ -178,10 +186,6 @@ export class RateLimiter {
     }
   }
 
-  async allow(key: string, limit: number, windowMs: number): Promise<boolean> {
-    return (await this.check(key, limit, windowMs)).allowed;
-  }
-
   async reset(): Promise<void> {
     await Promise.all([this.store.reset(), this.fallback.reset()]);
   }
@@ -196,23 +200,25 @@ function limiter(): RateLimiter {
 
 /**
  * Is the caller identified by `key` within `limit` requests per
- * `windowMs`? Counts the request when it is. False means reject (429).
+ * `windowMs`? Counts the request when it is. `allowed: false` means
+ * reject (429), and `retryAfterMs` says for how long.
+ *
+ *   const limit = await rateLimitCheck(`translate:ws:${id}`, 30, 60_000);
+ *   if (!limit.allowed) return tooManyRequests(…, retryAfterHeaders(limit));
  */
-export async function rateLimitAllow(
-  key: string,
-  limit: number,
-  windowMs: number,
-): Promise<boolean> {
-  return limiter().allow(key, limit, windowMs);
-}
-
-/** rateLimitAllow, plus how long a rejected caller should wait. */
 export async function rateLimitCheck(
   key: string,
   limit: number,
   windowMs: number,
 ): Promise<RateLimitDecision> {
   return limiter().check(key, limit, windowMs);
+}
+
+/** The Retry-After header of a 429 (whole seconds, at least 1). */
+export function retryAfterHeaders(decision: Pick<RateLimitDecision, 'retryAfterMs'>): {
+  'Retry-After': string;
+} {
+  return { 'Retry-After': String(Math.max(1, Math.ceil(decision.retryAfterMs / 1000))) };
 }
 
 /** Test seam: empty every window (the table and the fallback). */
