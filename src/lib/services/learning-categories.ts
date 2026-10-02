@@ -8,7 +8,7 @@
 //   - whether the manual form offers it (manualCreatable),
 //   - which code actually consumes it (consumers).
 //
-// Retrieval (resolveCategoriesForTask), both extractors, the synthesis
+// Retrieval (resolveCategoriesForTask), the decision extractor, the synthesis
 // prompt, the /learning forms and the qualification prompt's PREFER/AVOID
 // marks all derive from here. Before this registry a lesson could live in
 // a category no prompt ever read (I038: manual lessons defaulted to
@@ -285,7 +285,8 @@ export function resolveLessonPolarity(
 }
 
 /**
- * Polarity for a rule an extractor produced (AI or heuristic). Fixed
+ * Polarity for a rule whose direction the caller did not fix (the manual
+ * form, synthesis). Fixed
  * categories get theirs; an allowed explicit choice wins; otherwise an
  * avoid-verb in the text makes it AVOID where the category allows that,
  * and anything else gets the category default. Never trusts the text over

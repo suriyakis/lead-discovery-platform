@@ -6,7 +6,7 @@
 //     that does not exist);
 //   - retrieval categories are derived from it (general_instruction reaches
 //     classification and outreach, reply_quality reaches replies — I038);
-//   - neither extractor can emit a removed category.
+//   - the decision extractor (KL-03) can never emit a removed category.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -29,11 +29,12 @@ import {
   resolveLessonPolarity,
   type LessonConsumerId,
 } from '@/lib/services/learning-categories';
+import { resolveCategoriesForTask } from '@/lib/services/learning';
 import {
-  EXTRACTOR_SYSTEM_PROMPT,
-  extractLessonHeuristic,
-  resolveCategoriesForTask,
-} from '@/lib/services/learning';
+  allowedCategories,
+  buildExtractionSystemPrompt,
+  validateExtraction,
+} from '@/lib/services/learning-extraction';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -189,38 +190,36 @@ describe('polarity', () => {
   });
 });
 
-describe('extractors never emit a removed category', () => {
-  it('the AI extractor prompt only lists registry categories', () => {
-    for (const removed of REMOVED_LESSON_CATEGORIES) {
-      expect(EXTRACTOR_SYSTEM_PROMPT).not.toContain(removed);
+describe('the decision extractor never emits a removed category', () => {
+  it('its prompt only lists registry categories, filtered to the decision polarity', () => {
+    for (const polarities of [[1], [-1], [1, -1], [1, -1, 0]] as const) {
+      const prompt = buildExtractionSystemPrompt([...polarities]);
+      for (const removed of REMOVED_LESSON_CATEGORIES) expect(prompt).not.toContain(removed);
+      for (const c of allowedCategories([...polarities])) expect(prompt).toContain(`- ${c}:`);
     }
-    for (const c of LESSON_CATEGORIES) expect(EXTRACTOR_SYSTEM_PROMPT).toContain(`- ${c}:`);
+    const rejection = buildExtractionSystemPrompt([-1]);
+    expect(rejection).not.toContain('- qualification_positive:');
+    expect(rejection).toContain('- qualification_negative:');
+    expect(buildExtractionSystemPrompt([1, -1, 0])).toContain('- outreach_style:');
   });
 
-  it('the heuristic no longer produces dedupe_hint or connector_quality', () => {
-    const formerlyRemoved = [
-      'this is a duplicate of a company we already have',
-      'same company as the one from yesterday, merge it',
-      'the source is noisy and outdated',
-      'this directory is low quality',
-    ];
-    for (const comment of formerlyRemoved) {
-      const draft = extractLessonHeuristic(comment);
-      if (draft) {
-        expect(REMOVED_LESSON_CATEGORIES as readonly string[]).not.toContain(draft.category);
-        expect(isLessonCategory(draft.category)).toBe(true);
+  it('an answer naming a removed or unknown category is no rule', () => {
+    for (const category of [...REMOVED_LESSON_CATEGORIES, 'totally_made_up']) {
+      const v = validateExtraction(
+        { category, rule: 'Merge the same company across sources.', polarity: 'avoid', confidence: 90 },
+        { polarities: [-1], note: 'same company as one we already have' },
+        [],
+      );
+      expect(v).toEqual({ kind: 'rejected', reason: 'category_not_allowed' });
+      expect(isLessonCategory(category)).toBe(false);
+    }
+  });
+
+  it('every allowed category can carry the decision polarity', () => {
+    for (const p of [1, -1] as const) {
+      for (const c of allowedCategories([p])) {
+        expect(LESSON_CATEGORY_REGISTRY[c].polarity.allowed as readonly number[]).toContain(p);
       }
     }
-  });
-
-  it('heuristic drafts carry a polarity consistent with their category', () => {
-    const neg = extractLessonHeuristic("don't target councils");
-    expect(neg?.category).toBe('qualification_negative');
-    expect(neg?.polarity).toBe(-1);
-    const sector = extractLessonHeuristic('construction sector buys these');
-    expect(sector?.category).toBe('sector_preference');
-    expect(sector?.polarity).toBe(1);
-    const style = extractLessonHeuristic('the tone is too formal here');
-    expect(style?.polarity).toBe(0);
   });
 });

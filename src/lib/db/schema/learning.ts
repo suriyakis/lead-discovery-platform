@@ -17,6 +17,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -65,14 +66,19 @@ export const OPERATOR_VERDICTS = ['fit', 'not_fit'] as const;
 export type OperatorVerdict = (typeof OPERATOR_VERDICTS)[number];
 
 /** Outbox state of a decision event. Written as 'pending' in the same
- *  transaction as the state change; learning.process claims it.
+ *  transaction as the state change; learning.process claims it
+ *  (KL-03, src/lib/services/learning-processor.ts).
  *   - pending / processing: waiting for, or claimed by, learning.process
  *   - done:      a rule was created or strengthened from it
- *   - no_rule:   processed; nothing reusable to learn
- *   - below_floor / skipped_no_tokens: reserved for the KL-03 processor
+ *   - no_rule:   processed; nothing reusable to learn (processing_note
+ *                says why)
+ *   - below_floor: the extractor was less than 50 % sure — no rule
+ *   - skipped_no_tokens: needs an AI extraction but the wallet is empty
+ *                or no AI provider is set; the sweeper re-queues it once
+ *                both are back
  *   - skipped:   never processed by design (autopilot/system events, or
  *                voided before processing)
- *   - failed:    gave up after the retry budget */
+ *   - failed:    gave up after the retry budget (5 attempts) */
 export const LEARNING_PROCESSING_STATUSES = [
   'pending',
   'processing',
@@ -210,6 +216,15 @@ export const learningEvents = pgTable(
     nextAttemptAt: timestamp('next_attempt_at', { mode: 'date', withTimezone: true }),
     lastError: text('last_error'),
     processedAt: timestamp('processed_at', { mode: 'date', withTimezone: true }),
+    /** KL-03: when learning.process claimed the row ('processing'). It is
+     *  also the claim token: a worker only writes rows still carrying the
+     *  claimed_at it set, and the sweeper releases claims older than 10
+     *  minutes (a killed worker). */
+    claimedAt: timestamp('claimed_at', { mode: 'date', withTimezone: true }),
+    /** KL-03: why the processor closed the row the way it did — a short
+     *  code (learning-processor.ts LEARNING_PROCESSING_NOTES), read by the
+     *  decision receipt. */
+    processingNote: text('processing_note'),
     // ---- KL-02: supersession ----
     voidedAt: timestamp('voided_at', { mode: 'date', withTimezone: true }),
     voidedByEventId: bigint('voided_by_event_id', { mode: 'bigint' }),
@@ -252,6 +267,14 @@ export const learningEvents = pgTable(
     outboxIdx: index('learning_events_outbox_idx')
       .on(table.processingStatus, table.nextAttemptAt)
       .where(sql`${table.processingStatus} IN ('pending', 'processing')`),
+    /** KL-03: the sweeper's "waiting for tokens" pass, per workspace. */
+    waitingTokensIdx: index('learning_events_waiting_tokens_idx')
+      .on(table.workspaceId)
+      .where(sql`${table.processingStatus} = 'skipped_no_tokens'`),
+    /** KL-03: supersession looks up the events a claimed event voided. */
+    voidedByIdx: index('learning_events_voided_by_idx')
+      .on(table.voidedByEventId)
+      .where(sql`${table.voidedByEventId} IS NOT NULL`),
     originCheck: check(
       'learning_events_origin_check',
       sql`${table.origin} IN (${sqlList(DECISION_ORIGINS)})`,
@@ -350,7 +373,11 @@ export const learningLessons = pgTable(
      *  category come from the category registry. */
     polarity: smallint('polarity').notNull().default(0),
     /** Where this lesson came from:
-     *  - operator:   manual create or extracted from an operator's comment
+     *  - operator:   created by hand on /learning
+     *  - decision:   extracted by learning.process from an operator's
+     *                decision (reason, chips, disagreement or override)
+     *                or review comment (KL-03); evidence_event_ids names
+     *                the decision events
      *  - draft_edit: learned by diffing an AI draft against the operator's edit
      *  - synthesis:  proposed by the weekly self-learning pattern miner */
     source: text('source').notNull().default('operator'),
@@ -459,6 +486,99 @@ export const lessonScopes = pgTable(
   }),
 );
 
+/** KL-03: what moved a rule's confidence.
+ *   - cited:        an operator verdict on a record whose AI verdict cited
+ *                   the rule (+2 when the citation agreed with the verdict,
+ *                   -3 when it opposed it, x the event weight)
+ *   - dedup_match:  a decision's extracted rule repeated this one (+5)
+ *   - compensation: reverses one earlier row exactly (its delta_applied)
+ *                   because that row's event was voided */
+export const LESSON_REINFORCEMENT_KINDS = ['cited', 'dedup_match', 'compensation'] as const;
+export type LessonReinforcementKind = (typeof LESSON_REINFORCEMENT_KINDS)[number];
+
+/**
+ * KL-03: the reinforcement ledger. Every confidence change a decision
+ * causes is one row, written in the same transaction as the confidence
+ * update, so the ledger always explains the number:
+ *
+ *   - idempotent: at most one forward row per (event, rule) — the partial
+ *     UNIQUE(event_id, lesson_id) — so a re-run job never moves a rule
+ *     twice for the same decision;
+ *   - exact: delta_applied is what really changed after the 5..95 bounds,
+ *     so a compensation (event voided: changed mind, undo, autopilot
+ *     override) restores the previous confidence exactly, clamped cases
+ *     included; each forward row is compensated at most once
+ *     (UNIQUE(compensates_id)).
+ */
+export const lessonReinforcements = pgTable(
+  'lesson_reinforcements',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    workspaceId: bigint('workspace_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    lessonId: bigint('lesson_id', { mode: 'bigint' }).notNull(),
+    /** The decision event behind the change (for a compensation: the
+     *  voided event whose earlier row it reverses). */
+    eventId: bigint('event_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => learningEvents.id, { onDelete: 'cascade' }),
+    kind: text('kind', { enum: LESSON_REINFORCEMENT_KINDS }).notNull(),
+    /** The step asked for (e.g. +2, -3, +5, or minus a row's delta_applied). */
+    deltaRequested: smallint('delta_requested').notNull(),
+    /** The step actually applied after the bounds; 0 when bounded out. */
+    deltaApplied: smallint('delta_applied').notNull(),
+    confidenceBefore: smallint('confidence_before').notNull(),
+    confidenceAfter: smallint('confidence_after').notNull(),
+    /** The forward row a compensation reverses. */
+    compensatesId: bigint('compensates_id', { mode: 'bigint' }),
+    /** e.g. cited_agrees, cited_opposes, dedup_match, void:changed_mind. */
+    reason: text('reason').notNull(),
+    createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    /** Composite on workspace_id: a ledger row can only move a rule of
+     *  its own workspace. */
+    lessonFk: foreignKey({
+      name: 'lesson_reinforcements_lesson_fk',
+      columns: [table.workspaceId, table.lessonId],
+      foreignColumns: [learningLessons.workspaceId, learningLessons.id],
+    }).onDelete('cascade'),
+    compensatesFk: foreignKey({
+      name: 'lesson_reinforcements_compensates_fk',
+      columns: [table.compensatesId],
+      foreignColumns: [table.id],
+    }).onDelete('cascade'),
+    /** One forward row per (event, rule): the idempotency key. */
+    eventLessonUnique: uniqueIndex('lesson_reinforcements_event_lesson_unique')
+      .on(table.eventId, table.lessonId)
+      .where(sql`${table.compensatesId} IS NULL`),
+    compensatesUnique: unique('lesson_reinforcements_compensates_unique').on(table.compensatesId),
+    /** Receipts and compensation read an event's rows of every kind. */
+    eventIdx: index('lesson_reinforcements_event_idx').on(table.eventId),
+    lessonIdx: index('lesson_reinforcements_ws_lesson_idx').on(
+      table.workspaceId,
+      table.lessonId,
+      table.createdAt,
+    ),
+    kindCheck: check(
+      'lesson_reinforcements_kind_check',
+      sql`${table.kind} IN (${sqlList(LESSON_REINFORCEMENT_KINDS)})`,
+    ),
+    /** A compensation, and only a compensation, points at the row it reverses. */
+    compensationCheck: check(
+      'lesson_reinforcements_compensation_check',
+      sql`(${table.kind} = 'compensation') = (${table.compensatesId} IS NOT NULL)`,
+    ),
+    confidenceCheck: check(
+      'lesson_reinforcements_confidence_check',
+      sql`${table.confidenceBefore} BETWEEN 0 AND 100 AND ${table.confidenceAfter} BETWEEN 0 AND 100 AND ${table.confidenceAfter} - ${table.confidenceBefore} = ${table.deltaApplied}`,
+    ),
+  }),
+);
+
 export type LearningDecision = typeof learningDecisions.$inferSelect;
 export type NewLearningDecision = typeof learningDecisions.$inferInsert;
 export type LearningEvent = typeof learningEvents.$inferSelect;
@@ -466,6 +586,8 @@ export type NewLearningEvent = typeof learningEvents.$inferInsert;
 export type LearningLesson = typeof learningLessons.$inferSelect;
 export type NewLearningLesson = typeof learningLessons.$inferInsert;
 export type LessonScope = typeof lessonScopes.$inferSelect;
+export type LessonReinforcement = typeof lessonReinforcements.$inferSelect;
+export type NewLessonReinforcement = typeof lessonReinforcements.$inferInsert;
 export type LessonScopeKind = (typeof lessonScopeKind.enumValues)[number];
 export type LessonLifecycle = (typeof lessonLifecycle.enumValues)[number];
 export type LessonRetiredReason = (typeof lessonRetiredReason.enumValues)[number];

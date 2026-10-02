@@ -104,6 +104,8 @@ function recordSnapshot(sr: SourceRecord, quals: ReviewQualSnapshot[]): Decision
       quals.find((q) => q.qualification.inferredCountry)?.qualification.inferredCountry ?? null,
     geoStatus: geo ?? null,
     evidenceQuality: text(nd.body) ? 'body' : text(nd.snippet) ? 'snippet' : 'domain_only',
+    // Untrusted record text: the rule extractor fences it as DATA (KL-03).
+    snippet: text(nd.snippet)?.slice(0, 600) ?? null,
   };
 }
 
@@ -115,6 +117,22 @@ function lessonIdStrings(v: unknown): string[] {
     : [];
 }
 
+/** KL-04's citations with their direction (evidence.citedLessons items
+ *  shaped {id, effect}); anything else is dropped. */
+function citedWithEffect(v: unknown): Array<{ id: string; effect: 'toward_fit' | 'against_fit' }> {
+  if (!Array.isArray(v)) return [];
+  const out: Array<{ id: string; effect: 'toward_fit' | 'against_fit' }> = [];
+  for (const c of v) {
+    if (!c || typeof c !== 'object') continue;
+    const { id, effect } = c as { id?: unknown; effect?: unknown };
+    const idStr = typeof id === 'bigint' ? id.toString() : id;
+    if (typeof idStr !== 'string' || !/^\d{1,19}$/.test(idStr)) continue;
+    if (effect !== 'toward_fit' && effect !== 'against_fit') continue;
+    out.push({ id: idStr, effect });
+  }
+  return out;
+}
+
 function productSnapshot(qs: ReviewQualSnapshot): DecisionProductSnapshot {
   const q = qs.qualification;
   const ev = (q.evidence ?? {}) as { matchedLessonIds?: unknown; citedLessons?: unknown };
@@ -123,6 +141,7 @@ function productSnapshot(qs: ReviewQualSnapshot): DecisionProductSnapshot {
         ev.citedLessons.map((c) => (c && typeof c === 'object' ? (c as { id?: unknown }).id : c)),
       )
     : [];
+  const citedLessons = citedWithEffect(ev.citedLessons);
   const reason =
     (q.isRelevant ? q.qualificationReason : (q.rejectionReason ?? q.qualificationReason)) ?? null;
   return {
@@ -137,6 +156,7 @@ function productSnapshot(qs: ReviewQualSnapshot): DecisionProductSnapshot {
       reason: reason ? reason.slice(0, 300) : null,
       matchedLessonIds: lessonIdStrings(ev.matchedLessonIds),
       citedLessonIds: cited,
+      ...(citedLessons.length > 0 ? { citedLessons } : {}),
     },
     priorVerdict: q.operatorVerdict ?? null,
   };

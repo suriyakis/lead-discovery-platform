@@ -63,6 +63,12 @@ function sourceLabel(source: string): { label: string; title: string } | null {
         label: '✎ from your edits',
         title: 'Learned by comparing an AI draft with the operator’s edited version',
       };
+    case 'decision':
+      return {
+        label: 'from a decision',
+        title:
+          'Learned in the background from an approve, reject or comment on a review item: its reason, or a disagreement with the AI',
+      };
     default:
       return null; // operator-taught is the norm — no badge noise
   }

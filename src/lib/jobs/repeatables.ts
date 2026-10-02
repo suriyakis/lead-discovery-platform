@@ -14,6 +14,11 @@
 //                                          workspace with followUpEnabled,
 //                                          process pending follow-ups whose
 //                                          scheduled_for has passed.
+//   learning.sweep         every 2 min  → KL-03: the learning outbox's
+//                                          sweeper (stale claims, lost jobs,
+//                                          backoff retries, events waiting
+//                                          for tokens, missed compensations)
+//                                          — runLearningSweep.
 //
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
@@ -33,6 +38,11 @@ import { processDueCrawlPlans } from '@/lib/services/crawl-engine';
 import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
+import {
+  LEARNING_SWEEP_JOB,
+  LEARNING_SWEEP_TICK_MS,
+  runLearningSweep,
+} from '@/lib/services/learning-processor';
 import { processDueHealthChecks } from '@/lib/services/health-check';
 import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
 import { getJobQueue, type JobHandler } from './index';
@@ -355,6 +365,9 @@ const handleHealthCheckTick: JobHandler = async () => {
   return processDueHealthChecks();
 };
 
+/** KL-03: per-workspace errors are caught inside runLearningSweep. */
+const handleLearningSweepTick: JobHandler = () => runLearningSweep();
+
 let registered = false;
 
 /**
@@ -375,6 +388,7 @@ export async function registerRepeatableJobs(
   q.on('mail.trash.purge.tick', handleMailTrashPurgeTick);
   q.on('crawl.engine.tick', handleCrawlEngineTick);
   q.on('health.check.tick', handleHealthCheckTick);
+  q.on(LEARNING_SWEEP_JOB, handleLearningSweepTick);
   if (!options.skipSchedule) {
     await q.enqueueRepeatable('autopilot.tick', {}, {
       everyMs: AUTOPILOT_TICK_MS,
@@ -407,6 +421,10 @@ export async function registerRepeatableJobs(
     await q.enqueueRepeatable('health.check.tick', {}, {
       everyMs: HEALTH_CHECK_TICK_MS,
       jobId: 'health-check-tick',
+    });
+    await q.enqueueRepeatable(LEARNING_SWEEP_JOB, {}, {
+      everyMs: LEARNING_SWEEP_TICK_MS,
+      jobId: 'learning-sweep',
     });
   }
   registered = true;

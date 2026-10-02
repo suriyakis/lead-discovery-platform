@@ -17,20 +17,19 @@
 //     (overrides_autopilot, void_reason 'autopilot_override').
 //
 // Operator events are written 'pending' — the outbox. After the commit the
-// caller enqueues learning.process {decisionId}; processDecision() claims
-// the pending events by a conditional UPDATE and learns from them: ONE rule
-// extraction per decision whatever the number of products (I032), and the
-// verdict reinforcement of the rules the AI used. Autopilot and system
-// events are written 'skipped': machines never teach (I034).
-//
-// KL-03 hardens the processor (sweeper, backoff, ledger, compensation of
-// voided events, validated extraction); the contract above stays.
+// caller enqueues learning.process {decisionId}; the processor
+// (learning-processor.ts, KL-03) claims the pending events by a conditional
+// UPDATE and learns from them: ONE rule extraction per decision whatever
+// the number of products (I032), the reinforcement ledger for the rules the
+// AI cited, and the compensation of the events this decision voided. A
+// sweeper re-drives lost jobs, retries failures with backoff and resumes
+// events that waited for tokens. Autopilot and system events are written
+// 'skipped': machines never teach (I034).
 
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
-import { productProfiles } from '@/lib/db/schema/products';
 import {
   DECISION_ORIGINS,
   OPERATOR_VERDICTS,
@@ -43,14 +42,7 @@ import {
   type OperatorVerdict,
 } from '@/lib/db/schema/learning';
 import type { WorkspaceContext } from './context';
-import {
-  prepareLessonFromText,
-  reinforceLessonsForVerdict,
-  scheduleLessonEmbedding,
-  writePreparedLesson,
-  type LearningTx,
-  type LessonScopeInput,
-} from './learning';
+import type { LearningTx } from './learning';
 
 export type { DecisionOrigin, OperatorVerdict } from '@/lib/db/schema/learning';
 
@@ -129,6 +121,12 @@ const ProductAiSchema = z.object({
   matchedLessonIds: z.array(z.string()),
   /** KL-04's cited rules, when the verdict carries them. */
   citedLessonIds: z.array(z.string()),
+  /** KL-04's citations with their direction, when the verdict carries
+   *  them. Without an effect the processor reads it from the rule's
+   *  polarity (a PREFER rule argues toward_fit, an AVOID rule against). */
+  citedLessons: z
+    .array(z.object({ id: z.string(), effect: z.enum(['toward_fit', 'against_fit']) }))
+    .optional(),
 });
 
 const ProductSnapshotSchema = z.object({
@@ -152,6 +150,9 @@ const RecordSnapshotSchema = z.object({
   /** How much the verdict could see: a domain name only, a search
    *  snippet, or page body text. */
   evidenceQuality: z.enum(['domain_only', 'snippet', 'body']),
+  /** KL-03: the record's search snippet (≤ 600 chars) as decided on — the
+   *  untrusted record text the rule extractor reads inside its DATA fence. */
+  snippet: z.string().nullable().optional(),
 });
 
 /** learning_events.context (v1). Written by the subject's service (e.g.
@@ -417,8 +418,9 @@ export type LearningProcessPayload = z.infer<typeof LearningProcessPayloadSchema
 /**
  * After the decision's transaction committed: ask learning.process to work
  * the outbox. Best effort — the events are already durable as 'pending',
- * so a lost enqueue only delays learning until the KL-03 sweeper re-drives
- * them. Never throws.
+ * so a lost enqueue only delays learning until learning.sweep re-drives
+ * them (pending rows older than 2 minutes). Never throws, never waits for
+ * the job: no AI call runs inside the operator's request (I108).
  */
 export async function enqueueDecisionProcessing(
   ctx: WorkspaceContext,
@@ -441,7 +443,7 @@ export async function enqueueDecisionProcessing(
   }
 }
 
-// ---- the processor ----------------------------------------------------------------
+// ---- shared with the processor -------------------------------------------------------
 
 /** "@user@example.com" mentions carry no rule — strip them before learning. */
 export function stripMentions(text: string): string {
@@ -451,206 +453,5 @@ export function stripMentions(text: string): string {
     .trim();
 }
 
-/** Shortest note worth an extraction call (matches extractLesson's floor). */
+/** Shortest note worth an extraction call. */
 export const MIN_TEACHABLE_TEXT = 8;
-
-const MAX_ATTEMPTS = 5;
-
-export interface ProcessDecisionResult {
-  claimed: number;
-  lessonId: bigint | null;
-  dedupReinforced: boolean;
-  reinforcedRules: number;
-  statuses: Partial<Record<LearningProcessingStatus, number>>;
-  error: string | null;
-}
-
-function productSnapshot(event: LearningEvent): DecisionProductSnapshot | null {
-  if (event.productProfileId === null) return null;
-  const parsed = DecisionContextSchema.safeParse(event.context);
-  if (!parsed.success) return null;
-  return parsed.data.products.find((p) => p.id === event.productProfileId!.toString()) ?? null;
-}
-
-function ruleIds(ids: readonly string[]): bigint[] {
-  return Array.from(new Set(ids.filter((v) => /^\d{1,19}$/.test(v)))).map((v) => BigInt(v));
-}
-
-/**
- * Work one decision's outbox rows (the learning.process job). Claims the
- * decision's 'pending' events by a conditional UPDATE, so two workers can
- * never process the same event; voided events are closed as 'skipped' and
- * never mined. Then:
- *   1. extraction — the decision's reason (mentions stripped) is extracted
- *      ONCE; the rule is scoped to every product whose verdict points the
- *      rule's way (or workspace-wide for an unscoped event), deduped
- *      against existing rules, and linked to those events ('done'); the
- *      rest are 'no_rule';
- *   2. reinforcement — for each operator product verdict on an AI-method
- *      row, the rules that verdict used move with the verdict's polarity
- *      (rules-fallback rows never reinforce, §5).
- * A failure puts the claimed rows back to 'pending' (or 'failed' after
- * MAX_ATTEMPTS) with last_error; nothing is half-written because the rule
- * and the status update commit together. Never throws.
- */
-export async function processDecision(
-  ctx: WorkspaceContext,
-  decisionId: string,
-): Promise<ProcessDecisionResult> {
-  const result: ProcessDecisionResult = {
-    claimed: 0,
-    lessonId: null,
-    dedupReinforced: false,
-    reinforcedRules: 0,
-    statuses: {},
-    error: null,
-  };
-  const claimed = await db
-    .update(learningEvents)
-    .set({
-      processingStatus: 'processing',
-      attempts: sql`${learningEvents.attempts} + 1`,
-      nextAttemptAt: null,
-    })
-    .where(
-      and(
-        eq(learningEvents.workspaceId, ctx.workspaceId),
-        eq(learningEvents.decisionId, decisionId),
-        eq(learningEvents.processingStatus, 'pending'),
-      ),
-    )
-    .returning();
-  result.claimed = claimed.length;
-  if (claimed.length === 0) return result;
-
-  const count = (status: LearningProcessingStatus, n: number) => {
-    if (n > 0) result.statuses[status] = (result.statuses[status] ?? 0) + n;
-  };
-
-  try {
-    const voided = claimed.filter((e) => e.voidedAt !== null);
-    const live = claimed.filter((e) => e.voidedAt === null && e.origin === 'operator');
-    const machine = claimed.filter((e) => e.voidedAt === null && e.origin !== 'operator');
-
-    // ---- 1. extraction (outside the tx: AI + embedding calls) ----
-    // ONE extraction for the whole decision (I032). The rule's polarity
-    // picks the events it speaks for — on a mixed decision a PREFER rule
-    // belongs to the Fit products — and those events' products are its
-    // scope (any unscoped event makes it workspace-wide).
-    const reason = live.find((e) => e.originalComment)?.originalComment ?? null;
-    const text = reason ? stripMentions(reason) : '';
-    let targets: LearningEvent[] = [];
-    let prepared: Awaited<ReturnType<typeof prepareLessonFromText>> = null;
-    if (live.length > 0 && text.length >= MIN_TEACHABLE_TEXT) {
-      prepared = await prepareLessonFromText(ctx, text, async (draft) => {
-        const same =
-          draft.polarity === 0 ? live : live.filter((e) => e.polarity === draft.polarity);
-        targets = same.length > 0 ? same : live;
-        if (targets.some((e) => e.productProfileId === null)) return { kind: 'workspace' };
-        const wanted = Array.from(new Set(targets.map((e) => e.productProfileId!.toString()))).map(
-          (s) => BigInt(s),
-        );
-        // A product deleted since the decision cannot carry a scope row.
-        const existing = await db
-          .select({ id: productProfiles.id })
-          .from(productProfiles)
-          .where(
-            and(
-              eq(productProfiles.workspaceId, ctx.workspaceId),
-              inArray(productProfiles.id, wanted),
-            ),
-          );
-        const scope: LessonScopeInput | null =
-          existing.length > 0
-            ? { kind: 'products', productProfileIds: existing.map((p) => p.id) }
-            : null;
-        return scope;
-      });
-      if (!prepared) targets = [];
-    }
-
-    // ---- write the rule + close the claimed rows, atomically ----
-    const now = new Date();
-    const targetIds = new Set(targets.map((t) => t.id.toString()));
-    const written = await db.transaction(async (tx) => {
-      const out = prepared
-        ? await writePreparedLesson(
-            tx,
-            ctx,
-            prepared,
-            targets.map((t) => t.id),
-          )
-        : { lesson: null, dedupReinforced: false };
-      const close = async (ids: bigint[], status: LearningProcessingStatus) => {
-        if (ids.length === 0) return;
-        await tx
-          .update(learningEvents)
-          .set({ processingStatus: status, processedAt: now, lastError: null })
-          .where(
-            and(eq(learningEvents.workspaceId, ctx.workspaceId), inArray(learningEvents.id, ids)),
-          );
-        count(status, ids.length);
-      };
-      const linked = out.lesson !== null;
-      await close(
-        live.filter((e) => linked && targetIds.has(e.id.toString())).map((e) => e.id),
-        'done',
-      );
-      await close(
-        live.filter((e) => !(linked && targetIds.has(e.id.toString()))).map((e) => e.id),
-        'no_rule',
-      );
-      await close(
-        [...voided, ...machine].map((e) => e.id),
-        'skipped',
-      );
-      return out;
-    });
-    result.lessonId = written.lesson?.id ?? null;
-    result.dedupReinforced = written.dedupReinforced;
-    if (written.lesson && !written.dedupReinforced) scheduleLessonEmbedding(ctx, written.lesson.id);
-
-    // ---- 2. reinforcement (after commit; never throws) ----
-    for (const verdict of OPERATOR_VERDICTS) {
-      const ids = new Set<string>();
-      for (const e of live) {
-        if (e.verdict !== verdict) continue;
-        const snap = productSnapshot(e);
-        if (!snap?.ai || snap.ai.method !== 'ai') continue;
-        const used =
-          snap.ai.citedLessonIds.length > 0 ? snap.ai.citedLessonIds : snap.ai.matchedLessonIds;
-        for (const id of ruleIds(used)) ids.add(id.toString());
-      }
-      if (ids.size === 0) continue;
-      const r = await reinforceLessonsForVerdict(
-        ctx,
-        [...ids].map((s) => BigInt(s)),
-        verdict,
-        `decision:${decisionId}`,
-      );
-      result.reinforcedRules += r.strengthened.length + r.weakened.length;
-    }
-    return result;
-  } catch (err) {
-    const message = (err instanceof Error ? err.message : String(err)).slice(0, 500);
-    console.error(`[learning-decisions] processing ${decisionId} failed:`, message);
-    result.error = message;
-    // Give the rows back. Exponential backoff for the KL-03 sweeper; after
-    // MAX_ATTEMPTS the event is 'failed'.
-    for (const e of claimed) {
-      const attempts = e.attempts;
-      const giveUp = attempts >= MAX_ATTEMPTS;
-      await db
-        .update(learningEvents)
-        .set({
-          processingStatus: giveUp ? 'failed' : 'pending',
-          lastError: message,
-          nextAttemptAt: giveUp ? null : new Date(Date.now() + 2 ** attempts * 60_000),
-        })
-        .where(and(eq(learningEvents.workspaceId, ctx.workspaceId), eq(learningEvents.id, e.id)))
-        .catch(() => {});
-      count(giveUp ? 'failed' : 'pending', 1);
-    }
-    return result;
-  }
-}

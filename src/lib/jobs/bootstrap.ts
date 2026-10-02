@@ -18,8 +18,8 @@ import {
 import {
   LEARNING_PROCESS_JOB,
   LearningProcessPayloadSchema,
-  processDecision,
 } from '@/lib/services/learning-decisions';
+import { processDecision } from '@/lib/services/learning-processor';
 
 export interface ConnectorRunJobPayload {
   runId: string;
@@ -55,9 +55,12 @@ const handleConnectorRun: JobHandler<ConnectorRunJobPayload> = async (payload) =
 };
 
 /**
- * KL-02: work one decision's learning outbox. The payload is untrusted
- * queue data — validated before use; the decision's events already sit in
- * the database as 'pending', so a malformed or lost job only delays them.
+ * KL-02/KL-03: work one decision's learning outbox (learning-processor.ts).
+ * The payload is untrusted queue data — validated before use; the
+ * decision's events already sit in the database as 'pending', so a
+ * malformed or lost job only delays them until learning.sweep re-drives
+ * them. processDecision never throws: failures are recorded on the events
+ * (backoff, then 'failed'), not left to the queue's own retries.
  */
 const handleLearningProcess: JobHandler = async (payload) => {
   const p = LearningProcessPayloadSchema.parse(payload);

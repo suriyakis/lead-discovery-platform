@@ -1,15 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { _setAIProviderForTests, type IAIProvider } from '@/lib/ai';
 import { db } from '@/lib/db/client';
-import { auditLog } from '@/lib/db/schema/audit';
 import { learningEvents, learningLessons } from '@/lib/db/schema/learning';
 import { productProfiles } from '@/lib/db/schema/products';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import {
   LearningServiceError,
   applyLessonsToPrompt,
-  getLessonScopeProducts,
   retireLessons,
   bulkSetLessonsEnabled,
   countLessons,
@@ -17,10 +14,8 @@ import {
   disableLesson,
   getLessonCategoryCounts,
   enableLesson,
-  extractLessonHeuristic,
   getRelevantLessons,
   listLessons,
-  recordFeedback,
   updateLesson,
 } from '@/lib/services/learning';
 import { createProductProfile } from '@/lib/services/product-profile';
@@ -66,122 +61,6 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await (db.$client as unknown as { end: () => Promise<void> }).end();
-});
-
-// ---- heuristic extractor -------------------------------------------
-
-describe('extractLessonHeuristic', () => {
-  it('returns null for empty / too-short input', () => {
-    expect(extractLessonHeuristic(null)).toBeNull();
-    expect(extractLessonHeuristic('')).toBeNull();
-    expect(extractLessonHeuristic('ok')).toBeNull();
-  });
-
-  it('catches qualification negatives', () => {
-    expect(extractLessonHeuristic("don't target councils")?.category).toBe(
-      'qualification_negative',
-    );
-    expect(extractLessonHeuristic('avoid retail SMBs entirely')?.category).toBe(
-      'qualification_negative',
-    );
-  });
-
-  it('catches qualification positives', () => {
-    expect(extractLessonHeuristic('this is the ideal kind of company')?.category).toBe(
-      'qualification_positive',
-    );
-  });
-
-  it('catches false positive / negative', () => {
-    expect(
-      extractLessonHeuristic('this is a false positive — wrong sector')?.category,
-    ).toBe('false_positive');
-  });
-
-  it('catches outreach style', () => {
-    expect(extractLessonHeuristic('the tone is too formal here')?.category).toBe(
-      'outreach_style',
-    );
-  });
-
-  it('catches contact role', () => {
-    expect(extractLessonHeuristic('we need to reach procurement, not engineering')?.category).toBe(
-      'contact_role',
-    );
-  });
-
-  it('returns null on neutral content', () => {
-    expect(extractLessonHeuristic('looks fine I guess')).toBeNull();
-  });
-});
-
-// ---- recordFeedback ---------------------------------------------------
-
-describe('recordFeedback', () => {
-  it('appends a learning_event and writes audit', async () => {
-    const s = await setup();
-    const { event } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      entityType: 'review_item',
-      entityId: '1',
-      actionType: 'general_instruction',
-      originalComment: 'looks fine I guess',
-    });
-    expect(event.workspaceId).toBe(s.workspaceA);
-    expect(event.actionType).toBe('general_instruction');
-    expect(event.extractedLessonId).toBeNull();
-    const audit = await db.select().from(auditLog).where(eq(auditLog.kind, 'learning.feedback'));
-    expect(audit).toHaveLength(1);
-  });
-
-  it('extracts a lesson when the comment matches a heuristic', async () => {
-    const s = await setup();
-    const { event, lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: "don't target councils for this product",
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('qualification_negative');
-    expect(lesson?.evidenceEventIds).toEqual([event.id]);
-    expect(event.extractedLessonId).toBe(lesson?.id ?? null);
-  });
-
-  it('respects workspace isolation on the produced lesson', async () => {
-    const s = await setup();
-    await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: "don't target councils",
-    });
-    const inA = await listLessons(ctx(s.workspaceA, s.ownerA, 'owner'));
-    const inB = await listLessons(ctx(s.workspaceB, s.ownerB, 'owner'));
-    expect(inA).toHaveLength(1);
-    expect(inB).toHaveLength(0);
-  });
-
-  it('repeated identical feedback reinforces the existing lesson instead of duplicating', async () => {
-    const s = await setup();
-    const comment = "don't target councils for this product";
-    const first = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: comment,
-    });
-    const second = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: comment,
-    });
-    // One lesson row, not two.
-    const rows = await db
-      .select()
-      .from(learningLessons)
-      .where(eq(learningLessons.workspaceId, s.workspaceA));
-    expect(rows).toHaveLength(1);
-    // Second feedback linked its event to the SAME lesson and bumped it.
-    expect(second.lesson?.id).toBe(first.lesson?.id);
-    expect(second.event.extractedLessonId).toBe(first.lesson?.id ?? null);
-    expect(second.lesson!.confidence).toBe(first.lesson!.confidence + 5);
-    // Evidence chain unions both events.
-    expect(second.lesson!.evidenceEventIds).toContain(first.event.id);
-    expect(second.lesson!.evidenceEventIds).toContain(second.event.id);
-  });
 });
 
 // ---- createLesson + listLessons --------------------------------------
@@ -773,167 +652,6 @@ describe('recordLessonsApplied', () => {
     // Should not throw and should not flip anything.
     await recordLessonsApplied({ workspaceId: s.workspaceA }, []);
     expect(true).toBe(true);
-  });
-});
-
-// ---- AI extractor (P60-03) --------------------------------------------
-
-describe('extractLesson (AI-first with heuristic fallback)', () => {
-  function stubAi(
-    impl: () => Promise<{
-      category: string | null;
-      rule: string;
-      confidence: number;
-      polarity?: string;
-    }>,
-  ): IAIProvider {
-    return {
-      id: 'stub-ai',
-      model: 'stub-model',
-      async generateText() {
-        return {
-          text: '',
-          model: 'stub',
-          usage: { inputTokens: 0, outputTokens: 0 },
-        };
-      },
-      async generateJson(_input, schema) {
-        void _input;
-        const out = await impl();
-        return schema.parse(out);
-      },
-      estimateCost() {
-        return 0;
-      },
-      async healthCheck() {
-        return { ok: true };
-      },
-    };
-  }
-
-  afterAll(() => _setAIProviderForTests(null));
-
-  it('uses the AI-extracted category when the AI returns a valid lesson', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({
-        category: 'sector_preference',
-        rule: 'Avoid public-sector schools — corporate buyers convert better.',
-        confidence: 82,
-      })),
-    );
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_negative',
-      originalComment: 'wrong sector — these are public-sector schools, not corporate',
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('sector_preference');
-    expect(lesson?.confidence).toBe(82);
-    expect(lesson?.rule).toContain('public-sector');
-    // No polarity from the model: the avoid-verb makes this sector rule AVOID.
-    expect(lesson?.polarity).toBe(-1);
-  });
-
-  it('honours the polarity the AI returns when the category allows it', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({
-        category: 'contact_role',
-        rule: 'Office managers only forward the email; write to the contracts manager.',
-        confidence: 70,
-        polarity: 'avoid',
-      })),
-    );
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'general_instruction',
-      originalComment: 'office managers never decide anything',
-    });
-    expect(lesson?.category).toBe('contact_role');
-    expect(lesson?.polarity).toBe(-1);
-  });
-
-  it('never stores a removed category the AI still names (dedupe_hint, connector_quality)', async () => {
-    const s = await setup();
-    for (const removed of ['dedupe_hint', 'connector_quality']) {
-      _setAIProviderForTests(
-        stubAi(async () => ({ category: removed, rule: 'Merge branches', confidence: 90 })),
-      );
-      const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-        actionType: 'general_instruction',
-        // Neutral for the heuristic too, so nothing else can produce a rule.
-        originalComment: `${removed}: same company as one we already have`,
-      });
-      expect(lesson).toBeNull();
-    }
-    const rows = await db
-      .select()
-      .from(learningLessons)
-      .where(eq(learningLessons.workspaceId, s.workspaceA));
-    expect(rows).toHaveLength(0);
-  });
-
-  it('a product event scopes the extracted rule to that product', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({ category: 'qualification_negative', rule: 'Skip councils', confidence: 70 })),
-    );
-    const a = ctx(s.workspaceA, s.ownerA, 'owner');
-    const product = await createProductProfile(a, { name: 'Vetrofluid' });
-    const { lesson } = await recordFeedback(a, {
-      actionType: 'qualification_negative',
-      productProfileId: product.id,
-      originalComment: 'councils never buy this one',
-    });
-    expect(lesson?.scopeKind).toBe('products');
-    const scopes = await getLessonScopeProducts(a, [lesson!.id]);
-    expect(scopes.get(lesson!.id.toString())).toEqual([product.id]);
-  });
-
-  it('falls back to the heuristic when the AI returns null category', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({ category: null, rule: '', confidence: 0 })),
-    );
-    // "wrong fit" matches the heuristic's false_positive pattern.
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_negative',
-      originalComment: 'wrong fit — not a real buyer',
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('false_positive');
-  });
-
-  it('falls back to the heuristic when the AI provider throws', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => {
-        throw new Error('upstream timeout');
-      }),
-    );
-    // "perfect" matches the heuristic's qualification_positive pattern.
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_positive',
-      originalComment: 'perfect fit, exactly the kind of buyer we want',
-    });
-    expect(lesson).not.toBeNull();
-    expect(lesson?.category).toBe('qualification_positive');
-  });
-
-  it('rejects an AI category that is not in the allow-list', async () => {
-    const s = await setup();
-    _setAIProviderForTests(
-      stubAi(async () => ({
-        category: 'totally_made_up',
-        rule: 'should be ignored',
-        confidence: 90,
-      })),
-    );
-    // Heuristic also returns null for this neutral text, so no lesson at all.
-    const { lesson } = await recordFeedback(ctx(s.workspaceA, s.ownerA, 'owner'), {
-      actionType: 'qualification_negative',
-      originalComment: 'no clear signal here just some neutral text',
-    });
-    expect(lesson).toBeNull();
   });
 });
 

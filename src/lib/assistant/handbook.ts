@@ -280,9 +280,19 @@ message instead (restore it first). {H-28} The CSV export on
 
 ## Learning memory (/learning) — the platform teaches itself
 Lessons are rules qualification and outreach follow. They come from
-four channels: (1) operator review comments and the reasons given when
-approving or rejecting, auto-extracted in the background — one rule
-per decision, for the products the decision was about; (2) the
+four channels: (1) review decisions and comments, learned in the
+background a moment after you decide (badge "from a decision") — one
+rule per decision, scoped to every product that got the same verdict,
+and only when there is something to learn: a written reason, a verdict
+that contradicts the AI's, or overturning autopilot. A decision that
+simply agrees with the AI makes no new rule; it strengthens the rules
+the AI relied on and weakens the ones that pointed the other way. A
+suggested rule the AI is less than 50% sure of is dropped. Learning
+uses AI tokens: with an empty wallet it waits and resumes after a
+top-up. Changing your mind undoes what the earlier decision taught —
+rule confidences go back and a rule learned only from it is retired.
+If learning fails 5 times you get one notification that day; the
+decision itself is always saved. {H-34} (2) the
 operator's edits to AI drafts — a material rewrite is diffed and
 distilled into a style rule (badge "from your edits"); (3) reply
 outcomes — switched off for every workspace for now, so replies teach

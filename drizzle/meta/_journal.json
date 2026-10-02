@@ -484,6 +484,13 @@
       "when": 1790904510638,
       "tag": "0068_p1_knowledge_foundation_decision_record",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1790908931786,
+      "tag": "0069_p1_knowledge_foundation_learning_processor",
+      "breakpoints": true
     }
   ]
 }

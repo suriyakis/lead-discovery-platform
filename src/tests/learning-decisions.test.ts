@@ -33,7 +33,8 @@ import {
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import { registerDecisionHook, type ProductsDecidedEvent } from '@/lib/services/decision-hooks';
 import { createLesson } from '@/lib/services/learning';
-import { DecisionContextSchema, processDecision } from '@/lib/services/learning-decisions';
+import { DecisionContextSchema } from '@/lib/services/learning-decisions';
+import { processDecision } from '@/lib/services/learning-processor';
 import { synthesizeWorkspaceLearning } from '@/lib/services/learning-synthesis';
 import { createMailbox } from '@/lib/services/mailbox';
 import { generateOutreachDraft } from '@/lib/services/outreach';

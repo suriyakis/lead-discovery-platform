@@ -1,24 +1,120 @@
 # Learning layer
 
-The system gets smarter over time by capturing what users do (approve, reject, comment, edit) and turning it into reusable lessons that influence future qualification, drafts, and recommendations.
+The platform gets better at judging records by learning from what operators decide. A decision (approve, reject, ignore, archive, a comment) is recorded as part of the state change itself, and a background job turns it into reusable rules ("lessons") and adjusts the confidence of the rules the AI relied on. Rules then shape future qualification, outreach drafts and reply suggestions.
 
-## Two-part design
+This document describes the code as it is after KL-01 (scope, lifecycle, category registry), KL-02 (the decision record) and KL-03 (the learning processor).
 
-### 1. Structured memory (Phase 5)
-- Events come in as `LearningEvent` rows.
-- A lesson extractor turns them into structured `LearningLesson` rows with a category, a one-sentence rule, a polarity (PREFER / AVOID / neutral), a scope (workspace-wide or a set of products) and a lifecycle (`active`, `proposed`, `disabled`, `retired`).
-- Lessons are retrieved by the task's registry categories + scope (`lessonInScope`) + free-text similarity and injected into prompts or used directly by rules. Only `active` lessons are retrieved.
+## The contract
 
-### 2. Vector memory (Phase 12)
-- Lessons (and example documents, rejected drafts, approved drafts, replies) get embeddings stored in a `vector(1536)` column.
-- Retrieval moves from "matching keywords" to "semantically related."
-- The interface for retrieval (`getRelevantLessons`) does not change — only its implementation.
+1. **One decision, one transaction.** Every decision writes its `learning_events` in the same transaction as the state change (`recordDecision`). There is no decision without events and no event without a decision. A repeated form submit (same `decision_key`) records nothing twice.
+2. **Slow work never blocks a decision.** No AI call runs inside the operator's request. The events are the outbox; the `learning.process` job drains it (I108).
+3. **One extraction per decision.** A decision about several products is one AI call and at most one rule, scoped to every product that got the same verdict (I032). A bulk decision is one call per product-group × polarity with at most 10 sampled records.
+4. **Credit only where cited.** Only the rules an AI verdict cited move with the operator's verdict, by polarity (I098). Exposure is not use.
+5. **Machines never teach.** Autopilot and system decisions are recorded for the audit trail and never mined, extracted from or reinforced by (I034).
+6. **Decisions can be taken back.** A newer decision on the same (record, product) voids the older event. Voiding reverses exactly what the old event did to rule confidence and retires a rule learned only from it.
+7. **Untrusted text never becomes an instruction.** Record text and earlier AI reasoning sit in a fenced DATA block, and the extracted rule is validated.
+8. **Receipts tell the truth.** Every decision has a receipt that reports what was actually learned.
 
-The architecture commits to Phase 1 abstractions so Phase 12 is additive.
+## Flow
+
+```
+Operator / autopilot action
+  recordDecision(tx)                 — SAME transaction as the state change
+    learning_decisions row          (idempotent on decision_key)
+    learning_events: one per product verdict (or one unscoped event),
+      origin, verdict, polarity, weight, reason, chips, context snapshot,
+      processing_status = 'pending' (operator) | 'skipped' (autopilot/system)
+    voids the earlier live event on the same (subject, product)
+    qualifications.operator_verdict (review decisions)
+  after commit: enqueue learning.process {decisionId}   (best effort)
+
+learning.process {decisionId}        (src/lib/services/learning-processor.ts)
+  1. claim   — conditional UPDATE pending -> processing, attempts + 1,
+               claimed_at = claim token; only due rows (no backoff pending)
+  2. plan    — outside any transaction: extraction groups, the AI call,
+               validation, dedup lookups
+  3. write   — ONE transaction that re-locks the claimed events and checks
+               the claim is still ours:
+               a. compensate the events this decision voided
+               b. the rule: new / +5 on the active rule it repeats /
+                  nothing if it repeats a rule the operator rejected
+               c. reinforce the cited rules (the ledger)
+               d. close every claimed event with a status and a note
+  4. fail    — back to 'pending' with backoff 2, 4, 8, 16 min; after 5
+               attempts 'failed' + one 'learning.failed' notification per
+               workspace per day
+
+learning.sweep (repeatable, every 2 min, every active workspace)
+  - releases 'processing' claims older than 10 min (a dead worker)
+  - compensates voided events nobody compensated (catch-all)
+  - resumes 'skipped_no_tokens' events once tokens and an AI provider exist
+  - re-enqueues learning.process for 'pending' events older than 2 min
+    (lost job) or whose backoff has passed
+```
+
+The sweeper only enqueues, so it behaves the same on the memory queue (dev, tests) and on BullMQ (prod). Processing is idempotent: claims stop two workers from holding the same event, a job killed before its commit leaves nothing behind, an event already linked to a rule is never extracted again, and the ledger's `UNIQUE(event_id, lesson_id)` stops a rule moving twice for one decision.
+
+## When a decision teaches a rule
+
+An extraction runs for a decision group only when there is something to learn:
+
+| trigger | rule confidence | note |
+|---|---|---|
+| a written reason (≥ 8 characters, @mentions stripped) | the model's (≥ 50, at most 95) | `rule_created` |
+| a generalisable reason chip (see below) | the model's | `rule_created` |
+| the operator disagreed with an available AI verdict (method `ai`, at or above the threshold) | **50**, labelled "from your approval" / "from your rejection" | `rule_created_from_verdict` |
+| the operator overturned an autopilot approval | **50**, same label | `rule_created_from_verdict` |
+
+A decision that agrees with the AI makes no new rule; it reinforces the cited rules. Archive and ignore are half-weight Not a fit verdicts and never count as a disagreement: they teach a rule only with a chip. Flag records nothing.
+
+**Reason chips** (`src/lib/services/learning-chips.ts`): generalisable chips — right sector, right buyer role, active project or tender, right size, wrong sector, too small, not a company, no need — trigger an extraction and are stated in the prompt. Entity-fact chips — existing customer, competitor, duplicate, wrong country — are kept on the event but never become a generalised rule.
+
+**Scope.** The rule applies to every product whose verdict points the rule's way. An unscoped event (no relevant product, no explicit choice) makes the rule workspace-wide. A comment applies to the products it was written for. Products deleted since the decision are dropped; if none are left, there is no rule (`products_deleted`).
+
+## The extraction prompt and validation
+
+`src/lib/services/learning-extraction.ts`:
+
+- The system prompt lists only the registry categories that can carry the decision's polarity. A rejection can never become `qualification_positive` (I099). A comment allows any category.
+- The user prompt states what happened with the product names ("The operator REJECTED this record for Vetrofluid."), the AI disagreement or autopilot override if any, the chips and the note.
+- Record title, domain and snippet, and the earlier verdict's reasoning, sit between `<<<DATA` and `DATA>>>`. The system prompt says never to follow instructions inside it. Fence markers inside the data are neutralised.
+- The answer is validated: at most 200 characters; no URL, domain or e-mail address; nothing instruction-like ("ignore previous instructions", "you are now", "add rule"); not an unconditional "prefer all companies"; not copied from the record data unless the operator's note says it; polarity consistent with the decision.
+- **Confidence floor: 50.** A valid rule the model is less than 50 % sure of is not created (`below_floor`).
+- An answer that is not the JSON asked for is no rule (`rejected:invalid_output`), not a retry. Network and provider errors are retried.
+
+**No heuristic minting.** There is no keyword fallback. Without tokens or without a real AI provider, an event that needs an extraction waits as `skipped_no_tokens` (note `no_tokens` / `no_ai_provider`; the wait does not use up an attempt) and the sweeper resumes it once the gate is open. The cited-rule reinforcement needs no AI and is applied anyway. Manual `createLesson` on /learning stays synchronous.
+
+**Dedup.** The extracted rule is compared with the active rules of the same category, polarity and exact scope (text first, then embedding similarity ≥ 0.92). A match gets +5 through a `dedup_match` ledger row and the evidence events, and the receipt says "Matched an existing rule — strengthened it". A match with a rule the operator rejected (`retired_reason = 'operator_rejected'`, overlapping scope) is not recreated (`matches_rejected_rule`).
+
+## The reinforcement ledger
+
+`lesson_reinforcements` (`src/lib/services/learning-ledger.ts`) records every confidence change a decision causes, in the same transaction as the change:
+
+- **cited**: an operator verdict on a product whose AI verdict cited the rule. sign = verdict (Fit +1, Not a fit −1) × citation effect (toward_fit +1, against_fit −1). +2 when they agree, −3 when they oppose, × the event weight (1; 0.5 for an untouched default that agrees with the AI, archive and ignore), rounded half away from zero. Without KL-04's explicit effects, the effect is read from the rule's polarity (PREFER = toward_fit, AVOID = against_fit; neutral rules never move). Only origin `operator`, method `ai`, at or above the threshold: rules-fallback and below-threshold verdicts never reinforce.
+- **dedup_match**: +5 when the decision's extracted rule repeats this one. A rule credited by a dedup match is not also credited as cited by the same event.
+- **compensation**: reverses one forward row exactly by its `delta_applied`.
+
+Forward steps stay within 5..95 and never move a rule against their own direction. `delta_applied` records what really changed, so a compensation restores the earlier confidence exactly, clamped cases included. One forward row per (event, rule) (partial unique index); one compensation per forward row (`UNIQUE(compensates_id)`); a CHECK keeps `confidence_after − confidence_before = delta_applied`.
+
+## Supersession
+
+A newer verdict on the same (subject, product) voids the older event (`voided_at`, `voided_by_event_id`, `void_reason`: `changed_mind`, `undo`, `autopilot_override`). An operator verdict that voids an autopilot event sets `overrides_autopilot`, which always triggers an extraction. When the newer decision is processed:
+
+- every forward ledger row of the voided event is compensated;
+- every rule whose evidence events are now all voided is retired with `retired_reason = 'source_decision_voided'` (a rule with any live evidence stays);
+- a voided event that was never processed is closed `skipped` and never mined.
+
+The sweeper repeats this for voided events older than 2 minutes that still have uncompensated rows or a rule in service learned only from them. Comments never void verdicts.
+
+## Statuses and receipts
+
+`learning_events.processing_status`: `pending` → `processing` → `done` | `no_rule` | `below_floor` | `skipped_no_tokens` | `skipped` | `failed`. `processing_note` says why: `rule_created`, `rule_created_from_verdict`, `rule_strengthened`, `matches_rejected_rule`, `nothing_to_learn`, `other_direction`, `below_floor`, `products_deleted`, `no_tokens`, `no_ai_provider`, `voided`, `machine`, `failed`, `rejected:<reason>`.
+
+`getDecisionReceipt(ctx, decisionId)` (`src/lib/services/learning-receipts.ts`) and `GET /api/learning/receipts/[decisionId]` (workspace-scoped; another workspace's decision is 404) return the state (learning, learned, strengthened, not_recreated, too_uncertain, waiting_for_tokens, waiting_for_ai, failed, changed_later, recorded_only, nothing_new), a headline, per-event status, the rules created or strengthened, the ledger changes (with `undone` when a later decision reversed them) and what this decision undid. The decision panel's `<LearningReceipt>` (KL-20) renders it.
 
 ## Lesson categories (registry)
 
-`src/lib/services/learning-categories.ts` is the single source of truth (KL-01). For every category it records the operator label and description, the allowed polarity, which tasks read it (`appliesTo`: qualification / outreach / replies), whether the manual form offers it, and the code that consumes it. Retrieval (`resolveCategoriesForTask`), both extractors, the synthesis prompt, the /learning forms and the qualification prompt's PREFER / AVOID marks derive from it, and `src/tests/learning-categories.test.ts` fails when a category has no consumer for a task it claims.
+`src/lib/services/learning-categories.ts` is the single source of truth (KL-01). For every category it records the operator label and description, the allowed polarity, which tasks read it (`appliesTo`: qualification / outreach / replies), whether the manual form offers it, and the code that consumes it. Retrieval (`resolveCategoriesForTask`), the decision extractor, the synthesis prompt, the /learning forms and the qualification prompt's PREFER / AVOID marks derive from it, and `src/tests/learning-categories.test.ts` fails when a category has no consumer for a task it claims.
 
 | category | polarity | applies to |
 |---|---|---|
@@ -33,90 +129,34 @@ The architecture commits to Phase 1 abstractions so Phase 12 is additive.
 | `reply_quality` | neutral | replies |
 | `general_instruction` | any | qualification, outreach, replies |
 
-`dedupe_hint` and `connector_quality` were removed in KL-01: nothing ever read them. Existing rows were retired with `retired_reason = 'category_removed'`. Source quality is a learning event for Discovery, not a rule.
-
-`LearningEvent.actionType` stays a loose text tag (the categories above plus outcome tags such as `reply_positive`).
+`dedupe_hint` and `connector_quality` were removed in KL-01: nothing ever read them.
 
 ## Data model
 
-### `learning_events`
-Append-only.
+- `learning_decisions` — one row per decision; `UNIQUE(workspace_id, decision_key)`; generic `subject_type` / `subject_id`.
+- `learning_events` — the decision log and the outbox: `decision_id` (composite FK on workspace), origin, verdict, polarity, weight, explicit, reason_codes, `context` (record snapshot: normalized domain — never a Vertex redirect — title, snippet, countries, per-product AI verdict / method / score / threshold / reason / cited rules, evidence quality, connector and recipe ids, product names), outbox state (`processing_status`, `attempts`, `next_attempt_at`, `last_error`, `processed_at`, `claimed_at`, `processing_note`), supersession (`voided_at`, `voided_by_event_id`, `void_reason`, `overrides_autopilot`) and `extracted_lesson_id`.
+- `learning_lessons` — the rules: `scope_kind` (+ `lesson_scopes`), category, rule, polarity, `source` (`operator` = manual, `decision` = learned by the processor, `draft_edit`, `synthesis`), `evidence_event_ids`, lifecycle (`active` / `proposed` / `disabled` / `retired` with `retired_reason`, `retired_note`, `merged_into_id`), confidence, exposure counters, `cited_count`, `reinforced_at`, embedding.
+- `lesson_scopes` — `(lesson_id, workspace_id, product_profile_id)` with composite FKs on workspace, `ON DELETE CASCADE`.
+- `lesson_reinforcements` — the ledger above.
 
-| col | type | notes |
-|---|---|---|
-| id | bigserial | PK |
-| workspaceId | bigint | NOT NULL |
-| userId | bigint | nullable (system events possible) |
-| entityType | text | `review_item` `draft` `qualification` `record` ... |
-| entityId | text | |
-| productProfileId | bigint | nullable |
-| actionType | text | category from list above |
-| originalComment | text | nullable — the user's verbatim words |
-| extractedLessonId | bigint | nullable, FK learning_lessons |
-| confidence | smallint | 0–100; how sure the extractor is |
-| createdAt | timestamptz | |
+Full column lists: [`docs/DATABASE_MODEL.md`](DATABASE_MODEL.md).
 
-### `learning_lessons`
-Mutable (edit text, lifecycle), never hard-deleted.
+## How rules influence behaviour
 
-| col | type | notes |
-|---|---|---|
-| id | bigserial | PK; UNIQUE (workspace_id, id) |
-| workspaceId | bigint | NOT NULL |
-| scopeKind | enum | `workspace` or `products` (see `lesson_scopes`) |
-| category | text | one of the registry categories |
-| rule | text | one-sentence imperative, e.g., "Skip councils for Vetrofluid offers." |
-| polarity | smallint | +1 PREFER, -1 AVOID, 0 neutral |
-| evidenceEventIds | bigint[] | learning_events that produced/support this lesson |
-| lifecycle | enum | `active` / `proposed` / `disabled` / `retired` |
-| retiredReason, retiredNote, mergedIntoId | | why, and into which rule, a rule was retired |
-| confidence | smallint | 0-100 |
-| applicationCount, lastAppliedAt | | exposures (pulled into a prompt) |
-| citedCount, lastCitedAt | | citations by a model (KL-04) |
-| reinforcedAt | timestamptz | last outcome-driven confidence change |
-| embedding | vector(1536) | nullable |
-| createdAt, updatedAt | timestamptz | |
-
-### `lesson_scopes`
-`(lesson_id, workspace_id, product_profile_id)`; composite FKs on `workspace_id` to both `learning_lessons` and `product_profiles`, `ON DELETE CASCADE`. A rule can only be scoped to products of its own workspace, and deleting a product leaves its rules in place but out of scope.
-
-## Service interface
-
-```ts
-interface ILearningMemory {
-  recordFeedback(ctx: WorkspaceContext, event: LearningEventInput): Promise<LearningEvent>;
-  extractLesson(comment: string, context: LessonContext): Promise<LearningLessonDraft | null>;
-  getRelevantLessons(ctx: WorkspaceContext, q: LessonQuery): Promise<LearningLesson[]>;
-  applyLessonsToPrompt(basePrompt: string, lessons: LearningLesson[]): string;
-  listLessons(ctx: WorkspaceContext, filter?: LessonFilter): Promise<LearningLesson[]>;
-  enableLesson(ctx: WorkspaceContext, id: bigint): Promise<void>;
-  disableLesson(ctx: WorkspaceContext, id: bigint): Promise<void>;
-  updateLesson(ctx: WorkspaceContext, id: bigint, patch: LessonPatch): Promise<LearningLesson>;
-}
-```
-
-`recordFeedback` enqueues lesson extraction as a job in Phase 5+. The job calls `extractLesson` (which can be the mock AI or real AI provider), gets a structured draft, and writes a `learning_lessons` row linked back to the event.
-
-### Decisions (KL-02)
-Review decisions no longer call `recordFeedback` after the commit. `recordDecision(tx, ctx, …)` (`src/lib/services/learning-decisions.ts`) writes them INSIDE the transaction of the state change: a `learning_decisions` row (idempotent on `decision_key`), one event per product verdict, the operator verdict on `qualifications`, and the voiding of the previous event on the same (subject, product). A decision speaks for the products the AI found relevant (method `ai`, at or above the threshold) unless the caller passes explicit per-product verdicts; with neither it records one unscoped event (I032). Archive and ignore are half-weight Not a fit; flag records nothing; a same-state transition records nothing. Autopilot's approvals are `origin = 'autopilot'` (no user, `approvalReason = 'autopilot'`), written `skipped` and never mined; an operator verdict on an autopilot approval voids it as an `autopilot_override` (I034). After the commit the `learning.process` job claims the decision's `pending` events, extracts ONE rule from the reason (scoped to the products whose verdict it speaks for) and reinforces the rules an AI-method verdict used; post-commit hooks (`src/lib/services/decision-hooks.ts`: `onApprovedProducts`, `onRejectedProducts`) let other modules react. Reply-outcome learning is off unless the workspace owner switches `learnFromReplies` on. KL-03 adds the sweeper, retries, the reinforcement ledger and compensation of voided events.
-
-`getRelevantLessons`: active lessons, `lessonInScope(productProfileId)`, the task's registry categories, ranked by confidence + recency; reranked by embedding similarity to the task context when the pool exceeds the prompt budget.
-
-## Extraction policy
-
-- **Conservative.** A lesson is only created when the extractor is confident enough (configurable threshold, default 60). Low-confidence comments are kept as raw events but do not yet become lessons.
-- **No autonomy.** Lessons can be reviewed by an admin from the UI (`/learning` page in Phase 5+). Disabled lessons stop influencing future runs immediately.
-- **Workspace-isolated.** A lesson learned in workspace A is never used in workspace B, even if both are about the same product category. Cross-workspace learning is a deliberate, audited future feature.
-
-## How lessons influence behavior
-
-- **Qualification (Phase 7):** `getRelevantLessons({ taskType: 'classification' })` returns the registry's qualification categories, `general_instruction` included. The AI prompt marks each rule PREFER / AVOID / NOTE from its polarity; the rules fallback adds or subtracts by polarity and ignores neutral rules. A review verdict reinforces the matched rules by polarity (`reinforceLessonsForVerdict`): rules that pointed the way the operator decided gain, the others lose.
-- **Outreach drafts (Phase 8):** `taskType: 'outreach'` (`outreach_style`, `contact_role`, `product_positioning`, `general_instruction`). Forbidden phrases come from the product profile, not from lessons.
+- **Qualification:** `getRelevantLessons({ taskType: 'classification' })`; the AI prompt marks each rule PREFER / AVOID / NOTE from its polarity; the rules fallback adds or subtracts by polarity and ignores neutral rules.
+- **Outreach drafts:** `taskType: 'outreach'` (`outreach_style`, `contact_role`, `product_positioning`, `general_instruction`).
 - **Reply suggestions:** `retrieveLessons({ taskType: 'reply' })` (`reply_quality`, `outreach_style`, `general_instruction`).
-- **Recommendations layer (later):** lessons drive the "why this lead matters" / "why this may be wrong" features.
+- Only `active` rules in scope (`lessonInScope`) are retrieved.
+
+## Other sources of rules
+
+- **Draft edits** (`learnFromDraftEdit`): a material rewrite of an AI draft is diffed into an `outreach_style` rule (`source = 'draft_edit'`).
+- **Reply outcomes** (`learnFromReplyOutcome`): off unless the workspace owner switches `learn_from_replies` on; KL-15 owns the remaining gates.
+- **Weekly synthesis** (`learning-synthesis.ts`): mines live operator decisions for patterns and proposes rules.
+- **Compaction** (`knowledge-compaction.ts`): merges near-duplicates and retires stale rules.
 
 ## What we don't do
 
-- We do not silently change decisions based on lessons. Every classification or draft cites the lessons it used. The user can disable a lesson and see the immediate effect.
-- We do not learn from a single comment without a clear category. Garbage in, garbage out.
-- We do not embed everything in Phase 5. Vector storage costs and embedding latency only kick in once the corpus is meaningful (Phase 12).
+- We do not change a decision because of a rule. Every rule can be disabled on /learning and the effect is immediate.
+- We do not mint rules from keywords, from autopilot, or from a voided decision.
+- We do not learn across workspaces.

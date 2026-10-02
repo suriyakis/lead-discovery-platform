@@ -657,6 +657,9 @@ export interface BulkArchiveOptions {
   decisionKey?: string | null;
   /** Audit row for the call (default: review.bulk_archive). */
   audit?: { kind: string; entityType: string; payload: Record<string, unknown> };
+  /** Shared reason chips (learning-chips.ts). A generalisable chip makes
+   *  learning.process extract one rule per product-group (KL-03). */
+  reasonCodes?: readonly string[];
 }
 
 /**
@@ -681,7 +684,7 @@ export async function bulkArchiveReviewItems(
     reason: null,
     decisionKey: resolveDecisionKey(options.decisionKey),
     explicit: null,
-    reasonCodes: [],
+    reasonCodes: options.reasonCodes ?? [],
     lenient: true,
     bulkAudit: options.audit ?? { kind: 'review.bulk_archive', entityType: 'review_item', payload: {} },
   });

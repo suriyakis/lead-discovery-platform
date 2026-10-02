@@ -10,37 +10,29 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
-import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import {
-  learningEvents,
   learningLessons,
   lessonScopes,
-  type LearningEvent,
   type LearningLesson,
   type LessonLifecycle,
   type LessonRetiredReason,
   type LessonScopeKind,
-  type NewLearningEvent,
   type NewLearningLesson,
 } from '@/lib/db/schema/learning';
-import { getAIProviderForCtx } from '@/lib/ai';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 import {
   LESSON_CATEGORIES,
-  LESSON_CATEGORY_REGISTRY,
   categoriesForTaskType,
   isLessonCategory,
   isPolarityAllowed,
-  parseLessonPolarity,
   polarityForRule,
   resolveLessonPolarity,
   type LessonCategory,
   type LessonPolarity,
   type LessonTaskType,
 } from './learning-categories';
-import { recordUsage } from './usage';
 
 export {
   LESSON_CATEGORIES,
@@ -153,7 +145,9 @@ function validateRule(input: string): string {
   return rule;
 }
 
-export type LessonSource = 'operator' | 'draft_edit' | 'synthesis';
+/** Provenance of a rule. 'decision' = extracted by learning.process from
+ *  an operator's decision or review comment (KL-03). */
+export type LessonSource = 'operator' | 'decision' | 'draft_edit' | 'synthesis';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /** An open transaction on the shared client (KL-02 writes inside it). */
@@ -181,14 +175,15 @@ export function scopeForProduct(productProfileId: bigint | null | undefined): Le
     : WORKSPACE_SCOPE;
 }
 
-interface NormalizedScope {
+/** A validated scope: product ids deduplicated and sorted. */
+export interface NormalizedScope {
   kind: LessonScopeKind;
   productProfileIds: bigint[];
 }
 
 const MAX_SCOPE_PRODUCTS = 100;
 
-function normalizeScope(scope: LessonScopeInput | null | undefined): NormalizedScope {
+export function normalizeScope(scope: LessonScopeInput | null | undefined): NormalizedScope {
   if (!scope || scope.kind === 'workspace') return { kind: 'workspace', productProfileIds: [] };
   if (scope.kind !== 'products') throw invalid('unknown scope kind');
   const ids = Array.from(new Set(scope.productProfileIds.map((id) => id.toString())))
@@ -261,7 +256,10 @@ async function insertScopeRows(
   );
 }
 
-async function insertLessonWithScope(
+/** Insert a rule and its scope rows in the caller's transaction. The
+ *  composite FKs refuse another tenant's product (the caller maps the
+ *  violation with mapScopeError, or lets its transaction fail). */
+export async function insertLessonWithScope(
   tx: Tx,
   row: NewLearningLesson,
   scope: NormalizedScope,
@@ -327,361 +325,6 @@ export function scheduleLessonEmbedding(
         err instanceof Error ? err.message : err,
       ),
     );
-}
-
-// ---- feedback recording ------------------------------------------------
-
-export interface FeedbackInput {
-  entityType?: string | null;
-  entityId?: string | null;
-  /** The product the event is about; an extracted rule is scoped to it
-   *  (none = workspace-wide). */
-  productProfileId?: bigint | null;
-  /** Loose enum — common values are the lesson categories above. */
-  actionType: string;
-  originalComment?: string | null;
-  confidence?: number;
-}
-
-/**
- * Append a feedback event and, when an extractor finds a clean signal,
- * also materialize a `learning_lessons` row linked back to the event.
- *
- * Extraction order: AI provider first (when configured + workspace context),
- * heuristic fallback on any AI failure or null. AI runs OUTSIDE the
- * transaction so the network call doesn't tie up a DB connection.
- */
-export async function recordFeedback(
-  ctx: WorkspaceContext,
-  input: FeedbackInput,
-): Promise<{ event: LearningEvent; lesson: LearningLesson | null }> {
-  // Extraction + dedup lookup first (outside tx) so a slow / failing AI
-  // call doesn't hold a transaction open.
-  const prepared = await prepareLessonFromText(
-    ctx,
-    input.originalComment ?? null,
-    scopeForProduct(input.productProfileId),
-  );
-
-  let result: { event: LearningEvent; lesson: LearningLesson | null; dedupReinforced: boolean };
-  try {
-    result = await db.transaction(async (tx) => {
-      const eventRow: NewLearningEvent = {
-        workspaceId: ctx.workspaceId,
-        userId: ctx.userId,
-        entityType: input.entityType ?? null,
-        entityId: input.entityId ?? null,
-        productProfileId: input.productProfileId ?? null,
-        actionType: input.actionType,
-        originalComment: input.originalComment ?? null,
-        confidence: clampConfidence(input.confidence ?? 50),
-      };
-
-      const insertedEvent = (await tx.insert(learningEvents).values(eventRow).returning())[0];
-      if (!insertedEvent) throw invariant('learning_events insert returned no row');
-
-      const written = prepared
-        ? await writePreparedLesson(tx, ctx, prepared, [insertedEvent.id])
-        : { lesson: null, dedupReinforced: false };
-      const lesson = written.lesson;
-      const dedupReinforced = written.dedupReinforced;
-      // Reflect the FK on the returned object — the post-INSERT snapshot
-      // doesn't see the subsequent UPDATE.
-      if (lesson) insertedEvent.extractedLessonId = lesson.id;
-
-      await recordAuditEvent(ctx, {
-        kind: 'learning.feedback',
-        entityType: 'learning_event',
-        entityId: insertedEvent.id,
-        payload: {
-          actionType: input.actionType,
-          extractedLessonId: lesson?.id.toString() ?? null,
-          dedupReinforced,
-          productProfileId: input.productProfileId?.toString() ?? null,
-        },
-      });
-
-      return { event: insertedEvent, lesson, dedupReinforced };
-    });
-  } catch (err) {
-    throw mapScopeError(err);
-  }
-  // Outside the tx: embed only NEW lessons — a reinforced duplicate's
-  // rule text didn't change, so its stored embedding is still right.
-  if (result.lesson && !result.dedupReinforced) {
-    scheduleLessonEmbedding(ctx, result.lesson.id);
-  }
-  return { event: result.event, lesson: result.lesson };
-}
-
-/** A rule extracted from a piece of operator text, ready to be written:
- *  either a brand-new rule or the near-duplicate it repeats. */
-export interface PreparedLesson {
-  draft: LessonDraft;
-  scope: { kind: LessonScopeKind; productProfileIds: bigint[] };
-  /** The existing rule this one repeats; writing then reinforces it. */
-  duplicate: LearningLesson | null;
-}
-
-/**
- * Extract a rule from operator text and look for a near-duplicate in the
- * same scope. Runs OUTSIDE any transaction (it may call the AI provider
- * and the embedder). Never throws for extraction trouble — extractLesson
- * falls back to the heuristic — and returns null when the text carries no
- * reusable rule. Shared by recordFeedback and the decision processor
- * (learning-decisions.ts), so a decision's reason is extracted ONCE however
- * many products it covers (I032).
- */
-export async function prepareLessonFromText(
-  ctx: WorkspaceContext,
-  text: string | null,
-  /** The rule's scope, or a function choosing it from the extracted draft
-   *  (e.g. by its polarity); returning null means "no rule". */
-  scopeInput:
-    | LessonScopeInput
-    | ((draft: LessonDraft) => Promise<LessonScopeInput | null> | LessonScopeInput | null),
-): Promise<PreparedLesson | null> {
-  const draft = await extractLesson(ctx, text);
-  if (!draft) return null;
-  const chosen = typeof scopeInput === 'function' ? await scopeInput(draft) : scopeInput;
-  if (!chosen) return null;
-  const scope = normalizeScope(chosen);
-  // A repeat of an already-known rule reinforces the existing lesson
-  // instead of planting a near-identical sibling.
-  const duplicate = await findNearDuplicateLesson(ctx, {
-    category: draft.category,
-    rule: draft.rule,
-    polarity: draft.polarity,
-    scope,
-  });
-  return { draft, scope, duplicate };
-}
-
-/**
- * Write a prepared rule inside the caller's transaction and link the
- * evidence events to it: a duplicate is reinforced (+5, evidence merged),
- * otherwise a new active rule is inserted with its scope rows. The caller
- * maps a scope FK violation (mapScopeError) and schedules the embedding
- * for a new rule after commit.
- */
-export async function writePreparedLesson(
-  tx: LearningTx,
-  ctx: WorkspaceContext,
-  prepared: PreparedLesson,
-  evidenceEventIds: readonly bigint[],
-): Promise<{ lesson: LearningLesson | null; dedupReinforced: boolean }> {
-  const { draft, duplicate } = prepared;
-  const linkEvents = async (lessonId: bigint) => {
-    if (evidenceEventIds.length === 0) return;
-    await tx
-      .update(learningEvents)
-      .set({ extractedLessonId: lessonId })
-      .where(
-        and(
-          eq(learningEvents.workspaceId, ctx.workspaceId),
-          inArray(learningEvents.id, [...evidenceEventIds]),
-        ),
-      );
-  };
-  if (duplicate) {
-    // Reinforce inside the tx so event-link + confidence bump are atomic.
-    const evidence = Array.from(
-      new Set<bigint>([...duplicate.evidenceEventIds, ...evidenceEventIds]),
-    );
-    const [updated] = await tx
-      .update(learningLessons)
-      .set({
-        confidence: sql`LEAST(${learningLessons.confidence} + ${DEDUP_REINFORCE_STEP}, ${DEDUP_CONFIDENCE_CEILING})`,
-        evidenceEventIds: evidence,
-        reinforcedAt: new Date(),
-        updatedAt: new Date(),
-        updatedBy: ctx.userId,
-      })
-      .where(
-        and(
-          eq(learningLessons.workspaceId, ctx.workspaceId),
-          eq(learningLessons.id, duplicate.id),
-        ),
-      )
-      .returning();
-    if (!updated) return { lesson: null, dedupReinforced: false };
-    await linkEvents(updated.id);
-    return { lesson: updated, dedupReinforced: true };
-  }
-  const inserted = await insertLessonWithScope(
-    tx,
-    {
-      workspaceId: ctx.workspaceId,
-      category: draft.category,
-      rule: draft.rule,
-      polarity: draft.polarity,
-      evidenceEventIds: [...evidenceEventIds],
-      lifecycle: 'active',
-      confidence: draft.confidence,
-      createdBy: ctx.userId,
-      updatedBy: ctx.userId,
-    },
-    prepared.scope,
-  );
-  await linkEvents(inserted.id);
-  return { lesson: inserted, dedupReinforced: false };
-}
-
-// ---- extractor (AI first, heuristic fallback) -------------------------
-
-export interface LessonDraft {
-  category: LessonCategory;
-  rule: string;
-  confidence: number;
-  polarity: LessonPolarity;
-}
-
-/**
- * Try the workspace's AI provider first; fall back to the heuristic on any
- * error. Never throws — extraction failures must never break the event
- * write that called us.
- */
-export async function extractLesson(
-  ctx: WorkspaceContext,
-  comment: string | null,
-): Promise<LessonDraft | null> {
-  if (!comment) return null;
-  const trimmed = comment.trim();
-  if (trimmed.length < 8) return null;
-  try {
-    const ai = await extractLessonAI(ctx, trimmed);
-    if (ai) return ai;
-  } catch (err) {
-    // Provider not configured, network error, schema-validation failure on
-    // mock provider, etc. Fall back to the deterministic heuristic.
-    console.error('[learning.extractLesson] AI extraction failed:', err);
-  }
-  return extractLessonHeuristic(trimmed);
-}
-
-function polarityHint(category: LessonCategory): string {
-  const allowed = LESSON_CATEGORY_REGISTRY[category].polarity.allowed as readonly number[];
-  if (allowed.length === 1) {
-    return allowed[0] === 1 ? 'always prefer' : allowed[0] === -1 ? 'always avoid' : 'neutral';
-  }
-  return allowed.includes(0) ? 'prefer, avoid or neutral' : 'prefer or avoid';
-}
-
-/** Built from the category registry, so the extractor can only ever name
- *  a category something consumes. */
-export const EXTRACTOR_SYSTEM_PROMPT = `You categorize a single operator note into ONE lesson the lead-discovery platform will reuse.
-
-Allowed categories (pick the most specific):
-${LESSON_CATEGORIES.map(
-  (c) => `- ${c}: ${LESSON_CATEGORY_REGISTRY[c].description} (${polarityHint(c)})`,
-).join('\n')}
-
-Return a strict JSON object: {"category": "<one of the above or null>", "rule": "<a generalized one-sentence rule>", "polarity": "prefer" | "avoid" | "neutral", "confidence": <integer 0-100>}.
-- "rule" must generalize from the specific example so the platform can match similar cases later.
-- "polarity" says whether the rule pushes toward approving similar records (prefer), against (avoid), or is neutral guidance.
-- If the note carries no reusable signal, return {"category": null, "rule": "", "polarity": "neutral", "confidence": 0}.
-- Output JSON only, no prose.`;
-
-const ExtractorResultSchema = z.object({
-  category: z.string().nullable(),
-  rule: z.string(),
-  confidence: z.number().int().min(0).max(100),
-  polarity: z.string().nullable().optional(),
-});
-
-export async function extractLessonAI(
-  ctx: WorkspaceContext,
-  comment: string,
-): Promise<LessonDraft | null> {
-  const provider = await getAIProviderForCtx(ctx);
-  const result = await provider.generateJson(
-    {
-      system: EXTRACTOR_SYSTEM_PROMPT,
-      prompt: `Operator note:\n"""${comment}"""`,
-    },
-    ExtractorResultSchema,
-    {
-      maxTokens: 256,
-      temperature: 0,
-      // Mock provider seeds on the prompt; including a stable marker lets
-      // tests deterministically inject a JSON response via mockSeed.
-      mockSeed: `learning.extract:${comment}`,
-    },
-  );
-
-  // Audit + cost: a lesson extraction is a billable AI call. Best-effort —
-  // a usage-log write failure must not lose a successful extraction.
-  try {
-    await recordUsage(ctx, {
-      kind: 'ai.learning_extract',
-      provider: provider.id,
-      units: 1n,
-      costEstimateCents: 0,
-      payload: { model: provider.model },
-    });
-  } catch (err) {
-    console.error('[learning.extractLessonAI] recordUsage failed:', err);
-  }
-
-  // Only registry categories: a removed or invented one is no lesson.
-  if (!result.category || !isLessonCategory(result.category)) return null;
-  const rule = result.rule.trim();
-  if (!rule) return null;
-  const category = result.category;
-  const truncated = rule.slice(0, RULE_MAX);
-  return {
-    category,
-    rule: truncated,
-    confidence: clampConfidence(result.confidence),
-    polarity: polarityForRule(category, truncated, parseLessonPolarity(result.polarity)),
-  };
-}
-
-/**
- * Cheap pattern-matching extractor. Looks for clear directional signals in
- * the comment and produces a draft lesson when found. Returns null when the
- * comment is too low-signal — those are kept only as raw events.
- *
- * The patterns are deliberately conservative; false positives would teach
- * the future AI/rule engine the wrong things. Operators can disable any
- * lesson the heuristic produces from the /learning page. It only emits
- * registry categories (dedupe_hint / connector_quality are gone, KL-01).
- */
-export function extractLessonHeuristic(comment: string | null): LessonDraft | null {
-  if (!comment) return null;
-  const trimmed = comment.trim();
-  if (trimmed.length < 8) return null;
-  const lower = trimmed.toLowerCase();
-  const draft = (category: LessonCategory, confidence: number): LessonDraft => ({
-    category,
-    rule: trimmed,
-    confidence,
-    polarity: polarityForRule(category, trimmed),
-  });
-
-  // Order matters: more-specific signals win.
-  if (/\b(false positive|wrong fit|wrongly classified|misqualified)\b/.test(lower)) {
-    return draft('false_positive', 70);
-  }
-  if (/\b(false negative|missed lead|should have been approved)\b/.test(lower)) {
-    return draft('false_negative', 70);
-  }
-  if (/\b(don't|do not|avoid|skip|never|exclude|not relevant|not interested)\b/.test(lower)) {
-    return draft('qualification_negative', 65);
-  }
-  if (/\b(perfect|ideal|excellent fit|good fit|exactly the kind|target|focus)\b/.test(lower)) {
-    return draft('qualification_positive', 65);
-  }
-  if (/\b(tone|formal|casual|too long|too short|robotic|wording|style)\b/.test(lower)) {
-    return draft('outreach_style', 60);
-  }
-  if (/\b(procurement|engineer|architect|cmo|cto|ceo|head of|director of)\b/.test(lower)) {
-    return draft('contact_role', 60);
-  }
-  if (/\b(sector|industry|construction|finance|retail|tender|government)\b/.test(lower)) {
-    return draft('sector_preference', 55);
-  }
-  return null;
 }
 
 // ---- listing -----------------------------------------------------------
@@ -898,32 +541,100 @@ export async function findNearDuplicateLesson(
         sameIds(scopes.get(c.id.toString()) ?? [], scope.productProfileIds),
       );
     }
-    if (candidates.length === 0) return null;
-
-    const norm = input.rule.trim().toLowerCase();
-    const exact = candidates.find((c) => c.rule.trim().toLowerCase() === norm);
-    if (exact) return exact;
-
-    const embeddable = candidates.filter(
-      (c) => c.embedding && c.embedding.length > 0,
-    );
-    if (embeddable.length === 0) return null;
-    const { getEmbeddingProviderForCtx } = await import('@/lib/embeddings');
-    const embedder = await getEmbeddingProviderForCtx(ctx as WorkspaceContext);
-    const result = await embedder.embed({ texts: [input.rule.slice(0, 2000)] });
-    const vec = result.embeddings[0];
-    if (!vec) return null;
-
-    let best: { lesson: LearningLesson; sim: number } | null = null;
-    for (const c of embeddable) {
-      if (c.embedding!.length !== vec.length) continue;
-      const sim = cosineSimilarity(c.embedding!, vec);
-      if (!best || sim > best.sim) best = { lesson: c, sim };
-    }
-    return best && best.sim >= DEDUP_SIMILARITY_THRESHOLD ? best.lesson : null;
+    return await bestRuleMatch(ctx, candidates, input.rule);
   } catch (err) {
     console.error(
       '[learning.findNearDuplicateLesson] dedup check failed (creating anyway):',
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+/** The candidate saying the same thing as `rule`: an exact
+ *  (case-insensitive) text match first — free — then the most similar
+ *  embedding at or above DEDUP_SIMILARITY_THRESHOLD. */
+async function bestRuleMatch(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  candidates: readonly LearningLesson[],
+  rule: string,
+): Promise<LearningLesson | null> {
+  if (candidates.length === 0) return null;
+  const norm = rule.trim().toLowerCase();
+  const exact = candidates.find((c) => c.rule.trim().toLowerCase() === norm);
+  if (exact) return exact;
+
+  const embeddable = candidates.filter((c) => c.embedding && c.embedding.length > 0);
+  if (embeddable.length === 0) return null;
+  const { getEmbeddingProviderForCtx } = await import('@/lib/embeddings');
+  const embedder = await getEmbeddingProviderForCtx(ctx as WorkspaceContext);
+  const result = await embedder.embed({ texts: [rule.slice(0, 2000)] });
+  const vec = result.embeddings[0];
+  if (!vec) return null;
+
+  let best: { lesson: LearningLesson; sim: number } | null = null;
+  for (const c of embeddable) {
+    if (c.embedding!.length !== vec.length) continue;
+    const sim = cosineSimilarity(c.embedding!, vec);
+    if (!best || sim > best.sim) best = { lesson: c, sim };
+  }
+  return best && best.sim >= DEDUP_SIMILARITY_THRESHOLD ? best.lesson : null;
+}
+
+/**
+ * KL-03: a rule the operator REJECTED (retired 'operator_rejected') that
+ * says the same thing as `rule`, in the same category and direction, and
+ * whose scope overlaps this one (either is workspace-wide, or they share a
+ * product). Extraction never recreates such a rule (§6: rejected rules are
+ * kept as negative examples). Returns null on any failure.
+ */
+export async function findRejectedRuleMatch(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  input: {
+    category: LessonCategory;
+    rule: string;
+    polarity: LessonPolarity;
+    scope: LessonScopeInput | NormalizedScope;
+  },
+): Promise<LearningLesson | null> {
+  try {
+    const scope = normalizeScope(input.scope as LessonScopeInput);
+    const conds: SQL[] = [
+      eq(learningLessons.workspaceId, ctx.workspaceId),
+      eq(learningLessons.category, input.category),
+      eq(learningLessons.polarity, input.polarity),
+      eq(learningLessons.lifecycle, 'retired'),
+      eq(learningLessons.retiredReason, 'operator_rejected'),
+    ];
+    if (scope.kind === 'products') {
+      conds.push(
+        or(
+          eq(learningLessons.scopeKind, 'workspace'),
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(lessonScopes)
+              .where(
+                and(
+                  eq(lessonScopes.workspaceId, learningLessons.workspaceId),
+                  eq(lessonScopes.lessonId, learningLessons.id),
+                  inArray(lessonScopes.productProfileId, scope.productProfileIds),
+                ),
+              ),
+          ),
+        )!,
+      );
+    }
+    const candidates = await db
+      .select()
+      .from(learningLessons)
+      .where(and(...conds))
+      .orderBy(desc(learningLessons.updatedAt))
+      .limit(200);
+    return await bestRuleMatch(ctx, candidates, input.rule);
+  } catch (err) {
+    console.error(
+      '[learning.findRejectedRuleMatch] check failed:',
       err instanceof Error ? err.message : err,
     );
     return null;
@@ -1513,8 +1224,10 @@ const REINFORCE_CEILING = 95;
  * lessons up; negative replies push them down (down is steeper — wrong
  * advice is worse than the absence of advice). Compaction's
  * stale-retirement then naturally garbage-collects lessons the outcomes
- * keep punishing. Workspace-scoped; never throws. For fit verdicts use
- * reinforceLessonsForVerdict, which honours each rule's polarity.
+ * keep punishing. Workspace-scoped; never throws. Only the reply-outcome
+ * path (off unless learn_from_replies, KL-15 owns its gates) uses it;
+ * review verdicts move rules through the reinforcement ledger
+ * (learning-ledger.ts), which honours polarity and can be compensated.
  */
 export async function reinforceLessons(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -1559,68 +1272,6 @@ export async function reinforceLessons(
   } catch (err) {
     console.error('[learning.reinforceLessons] failed:', err);
     return 0;
-  }
-}
-
-/**
- * Fit-verdict reinforcement that honours each rule's polarity (I098). A
- * rule AGREES with the verdict when its polarity points the same way —
- * a PREFER rule on a Fit, an AVOID rule on a Not-a-fit — and gains
- * confidence; a rule pointing the other way loses some. Neutral rules
- * (polarity 0) never moved the verdict and are left alone. Before KL-01 a
- * correct AVOID rule lost 3 points every time the operator agreed with it.
- * Workspace-scoped; never throws.
- */
-export async function reinforceLessonsForVerdict(
-  ctx: Pick<WorkspaceContext, 'workspaceId'>,
-  lessonIds: readonly bigint[],
-  verdict: 'fit' | 'not_fit',
-  reason: string,
-): Promise<{ strengthened: bigint[]; weakened: bigint[] }> {
-  const none = { strengthened: [] as bigint[], weakened: [] as bigint[] };
-  if (lessonIds.length === 0) return none;
-  const agreeing = verdict === 'fit' ? 1 : -1;
-  try {
-    const rows = await db
-      .update(learningLessons)
-      .set({
-        confidence: sql`CASE WHEN ${learningLessons.polarity} = ${agreeing}
-          THEN LEAST(${learningLessons.confidence} + ${REINFORCE_UP_STEP}, ${REINFORCE_CEILING})
-          ELSE GREATEST(${learningLessons.confidence} - ${REINFORCE_DOWN_STEP}, ${REINFORCE_FLOOR}) END`,
-        reinforcedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(learningLessons.workspaceId, ctx.workspaceId),
-          inArray(learningLessons.id, lessonIds as bigint[]),
-          ne(learningLessons.polarity, 0),
-        ),
-      )
-      .returning({ id: learningLessons.id, polarity: learningLessons.polarity });
-    const out = {
-      strengthened: rows.filter((r) => r.polarity === agreeing).map((r) => r.id),
-      weakened: rows.filter((r) => r.polarity !== agreeing).map((r) => r.id),
-    };
-    if (rows.length > 0) {
-      const { recordPlatformAuditEvent } = await import('./audit');
-      await recordPlatformAuditEvent(null, {
-        kind: 'learning.lesson.reinforce',
-        entityType: 'learning_lesson',
-        entityId: null,
-        payload: {
-          workspaceId: ctx.workspaceId.toString(),
-          verdict,
-          reason,
-          strengthened: out.strengthened.map((id) => id.toString()),
-          weakened: out.weakened.map((id) => id.toString()),
-        },
-      });
-    }
-    return out;
-  } catch (err) {
-    console.error('[learning.reinforceLessonsForVerdict] failed:', err);
-    return none;
   }
 }
 

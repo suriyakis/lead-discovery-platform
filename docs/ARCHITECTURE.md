@@ -101,6 +101,8 @@ interface IJobQueue {
 ```
 In-memory implementation in Phase 1 — handlers run inline on a microtask. BullMQ implementation later for production durability.
 
+**Outbox, not queue retries (KL-03).** The queue adds no attempts of its own, so durable background work keeps its state in the database: the request writes the work as rows in the same transaction as the change, enqueues a job after the commit (best effort), and a repeatable sweeper re-enqueues what was lost, retries failures with backoff and releases stale claims. The learning layer works this way (`learning_events` outbox, `learning.process` + `learning.sweep`, see [`LEARNING_LAYER.md`](LEARNING_LAYER.md)); the sweeper only enqueues, so it behaves the same on the memory queue and on BullMQ.
+
 ### `IStorage`
 ```ts
 interface IStorage {
