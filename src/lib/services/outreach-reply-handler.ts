@@ -30,6 +30,7 @@ import { buildProductKnowledgeBlock } from './outreach-knowledge';
 import { canWrite, type WorkspaceContext } from './context';
 import { recordAuditEvent } from './audit';
 import { checkGate } from './automation-gate';
+import { productPauseOf } from './automation-policy';
 import {
   composeClosingDraft,
   composeEngagementDraft,
@@ -280,6 +281,12 @@ export async function handleClassifiedReply(
     if (!gate.allowed) {
       return { action, draftIds: [], forkedThreadStateId: null };
     }
+  }
+
+  // PC-13: the lead's product is paused — no AI reply draft for it (the
+  // decision above is still recorded; a person can still reply by hand).
+  if (await productPauseOf(ctx, lead.productProfileId)) {
+    return { action, draftIds: [], forkedThreadStateId: null };
   }
 
   // referral: fork. Two drafts written: closing thank-you in the

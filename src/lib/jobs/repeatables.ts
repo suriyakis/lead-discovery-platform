@@ -18,7 +18,7 @@
 // Each handler iterates serially and swallows per-tenant errors so one
 // stuck workspace can't block the whole platform.
 //
-// PC-06: every tick iterates activeWorkspacesForTicks() — active
+// PC-06: every tick iterates the gate's tick list (activeWorkspacesForTicks) — active
 // workspaces, selected from the workspace_automation_state view, each with
 // its automation state and a context that acts as the accountable owner —
 // and skips a workspace the automation gate holds for the tick's
@@ -30,17 +30,28 @@
 // keep arriving while paused), and each tick's service re-checks the gate
 // before every item it works on (a queue row, a follow-up, a recipe, a
 // mailbox), so a pause committed mid-tick stops it at the next item.
+//
+// PC-13: every tick iterates workspacesForTick() — the same workspaces,
+// each with its resolved automation policy (services/automation-policy.ts,
+// loaded in one batch) — and asks tickVerdict(policy, tick): held by the
+// gate (counted as `held`), off by configuration (autopilot off, auto-sync
+// off, follow-ups off, no crawl plan, trash kept, health check off:
+// skipped silently, no work and no log rows), or run.
 
 import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { workspaces } from '@/lib/db/schema/workspaces';
 import { mailboxes } from '@/lib/db/schema/mailing';
 import {
   AutomationGateError,
-  activeWorkspacesForTicks,
   checkGate,
   logGateSkip,
 } from '@/lib/services/automation-gate';
+import {
+  tickVerdict,
+  workspacesForTick,
+  type AutomationTick,
+  type TickWorkspacePolicy,
+} from '@/lib/services/automation-policy';
 import { runOnce } from '@/lib/services/autopilot';
 import { drainQueue } from '@/lib/services/outreach-queue';
 import { purgeOldTrashUnattended, safeSyncOne } from '@/lib/services/mail';
@@ -73,6 +84,21 @@ export const CRAWL_ENGINE_TICK_MS = 5 * 60 * 1000;
  *  ones. The service claims each due workspace atomically. */
 export const HEALTH_CHECK_TICK_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * PC-13: should `tick` work on this workspace? A workspace the gate holds
+ * is counted (onHeld) and logged; one whose configuration has the path off
+ * is skipped silently.
+ */
+function shouldRun(ws: TickWorkspacePolicy, tick: AutomationTick, onHeld: () => void): boolean {
+  const verdict = tickVerdict(ws.policy, tick);
+  if (verdict.run) return true;
+  if ('held' in verdict) {
+    onHeld();
+    logGateSkip(tick, ws.workspaceId, verdict.held);
+  }
+  return false;
+}
+
 /** Autopilot tick body. Exported for tests (deterministic). */
 export async function runAutopilotTick(): Promise<{
   workspaces: number;
@@ -80,17 +106,14 @@ export async function runAutopilotTick(): Promise<{
   failed: number;
   held: number;
 }> {
-  const wss = await activeWorkspacesForTicks();
+  const wss = await workspacesForTick();
   let ran = 0;
   let failed = 0;
   let held = 0;
   for (const ws of wss) {
-    const gate = ws.gate('autopilot');
-    if (!gate.allowed) {
-      held++;
-      logGateSkip('autopilot.tick', ws.workspaceId, gate);
-      continue;
-    }
+    // Autopilot off: no run, and no 'autopilot_disabled' log row every
+    // 5 minutes.
+    if (!shouldRun(ws, 'autopilot.tick', () => held++)) continue;
     try {
       const result = await runOnce(ws.ctx);
       ran += result.steps.length;
@@ -115,18 +138,13 @@ export async function runDrainTick(): Promise<{
   failed: number;
   held: number;
 }> {
-  const wss = await activeWorkspacesForTicks();
+  const wss = await workspacesForTick();
   let totalSent = 0;
   let totalSkipped = 0;
   let failed = 0;
   let held = 0;
   for (const ws of wss) {
-    const gate = ws.gate('sending');
-    if (!gate.allowed) {
-      held++;
-      logGateSkip('drain.tick', ws.workspaceId, gate);
-      continue;
-    }
+    if (!shouldRun(ws, 'outreach.drain.tick', () => held++)) continue;
     try {
       const r = await drainQueue(ws.ctx);
       totalSent += r.sent;
@@ -173,15 +191,7 @@ export async function runImapTick(now: Date = new Date()): Promise<{
   adopted: number;
   held: number;
 }> {
-  const tickWss = await activeWorkspacesForTicks(now);
-  const imapOn = new Set(
-    (
-      await db
-        .select({ id: workspaces.id })
-        .from(workspaces)
-        .where(and(eq(workspaces.status, 'active'), eq(workspaces.imapAutoSyncEnabled, true)))
-    ).map((w) => w.id.toString()),
-  );
+  const tickWss = await workspacesForTick(now);
 
   let adopted = 0;
   for (const ws of tickWss) {
@@ -203,13 +213,10 @@ export async function runImapTick(now: Date = new Date()): Promise<{
   let recovered = 0;
   let held = 0;
   for (const ws of tickWss) {
-    if (!imapOn.has(ws.workspaceId.toString())) continue;
-    const gate = ws.gate('inbox_sync');
-    if (!gate.allowed) {
-      held++;
-      logGateSkip('imap.tick', ws.workspaceId, gate);
-      continue;
-    }
+    // Auto-sync off (P61-23): the operator pulls by hand only — not
+    // counted as held even when a hold also applies.
+    if (!ws.policy.inbox.autoSync) continue;
+    if (!shouldRun(ws, 'mail.imap.tick', () => held++)) continue;
     const mbs = await db
       .select()
       .from(mailboxes)
@@ -299,19 +306,14 @@ export async function runFollowUpTick(): Promise<{
   // service-level loadSettings() is the source of truth — we just
   // iterate the workspace list and let processDueFollowUps no-op
   // for any that have follow-ups disabled.
-  const wss = await activeWorkspacesForTicks();
+  const wss = await workspacesForTick();
   let sent = 0;
   let skipped = 0;
   let failed = 0;
   let checked = 0;
   let held = 0;
   for (const ws of wss) {
-    const gate = ws.gate('sending');
-    if (!gate.allowed) {
-      held++;
-      logGateSkip('follow_up.tick', ws.workspaceId, gate);
-      continue;
-    }
+    if (!shouldRun(ws, 'outreach.follow_up.tick', () => held++)) continue;
     try {
       const result = await processDueFollowUps(ws.ctx);
       checked += result.checked;
@@ -342,7 +344,7 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
   /** PC-05: due plans skipped (and moved on) for an empty wallet. */
   walletEmptySkipped: number;
 }> {
-  const wss = await activeWorkspacesForTicks(now);
+  const wss = await workspacesForTick(now);
   let processed = 0;
   let inQuiet = 0;
   let totalStarted = 0;
@@ -350,12 +352,7 @@ export async function runCrawlEngineTick(now: Date = new Date()): Promise<{
   let held = 0;
   let walletEmptySkipped = 0;
   for (const ws of wss) {
-    const gate = ws.gate('discovery');
-    if (!gate.allowed) {
-      held++;
-      logGateSkip('crawl.engine.tick', ws.workspaceId, gate);
-      continue;
-    }
+    if (!shouldRun(ws, 'crawl.engine.tick', () => held++)) continue;
     try {
       const result = await processDueCrawlPlans(ws.ctx, now);
       processed += result.processed;
@@ -393,17 +390,12 @@ export async function runMailTrashPurgeTick(): Promise<{
   failed: number;
   held: number;
 }> {
-  const wss = await activeWorkspacesForTicks();
+  const wss = await workspacesForTick();
   let totalDeleted = 0;
   let failed = 0;
   let held = 0;
   for (const ws of wss) {
-    const gate = ws.gate('trash_purge');
-    if (!gate.allowed) {
-      held++;
-      logGateSkip('mail.trash.purge.tick', ws.workspaceId, gate);
-      continue;
-    }
+    if (!shouldRun(ws, 'mail.trash.purge.tick', () => held++)) continue;
     try {
       const result = await purgeOldTrashUnattended(ws.workspaceId);
       totalDeleted += result.deleted;
@@ -431,7 +423,7 @@ export async function runKnowledgeCompactTick(): Promise<{
   failed: number;
   held: number;
 }> {
-  const wss = await activeWorkspacesForTicks();
+  const wss = await workspacesForTick();
   let processed = 0;
   let merged = 0;
   let retired = 0;
@@ -441,12 +433,7 @@ export async function runKnowledgeCompactTick(): Promise<{
   for (const ws of wss) {
     // PC-06: compaction and synthesis are both Background AI. PC-05: both
     // call the AI, so an empty wallet skips them too (I110).
-    const gate = ws.gate('background_ai', { spendsTokens: true });
-    if (!gate.allowed) {
-      held++;
-      logGateSkip('knowledge.compact.tick', ws.workspaceId, gate);
-      continue;
-    }
+    if (!shouldRun(ws, 'knowledge.compact.tick', () => held++)) continue;
     try {
       const summary = await compactWorkspaceKnowledgeUnattended(ws.workspaceId);
       processed += 1;
@@ -477,9 +464,18 @@ export async function runKnowledgeCompactTick(): Promise<{
 
 const handleKnowledgeCompactTick: JobHandler = () => runKnowledgeCompactTick();
 
-const handleHealthCheckTick: JobHandler = async () => {
-  return processDueHealthChecks();
-};
+/** Health-check tick body. Exported for tests. PC-13: only workspaces
+ *  whose policy runs the health check are considered; processDueHealthChecks
+ *  claims each due one atomically, and its AI review asks the gate itself. */
+export async function runHealthCheckTick(): Promise<{ checked: number; failed: number }> {
+  const wss = await workspacesForTick();
+  const workspaceIds = wss
+    .filter((ws) => shouldRun(ws, 'health.check.tick', () => undefined))
+    .map((ws) => ws.workspaceId);
+  return processDueHealthChecks({ workspaceIds });
+}
+
+const handleHealthCheckTick: JobHandler = () => runHealthCheckTick();
 
 let registered = false;
 

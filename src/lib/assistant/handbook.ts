@@ -169,7 +169,6 @@ plan stops the runs. {H-11} It runs every 5 minutes and right after
 every discovery run that found records, but only while its master switch
 is on and automation is not paused (see Pausing below). {H-12} Every
 step is off until an admin turns it on:
-- Sync inbound mail.
 - Auto-approve: review items still in "new" whose relevance score
   reaches the threshold (default 70) are approved and recorded as
   approved by the workspace owner (or by whoever started the run that
@@ -179,14 +178,19 @@ step is off until an admin turns it on:
   in the workspace owner's name and puts it in the send queue; nobody
   reviews those emails. It still needs a pipeline lead with a contact
   email (see Known limitations, I001). {H-08}
-- Auto-drain the send queue, CRM contact sync, CRM deal on qualified.
-Per-product overrides (pick a product on [/autopilot]) can switch a step
-off for that product or change its threshold. They cannot switch on a
-step the workspace has off, and the per-product master and emergency
-pause overrides are not applied. {H-13} The Crawl engine page
-([/connectors/engine]) repeats the master, auto-approve, threshold and
-generate + enqueue switches; they change the same settings as
-[/autopilot].
+- CRM contact sync (new and changed qualified leads only) and CRM deal
+  on qualified (only for leads whose contact is already synced).
+Sending queued mail and reading mailboxes are not autopilot steps: they
+always run in the background (see Pausing below).
+Per-product overrides (pick a product on [/autopilot]) only narrow what
+the workspace runs: autopilot or a step can be switched off for that
+product, or its approval threshold raised; switching on what the
+workspace has off is refused. "Pause <product>" there (anyone who can
+edit; owners and admins resume) stops autopilot for that product and
+holds its queued emails and follow-ups — not sent, not failed — until it
+is resumed; email you write yourself still sends. {H-13} The Crawl engine
+page ([/connectors/engine]) shows the autopilot steps read-only, with a
+link to [/autopilot] to change them.
 
 Pausing all automation — one switch for the whole workspace:
 - "Pause all automation" (on [/autopilot] and [/mailbox/queue]; anyone
@@ -211,9 +215,9 @@ Pausing all automation — one switch for the whole workspace:
   AI reply drafts wait in the send queue until the platform releases
   the workspace (a banner says so), while email you write yourself sends
   normally. {H-32}
-- The send queue is drained every 30 seconds and mailboxes sync every 2
-  minutes whatever autopilot's "Auto-drain" and "Sync inbound" switches
-  say; those only add an extra pass inside an autopilot run. Background
+- Approved emails in the send queue go out every 30 seconds and
+  mailboxes sync every 2 minutes, whether or not autopilot is on: only
+  the pause, a hold or the go-live hold stops sending. Background
   mailbox sync is switched off under "Mailbox auto-sync" on
   [/settings/outreach].
 
@@ -305,8 +309,8 @@ evidence chain.
 - [/settings/outreach] (owners and admins; everyone else sees only the
   reply auto-action switches, read-only): workspace native language,
   default outreach language, "Auto-draft replies" (AI drafts the next
-  reply on lead threads for your review; "Auto-send replies" has no
-  effect yet, so reply drafts always wait for you), the reply
+  reply on lead threads for your review; a reply draft is never sent
+  until you approve it), the reply
   auto-action switches (see Replies), follow-up schedule and approval,
   mailbox auto-sync, trash retention.
 - [/settings/members]: owners and admins add teammates and set their
@@ -389,9 +393,7 @@ ${KNOWN_LIMITATIONS_HEADING}
 - I005: Follow-ups are never scheduled after a cold email, so the follow-up cadence set on [/settings/outreach] sends nothing for cold outreach.
 - X1: Until Phase 0 every message synced from a mailbox was classified as if it were a reply, so newsletters and notifications raised "replied" notifications and, with the auto-suppress switches on, suppressed their senders (sometimes colleagues or customers) and closed their leads. Now only mail that answers your outreach is classified and can notify or act; everything else is filed on its thread with no class, no notification and no side effect, whatever the switches say. {H-25} Addresses suppressed and contacts created the old way stay until they are cleaned up: check [/mailbox/suppression] and have an admin revoke the ones you never meant to block.
 - I073: If the research provider chosen on [/settings/integrations] (Gemini or Perplexity) has no working key, discovery silently falls back to mock search: leads called "Mock result N" on example-*.test domains, possibly qualified at token cost. The run's log says provider=mock.
-- I020: The per-product "Autopilot enabled" override on [/autopilot] is saved but not applied (an older per-product pause setting is not applied either; pausing is for the whole workspace).
 - I088: Reply classes come from keyword rules, so ordinary replies can be mislabelled (for example "thanks for your email, we are not interested" can count as a bounce), and a class cannot be corrected.
-- I019: "Auto-send replies" does nothing yet, and autopilot's "Auto-drain" and "Sync inbound" switches do not control the background drain and sync.
 `.trim();
 
 const CLAIM_TAG_RE = /\{(H-\d{2})\}/g;

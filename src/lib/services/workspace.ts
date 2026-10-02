@@ -146,12 +146,11 @@ export async function getActiveWorkspaceSummary(
 
 export interface UpdateOutreachDefaultsInput {
   autoDraftReplies?: boolean;
-  autoSendReplies?: boolean;
 }
 
 /** Update workspace-level outreach automation toggles. Workspace-admin
- *  only. autoSendReplies forces autoDraftReplies on (auto-send without
- *  auto-draft is meaningless). */
+ *  only. (PC-13, I019: "Auto-send replies" is gone — it was saved but
+ *  never implemented; AI reply drafts always wait for a person.) */
 export async function updateOutreachDefaults(
   ctx: WorkspaceContext,
   input: UpdateOutreachDefaultsInput,
@@ -162,11 +161,6 @@ export async function updateOutreachDefaults(
   const updates: Partial<Workspace> & { updatedAt: Date } = { updatedAt: new Date() };
   if (input.autoDraftReplies !== undefined) {
     updates.autoDraftReplies = input.autoDraftReplies;
-  }
-  if (input.autoSendReplies !== undefined) {
-    updates.autoSendReplies = input.autoSendReplies;
-    // Auto-send implies auto-draft (you can't send what wasn't drafted).
-    if (input.autoSendReplies) updates.autoDraftReplies = true;
   }
   const [updated] = await db
     .update(workspaces)
@@ -180,7 +174,6 @@ export async function updateOutreachDefaults(
     entityId: ctx.workspaceId,
     payload: {
       autoDraftReplies: updated.autoDraftReplies,
-      autoSendReplies: updated.autoSendReplies,
     },
   });
   return updated;

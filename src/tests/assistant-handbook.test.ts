@@ -103,12 +103,17 @@ describe('assistant handbook — content truth', () => {
     }
   });
 
-  it('has an Autopilot section that covers /autopilot and the duplicate switches on /connectors/engine', () => {
+  it('has an Autopilot section that covers /autopilot and the read-only status on /connectors/engine', () => {
     const autopilot = section(HANDBOOK_SOURCE, '## Autopilot');
     expect(autopilot).not.toBe('');
     expect(autopilot).toContain('[/autopilot]');
     expect(autopilot).toContain('[/connectors/engine]');
     const f = flat(autopilot);
+    // PC-13 (I019, I020, I062): no dead switches, narrow-only overrides,
+    // the Crawl Engine panel is read-only.
+    expect(f).toContain('shows the autopilot steps read-only');
+    expect(f).toContain('only narrow what the workspace runs');
+    expect(f).not.toMatch(/Auto-drain|Sync inbound mail|Auto-send replies/);
     // PC-05: one pause for the whole workspace replaced the two
     // Emergency pause switches; anyone who can edit pauses, owners and
     // admins resume.

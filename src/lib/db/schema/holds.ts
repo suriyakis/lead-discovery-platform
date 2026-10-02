@@ -22,7 +22,8 @@ import { workspaces } from './workspaces';
  *
  *   sending          every outbound send: the queue drain, follow-ups,
  *                    replies, compose, retry
- *   inbox_sync       IMAP sync: the tick, manual Sync, autopilot's sync step
+ *   inbox_sync       IMAP sync: the tick and manual Sync (PC-13 removed
+ *                    autopilot's sync step)
  *   inbound_actions  reply auto-actions (auto-suppress, auto-close)
  *   discovery        connector runs: crawl plans (tick and Run now), recipe runs
  *   autopilot        autopilot runs (runOnce)

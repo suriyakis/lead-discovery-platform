@@ -296,10 +296,10 @@ export function archiveCrmConnectionConfirm(c: { name: string; system: string })
 
 // ---- autopilot ------------------------------------------------------------
 
-/** The per-product override columns (NULL = inherit). */
+/** The per-product override columns (NULL = inherit; PC-13: an override
+ *  is only ever false — overrides narrow). */
 export interface AutopilotOverlayLike {
   autopilotEnabled: boolean | null;
-  emergencyPause: boolean | null;
   enableAutoApproveProjects: boolean | null;
   autoApproveThreshold: number | null;
   enableAutoEnqueueOutreach: boolean | null;
@@ -320,13 +320,13 @@ export interface AutopilotBaseLike {
   enableAutoCrmDealOnQualified: boolean;
 }
 
-/** Same labels as the toggles on /autopilot. */
+/** Same labels as the product override toggles on /autopilot. */
 const AUTOPILOT_STEP_LABELS = {
-  autopilotEnabled: 'Autopilot (master)',
+  autopilotEnabled: 'Autopilot for this product',
   enableAutoApproveProjects: 'Auto-approve relevant review items',
-  enableAutoEnqueueOutreach: 'Auto-generate + enqueue outreach drafts',
-  enableAutoCrmContactSync: "Auto-sync qualified leads' contacts to CRM",
-  enableAutoCrmDealOnQualified: 'Auto-create CRM deals on qualified state',
+  enableAutoEnqueueOutreach: 'Generate + queue outreach drafts',
+  enableAutoCrmContactSync: "Sync qualified leads' contacts to the CRM",
+  enableAutoCrmDealOnQualified: 'Create CRM deals for qualified leads',
 } as const;
 
 /**
@@ -349,18 +349,11 @@ export function clearAutopilotOverridesConfirm(
     (base[key] ? turnsOn : turnsOff).push(AUTOPILOT_STEP_LABELS[key]);
   }
   const effects: string[] = [];
-  if (overlay.emergencyPause !== null) {
-    // PC-05 / I020: a saved per-product pause override was never applied;
-    // clearing it changes nothing that runs, so say so.
-    effects.push(
-      `- Removes ${productName}'s old per-product pause setting (it was saved but never applied; pausing is for the whole workspace).`,
-    );
-  }
   if (turnsOn.length > 0) effects.push(`- Turns ON: ${turnsOn.join('; ')}.`);
   if (turnsOff.length > 0) effects.push(`- Turns off: ${turnsOff.join('; ')}.`);
   if (
     overlay.autoApproveThreshold !== null &&
-    overlay.autoApproveThreshold !== base.autoApproveThreshold
+    overlay.autoApproveThreshold > base.autoApproveThreshold
   ) {
     effects.push(
       `- Approval threshold: ${overlay.autoApproveThreshold} → ${base.autoApproveThreshold}.`,
@@ -373,7 +366,12 @@ export function clearAutopilotOverridesConfirm(
     effects.length > 0
       ? effects.join('\n')
       : 'Nothing changes in practice: every override matches the workspace default.';
-  return `Clear all autopilot overrides for "${productName}"?\n\nEvery step for this product goes back to the workspace default.\n${body}`;
+  return `Clear all autopilot overrides for "${productName}"?\n\nEvery step for this product goes back to the workspace default. A pause stays until someone resumes the product.\n${body}`;
+}
+
+/** PC-13: confirm text for resuming a paused product. */
+export function resumeProductConfirm(productName: string): string {
+  return `Resume "${productName}"?\n\nAutopilot works for it again on its next run, and its held emails and follow-ups go out at their next turn (within 15 minutes), within each mailbox's sending window.`;
 }
 
 // ---- workspace pause (PC-05) ------------------------------------------------

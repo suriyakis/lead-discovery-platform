@@ -12,6 +12,7 @@ import {
   Play,
   Plus,
   Save,
+  Settings2,
   Trash2,
   Zap,
 } from 'lucide-react';
@@ -39,15 +40,13 @@ function minutesToHoursDisplay(min: number): number {
   return Math.round((min / 60) * 100) / 100;
 }
 import { listProductProfiles } from '@/lib/services/product-profile';
-import { getAutopilotSettings } from '@/lib/services/autopilot';
-import { loadAutomationState } from '@/lib/services/automation-gate';
+import { autopilotFlow, resolveAutomationPolicy } from '@/lib/services/automation-policy';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   createPlan,
   deletePlanAction,
   reclassifyAll,
   runPlanAction,
-  saveAutopilot,
   savePlan,
 } from './actions';
 
@@ -81,18 +80,20 @@ export default async function CrawlEnginePage({
     throw err;
   }
 
-  const [plans, recipes, connectors, products, autopilot] = await Promise.all([
+  const [plans, recipes, connectors, products, policy] = await Promise.all([
     listCrawlPlans(ctx),
     listRecipes(ctx),
     listConnectors(ctx),
     listProductProfiles(ctx, { includeArchived: false }),
-    getAutopilotSettings(ctx),
+    resolveAutomationPolicy(ctx),
   ]);
-  // PC-05 (I062): the master box shows autopilotEnabled only; the
-  // workspace pause is shown beside it as a badge linking to its control,
-  // so saving this form while paused never switches autopilot off.
-  const paused = (await loadAutomationState(ctx.workspaceId)).pause !== null;
-  const running = autopilot.autopilotEnabled && !paused;
+  // PC-13 (I062): read-only status from the automation policy; the
+  // workspace pause is a badge linking to its control.
+  const paused = policy.state.pause !== null;
+  const autopilotOn = policy.autopilot.enabled;
+  const flow = autopilotFlow(policy, null);
+  const approveStep = flow.find((f) => f.key === 'auto_approve');
+  const queueStep = flow.find((f) => f.key === 'generate_queue');
 
   const connectorNameById = new Map(
     connectors.map((c) => [c.id.toString(), c.name]),
@@ -157,44 +158,36 @@ export default async function CrawlEnginePage({
         {sp.error ? <p className="mail-flash error">{sp.error}</p> : null}
 
         {/* Pipeline status — what happens after the recipes run.
-            Form wraps the panel so the operator can toggle autopilot
-            inline without navigating to /autopilot. */}
-        <form
-          action={saveAutopilot}
-          className="pipeline-status"
-          aria-label="Pipeline status"
-        >
+            PC-13 (I062): read-only. The autopilot switches live on
+            /autopilot only; this panel shows what the automation policy
+            resolves (autopilotFlow) and links there, so saving anything on
+            this page can never change autopilot. */}
+        <section className="pipeline-status" aria-label="Pipeline status">
           <header className="pipeline-status-head">
             <h2 className="pipeline-status-title">
               <Bot className="lucide" /> Pipeline after crawl
             </h2>
             <div className="pipeline-status-toolbar">
-              <label className="pipeline-toggle pipeline-toggle-master">
-                <input
-                  type="checkbox"
-                  name="autopilotEnabled"
-                  defaultChecked={autopilot.autopilotEnabled}
-                />
-                <span>
-                  Autopilot <strong>{autopilot.autopilotEnabled ? 'ON' : 'OFF'}</strong>
-                </span>
-              </label>
+              <span className={autopilotOn ? 'badge badge-good' : 'badge'}>
+                Autopilot {autopilotOn ? 'ON' : 'OFF'}
+              </span>
               {paused ? (
                 <Link href="/autopilot#pause" className="badge badge-bad">
                   Paused — all automation waits
                 </Link>
               ) : null}
-              <button type="submit" className="primary-btn">
-                <Save className="lucide" /> Save
-              </button>
-              <button
-                type="submit"
-                formAction={reclassifyAll}
-                className="ghost-btn"
-                title="Re-run AI qualification on every source record in this workspace. Useful after changing the AI provider, model, or product profile."
-              >
-                Re-classify all
-              </button>
+              <Link href="/autopilot" className="ghost-btn">
+                <Settings2 className="lucide" /> Change on Autopilot
+              </Link>
+              <form action={reclassifyAll}>
+                <button
+                  type="submit"
+                  className="ghost-btn"
+                  title="Re-run AI qualification on every source record in this workspace. Useful after changing the AI provider, model, or product profile."
+                >
+                  Re-classify all
+                </button>
+              </form>
             </div>
           </header>
           <ol className="pipeline-steps">
@@ -238,89 +231,40 @@ export default async function CrawlEnginePage({
                     <>
                       Scoring each record against{' '}
                       <strong>{products.length}</strong> active product
-                      profile{products.length === 1 ? '' : 's'}. Best fit
-                      wins.
+                      profile{products.length === 1 ? '' : 's'}.
                     </>
                   )}
                 </p>
               </div>
             </li>
-            <li
-              className={
-                running && autopilot.enableAutoApproveProjects
-                  ? 'pipeline-step is-on'
-                  : 'pipeline-step is-off'
-              }
-            >
-              <span className="pipeline-step-icon">
-                {running && autopilot.enableAutoApproveProjects ? (
-                  <CheckCircle2 className="lucide" />
-                ) : (
-                  <PauseCircle className="lucide" />
-                )}
-              </span>
-              <div>
-                <div className="pipeline-step-title">
-                  3. Auto-approve high-scoring records
-                </div>
-                <p className="pipeline-step-detail">
-                  Approving records with relevance score ≥{' '}
-                  <input
-                    type="number"
-                    name="autoApproveThreshold"
-                    defaultValue={autopilot.autoApproveThreshold}
-                    min={0}
-                    max={100}
-                    className="pipeline-inline-input"
-                    aria-label="Auto-approve threshold (0–100)"
-                  />{' '}
-                  / 100. Otherwise → <Link href="/review">review queue</Link>{' '}
-                  for manual triage.
-                </p>
-                <label className="pipeline-toggle">
-                  <input
-                    type="checkbox"
-                    name="enableAutoApproveProjects"
-                    defaultChecked={autopilot.enableAutoApproveProjects}
-                  />
-                  <span>Enable auto-approve</span>
-                </label>
-              </div>
-            </li>
-            <li
-              className={
-                running && autopilot.enableAutoEnqueueOutreach
-                  ? 'pipeline-step is-on'
-                  : 'pipeline-step is-off'
-              }
-            >
-              <span className="pipeline-step-icon">
-                {running && autopilot.enableAutoEnqueueOutreach ? (
-                  <Mail className="lucide" />
-                ) : (
-                  <PauseCircle className="lucide" />
-                )}
-              </span>
-              <div>
-                <div className="pipeline-step-title">
-                  4. Generate + enqueue outreach
-                </div>
-                <p className="pipeline-step-detail">
-                  AI drafts a personalised email per approved record using its
-                  best-fit product profile pitch and queues it for send.
-                </p>
-                <label className="pipeline-toggle">
-                  <input
-                    type="checkbox"
-                    name="enableAutoEnqueueOutreach"
-                    defaultChecked={autopilot.enableAutoEnqueueOutreach}
-                  />
-                  <span>Enable auto-outreach</span>
-                </label>
-              </div>
-            </li>
+            {[approveStep, queueStep].map((step) =>
+              step ? (
+                <li
+                  key={step.key}
+                  className={
+                    step.status === 'on' ? 'pipeline-step is-on' : 'pipeline-step is-off'
+                  }
+                >
+                  <span className="pipeline-step-icon">
+                    {step.status === 'on' ? (
+                      step.key === 'auto_approve' ? (
+                        <CheckCircle2 className="lucide" />
+                      ) : (
+                        <Mail className="lucide" />
+                      )
+                    ) : (
+                      <PauseCircle className="lucide" />
+                    )}
+                  </span>
+                  <div>
+                    <div className="pipeline-step-title">{step.label}</div>
+                    <p className="pipeline-step-detail">{step.blurb}</p>
+                  </div>
+                </li>
+              ) : null,
+            )}
           </ol>
-        </form>
+        </section>
 
         {/* Existing plans */}
         {plans.length === 0 ? (

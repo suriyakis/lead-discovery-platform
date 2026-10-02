@@ -477,6 +477,13 @@
       "when": 1790903522330,
       "tag": "0067_p1_automation_control_pause",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1790908432329,
+      "tag": "0068_p1_automation_control_policy",
+      "breakpoints": true
     }
   ]
 }

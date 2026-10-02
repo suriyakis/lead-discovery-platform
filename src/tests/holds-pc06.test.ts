@@ -824,7 +824,7 @@ describe('(1) Autopilot hold blocks runOnce', { timeout: 60_000 }, () => {
     const t = await tenant();
     await updateAutopilotSettings(t.owner, {
       autopilotEnabled: true,
-      enableAutoSyncInbound: true,
+      enableAutoApproveProjects: true,
     });
     await hold(t, ['autopilot'], 'autopilot misfired');
     const r = await runOnce(t.owner);

@@ -138,9 +138,12 @@ export const workspaces = pgTable('workspaces', {
    *  generate the next draft via AI. Operator can flip this OFF if they
    *  prefer to write every reply themselves. Default ON. */
   autoDraftReplies: boolean('auto_draft_replies').notNull().default(true),
-  /** When auto-drafted reply confidence is high enough, send without
-   *  human review. Default OFF — sales replies are too risky to auto-
-   *  send unless the operator opts in. */
+  /**
+   * @deprecated PC-13 (I019): read by nothing — "Auto-send replies" was
+   * saved but never implemented (reply drafts always wait for a person).
+   * Removed from code and UI; set to false by migration
+   * p1_automation_control_policy and dropped one release later.
+   */
   autoSendReplies: boolean('auto_send_replies').notNull().default(false),
 
   /** Phase 50: per-product cap on bytes uploaded to vector storage.

@@ -176,6 +176,26 @@ A new workspace is also **not live** for outreach until the platform
 releases it: its cold emails, follow-ups and AI reply drafts wait in the
 queue (a banner says so) while email you write yourself sends normally.
 
+### Pausing one product, and what autopilot really does
+
+Only one product is the problem? Open `/autopilot`, pick the product and
+press **Pause <product>** (anyone who can edit). Autopilot then does
+nothing for it — no approvals, drafts, queueing or CRM pushes — and its
+queued emails and follow-ups wait (still queued, with the reason shown;
+nothing fails). Owners and admins **Resume** it. Email you write yourself
+still sends.
+
+A product can only narrow what the workspace runs: on `/autopilot` each of
+its steps either inherits the workspace or is off for it, and its approval
+threshold can only be higher. To run a step for some products only, switch
+it on for the workspace and off for the others.
+
+Approved emails in the send queue always go out (every 30 seconds, within
+each mailbox's window) and mailboxes are read every 2 minutes while
+**Mailbox auto-sync** is on in `/settings/outreach` — neither is an
+autopilot switch. `/connectors/engine` shows the autopilot steps read-only;
+change them on `/autopilot`.
+
 ## 6. Admin operations (super-admin only)
 
 - `/admin` — platform totals, workspace metrics, billing and token grants

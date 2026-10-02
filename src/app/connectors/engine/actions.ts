@@ -1,6 +1,8 @@
 'use server';
 
-// P62-03: server actions for the Crawl Engine UI.
+// P62-03: server actions for the Crawl Engine UI. PC-13 (I062): none of
+// them writes autopilot settings — the autopilot switches live on
+// /autopilot only (the "Pipeline after crawl" panel is read-only).
 
 import { redirect } from 'next/navigation';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
@@ -11,7 +13,6 @@ import {
   runCrawlPlanNow,
   updateCrawlPlan,
 } from '@/lib/services/crawl-engine';
-import { updateAutopilotSettings } from '@/lib/services/autopilot';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 function bigintArrayFromFormData(formData: FormData, name: string): bigint[] {
@@ -135,41 +136,6 @@ export async function runPlanAction(formData: FormData): Promise<void> {
           : err instanceof Error
             ? err.message
             : 'run failed',
-      )}`,
-    );
-  }
-}
-
-export async function saveAutopilot(formData: FormData): Promise<void> {
-  const c = await getWorkspaceContext();
-  // Read each toggle: an unticked checkbox is absent from the form. The
-  // master box reflects autopilotEnabled only (PC-05, I062: it used to
-  // show OFF while the old emergency pause was on, so saving switched
-  // autopilot off); pausing is the separate workspace pause.
-  const autopilotEnabled = formData.get('autopilotEnabled') === 'on';
-  const enableAutoApproveProjects =
-    formData.get('enableAutoApproveProjects') === 'on';
-  const enableAutoEnqueueOutreach =
-    formData.get('enableAutoEnqueueOutreach') === 'on';
-  const rawThreshold = Number(formData.get('autoApproveThreshold') ?? 75);
-  const autoApproveThreshold = Number.isFinite(rawThreshold)
-    ? Math.max(0, Math.min(100, Math.floor(rawThreshold)))
-    : 75;
-  try {
-    await updateAutopilotSettings(c, {
-      autopilotEnabled,
-      enableAutoApproveProjects,
-      enableAutoEnqueueOutreach,
-      autoApproveThreshold,
-    });
-    redirect(
-      `/connectors/engine?message=${encodeURIComponent('Autopilot updated.')}`,
-    );
-  } catch (err) {
-    if (isNextRedirectError(err)) throw err;
-    redirect(
-      `/connectors/engine?error=${encodeURIComponent(
-        err instanceof Error ? err.message : 'autopilot save failed',
       )}`,
     );
   }

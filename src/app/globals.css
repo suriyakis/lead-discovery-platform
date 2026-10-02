@@ -403,6 +403,35 @@ main {
   border-style: dashed;
 }
 
+/* PC-13: the flow view shows what really runs (autopilotFlow). */
+.flow-step-always {
+  border-color: oklch(0.7 0.16 150 / 0.5);
+  background: oklch(0.7 0.16 150 / 0.08);
+}
+
+.flow-step-held {
+  border-color: oklch(0.78 0.13 75 / 0.5);
+  background: oklch(0.78 0.13 75 / 0.08);
+}
+
+.flow-step-partial {
+  border-color: oklch(0.78 0.13 75 / 0.4);
+  border-style: dashed;
+  background: oklch(0.7 0.16 150 / 0.05);
+}
+
+.flow-step-blurb {
+  margin: 0;
+  font-size: 0.825rem;
+}
+
+.autopilot-master-strip {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .flow-step-icon {
   font-size: 1.25rem;
   width: 1.5rem;

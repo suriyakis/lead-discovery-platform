@@ -36,6 +36,7 @@ import {
   originForDraft,
   type SendOrigin,
 } from './automation-gate';
+import { productPauseOf, productPausedMessage } from './automation-policy';
 import {
   canAdminWorkspace,
   canWrite,
@@ -392,8 +393,9 @@ export interface DrainResult {
    *  sending policy's window, or deferred by the gate (see `deferred`). */
   skipped: number;
   /** PC-05: rows the gate deferred (still queued, due again later, the
-   *  reason in last_error): the go-live hold for their origin, or a
-   *  paused / failing / archived mailbox. Counted in `skipped` too. */
+   *  reason in last_error): the go-live hold for their origin, a paused /
+   *  failing / archived mailbox, or (PC-13) a paused product. Counted in
+   *  `skipped` too. */
   deferred: number;
   /** PC-06 / PC-05: set when the automation gate stopped the drain (the
    *  workspace pause, a Sending hold, the platform outbound stop, no
@@ -422,6 +424,10 @@ export interface DrainOptions {
  * workspace row, which the pause has to wait for), so a pause committed
  * while row k is being sent leaves every later row queued and untouched,
  * and no row is claimed after the pause time.
+ *
+ * PC-13 (I020): a row whose draft belongs to a paused product is deferred
+ * the same way (still queued, its reason in last_error) — read fresh
+ * before each row, so a product paused mid-drain holds its remaining rows.
  */
 export async function drainQueue(
   ctx: WorkspaceContext,
@@ -466,7 +472,7 @@ export async function drainQueue(
     )
     .orderBy(asc(outreachQueue.scheduledSendAt))
     .limit(limit);
-  const origins = await originsForEntries(ctx, due);
+  const { origins, products } = await draftFactsForEntries(ctx, due);
 
   let sent = 0;
   let failed = 0;
@@ -493,6 +499,18 @@ export async function drainQueue(
       }
       continue;
     }
+    // PC-13: the draft's product is paused — hold the row, never fail it.
+    const productId = products.get(entry.id.toString());
+    if (productId !== undefined) {
+      const productPause = await productPauseOf(ctx, productId);
+      if (productPause) {
+        if (await deferEntry(entry, now, productPausedMessage(productPause.productName))) {
+          deferred++;
+          skipped++;
+        }
+        continue;
+      }
+    }
     const result = await processEntry(ctx, entry, settings, origin, options.providerOverride, now);
     if (result.kind === 'stopped') {
       heldReason = result.reason;
@@ -515,13 +533,16 @@ export async function drainQueue(
   };
 }
 
-/** Where each entry's email comes from (flow:F-07). A draft decides it;
- *  an entry without one (its draft was deleted) fails closed as cold. */
-async function originsForEntries(
+/** Where each entry's email comes from (flow:F-07) and, PC-13, which
+ *  product its draft is for (keyed by entry id). A draft decides both; an
+ *  entry without one (a one-off send, or its draft was deleted) fails
+ *  closed as cold and belongs to no product. */
+async function draftFactsForEntries(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   entries: ReadonlyArray<OutreachQueueEntry>,
-): Promise<Map<string, SendOrigin>> {
+): Promise<{ origins: Map<string, SendOrigin>; products: Map<string, bigint> }> {
   const out = new Map<string, SendOrigin>();
+  const products = new Map<string, bigint>();
   const draftIds = [
     ...new Set(entries.map((e) => e.draftId).filter((d): d is bigint => d !== null)),
   ];
@@ -533,6 +554,7 @@ async function originsForEntries(
             id: outreachDrafts.id,
             stage: outreachDrafts.stage,
             triggeredByMessageId: outreachDrafts.triggeredByMessageId,
+            productProfileId: outreachDrafts.productProfileId,
           })
           .from(outreachDrafts)
           .where(
@@ -545,8 +567,9 @@ async function originsForEntries(
   for (const e of entries) {
     const draft = e.draftId !== null ? byId.get(e.draftId.toString()) : undefined;
     out.set(e.id.toString(), draft ? originForDraft(draft) : 'cold');
+    if (draft) products.set(e.id.toString(), draft.productProfileId);
   }
-  return out;
+  return { origins: out, products };
 }
 
 async function mailboxStatusOf(

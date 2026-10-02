@@ -77,6 +77,8 @@ import { saveSendSettingsAction } from '@/app/mailbox/queue/actions';
 import { workspaceMembers } from '@/lib/db/schema/workspaces';
 import { expectRedirect } from './helpers/next-render';
 import {
+  pauseProductAutomation,
+  resumeProductAutomation,
   runOnce,
   updateAutopilotSettings,
   upsertProductAutopilotSettings,
@@ -594,7 +596,7 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     await queuedEmail(s);
     await updateAutopilotSettings(ctx(s), {
       autopilotEnabled: true,
-      enableAutoDrainQueue: true,
+      enableAutoApproveProjects: true,
     });
     await pauseAutomation(ctx(s), { source: 'api' });
 
@@ -742,25 +744,30 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     expect((await runOnce(ctx(s))).steps[0]!.detail).toBe(`held: ${PAUSED_MESSAGE}`);
   });
 
-  it('[handbook H-13] per-product overrides only narrow a step; product master and emergency-pause overrides are not applied', async () => {
+  it('[handbook H-13] per-product overrides only narrow; a paused product gets no autopilot work and its email waits until an owner or admin resumes it', async () => {
     const s = await setup();
     const { product, items } = await discover(s);
     const item = items[0]!;
 
-    // The workspace step is off: a product "on" cannot widen it.
+    // The workspace step is off: a product "on" is refused, not saved.
     await updateAutopilotSettings(ctx(s), {
       autopilotEnabled: true,
       enableAutoApproveProjects: false,
       autoApproveThreshold: 50,
     });
-    await upsertProductAutopilotSettings(ctx(s), {
-      productProfileId: product.id,
-      enableAutoApproveProjects: true,
-    });
-    await runOnce(ctx(s));
-    expect((await reviewItem(item.id)).state).toBe('new');
+    await expect(
+      upsertProductAutopilotSettings(ctx(s), {
+        productProfileId: product.id,
+        enableAutoApproveProjects: true as unknown as false,
+      }),
+    ).rejects.toMatchObject({ code: 'widening_override' });
+    // ...and so is a threshold below the workspace's.
+    await expect(
+      upsertProductAutopilotSettings(ctx(s), { productProfileId: product.id, autoApproveThreshold: 40 }),
+    ).rejects.toMatchObject({ code: 'widening_override' });
 
-    // The workspace step is on: a product "off" narrows it.
+    // The workspace step is on: a product "off" narrows it, and so does the
+    // product's autopilot switched off.
     await updateAutopilotSettings(ctx(s), { enableAutoApproveProjects: true });
     await upsertProductAutopilotSettings(ctx(s), {
       productProfileId: product.id,
@@ -768,14 +775,45 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
     });
     await runOnce(ctx(s));
     expect((await reviewItem(item.id)).state).toBe('new');
-
-    // Product master OFF + product emergency pause ON are saved but ignored.
     await upsertProductAutopilotSettings(ctx(s), {
       productProfileId: product.id,
       enableAutoApproveProjects: null,
       autopilotEnabled: false,
-      emergencyPause: true,
     });
+    await runOnce(ctx(s));
+    expect((await reviewItem(item.id)).state).toBe('new');
+
+    // Paused by anyone who can edit: nothing runs for it.
+    await upsertProductAutopilotSettings(ctx(s), { productProfileId: product.id, autopilotEnabled: null });
+    const member = makeWorkspaceContext({
+      workspaceId: s.workspaceId,
+      userId: s.adminId,
+      role: 'member',
+    });
+    await pauseProductAutomation(member, product.id);
+    await runOnce(ctx(s));
+    expect((await reviewItem(item.id)).state).toBe('new');
+
+    // Its queued email waits — still queued, not failed; a member cannot
+    // resume, an admin can, and then it goes out.
+    const q = await queuedEmail(s);
+    await pauseProductAutomation(member, q.product.id);
+    const held = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
+    expect(held).toMatchObject({ sent: 0, failed: 0, deferred: 1 });
+    expect((await queueRows(s))[0]!).toMatchObject({ status: 'queued' });
+    await expect(resumeProductAutomation(member, q.product.id)).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    await resumeProductAutomation(adminCtx(s), q.product.id);
+    await db
+      .update(outreachQueue)
+      .set({ scheduledSendAt: new Date(Date.now() - 1000) })
+      .where(eq(outreachQueue.id, q.entry.id));
+    const sent = await drainQueue(ctx(s), { providerOverride: new MockMailProvider() });
+    expect(sent).toMatchObject({ sent: 1 });
+
+    // Resumed: autopilot works for the product again.
+    await resumeProductAutomation(adminCtx(s), product.id);
     await runOnce(ctx(s));
     expect((await reviewItem(item.id)).state).toBe('approved');
   });

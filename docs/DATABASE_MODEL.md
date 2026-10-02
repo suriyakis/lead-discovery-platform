@@ -190,6 +190,11 @@ View `workspace_automation_state` (plain, not materialized): one row per workspa
 
 `autopilot_settings.emergency_pause` and `outreach_send_settings.emergency_pause` are legacy: migrated into the pause (a workspace started paused if either was on), read by nothing, written only as a mirror of the pause, and dropped one release later.
 
+### Product overrides, the product pause and the dead toggles (Phase 1, PC-13)
+`autopilot_product_settings` is narrow-only: each override switch (`autopilot_enabled`, `enable_auto_approve_projects`, `enable_auto_enqueue_outreach`, `enable_auto_crm_contact_sync`, `enable_auto_crm_deal_on_qualified`) is NULL (inherit) or false (off) — CHECK `autopilot_product_settings_narrow_only_check`; `auto_approve_threshold` only ever raises the workspace's (the resolver takes the higher). `paused_at` / `paused_by_user_id` (FK users, set null): the product pause. `emergency_pause` is legacy (never applied, carried into `paused_at` by migration `p1_automation_control_policy`, cleared, read by nothing, dropped one release later). `services/automation-policy.ts` is the only reader.
+
+`autopilot_settings.enable_auto_drain_queue`, `autopilot_settings.enable_auto_sync_inbound` and `workspaces.auto_send_replies` are legacy: read and written by nothing, set to false by the migration, dropped one release later.
+
 ## Reserved fields and tables (no migration needed for future phases)
 
 These columns / tables are reserved on Phase-1-and-Phase-2 tables so later phases can attach without an "alter table" parade:

@@ -35,6 +35,7 @@ import {
   mailboxHeldMessage,
   type GateOptions,
 } from './automation-gate';
+import { productPauseOf, productPausedMessage } from './automation-policy';
 import { getAIProviderForCtx } from '@/lib/ai';
 import {
   composeFollowUpDraft,
@@ -627,6 +628,26 @@ async function processOne(
   if (!product || !product.active) {
     await cancelFollowUps(ctx, row.threadId, 'product_archived');
     return 'skipped';
+  }
+
+  // PC-13 (I020): the lead's product is paused. Hold the step like a
+  // paused mailbox does: still pending, the reason in last_error, looked
+  // at again after GATE_DEFER_MS — nothing composed (no AI spend), never
+  // 'failed'. It goes out once the product is resumed.
+  {
+    const productPause = await productPauseOf(ctx, product.id);
+    if (productPause) {
+      const now = new Date();
+      await db
+        .update(outreachFollowUps)
+        .set({
+          lastError: productPausedMessage(productPause.productName),
+          scheduledFor: deferUntil(now),
+          updatedAt: now,
+        })
+        .where(and(eq(outreachFollowUps.id, row.id), eq(outreachFollowUps.status, 'pending')));
+      return 'skipped';
+    }
   }
 
   // Last message — used for in-reply-to threading. flow:F-01: bulk /

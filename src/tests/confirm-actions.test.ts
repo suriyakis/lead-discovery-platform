@@ -354,7 +354,6 @@ describe('confirm copy names what it acts on', () => {
     };
     const inherit: AutopilotOverlayLike = {
       autopilotEnabled: null,
-      emergencyPause: null,
       enableAutoApproveProjects: null,
       autoApproveThreshold: null,
       enableAutoEnqueueOutreach: null,
@@ -363,42 +362,43 @@ describe('confirm copy names what it acts on', () => {
       defaultMailboxId: null,
     };
 
-    it('spells out automation that turns ON and an old product pause that is removed', () => {
+    it('spells out automation that turns ON, and says a pause stays', () => {
       const msg = clearAutopilotOverridesConfirm(
         'Widget',
         {
           ...inherit,
-          emergencyPause: true,
           enableAutoEnqueueOutreach: false,
-          enableAutoCrmContactSync: true,
+          enableAutoApproveProjects: false,
           autoApproveThreshold: 90,
           defaultMailboxId: 7n,
         },
         base,
       );
       expect(msg).toContain('Clear all autopilot overrides for "Widget"?');
-      // PC-05 / I020: the per-product pause was saved but never applied.
-      expect(msg).toContain("- Removes Widget's old per-product pause setting");
-      expect(msg).toContain('never applied');
-      expect(msg).toContain('- Turns ON: Auto-generate + enqueue outreach drafts.');
-      expect(msg).toContain("- Turns off: Auto-sync qualified leads' contacts to CRM.");
+      // PC-13: overrides only narrow, so clearing them only turns things ON.
+      expect(msg).toContain(
+        '- Turns ON: Auto-approve relevant review items; Generate + queue outreach drafts.',
+      );
+      expect(msg).not.toContain('Turns off');
       expect(msg).toContain('- Approval threshold: 90 → 60.');
       expect(msg).toContain('- Sends from the workspace default mailbox again.');
+      expect(msg).toContain('A pause stays until someone resumes the product.');
     });
 
     it('says when nothing changes in practice', () => {
       const msg = clearAutopilotOverridesConfirm(
         'Widget',
-        { ...inherit, enableAutoApproveProjects: true, autoApproveThreshold: 60 },
+        // "off" for a step the workspace has off, the workspace's own threshold.
+        { ...inherit, enableAutoCrmContactSync: false, autoApproveThreshold: 60 },
         base,
       );
       expect(msg).toContain('Nothing changes in practice');
     });
 
-    it('PC-05: never claims a workspace emergency pause (there is none any more)', () => {
-      const msg = clearAutopilotOverridesConfirm('Widget', { ...inherit, emergencyPause: false }, base);
-      expect(msg).not.toContain('emergency pause');
-      expect(msg).toContain("- Removes Widget's old per-product pause setting");
+    it('PC-05 / PC-13: never mentions an emergency pause', () => {
+      const msg = clearAutopilotOverridesConfirm('Widget', inherit, base);
+      expect(msg.toLowerCase()).not.toContain('emergency pause');
+      expect(msg).not.toContain('old per-product pause');
     });
   });
 });

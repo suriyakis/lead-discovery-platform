@@ -531,10 +531,18 @@ export async function listHealthReports(
  * (enabled + lastAt older than their interval), then run each. The
  * conditional UPDATE prevents double-runs across concurrent ticks.
  */
-export async function processDueHealthChecks(): Promise<{
+export async function processDueHealthChecks(
+  options: {
+    /** PC-13: only these workspaces (the health-check tick passes the
+     *  ones whose automation policy runs the health check). Omitted = every
+     *  active workspace with the health check on. */
+    workspaceIds?: readonly bigint[];
+  } = {},
+): Promise<{
   checked: number;
   failed: number;
 }> {
+  if (options.workspaceIds && options.workspaceIds.length === 0) return { checked: 0, failed: 0 };
   const due = await db
     .select({
       id: workspaces.id,
@@ -544,7 +552,11 @@ export async function processDueHealthChecks(): Promise<{
     })
     .from(workspaces)
     .where(
-      and(eq(workspaces.status, 'active'), eq(workspaces.healthCheckEnabled, true)),
+      and(
+        eq(workspaces.status, 'active'),
+        eq(workspaces.healthCheckEnabled, true),
+        options.workspaceIds ? inArray(workspaces.id, [...options.workspaceIds]) : undefined,
+      ),
     );
 
   let checked = 0;

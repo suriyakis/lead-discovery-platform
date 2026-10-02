@@ -923,7 +923,7 @@ describe('(2) while paused nothing runs on its own', { timeout: 60_000 }, () => 
     await updateAutopilotSettings(t.owner, {
       autopilotEnabled: true,
       enableAutoApproveProjects: true,
-      enableAutoSyncInbound: true,
+      enableAutoCrmContactSync: true,
     });
     await pauseAutomation(t.member, { source: 'api' });
     for (const c of [t.owner, t.auto]) {
@@ -1771,18 +1771,14 @@ describe('legacy emergency_pause flags', { timeout: 60_000 }, () => {
     expect(offenders).toEqual([]);
   });
 
-  it('I062: the Crawl Engine master box shows autopilotEnabled only; saving it while paused keeps autopilot on', async () => {
+  it('I062 (PC-13): the Crawl Engine page has no autopilot form, so nothing on it can switch autopilot off', async () => {
     const page = readSrc('app/connectors/engine/page.tsx');
-    expect(page).toContain('defaultChecked={autopilot.autopilotEnabled}');
+    expect(page).not.toMatch(/name="(autopilotEnabled|enableAutoApproveProjects|enableAutoEnqueueOutreach|autoApproveThreshold)"/);
+    const actions = await import('@/app/connectors/engine/actions');
+    expect(Object.keys(actions)).not.toContain('saveAutopilot');
     const t = await tenant();
     await updateAutopilotSettings(t.owner, { autopilotEnabled: true });
     await pauseAutomation(t.member, { source: 'api' });
-    signInAs(t.adminId);
-    const { saveAutopilot } = await import('@/app/connectors/engine/actions');
-    const fd = new FormData();
-    fd.set('autopilotEnabled', 'on');
-    fd.set('autoApproveThreshold', '70');
-    await expectRedirect(() => saveAutopilot(fd));
     const [row] = await db
       .select()
       .from(autopilotSettings)
