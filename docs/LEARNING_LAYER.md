@@ -84,7 +84,7 @@ A decision that agrees with the AI makes no new rule; it reinforces the cited ru
 
 **No heuristic minting.** There is no keyword fallback. Without tokens or without a real AI provider, an event that needs an extraction waits as `skipped_no_tokens` (note `no_tokens` / `no_ai_provider`; the wait does not use up an attempt) and the sweeper resumes it once the gate is open. The cited-rule reinforcement needs no AI and is applied anyway. Manual `createLesson` on /learning stays synchronous.
 
-**Dedup.** The extracted rule is compared with the active rules of the same category, polarity and exact scope (text first, then embedding similarity ≥ 0.92). A match gets +5 through a `dedup_match` ledger row and the evidence events, and the receipt says "Matched an existing rule — strengthened it". A match with a rule the operator rejected (`retired_reason = 'operator_rejected'`, overlapping scope) is not recreated (`matches_rejected_rule`).
+**Dedup.** The extracted rule is compared with the active rules of the same category, polarity and exact scope (text first, then embedding similarity ≥ 0.92). A match gets +5 through a `dedup_match` ledger row and the evidence events, and the receipt says "Matched an existing rule — strengthened it". A match with a rule the operator rejected (`retired_reason = 'operator_rejected'`, overlapping scope) is not recreated (`matches_rejected_rule`), and neither is a match with a rule the operator switched off (`lifecycle = 'disabled'`, overlapping scope — Disable is the operator's only "no" until KL-12's "Not what I meant"): `matches_disabled_rule`, receipt "This matches a rule you switched off — it was not recreated". A proposed rule with no product (see Scope) is compared with the proposed rules with no product.
 
 ## The reinforcement ledger
 
@@ -108,9 +108,9 @@ The sweeper repeats this for voided events older than 2 minutes that still have 
 
 ## Statuses and receipts
 
-`learning_events.processing_status`: `pending` → `processing` → `done` | `no_rule` | `below_floor` | `skipped_no_tokens` | `skipped` | `failed`. `processing_note` says why: `rule_created`, `rule_created_from_verdict`, `rule_proposed_needs_scope`, `rule_strengthened`, `matches_rejected_rule`, `nothing_to_learn`, `other_direction`, `below_floor`, `products_deleted`, `no_tokens`, `no_ai_provider`, `voided`, `machine`, `failed`, `rejected:<reason>`.
+`learning_events.processing_status`: `pending` → `processing` → `done` | `no_rule` | `below_floor` | `skipped_no_tokens` | `skipped` | `failed`. `processing_note` says why: `rule_created`, `rule_created_from_verdict`, `rule_proposed_needs_scope`, `rule_strengthened`, `matches_rejected_rule`, `matches_disabled_rule`, `nothing_to_learn`, `other_direction`, `below_floor`, `products_deleted`, `no_tokens`, `no_ai_provider`, `voided`, `machine`, `failed`, `rejected:<reason>`.
 
-`getDecisionReceipt(ctx, decisionId)` (`src/lib/services/learning-receipts.ts`) and `GET /api/learning/receipts/[decisionId]` (workspace-scoped; another workspace's decision is 404) return the state (learning, learned, needs_scope, strengthened, not_recreated, too_uncertain, waiting_for_tokens, waiting_for_ai, failed, changed_later, recorded_only, nothing_new), a headline, per-event status, the rules created or strengthened, the ledger changes (with `undone` when a later decision reversed them) and what this decision undid. The decision panel's `<LearningReceipt>` (KL-20) renders it.
+`getDecisionReceipt(ctx, decisionId)` (`src/lib/services/learning-receipts.ts`) and `GET /api/learning/receipts/[decisionId]` (workspace-scoped; another workspace's decision is 404) return the state (learning, learned, needs_scope, strengthened, not_recreated, not_recreated_disabled, too_uncertain, waiting_for_tokens, waiting_for_ai, failed, changed_later, recorded_only, nothing_new), a headline, per-event status, the rules created or strengthened, the ledger changes (with `undone` when a later decision reversed them) and what this decision undid. The decision panel's `<LearningReceipt>` (KL-20) renders it.
 
 ## Lesson categories (registry)
 

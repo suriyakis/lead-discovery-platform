@@ -31,6 +31,7 @@ export type ReceiptState =
   | 'needs_scope'
   | 'strengthened'
   | 'not_recreated'
+  | 'not_recreated_disabled'
   | 'too_uncertain'
   | 'waiting_for_tokens'
   | 'waiting_for_ai'
@@ -45,6 +46,7 @@ export const RECEIPT_HEADLINES: Record<ReceiptState, string> = {
   needs_scope: 'Suggested a rule — choose which products it applies to',
   strengthened: 'Matched an existing rule — strengthened it',
   not_recreated: 'This matches a rule you rejected — it was not recreated',
+  not_recreated_disabled: 'This matches a rule you switched off — it was not recreated',
   too_uncertain: 'Nothing learned: the suggested rule was too uncertain',
   waiting_for_tokens: 'Waiting for tokens — learning resumes after a top-up',
   waiting_for_ai: 'Waiting for an AI provider — learning resumes once one is set up',
@@ -311,7 +313,9 @@ export async function getDecisionReceipt(
   } else if (proposed.size > 0) state = 'needs_scope';
   else if (rules.some((r) => r.outcome === 'strengthened')) state = 'strengthened';
   else if (has((e) => e.processingNote === 'matches_rejected_rule')) state = 'not_recreated';
-  else if (has((e) => e.processingStatus === 'below_floor')) state = 'too_uncertain';
+  else if (has((e) => e.processingNote === 'matches_disabled_rule')) {
+    state = 'not_recreated_disabled';
+  } else if (has((e) => e.processingStatus === 'below_floor')) state = 'too_uncertain';
   else if (events.every((e) => e.origin !== 'operator')) state = 'recorded_only';
   else state = 'nothing_new';
 

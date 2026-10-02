@@ -32,7 +32,7 @@ import { _resetHandlersForTests, registerJobHandlers } from '@/lib/jobs/bootstra
 import { _resetRepeatablesForTests, registerRepeatableJobs } from '@/lib/jobs/repeatables';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
-import { createLesson, retireLessons } from '@/lib/services/learning';
+import { createLesson, disableLesson, retireLessons } from '@/lib/services/learning';
 import {
   DATA_CLOSE,
   DATA_OPEN,
@@ -1146,6 +1146,47 @@ describe('decision receipts (acceptance 10)', () => {
     expect((await eventsOf(s))[0]!.processingNote).toBe('matches_rejected_rule');
     const receipt = await getDecisionReceipt(ownerCtx(s), await decisionIdOf(s, 'review.reject'));
     expect(receipt?.state).toBe('not_recreated');
+  });
+
+  it('a decision that repeats a rule the operator switched off does not mint an active copy', async () => {
+    const s = await setup();
+    const a = await product(s, 'Alpha');
+    const b = await product(s, 'Beta');
+    const switchedOff = await createLesson(ownerCtx(s), {
+      category: 'qualification_negative',
+      rule: 'Skip consultancies.',
+      confidence: 60,
+      scope: { kind: 'products', productProfileIds: [a.id] },
+    });
+    await disableLesson(ownerCtx(s), switchedOff.id);
+    const ai = stubAi(
+      rule({ category: 'qualification_negative', rule: 'Skip consultancies.', confidence: 80 }),
+    );
+    _setAIProviderForTests(ai);
+
+    const r = await record(s);
+    await qualify(s, r.sourceRecordId, a.id);
+    await rejectReviewItem(ownerCtx(s), r.itemId, 'It is a consultancy, we skip those');
+    await drainLearning();
+    expect(ai.calls).toHaveLength(1);
+    expect(await lessonsOf(s)).toHaveLength(1);
+    expect((await lessonRow(switchedOff.id)).lifecycle).toBe('disabled');
+    expect((await eventsOf(s))[0]).toMatchObject({
+      processingStatus: 'no_rule',
+      processingNote: 'matches_disabled_rule',
+    });
+    const receipt = await getDecisionReceipt(ownerCtx(s), await decisionIdOf(s, 'review.reject'));
+    expect(receipt?.state).toBe('not_recreated_disabled');
+    expect(receipt?.headline).toBe(RECEIPT_HEADLINES.not_recreated_disabled);
+
+    // A product the switched-off rule never covered can still learn it.
+    const r2 = await record(s);
+    await qualify(s, r2.sourceRecordId, b.id);
+    await rejectReviewItem(ownerCtx(s), r2.itemId, 'Another consultancy, we skip those');
+    await drainLearning();
+    const lessons = await lessonsOf(s);
+    expect(lessons).toHaveLength(2);
+    expect(lessons[1]).toMatchObject({ lifecycle: 'active', scopeKind: 'products' });
   });
 });
 

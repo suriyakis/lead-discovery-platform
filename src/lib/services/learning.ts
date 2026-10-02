@@ -602,12 +602,15 @@ async function bestRuleMatch(
 }
 
 /**
- * KL-03: a rule the operator REJECTED (retired 'operator_rejected') that
- * says the same thing as `rule`, in the same category and direction, and
- * whose scope overlaps this one (either is workspace-wide, or they share a
- * product; a NEEDS_SCOPE candidate overlaps any scope). Extraction never
- * recreates such a rule (§6: rejected rules are kept as negative
- * examples). Returns null on any failure.
+ * KL-03: a rule the operator REJECTED (retired 'operator_rejected') or
+ * SWITCHED OFF (lifecycle 'disabled' — until KL-12's "Not what I meant",
+ * Disable is the operator's only way to say no) that says the same thing
+ * as `rule`, in the same category and direction, and whose scope overlaps
+ * this one (either is workspace-wide, or they share a product; a
+ * NEEDS_SCOPE candidate overlaps any scope). Extraction never recreates
+ * such a rule (§6: rejected rules are kept as negative examples); the
+ * caller tells the two apart by the match's lifecycle. Returns null on any
+ * failure.
  */
 export async function findRejectedRuleMatch(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -626,8 +629,13 @@ export async function findRejectedRuleMatch(
       eq(learningLessons.workspaceId, ctx.workspaceId),
       eq(learningLessons.category, input.category),
       eq(learningLessons.polarity, input.polarity),
-      eq(learningLessons.lifecycle, 'retired'),
-      eq(learningLessons.retiredReason, 'operator_rejected'),
+      or(
+        and(
+          eq(learningLessons.lifecycle, 'retired'),
+          eq(learningLessons.retiredReason, 'operator_rejected'),
+        ),
+        eq(learningLessons.lifecycle, 'disabled'),
+      )!,
     ];
     if (scope.kind === 'products') {
       conds.push(

@@ -23,8 +23,8 @@
 //          rules learned only from them);
 //        - the rule: a new one (source 'decision', scoped to every product
 //          sharing the verdict), or +5 on the active rule it repeats, or
-//          nothing when it repeats a rule the operator rejected. Scope is
-//          never widened implicitly: an UNSCOPED event (no
+//          nothing when it repeats a rule the operator rejected or switched
+//          off (disabled). Scope is never widened implicitly: an UNSCOPED event (no
 //          relevant product, no explicit choice) speaks for the products
 //          the record was qualified against (its context snapshot) — with
 //          none left, the rule is only PROPOSED and "Needs a scope". Only
@@ -142,6 +142,10 @@ export const LEARNING_PROCESSING_NOTES = [
   'rule_proposed_needs_scope',
   'rule_strengthened',
   'matches_rejected_rule',
+  /** Repeats a rule the operator switched off (lifecycle 'disabled'): not
+   *  recreated as an active copy (Disable is the operator's no until
+   *  KL-12's "Not what I meant" retires a rule as operator_rejected). */
+  'matches_disabled_rule',
   'nothing_to_learn',
   'other_direction',
   'below_floor',
@@ -882,9 +886,9 @@ async function writeOutcome(
     }
     if (targets.length === 0) continue;
     if (o.rejectedTwin) {
-      for (const f of targets) {
-        close(f.event.id, { status: 'no_rule', note: 'matches_rejected_rule', lessonId: null });
-      }
+      const note: LearningProcessingNote =
+        o.rejectedTwin.lifecycle === 'disabled' ? 'matches_disabled_rule' : 'matches_rejected_rule';
+      for (const f of targets) close(f.event.id, { status: 'no_rule', note, lessonId: null });
       continue;
     }
     const dup = o.duplicate ? locked.get(o.duplicate.id.toString()) : undefined;
