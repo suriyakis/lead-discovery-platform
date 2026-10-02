@@ -166,7 +166,14 @@ export { formatUtc, toUtcInputValue } from '@/lib/format-utc';
 
 // ---- errors ---------------------------------------------------------
 
-export type QueueOperation = 'settings' | 'cancel' | 'reschedule' | 'drain' | 'retry' | 'requeue';
+export type QueueOperation =
+  | 'settings'
+  | 'cancel'
+  | 'reschedule'
+  | 'drain'
+  | 'retry'
+  | 'requeue'
+  | 'mark_delivered';
 
 const FALLBACK: Record<QueueOperation, string> = {
   settings: 'Could not save the send settings. Please try again.',
@@ -175,6 +182,7 @@ const FALLBACK: Record<QueueOperation, string> = {
   drain: 'Could not send the queue right now. Please try again.',
   retry: 'Could not retry that email. Please try again.',
   requeue: 'Could not put that email back in the queue. Please try again.',
+  mark_delivered: 'Could not mark that email as delivered. Please try again.',
 };
 
 /**
@@ -193,8 +201,9 @@ export function queueErrorMessage(err: unknown, op: QueueOperation): string {
       case 'not_found':
         return 'That email is no longer in the queue.';
       case 'conflict':
-        // PC-10: Retry / Requeue refusals are written for the operator.
-        if (op === 'retry' || op === 'requeue') return err.message;
+        // PC-10: Retry / Requeue / Mark as delivered refusals are written
+        // for the operator.
+        if (op === 'retry' || op === 'requeue' || op === 'mark_delivered') return err.message;
         return 'That email is no longer waiting to be sent: it has already been sent, cancelled or picked up for sending.';
       case 'invalid_input':
         return err.message;
@@ -262,6 +271,12 @@ export const REQUEUED_MESSAGE =
  *  unknown (cut off mid-send). */
 export const INTERRUPTED_RESEND_CONFIRM =
   'This email was cut off while it was being sent and no sent copy was found, so it may already have been delivered. Check the mailbox’s Sent folder first. Send it again?';
+
+/** PC-10: Mark as delivered on an interrupted entry — confirmation and flash. */
+export const MARK_DELIVERED_CONFIRM =
+  'Only if you found this email in the mailbox’s Sent folder: it is then recorded as sent, its failed copies leave Errors and it is never sent again. Mark it as delivered?';
+export const MARKED_DELIVERED_MESSAGE =
+  'Marked as delivered. It will not be sent again, and its failed copies left the Errors folder.';
 
 /** "next attempt … (after 2 of 5)" for a queued entry backing off. */
 export function describeBackoff(entry: {

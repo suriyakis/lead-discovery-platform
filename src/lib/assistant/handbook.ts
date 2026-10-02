@@ -124,7 +124,10 @@ Account: [/settings/account], [/support]. Emergency: [/autopilot].
    through suppression, the limits and the domain cooldown again. An
    entry still "sending" after 10 minutes is settled automatically: sent
    if a sent copy exists, otherwise failed as "Interrupted: delivery
-   unknown" (check the Sent folder before you retry it). {H-32}
+   unknown" (check the Sent folder before you retry it; if it is there,
+   "Mark as delivered" records it as sent). An email that has already
+   gone out is never sent again, from the queue or from the Errors
+   folder. {H-32}
 9. TRANSLATION: you write in your language. On a draft you can generate
    the translation and review it side by side; the edited translation is
    exactly what is sent. If you don't, the queue translates the approved

@@ -20,6 +20,7 @@ import { TRANSIENT_MAX_ATTEMPTS, LOCAL_MAX_ATTEMPTS } from '@/lib/mail/send-fail
 import {
   cancelQueuedEmailAction,
   drainSendQueueAction,
+  markQueuedEmailDeliveredAction,
   requeueQueuedEmailAction,
   rescheduleQueuedEmailAction,
   retryQueuedEmailAction,
@@ -27,6 +28,7 @@ import {
 } from './actions';
 import {
   INTERRUPTED_RESEND_CONFIRM,
+  MARK_DELIVERED_CONFIRM,
   SEND_SETTINGS_LIMITS,
   describeBackoff,
   describeSendSettings,
@@ -224,7 +226,7 @@ export default async function QueuePage({
             {TRANSIENT_MAX_ATTEMPTS} attempts; {LOCAL_MAX_ATTEMPTS} for an error before
             sending), waiting longer each time.
             {canAct
-              ? ' Retry now sends a failed, skipped or cancelled email again at once; Requeue puts it back for the background sender. Both go through the same checks again: suppression, limits and the domain cooldown.'
+              ? ' Retry now sends a failed, skipped or cancelled email again at once; Requeue puts it back for the background sender. Both go through the same checks again: suppression, limits and the domain cooldown. An email cut off mid-send can instead be marked as delivered once you find it in the Sent folder. An email that has already gone out is never sent twice.'
               : null}
           </p>
         ) : null}
@@ -341,6 +343,15 @@ export default async function QueuePage({
                           </button>
                         )}
                       </form>
+                      {interrupted ? (
+                        <form action={markQueuedEmailDeliveredAction}>
+                          <input type="hidden" name="status" value={statusKey} />
+                          <input type="hidden" name="id" value={e.id.toString()} />
+                          <ConfirmFormButton message={MARK_DELIVERED_CONFIRM} className="ghost-btn">
+                            Mark as delivered
+                          </ConfirmFormButton>
+                        </form>
+                      ) : null}
                     </div>
                   ) : null}
                 </li>

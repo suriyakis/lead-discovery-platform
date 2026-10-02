@@ -36,13 +36,27 @@
 
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
-import { connectorRunLogs, connectorRuns, type ConnectorRun } from '@/lib/db/schema/connectors';
+import {
+  connectorRecipes,
+  connectorRunLogs,
+  connectorRuns,
+  connectors,
+  type ConnectorRun,
+} from '@/lib/db/schema/connectors';
 import { mailMessages } from '@/lib/db/schema/mailing';
+import { opsEvents } from '@/lib/db/schema/ops';
 import { outreachQueue, type OutreachQueueEntry } from '@/lib/db/schema/outreach';
 import { formatUtc } from '@/lib/format-utc';
-import { reportRunStuck, reportSendInterrupted } from '@/lib/ops/work-incidents';
+import {
+  RUN_FAILED,
+  RUN_STUCK,
+  parseRunIncidentDedupeKey,
+  reportRunStuck,
+  reportSendInterrupted,
+} from '@/lib/ops/work-incidents';
 import { recordSystemAuditEvent } from './audit';
 import type { WorkspaceContext } from './context';
+import { resolveOpsEvent } from './ops-events';
 
 export const SEND_STUCK_AFTER_MS = 10 * 60 * 1000;
 export const RUN_STUCK_AFTER_MS = 15 * 60 * 1000;
@@ -374,6 +388,69 @@ function judgeRun(
     };
   }
   return null;
+}
+
+// ---- run incidents nothing can resolve any more ------------------------
+
+/**
+ * Open run.failed / run.stuck incidents are resolved by the recipe's next
+ * run. When the recipe was deleted or switched off, or its connector was
+ * deleted or deactivated, there is no next run: they would stay open for
+ * good, re-alerting the owner every 6 hours and sitting in every daily
+ * digest. Those are resolved here ('auto'). Platform-wide, one pass per
+ * reaper tick. Returns how many were resolved.
+ */
+export async function resolveOrphanedRunIncidents(): Promise<number> {
+  const open = await db
+    .select({ fingerprint: opsEvents.fingerprint, dedupeKey: opsEvents.dedupeKey })
+    .from(opsEvents)
+    .where(
+      and(
+        eq(opsEvents.scope, 'workspace'),
+        inArray(opsEvents.kind, [RUN_FAILED, RUN_STUCK]),
+        isNull(opsEvents.resolvedAt),
+      ),
+    );
+  const refs = open.flatMap((e) => {
+    const ref = parseRunIncidentDedupeKey(e.dedupeKey);
+    return ref ? [{ fingerprint: e.fingerprint, ...ref }] : [];
+  });
+  if (refs.length === 0) return 0;
+
+  const connectorIds = uniqueIds(refs.map((r) => r.connectorId));
+  const recipeIds = uniqueIds(refs.flatMap((r) => (r.recipeId === null ? [] : [r.recipeId])));
+  const liveConnectors = new Set(
+    (
+      await db
+        .select({ id: connectors.id })
+        .from(connectors)
+        .where(and(inArray(connectors.id, connectorIds), eq(connectors.active, true)))
+    ).map((r) => r.id.toString()),
+  );
+  const liveRecipes = new Set(
+    recipeIds.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: connectorRecipes.id })
+            .from(connectorRecipes)
+            .where(and(inArray(connectorRecipes.id, recipeIds), eq(connectorRecipes.active, true)))
+        ).map((r) => r.id.toString()),
+  );
+
+  let resolved = 0;
+  for (const ref of refs) {
+    const runnable =
+      liveConnectors.has(ref.connectorId.toString()) &&
+      (ref.recipeId === null || liveRecipes.has(ref.recipeId.toString()));
+    if (runnable) continue;
+    if (await resolveOpsEvent(ref.fingerprint, { resolution: 'auto' })) resolved++;
+  }
+  return resolved;
+}
+
+function uniqueIds(ids: readonly bigint[]): bigint[] {
+  return [...new Set(ids.map(String))].map((id) => BigInt(id));
 }
 
 // ---- helpers ---------------------------------------------------------

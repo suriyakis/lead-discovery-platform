@@ -10,7 +10,7 @@
 //   (7) a run with no progress is failed by the reaper.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull } from 'drizzle-orm';
 import postgres from 'postgres';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
@@ -18,9 +18,11 @@ import { auditLog } from '@/lib/db/schema/audit';
 import {
   connectorRunLogs,
   connectorRuns,
+  connectors,
   sourceRecords,
   type ConnectorRun,
 } from '@/lib/db/schema/connectors';
+import { reportRunFailed, reportRunStuck } from '@/lib/ops/work-incidents';
 import { mailMessages } from '@/lib/db/schema/mailing';
 import { jobHeartbeats, opsEvents } from '@/lib/db/schema/ops';
 import { notifications } from '@/lib/db/schema/notifications';
@@ -42,6 +44,7 @@ import {
   awaitRun,
   createConnector,
   createRecipe,
+  deleteRecipe,
   requestRunCancel,
   startRun,
 } from '@/lib/services/connector-run';
@@ -53,6 +56,7 @@ import {
   SEND_STUCK_AFTER_MS,
   reapStuckRuns,
   reapStuckSends,
+  resolveOrphanedRunIncidents,
 } from '@/lib/services/stuck-work';
 import { truncateAll } from './helpers/db';
 import {
@@ -574,6 +578,61 @@ describe('stuck runs (I013, I074)', () => {
     expect((await runRow(run.id)).status).toBe('failed');
     const logs = await db.select().from(connectorRunLogs).where(eq(connectorRunLogs.runId, run.id));
     expect(logs.some((l) => l.message.startsWith('The run was already marked failed'))).toBe(true);
+  });
+});
+
+// ---- run incidents that would never resolve (review: PC-10 / PC-08) -------
+
+describe('run incidents nothing could resolve (PC-10 review)', () => {
+  it('resolve once the recipe is deleted or the connector switched off; a runnable recipe keeps its incident', async () => {
+    const s = await setup();
+    const first = await searchRun(s, ['concrete repair']);
+    const gone = await createRecipe(ctx(s), {
+      connectorId: first.connector.id,
+      name: 'gone',
+      selectors: { searchQueries: ['floor coating'] },
+    });
+    const second = await searchRun(s, ['roof repair']);
+    const ref = (connectorId: bigint, recipeId: bigint | null, runId: bigint) => ({
+      workspaceId: s.workspaceId,
+      runId,
+      connectorId,
+      recipeId,
+    });
+    await reportRunStuck(ref(first.connector.id, first.recipe.id, 1n), 'no_progress', 'stuck');
+    await reportRunStuck(ref(first.connector.id, gone.id, 2n), 'no_progress', 'stuck');
+    await reportRunFailed(ref(first.connector.id, gone.id, 3n), 'failed');
+    await reportRunStuck(ref(second.connector.id, second.recipe.id, 4n), 'never_started', 'lost');
+    await reportRunStuck(ref(second.connector.id, null, 5n), 'never_started', 'lost');
+
+    await deleteRecipe(ctx(s), gone.id);
+    await db.update(connectors).set({ active: false }).where(eq(connectors.id, second.connector.id));
+
+    expect(await resolveOrphanedRunIncidents()).toBe(4);
+    const open = await db.select().from(opsEvents).where(isNull(opsEvents.resolvedAt));
+    expect(open.map((e) => e.dedupeKey)).toEqual([
+      `connector:${first.connector.id}:recipe:${first.recipe.id}`,
+    ]);
+    const closed = await db.select().from(opsEvents).where(isNotNull(opsEvents.resolvedAt));
+    expect(closed.every((e) => e.resolution === 'auto')).toBe(true);
+    expect(await resolveOrphanedRunIncidents()).toBe(0);
+  });
+
+  it("a later run that ends failed by itself closes the recipe's run.stuck; run.failed takes over", async () => {
+    const s = await setup();
+    const { connector, recipe } = await searchRun(s, ['concrete repair']);
+    await reportRunStuck(
+      { workspaceId: s.workspaceId, runId: 1n, connectorId: connector.id, recipeId: recipe.id },
+      'no_progress',
+      'stuck',
+    );
+    expect(await openEvents('run.stuck')).toHaveLength(1);
+
+    _setSearchProviderForTests(new FlakySearch(() => true));
+    const r = await startRun(ctx(s), { connectorId: connector.id, recipeId: recipe.id, wait: true });
+    expect(r.result!.status).toBe('failed');
+    expect(await openEvents('run.stuck')).toHaveLength(0);
+    expect(await openEvents('run.failed')).toHaveLength(1);
   });
 });
 

@@ -21,6 +21,7 @@ import {
   OutreachQueueError,
   cancelQueueEntry,
   drainQueue,
+  markQueueEntryDelivered,
   requeueQueueEntry,
   rescheduleQueueEntry,
   retryQueueEntry,
@@ -28,6 +29,7 @@ import {
 } from '@/lib/services/outreach-queue';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
+  MARKED_DELIVERED_MESSAGE,
   REQUEUED_MESSAGE,
   describeDrainBlocked,
   describeRetryOutcome,
@@ -94,6 +96,19 @@ export async function requeueQueuedEmailAction(formData: FormData): Promise<void
   if (id === null) backToQueue(view, 'error', 'That email is no longer in the queue.');
   await runOrFlash(view, 'requeue', () => requeueQueueEntry(ctx, id));
   backToQueue(view, 'message', REQUEUED_MESSAGE);
+}
+
+/**
+ * PC-10: Mark as delivered — an email cut off mid-send that the operator
+ * found in the Sent folder. Any write role; the service enforces it.
+ */
+export async function markQueuedEmailDeliveredAction(formData: FormData): Promise<void> {
+  const view = parseQueueView(formData.get('status'));
+  const ctx = await requireActionContext();
+  const id = parseEntryId(formData.get('id'));
+  if (id === null) backToQueue(view, 'error', 'That email is no longer in the queue.');
+  await runOrFlash(view, 'mark_delivered', () => markQueueEntryDelivered(ctx, id));
+  backToQueue(view, 'message', MARKED_DELIVERED_MESSAGE);
 }
 
 export async function drainSendQueueAction(formData: FormData): Promise<void> {

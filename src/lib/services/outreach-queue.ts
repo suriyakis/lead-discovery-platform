@@ -785,6 +785,9 @@ async function processEntry(
     // footer + List-Unsubscribe); a draft answering the prospect's reply
     // is one-to-one.
     const draftId = entry.draftId;
+    /** The reaper gave this send up as interrupted while it was still
+     *  running (a hang past 10 minutes), and it went out after all. */
+    let reapedMidSend = false;
     const sendInput: Parameters<typeof sendMessage>[1] = {
       mode: await sendModeForEntry(ctx, entry),
       mailboxId: entry.mailboxId,
@@ -807,11 +810,12 @@ async function processEntry(
       // Earlier failed attempts of the same draft leave the Errors folder
       // in the same step: nobody can re-send an email that went out.
       onPersisted: async (tx, message) => {
-        await markQueueEntrySent(tx, {
+        const settled = await markQueueEntrySent(tx, {
           workspaceId: ctx.workspaceId,
           entryId: entry.id,
           messageId: message.id,
         });
+        reapedMidSend = settled.wasInterrupted;
         if (draftId) {
           await trashEarlierFailedCopies(tx, {
             workspaceId: ctx.workspaceId,
@@ -826,6 +830,7 @@ async function processEntry(
     if (entry.references.length > 0) sendInput.references = entry.references;
 
     await sendMessage(ctx, sendInput);
+    if (reapedMidSend) await resolveReapedMidSend(ctx, entry.id);
     // Phase 43: bump the per-mailbox counters so subsequent canSendNow
     // calls see the updated sentToday/sentThisHour. Best-effort.
     try {
@@ -857,12 +862,11 @@ async function settleFailedAttempt(
   // The mail server took the email; only recording it failed afterwards.
   // It went out — never retry it.
   if (isAfterDelivery(err)) {
-    await settleClaimed(entry.id, {
-      status: 'sent',
-      lastFailureKind: null,
-      nextAttemptAt: null,
-      lastError: clip(`Sent, but recording it failed: ${message}`),
-    });
+    const reaped = await settleDeliveredDespiteError(
+      entry.id,
+      clip(`Sent, but recording it failed: ${message}`),
+    );
+    if (reaped) await resolveSendInterrupted(entry.workspaceId, entry.id, null);
     return 'sent';
   }
 
@@ -926,6 +930,63 @@ async function settleFailedAttempt(
 
 function clip(text: string): string {
   return text.slice(0, 2000);
+}
+
+/**
+ * PC-10: a send the reaper gave up as interrupted went out after all — its
+ * send.interrupted incident no longer needs anyone. Only when the hook's
+ * 'sent' committed (it is rolled back when the message had to be recorded
+ * alone; the row then stays as the reaper left it). Best-effort: the send
+ * itself succeeded.
+ */
+async function resolveReapedMidSend(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  entryId: bigint,
+): Promise<void> {
+  try {
+    if ((await loadEntry(ctx, entryId)).status === 'sent') {
+      await resolveSendInterrupted(ctx.workspaceId, entryId, null);
+    }
+  } catch (err) {
+    console.error(
+      `[outreach-queue] interrupted incident of entry ${entryId} not resolved:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
+ * The email went out but recording it failed: the row is 'sent'. Written
+ * while it is still this attempt's claim ('sending') or — when the send
+ * hung past the reaper's 10 minutes — the reaper's 'interrupted' failure.
+ * Returns true in the second case (the caller resolves its incident).
+ */
+async function settleDeliveredDespiteError(entryId: bigint, lastError: string): Promise<boolean> {
+  const set = {
+    status: 'sent' as const,
+    lastFailureKind: null,
+    nextAttemptAt: null,
+    lastError,
+    updatedAt: new Date(),
+  };
+  const [claimed] = await db
+    .update(outreachQueue)
+    .set(set)
+    .where(and(eq(outreachQueue.id, entryId), eq(outreachQueue.status, 'sending')))
+    .returning({ id: outreachQueue.id });
+  if (claimed) return false;
+  const [reaped] = await db
+    .update(outreachQueue)
+    .set(set)
+    .where(
+      and(
+        eq(outreachQueue.id, entryId),
+        eq(outreachQueue.status, 'failed'),
+        eq(outreachQueue.lastFailureKind, 'interrupted'),
+      ),
+    )
+    .returning({ id: outreachQueue.id });
+  return Boolean(reaped);
 }
 
 /** Write the outcome of this attempt — only while the row is still the
@@ -1104,6 +1165,81 @@ async function putBack(
   if (existing.lastFailureKind === ('interrupted' satisfies SendFailureKind)) {
     await resolveSendInterrupted(ctx.workspaceId, id, ctx.userId);
   }
+  return updated;
+}
+
+/** True for an entry the reaper failed as "Interrupted: delivery unknown". */
+export function isInterruptedQueueEntry(entry: {
+  status: OutreachQueueStatus;
+  lastFailureKind: string | null;
+}): boolean {
+  return (
+    entry.status === 'failed' &&
+    entry.lastFailureKind === ('interrupted' satisfies SendFailureKind)
+  );
+}
+
+/**
+ * PC-10: Mark as delivered — for an email cut off mid-send that the
+ * operator found in the mailbox's Sent folder. The entry becomes 'sent'
+ * (no mail row of ours: the copy is on the mail server), the draft's
+ * failed copies leave the Errors folder so nobody sends it again, and its
+ * send.interrupted incident is resolved. Any write role, like Retry and
+ * Requeue; audited.
+ */
+export async function markQueueEntryDelivered(
+  ctx: WorkspaceContext,
+  id: bigint,
+): Promise<OutreachQueueEntry> {
+  if (!canWrite(ctx)) throw denied('outreach.queue.mark_delivered');
+  const existing = await loadEntry(ctx, id);
+  if (!isInterruptedQueueEntry(existing)) {
+    throw conflict(
+      'Only an email cut off while it was being sent (delivery unknown) can be marked as delivered.',
+    );
+  }
+  const now = new Date();
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(outreachQueue)
+      .set({
+        status: 'sent',
+        lastFailureKind: null,
+        nextAttemptAt: null,
+        lastError: `Marked as delivered on ${formatUtc(now)}: found in the Sent folder after it was cut off mid-send.`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(outreachQueue.workspaceId, ctx.workspaceId),
+          eq(outreachQueue.id, id),
+          eq(outreachQueue.status, 'failed'),
+          eq(outreachQueue.lastFailureKind, 'interrupted'),
+        ),
+      )
+      .returning();
+    if (row?.draftId) {
+      await trashEarlierFailedCopies(tx, {
+        workspaceId: ctx.workspaceId,
+        draftId: row.draftId,
+        now,
+      });
+    }
+    return row;
+  });
+  if (!updated) {
+    throw conflict('That email changed in the meantime. Reload the page to see where it is now.');
+  }
+  await recordAuditEvent(ctx, {
+    kind: 'outreach.queue.mark_delivered',
+    entityType: 'outreach_queue',
+    entityId: id,
+    payload: {
+      draftId: existing.draftId?.toString() ?? null,
+      previousError: existing.lastError?.slice(0, 500) ?? null,
+    },
+  });
+  await resolveSendInterrupted(ctx.workspaceId, id, ctx.userId);
   return updated;
 }
 

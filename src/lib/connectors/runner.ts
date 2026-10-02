@@ -38,7 +38,7 @@ import {
 import type { WorkspaceContext } from '@/lib/services/context';
 import { classifySourceRecord } from '@/lib/services/qualification';
 import { seedReviewItem } from '@/lib/services/review';
-import { reportRunFailed, resolveRunIncidents } from '@/lib/ops/work-incidents';
+import { reportRunFailed, resolveRunIncidents, resolveRunStuck } from '@/lib/ops/work-incidents';
 import { getConnector } from './registry';
 
 // Side-effect imports: each connector implementation calls
@@ -300,9 +300,15 @@ export async function runConnectorRun(
       dedupeKey: `run.failed:${run.connectorId}`,
     });
     await reportRunFailed(runRef, fatalError?.message ?? 'the run failed');
+    // PC-10: this run ended by itself, so the recipe is not stuck any more
+    // (its failure is the run.failed just raised).
+    await resolveRunStuck(ctx.workspaceId, run);
   } else if (finalStatus === 'succeeded' || finalStatus === 'partial') {
     // The recipe works again (at least partly): close its incidents.
     await resolveRunIncidents(ctx.workspaceId, run);
+  } else {
+    // Cancelled on request: it ended by itself, so not stuck any more.
+    await resolveRunStuck(ctx.workspaceId, run);
   }
 
   // P62-07: when a crawl succeeded with new records, kick the

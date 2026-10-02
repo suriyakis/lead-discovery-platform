@@ -41,6 +41,7 @@ import {
   tagAfterDelivery,
   tagTransportFailure,
 } from '@/lib/mail/send-failure';
+import { MockMailProvider, type OutboundMessage, type SendResult } from '@/lib/mail';
 import { classifySmtpError } from '@/lib/mail/smtp-errors';
 import { reportSendInterrupted } from '@/lib/ops/work-incidents';
 import { RETRY_DRAFT_IN_FLIGHT_ERROR, retrySend } from '@/lib/services/mail';
@@ -53,6 +54,7 @@ import {
   drainQueue,
   evaluateSendGate,
   getSendSettings,
+  markQueueEntryDelivered,
   requeueQueueEntry,
   retryQueueEntry,
 } from '@/lib/services/outreach-queue';
@@ -889,5 +891,126 @@ describe('follow-ups after a retried first touch (PC-10 review)', () => {
       .where(eq(outreachFollowUps.threadId, sent.threadId!));
     expect(followUps.length).toBeGreaterThan(0);
     expect(followUps.every((f) => f.qualifiedLeadId === lead!.id)).toBe(true);
+  });
+});
+
+// ---- interrupted sends resolve on their own (review: PC-10 / PC-08) --------
+
+/** Delivers, but runs `during` first (a send hanging while "the reaper"
+ *  acts on its row). */
+class HangingProvider extends MockMailProvider {
+  public calls = 0;
+  constructor(private readonly during: () => Promise<void>) {
+    super();
+  }
+  async send(message: OutboundMessage): Promise<SendResult> {
+    this.calls += 1;
+    await this.during();
+    return super.send(message);
+  }
+}
+
+/** What the reaper does to a send stuck for 10 minutes. */
+async function reapAsInterrupted(s: Setup, entryId: bigint, draftId: bigint | null) {
+  await db
+    .update(outreachQueue)
+    .set({ status: 'failed', lastFailureKind: 'interrupted', lastError: 'Interrupted: delivery unknown.' })
+    .where(eq(outreachQueue.id, entryId));
+  await reportSendInterrupted({
+    workspaceId: s.workspaceId,
+    entryId,
+    mailboxId: s.mailboxId,
+    draftId,
+    claimedAt: new Date(),
+  });
+}
+
+const openInterrupted = () =>
+  db
+    .select()
+    .from(opsEvents)
+    .where(and(eq(opsEvents.kind, 'send.interrupted'), isNull(opsEvents.resolvedAt)));
+
+async function interruptedEvent() {
+  const [ev] = await db.select().from(opsEvents).where(eq(opsEvents.kind, 'send.interrupted'));
+  return ev!;
+}
+
+describe('an interrupted send resolves when it turns out sent (PC-10 review)', () => {
+  it('a late drain completing a send the reaper gave up: sent, incident resolved', async () => {
+    const s = await setup();
+    const { entry, draft } = await queuedDraft(s, 'anna@target.com');
+    const provider = new HangingProvider(() => reapAsInterrupted(s, entry.id, draft.id));
+
+    expect((await drainQueue(ctx(s), { providerOverride: provider })).sent).toBe(1);
+    expect((await row(entry.id)).status).toBe('sent');
+    expect(await openInterrupted()).toHaveLength(0);
+    expect(await interruptedEvent()).toMatchObject({ resolution: 'auto', resolvedBy: null });
+  });
+
+  it('the same when recording the late send fails: sent, incident resolved', async () => {
+    const s = await setup();
+    const { entry, draft } = await queuedDraft(s, 'anna@target.com');
+    const provider = new HangingProvider(() => reapAsInterrupted(s, entry.id, draft.id));
+    await withTrigger(
+      'pc10_fail_late_sent_insert',
+      'mail_messages',
+      'BEFORE INSERT',
+      "NEW.status = 'sent'",
+      async () => {
+        expect((await drainQueue(ctx(s), { providerOverride: provider })).sent).toBe(1);
+      },
+    );
+    const q = await row(entry.id);
+    expect(q.status).toBe('sent');
+    expect(q.lastError).toMatch(/^Sent, but recording it failed/);
+    expect(await openInterrupted()).toHaveLength(0);
+  });
+
+  it('an Errors-folder retry that delivers the draft settles the interrupted row and resolves its incident', async () => {
+    const s = await setup();
+    const { entry } = await failedEntry(s);
+    await reapAsInterrupted(s, entry.id, entry.draftId);
+    const [copy] = await outbound(s.workspaceId);
+
+    const result = await retrySend(ctx(s), [copy!.id], new FlakyProvider(greylisted, 0));
+    expect(result.queueEntriesSent).toEqual([entry.id]);
+    expect((await row(entry.id)).status).toBe('sent');
+    expect(await openInterrupted()).toHaveLength(0);
+    expect(await interruptedEvent()).toMatchObject({ resolution: 'auto' });
+  });
+
+  it('Mark as delivered: sent, failed copies out of Errors, incident resolved, audited; never re-sent', async () => {
+    const s = await setup();
+    const { entry, copies } = await gaveUpWithFiveCopies(s);
+    // Only an interrupted entry can be marked delivered.
+    await expect(markQueueEntryDelivered(ctx(s), entry.id)).rejects.toThrow(/cut off/);
+
+    await reapAsInterrupted(s, entry.id, entry.draftId);
+    await expect(markQueueEntryDelivered(ctx(s, 'viewer'), entry.id)).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    const marked = await markQueueEntryDelivered(ctx(s, 'member'), entry.id);
+    expect(marked.status).toBe('sent');
+    expect(marked.lastFailureKind).toBeNull();
+    expect(marked.lastError).toMatch(/^Marked as delivered on /);
+
+    expect(await openInterrupted()).toHaveLength(0);
+    expect(await interruptedEvent()).toMatchObject({ resolution: 'manual', resolvedBy: s.memberId });
+    const [audit] = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.kind, 'outreach.queue.mark_delivered'));
+    expect(audit!.userId).toBe(s.memberId);
+
+    const rows = await outbound(s.workspaceId);
+    expect(rows.filter((m) => m.status === 'failed' && m.trashedAt === null)).toHaveLength(0);
+    const provider = new FlakyProvider(greylisted, 0);
+    const again = await retrySend(ctx(s), copies.map((c) => c.id), provider);
+    expect(provider.calls).toBe(0);
+    expect(again.skippedAlreadySent).toHaveLength(5);
+    await expect(markQueueEntryDelivered(ctx(s), entry.id)).rejects.toMatchObject({
+      code: 'conflict',
+    });
   });
 });

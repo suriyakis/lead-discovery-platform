@@ -10,8 +10,12 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { connectorRuns } from '@/lib/db/schema/connectors';
 import { outreachQueue, outreachSendSettings } from '@/lib/db/schema/outreach';
-import { requeueQueuedEmailAction, retryQueuedEmailAction } from '@/app/mailbox/queue/actions';
-import { REQUEUED_MESSAGE } from '@/app/mailbox/queue/forms';
+import {
+  markQueuedEmailDeliveredAction,
+  requeueQueuedEmailAction,
+  retryQueuedEmailAction,
+} from '@/app/mailbox/queue/actions';
+import { MARKED_DELIVERED_MESSAGE, REQUEUED_MESSAGE } from '@/app/mailbox/queue/forms';
 import QueuePage from '@/app/mailbox/queue/page';
 import { cancelRunAction } from '@/app/connectors/[id]/runs/[runId]/actions';
 import RunDetailPage from '@/app/connectors/[id]/runs/[runId]/page';
@@ -215,6 +219,41 @@ describe('/mailbox/queue recovery controls', () => {
       ),
     );
     expect(again.error).toBe('That email is already waiting in the queue.');
+  });
+
+  it('an interrupted entry offers Mark as delivered to an editor; the action records it sent', async () => {
+    const s = await setup();
+    const { entry } = await queuedDraft(s, 'stuck@two.com');
+    await db
+      .update(outreachQueue)
+      .set({ status: 'sending', claimedAt: new Date(Date.now() - 11 * 60_000) })
+      .where(eq(outreachQueue.id, entry.id));
+    await reapStuckSends(ctx(s));
+    const plain = await failedRow(s, 'anna@target.com');
+
+    signInAs(s.memberId);
+    const html = await renderQueue('failed');
+    // Only on the interrupted row, not on the plainly failed one.
+    expect(html.match(/>Mark as delivered</g)).toHaveLength(1);
+    signInAs(s.viewerId);
+    expect(await renderQueue('failed')).not.toContain('>Mark as delivered<');
+
+    signInAs(s.memberId);
+    const done = flash(
+      await expectRedirect(() =>
+        markQueuedEmailDeliveredAction(form({ status: 'failed', id: String(entry.id) })),
+      ),
+    );
+    expect(done.message).toBe(MARKED_DELIVERED_MESSAGE);
+    expect((await row(entry.id)).status).toBe('sent');
+
+    const refused = flash(
+      await expectRedirect(() =>
+        markQueuedEmailDeliveredAction(form({ status: 'failed', id: String(plain) })),
+      ),
+    );
+    expect(refused.error).toMatch(/^Only an email cut off/);
+    expect((await row(plain)).status).toBe('failed');
   });
 });
 

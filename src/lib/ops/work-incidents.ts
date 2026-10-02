@@ -3,14 +3,19 @@
 //
 //   send.interrupted  workspace · error   the reaper found a send cut off
 //                     one incident per queue row; resolved when an operator
-//                     retries or requeues that row
+//                     retries, requeues or marks that row delivered, or
+//                     (auto) when the row turns out sent after all: a late
+//                     drain or an Errors-folder retry settles it
 //   run.failed        workspace · warning a discovery run ended 'failed'
 //                     (incl. every query failing, I074)
 //   run.stuck         workspace · error   the reaper failed a run that
 //                     stopped making progress or never started
 //                     both run kinds: one incident per recipe (occurrences
 //                     counted), resolved by the recipe's next run that
-//                     succeeds or partly succeeds
+//                     succeeds or partly succeeds; run.stuck also by its
+//                     next run that ends by itself (failed, cancelled).
+//                     Both resolve (auto) once the recipe or connector is
+//                     deleted or switched off: nothing can run it again.
 //
 // Every function here is best-effort and never throws: recording an
 // incident must not break the send, the run or the reaper that reports it.
@@ -180,10 +185,40 @@ export async function resolveRunIncidents(
   run: { connectorId: bigint; recipeId: bigint | null },
 ): Promise<void> {
   for (const kind of [RUN_FAILED, RUN_STUCK] as const) {
-    try {
-      await resolveOpsEvent(runIncidentFingerprint(kind, workspaceId, run), { resolution: 'auto' });
-    } catch (err) {
-      logNotRecorded(`${kind} resolution for connector ${run.connectorId}`, err);
-    }
+    await resolveRunIncident(kind, workspaceId, run);
   }
+}
+
+/**
+ * A later run of the recipe reached an end by itself (failed or
+ * cancelled): the worker is processing the recipe again, so its run.stuck
+ * incident is over. A failure is reported as run.failed on its own.
+ */
+export async function resolveRunStuck(
+  workspaceId: bigint,
+  run: { connectorId: bigint; recipeId: bigint | null },
+): Promise<void> {
+  await resolveRunIncident(RUN_STUCK, workspaceId, run);
+}
+
+async function resolveRunIncident(
+  kind: typeof RUN_FAILED | typeof RUN_STUCK,
+  workspaceId: bigint,
+  run: { connectorId: bigint; recipeId: bigint | null },
+): Promise<void> {
+  try {
+    await resolveOpsEvent(runIncidentFingerprint(kind, workspaceId, run), { resolution: 'auto' });
+  } catch (err) {
+    logNotRecorded(`${kind} resolution for connector ${run.connectorId}`, err);
+  }
+}
+
+/** The connector / recipe a run incident's dedupe key names; null when the
+ *  key is not one of ours. */
+export function parseRunIncidentDedupeKey(
+  key: string,
+): { connectorId: bigint; recipeId: bigint | null } | null {
+  const m = /^connector:(\d+):recipe:(\d+|none)$/.exec(key);
+  if (!m) return null;
+  return { connectorId: BigInt(m[1]!), recipeId: m[2] === 'none' ? null : BigInt(m[2]!) };
 }

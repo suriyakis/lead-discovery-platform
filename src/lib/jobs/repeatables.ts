@@ -58,7 +58,7 @@ import { processDueFollowUps } from '@/lib/services/follow-up';
 import { compactWorkspaceKnowledgeUnattended } from '@/lib/services/knowledge-compaction';
 import { synthesizeWorkspaceLearningUnattended } from '@/lib/services/learning-synthesis';
 import { processDueHealthChecks } from '@/lib/services/health-check';
-import { reapStuckWork } from '@/lib/services/stuck-work';
+import { reapStuckWork, resolveOrphanedRunIncidents } from '@/lib/services/stuck-work';
 import { runRetentionTick } from '@/lib/services/retention';
 import { adoptUntrackedFailingMailboxes } from '@/lib/services/mailbox';
 import { recordTickRegistration } from '@/lib/services/job-heartbeats';
@@ -486,6 +486,17 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
     }
     await incidents.succeeded({ workspaceId: ws.id });
   }
+  // Run incidents whose recipe / connector is gone or switched off: no
+  // next run can resolve them. Best-effort, platform-wide.
+  let runIncidentsClosed = 0;
+  try {
+    runIncidentsClosed = await resolveOrphanedRunIncidents();
+  } catch (err) {
+    console.error(
+      '[ops.reaper.tick] orphaned run incidents not resolved:',
+      err instanceof Error ? err.message : err,
+    );
+  }
   return {
     workspaces: wss.length,
     sendsSettledSent,
@@ -493,6 +504,7 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
     runsFailed,
     runsCancelled,
     workspacesFailed,
+    runIncidentsClosed,
   };
 };
 
