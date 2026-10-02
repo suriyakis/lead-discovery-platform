@@ -349,6 +349,22 @@ describe('GET /go?ws=&to= (MOB-06)', () => {
     expect(res.headers.get('location')).toBe('/drafts');
   });
 
+  it.each([['/.//evil.example'], ['/a/..//evil.example'], ['/%2e//evil.example']])(
+    'never redirects off-site when the session is already in ws: %s is 400',
+    async (to) => {
+      // Already in `ws` → goLandingPath returns the target unchanged, so
+      // the target itself must never normalise to a protocol-relative URL.
+      const { user, one } = await twoWorkspaces();
+      const a = await signInBrowser(user, 'Laptop');
+      from(a, user);
+      await getWorkspaceContext();
+      const res = await go({ ws: one.toString(), to });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect((await sessionRow(a.token)).activeWorkspaceId).toBe(one);
+    },
+  );
+
   it('a workspace the user is not a member of is 403 and nothing switches — super-admins included', async () => {
     const { user, one } = await twoWorkspaces();
     const stranger = await seedUser({ email: 'stranger@mob06.test' });
@@ -393,6 +409,9 @@ describe('GET /go?ws=&to= (MOB-06)', () => {
     ['empty', ''],
     ['tab in the host', '/\t/evil.example'],
     ['a /go loop', '/go?ws=1&to=/review'],
+    ['dot segment', '/.//evil.example'],
+    ['parent segment', '/a/..//evil.example'],
+    ['encoded dot segment', '/%2e//evil.example'],
   ])('refuses a %s target with 400 and switches nothing', async (_label, to) => {
     const { user, one, two } = await twoWorkspaces();
     const a = await signInBrowser(user, 'Laptop');
@@ -457,6 +476,11 @@ describe('workspace-carrying links (pure)', () => {
     for (const bad of [
       '//evil.example',
       '/\\evil.example',
+      '/.//evil.example',
+      '/a/..//evil.example',
+      '/%2e//evil.example',
+      '/%2E%2E//evil.example',
+      '/./%2e/..//evil.example',
       'https://evil.example',
       'javascript:alert(1)',
       'review',
@@ -476,6 +500,7 @@ describe('workspace-carrying links (pure)', () => {
     expect(goHref(12n, goHref(12n, '/review/5'))).toBe('/go?ws=12&to=%2Freview%2F5');
     expect(goHref(12n, null)).toBeNull();
     expect(goHref(12n, '//evil.example')).toBeNull();
+    expect(goHref(12n, '/.//evil.example')).toBeNull();
     expect(goHref('abc', '/review')).toBeNull();
   });
 
@@ -495,6 +520,8 @@ describe('workspace-carrying links (pure)', () => {
   it('workspaceChangedHref carries the expected workspace and a safe return path', () => {
     expect(workspaceChangedHref(3n, '/review/9')).toBe('/workspace-changed?ws=3&to=%2Freview%2F9');
     expect(workspaceChangedHref(null, '//evil.example')).toBe('/workspace-changed');
+    // The "Reload the page" link on /workspace-changed must not go off-site either.
+    expect(workspaceChangedHref(3n, '/.//evil.example')).toBe('/workspace-changed?ws=3');
   });
 
   it('assistantLink: same workspace stays a client link, another one goes through /go', () => {
@@ -505,5 +532,6 @@ describe('workspace-carrying links (pure)', () => {
     });
     expect(assistantLink('/drafts/12', null, '5')).toEqual({ href: '/drafts/12', viaGo: false });
     expect(assistantLink('//evil.example', '4', '5')).toBeNull();
+    expect(assistantLink('/a/..//evil.example', '4', '4')).toBeNull();
   });
 });

@@ -44,8 +44,8 @@ export function parseWorkspaceIdParam(raw: unknown): bigint | null {
  *
  * Accepts only a relative path that starts with a single '/': no scheme,
  * no host, no protocol-relative '//' (or '/\', which browsers read as
- * '//'), no control characters, and nothing that resolves to another
- * origin. /go itself is refused so a link cannot loop. Query and #hash
+ * '//') either as given or after dot-segment normalisation, no control
+ * characters, and nothing that resolves to another origin. /go itself is refused so a link cannot loop. Query and #hash
  * are kept.
  */
 export function safeInAppPath(raw: unknown): string | null {
@@ -65,7 +65,12 @@ export function safeInAppPath(raw: unknown): string | null {
   }
   if (url.origin !== base) return null;
   if (url.pathname === GO_PATH || url.pathname.startsWith(`${GO_PATH}/`)) return null;
-  return `${url.pathname}${url.search}${url.hash}`;
+  const out = `${url.pathname}${url.search}${url.hash}`;
+  // Dot segments are resolved by the parser, so '/.//evil.com',
+  // '/a/..//evil.com' and '/%2e//evil.com' all normalise to '//evil.com'.
+  // Check the RESULT too: a protocol-relative output is another origin.
+  if (out.startsWith('//') || out.startsWith('/\\')) return null;
+  return out;
 }
 
 /**
