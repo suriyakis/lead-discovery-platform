@@ -99,7 +99,7 @@ import {
   type AutopilotStepKey,
 } from './automation-policy';
 import {
-  LOG_ONCE_INCIDENT_SINK,
+  OPS_EVENT_INCIDENT_SINK,
   reportAutopilotStepErrors,
   type AutopilotIncidentSink,
   type AutopilotStepErrors,
@@ -557,7 +557,7 @@ export interface RunOptions {
   /** Test seam — the CRM connector the CRM steps push through. */
   crmConnectorOverride?: ICRMConnector;
   /** PC-11: where step errors are reported, once per step and run (default:
-   *  logged once per step and day; PC-07's raiseOpsEvent once integrated). */
+   *  PC-07's incident stream, raiseOpsEvent). */
   incidentSink?: AutopilotIncidentSink;
 }
 
@@ -615,7 +615,7 @@ export async function runOnce(
   }
 
   // PC-11: each step that had errors → one incident report for this run.
-  await reportAutopilotStepErrors(options.incidentSink ?? LOG_ONCE_INCIDENT_SINK, {
+  await reportAutopilotStepErrors(options.incidentSink ?? OPS_EVENT_INCIDENT_SINK, {
     workspaceId: ctx.workspaceId,
     runId,
     at: ranAt,

@@ -9,13 +9,15 @@
 // while open only counts occurrences) a step that keeps failing opens ONE
 // incident per day, whose `occurrences` count its errors.
 //
-// The input has exactly the shape of PC-07's RaiseOpsEventInput, so wiring
-// the stream in is passing raiseOpsEvent as the sink. PC-07 lands on
-// another lane (feat/p1-ops-visibility); until the lanes are integrated the
-// default sink logs each incident once per process and day instead.
-// Recording an incident never breaks the run that reports it.
+// The input has exactly the shape of PC-07's RaiseOpsEventInput: the
+// default sink (OPS_EVENT_INCIDENT_SINK) is raiseOpsEvent, so the incident
+// lands in ops_events (and, at error severity, the owner's alerts, PC-08).
+// LOG_ONCE_INCIDENT_SINK (one console line per key and day) remains for
+// callers and tests that want no database write. Recording an incident
+// never breaks the run that reports it.
 
 import type { AutopilotStepKey } from './automation-policy';
+import { raiseOpsEvent } from './ops-events';
 
 /** ops_events.kind of an autopilot step incident. */
 export const AUTOPILOT_STEP_FAILED = 'autopilot.step_failed';
@@ -92,9 +94,11 @@ export function autopilotStepIncident(input: {
   };
 }
 
-/** Until the ops incident stream is wired in (see the header): one log
- *  line per incident key, workspace and process (keys of earlier days are
- *  dropped). */
+/** PC-07: the ops incident stream — the default sink. */
+export const OPS_EVENT_INCIDENT_SINK: AutopilotIncidentSink = (input) => raiseOpsEvent(input);
+
+/** One log line per incident key, workspace and process (keys of earlier
+ *  days are dropped); no database write. */
 const logged = { day: '', keys: new Set<string>() };
 
 export const LOG_ONCE_INCIDENT_SINK: AutopilotIncidentSink = async (input) => {

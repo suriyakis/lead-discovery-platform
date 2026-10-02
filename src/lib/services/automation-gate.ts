@@ -35,9 +35,9 @@
 //      acts as workspaces.owner_user_id, so when that user is not active
 //      or no longer a member it stops (no_accountable_owner) — no fallback
 //      to another member. Manual work by other members goes on. The first
-//      gate to find it raises one incident (an audit row plus a
-//      notification to the workspace admins) until PC-07's incident
-//      stream lands; it is cleared when the owner is back.
+//      gate to find it raises one incident (an audit row, a notification
+//      to the workspace admins and a PC-07 ops_event, which alerts the
+//      platform owner); it is resolved when the owner is back.
 //   5. the workspace pause (PC-05): automatic work of every capability but
 //      Inbox sync stops (replies keep arriving; reply auto-actions wait).
 //      A manual send is refused until the person confirms "send anyway"
@@ -69,6 +69,7 @@ import type { MailboxStatus } from '@/lib/db/schema/mailing';
 import { platformSettings } from '@/lib/db/schema/platform-settings';
 import { workspaces, type WorkspaceStatus } from '@/lib/db/schema/workspaces';
 import { isAutomatic, makeAutomationContext, type WorkspaceContext } from './context';
+import { opsEventFingerprint, raiseOpsEvent, resolveOpsEvent } from './ops-events';
 import { resolveEffectivePlan } from './plan-limits';
 
 export { AUTOMATION_CAPABILITIES, type AutomationCapability };
@@ -740,12 +741,22 @@ export function logGateSkip(tick: string, workspaceId: bigint, decision: GateRef
 export const OWNER_INCIDENT_KIND = 'automation.owner_unaccountable';
 export const OWNER_INCIDENT_RESOLVED_KIND = 'automation.owner_accountable_again';
 
+/** The ops_event of an open no-accountable-owner incident (PC-07). */
+export function ownerIncidentFingerprint(workspaceId: bigint): string {
+  return opsEventFingerprint({
+    scope: 'workspace',
+    workspaceId,
+    kind: OWNER_INCIDENT_KIND,
+    dedupeKey: 'owner',
+  });
+}
+
 /**
  * Raise the incident the first time automation finds no accountable
  * owner, and resolve it once the owner is accountable again. The
  * conditional UPDATE on workspaces.automation_owner_incident_at makes
  * exactly one caller win across concurrent ticks, so each episode writes
- * exactly one audit row (PC-07 will turn it into an ops event). Mutates
+ * exactly one audit row and opens one ops_event (PC-07). Mutates
  * `state.ownerIncidentOpenSince` to match. Best-effort: a failure is
  * logged, never thrown — the gate's answer does not depend on it.
  */
@@ -779,6 +790,17 @@ export async function reconcileOwnerIncident(state: AutomationState): Promise<vo
       });
       state.ownerIncidentOpenSince = at;
       if (raised) {
+        await raiseOpsEvent({
+          scope: 'workspace',
+          workspaceId: state.workspaceId,
+          kind: OWNER_INCIDENT_KIND,
+          severity: 'error',
+          source: 'automation.gate',
+          dedupeKey: 'owner',
+          title: 'Automatic work stopped: the workspace owner is not accountable',
+          message: ownerProblemMessage(state),
+          payload: { ownerUserId: state.ownerUserId, problem: state.ownerProblem },
+        });
         const { notifyWorkspaceAdmins } = await import('./notifications');
         await notifyWorkspaceAdmins(state.workspaceId, {
           kind: 'automation.owner_unaccountable',
@@ -813,6 +835,7 @@ export async function reconcileOwnerIncident(state: AutomationState): Promise<vo
           payload: { ownerUserId: state.ownerUserId, openedAt: opened.toISOString() },
         });
       });
+      await resolveOpsEvent(ownerIncidentFingerprint(state.workspaceId), { resolution: 'auto' });
       state.ownerIncidentOpenSince = null;
     }
   } catch (err) {

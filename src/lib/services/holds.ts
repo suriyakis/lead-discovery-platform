@@ -25,6 +25,11 @@
 // Audit: a hold is a tenant effect, so its events are filed against that
 // workspace (with the super-admin as the actor for platform holds); the
 // platform stop is a platform event (workspace_id NULL).
+//
+// PC-08: every committed change (a hold placed, released, confirmed or
+// discarded; the stop set or cleared) also reaches the platform owner as a
+// control-change alert (services/ops-alerts.ts notifyControlChange,
+// fire-and-forget, deduplicated against double submits).
 
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -51,6 +56,7 @@ import {
   type PlatformOutboundStop,
 } from './automation-gate';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
+import { notifyControlChange } from './ops-alerts';
 import { isPlatformContext, type PlatformContext } from './platform-context';
 
 export class HoldServiceError extends Error {
@@ -263,7 +269,7 @@ async function insertHold(p: {
     placedAt: p.now,
     history: [entry],
   };
-  return db.transaction(async (tx) => {
+  const placed = await db.transaction(async (tx) => {
     const [hold] = await tx.insert(workspaceHolds).values(row).returning();
     if (!hold) throw new HoldServiceError('hold insert returned no row', 'invariant_violation');
     await tx.insert(auditLog).values({
@@ -275,6 +281,26 @@ async function insertHold(p: {
       payload: holdPayload(hold),
     });
     return hold;
+  });
+  alertHoldChange(placed, 'placed', placed.reason);
+  return placed;
+}
+
+/** PC-08: tell the platform owner (ntfy) about a committed hold change.
+ *  Fire-and-forget: the change stands whatever the alert does. */
+function alertHoldChange(
+  hold: WorkspaceHold,
+  action: 'placed' | 'released' | 'confirmed' | 'discarded',
+  reason: string | null,
+): void {
+  notifyControlChange({
+    control: 'workspace_hold',
+    action,
+    source: hold.source,
+    workspaceId: hold.workspaceId,
+    holdId: hold.id,
+    scopeLabel: describeHoldScope(hold),
+    reason: reason ?? undefined,
   });
 }
 
@@ -418,7 +444,7 @@ async function transition(p: {
     reason: p.reason,
   };
   const ending = p.to === 'released' || p.to === 'discarded';
-  return db.transaction(async (tx) => {
+  const changed = await db.transaction(async (tx) => {
     const [updated] = await tx
       .update(workspaceHolds)
       .set({
@@ -451,6 +477,8 @@ async function transition(p: {
     });
     return updated;
   });
+  alertHoldChange(changed, p.action, p.reason ?? changed.reason);
+  return changed;
 }
 
 function holdPayload(hold: WorkspaceHold): Record<string, unknown> {
@@ -524,6 +552,7 @@ export async function setPlatformOutboundStop(
     entityId: PLATFORM_OUTBOUND_STOP_KEY,
     payload: { reason: why },
   });
+  notifyControlChange({ control: 'platform_outbound_stop', action: 'set', reason: why });
   return stop;
 }
 
@@ -549,6 +578,7 @@ export async function clearPlatformOutboundStop(
       stoppedReason: removed[0]!.value,
     },
   });
+  notifyControlChange({ control: 'platform_outbound_stop', action: 'cleared', reason: why });
 }
 
 export { CAPABILITY_LABELS };

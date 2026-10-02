@@ -49,6 +49,7 @@ import { workspaces } from '@/lib/db/schema/workspaces';
 import { recordAuditEvent } from './audit';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 import type { WorkspacePause } from './automation-gate';
+import { notifyControlChange } from './ops-alerts';
 
 export class AutomationPauseError extends Error {
   public readonly code:
@@ -226,6 +227,16 @@ export async function pauseAutomation(
     } satisfies PauseResult;
   });
 
+  // PC-08: the platform owner hears about every pause (ntfy, fire-and-forget).
+  if (!result.alreadyPaused) {
+    notifyControlChange({
+      control: 'automation_pause',
+      action: 'paused',
+      workspaceId: ctx.workspaceId,
+      reason: v.reason ?? undefined,
+    });
+  }
+
   // Only owners and admins resume: tell them when someone else paused.
   if (!result.alreadyPaused && !canAdminWorkspace(ctx)) {
     const { notifyWorkspaceAdmins } = await import('./notifications');
@@ -255,7 +266,7 @@ export async function undoPause(
   const device = PAUSE_DEVICES.includes(input.device ?? 'unknown')
     ? (input.device ?? 'unknown')
     : 'unknown';
-  return db.transaction(async (tx) => {
+  const undone = await db.transaction(async (tx) => {
     const current = await lockWorkspace(tx, ctx.workspaceId);
     if (!current.pausedAt) {
       throw new AutomationPauseError('Automation is not paused.', 'not_paused');
@@ -304,6 +315,14 @@ export async function undoPause(
     );
     return { undone: true as const, pausedAt: current.pausedAt };
   });
+  // PC-08: the pause alert went out; say it was taken back.
+  notifyControlChange({
+    control: 'automation_pause',
+    action: 'resumed',
+    workspaceId: ctx.workspaceId,
+    reason: 'Undone by the person who paused it, within the undo window.',
+  });
+  return undone;
 }
 
 // ---- resume ---------------------------------------------------------------
@@ -328,7 +347,7 @@ export async function resumeAutomation(
     );
   }
   const v = parseControlInput(input);
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx): Promise<ResumeResult> => {
     const current = await lockWorkspace(tx, ctx.workspaceId);
     if (!current.pausedAt) return { wasPaused: false, pausedAt: null, heldInboundActions: 0 };
     const held = await countHeldInboundActions(ctx.workspaceId, current.pausedAt, tx);
@@ -364,6 +383,15 @@ export async function resumeAutomation(
     );
     return { wasPaused: true, pausedAt: current.pausedAt, heldInboundActions: held };
   });
+  if (result.wasPaused) {
+    notifyControlChange({
+      control: 'automation_pause',
+      action: 'resumed',
+      workspaceId: ctx.workspaceId,
+      reason: v.reason ?? undefined,
+    });
+  }
+  return result;
 }
 
 // ---- held reply auto-actions -------------------------------------------
