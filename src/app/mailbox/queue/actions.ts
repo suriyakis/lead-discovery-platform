@@ -27,6 +27,7 @@ import {
   retryQueueEntry,
   updateSendSettings,
 } from '@/lib/services/outreach-queue';
+import { describeLeaseHolder } from '@/lib/services/work-leases';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import {
   MARKED_DELIVERED_MESSAGE,
@@ -120,7 +121,7 @@ export async function drainSendQueueAction(formData: FormData): Promise<void> {
   const view = parseQueueView(formData.get('status'));
   const ctx = await requireActionContext();
   const message = await runOrFlash(view, 'drain', async () => {
-    const r = await drainQueue(ctx);
+    const r = await drainQueue(ctx, { purpose: 'Send due emails now' });
     // PC-05: the gate stopped the drain (the workspace pause, a hold, the
     // platform stop) — say why rather than implying the queue is empty.
     const held = r.heldReason ? ` Stopped: ${r.heldReason}` : '';
@@ -134,8 +135,12 @@ export async function drainSendQueueAction(formData: FormData): Promise<void> {
     }
     // PC-10: when the send gate kept the pass from sending, say why rather
     // than implying the queue is simply empty.
+    // PC-12: another pass holds the drain lease — say since when.
     return r.blocked
-      ? describeDrainBlocked(r.blocked, r.heldReason)
+      ? describeDrainBlocked(
+          r.blocked,
+          r.sendPass ? describeLeaseHolder(r.sendPass) : r.heldReason,
+        )
       : 'Nothing was sent: no emails are due yet.';
   });
   backToQueue(view, 'message', message);

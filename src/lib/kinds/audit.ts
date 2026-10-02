@@ -237,6 +237,8 @@ export const AUDIT_KINDS = [
   'connector_run.cancel',
   'connector_run.reaped',
   'outreach.queue.reaped',
+  /** PC-12: a follow-up claim whose pass died, settled by the reaper. */
+  'follow_up.reaped',
   'outreach.queue.requeue',
   'outreach.queue.retry',
   'outreach.queue.mark_delivered',

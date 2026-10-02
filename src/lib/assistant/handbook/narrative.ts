@@ -212,6 +212,15 @@ step is off until an admin turns it on; a run takes them in this order:
 ${b.autopilotSteps}
 Sending queued mail and reading mailboxes are not autopilot steps: they
 always run in the background (see Pausing below).
+One thing at a time: only one autopilot run works in a workspace at
+once. "Run now" while a run is going (the 5-minute one, or the one after
+a crawl) starts nothing and says since when the other has been running;
+that run does the same work. Likewise one send pass sends at a time
+("Send due emails now" and Retry now while a pass is sending only put
+the email back for the next pass, so the daily limit is never
+overshot), one sync or connection test runs per mailbox, and one run per
+search recipe (a plan or "Run now" skips a recipe whose last run is
+still going, and says so).
 Per-product overrides (pick a product on [/autopilot]) only narrow what
 the workspace runs: autopilot or a step can be switched off for that
 product, or its approval threshold raised; switching on what the

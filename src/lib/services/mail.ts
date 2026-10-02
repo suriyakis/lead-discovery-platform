@@ -90,6 +90,7 @@ import {
 import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
 import { describeConnectionError } from '@/lib/mail/connection-errors';
+import { describeLeaseHolder, withWorkLease, type LeaseHolder } from './work-leases';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -869,15 +870,45 @@ export interface SyncInboundResult {
   duplicates: number;
 }
 
+/** PC-12: the mailbox's sync lease is held by another sync or check. */
+export const MAILBOX_BUSY = 'mailbox_busy';
+
+/** "A sync or connection check of this mailbox is already running since …". */
+export function mailboxBusyMessage(held: LeaseHolder): string {
+  return `A sync or connection check of this mailbox is already running ${describeLeaseHolder(held)}. Try again when it has finished.`;
+}
+
+/**
+ * Fetch and store a mailbox's new inbound mail. PC-12 (I067): under the
+ * mailbox's 'mailbox.sync' lease, like every other sync and connection
+ * check of it; while another holds it this throws MAILBOX_BUSY and
+ * touches nothing. The IMAP tick and the Sync buttons go through
+ * safeSyncOne (backoff and failure bookkeeping); this is the bare sync.
+ */
 export async function syncInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   providerOverride?: IMailProvider,
 ): Promise<SyncInboundResult> {
   if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
-  // PC-06: an Inbox-sync hold stops the tick, manual Sync and autopilot's
-  // sync step alike (X6: the disabled feature flag stopped nothing).
+  // PC-06: an Inbox-sync hold stops the tick and manual Sync alike (X6:
+  // the disabled feature flag stopped nothing).
   await assertGate(ctx, 'inbox_sync');
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'mailbox.sync', resource: mailboxId, purpose: 'sync' },
+    () => syncInboundHeld(ctx, mailboxId, providerOverride),
+  );
+  if (leased.status === 'ran') return leased.value;
+  throw new MailServiceError(mailboxBusyMessage(leased.held), MAILBOX_BUSY);
+}
+
+/** syncInbound's work; the caller holds the mailbox's sync lease. */
+async function syncInboundHeld(
+  ctx: WorkspaceContext,
+  mailboxId: bigint,
+  providerOverride?: IMailProvider,
+): Promise<SyncInboundResult> {
   const { mailbox, provider } = await buildProviderFor(ctx, mailboxId, providerOverride);
   const since = mailbox.lastSyncedAt ?? undefined;
   const messages = await provider.fetchInbound({ since, limit: 100 });
@@ -940,13 +971,21 @@ type PersistInboundOutcome =
  * "classify" (analyseReply) also covers the outreach reply handler and
  * follow-up cancellation. A bounce's sender is the mailer daemon, so it is
  * never made a contact; lead.replied is for people answering us (I161).
+ *
+ * PC-12 (I067): the insert is ON CONFLICT (workspace, message_id) DO
+ * NOTHING. The same email can reach two of a workspace's mailboxes (CC'd
+ * to both) and their syncs run side by side; the one that stores it second
+ * used to hit the unique index, throw, and count a spurious IMAP failure
+ * against a healthy mailbox. Now it is a duplicate like any other, with no
+ * side effects.
  */
 async function persistInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   inbound: InboundMessage,
 ): Promise<PersistInboundOutcome> {
-  // Dedup by (workspace, message_id).
+  // Dedup by (workspace, message_id) — the cheap check; the insert below
+  // settles a race the check cannot see.
   const existing = await db
     .select()
     .from(mailMessages)
@@ -1036,12 +1075,16 @@ async function persistInbound(
     receivedAt: inbound.receivedAt,
     outreachRelevance: relevance,
     relevanceSignals: assessment.signals,
-  } satisfies NewMailMessage).returning({ id: mailMessages.id });
+  } satisfies NewMailMessage)
+    .onConflictDoNothing({ target: [mailMessages.workspaceId, mailMessages.messageId] })
+    .returning({ id: mailMessages.id });
+  // Another sync stored it between the check above and this insert.
+  if (!insertedRow) return { existed: true };
 
   await touchThread(thread.id);
 
   // Bulk and unrelated mail stops here: stored, threaded, no side effects.
-  if (!insertedRow || !isOutreachLinked(relevance)) {
+  if (!isOutreachLinked(relevance)) {
     return { existed: false, relevance };
   }
 
@@ -1623,6 +1666,14 @@ export type SafeSyncOutcome =
       message: string;
       consecutiveFailures: number;
       nextSyncAfter: Date;
+    }
+  /** PC-12 (I067): another sync or check of this mailbox holds its lease
+   *  (the tick and a Sync button at once). Nothing was done and nothing is
+   *  recorded: not a failure, no backoff. */
+  | {
+      kind: 'busy';
+      message: string;
+      held: LeaseHolder;
     };
 
 /** Wraps syncInbound + the cron's post-result mailbox bookkeeping into
@@ -1644,7 +1695,15 @@ export type SafeSyncOutcome =
  *
  *  Caller passes the resolved mailbox row — this helper does NOT
  *  enforce the imap_next_sync_after cooldown gate; that's the cron's
- *  job. Manual sync is explicitly "do it now". */
+ *  job. Manual sync is explicitly "do it now".
+ *
+ *  PC-12 (I067): this is the one automatic inbound path (autopilot's own
+ *  sync step is gone, PC-13), and it runs under the mailbox's
+ *  'mailbox.sync' lease: a second sync or check of the same mailbox while
+ *  one is running returns `busy` without logging in, so the two can no
+ *  longer race on the message-id index and record a spurious failure.
+ *  The row is re-read under the lease — the caller's copy may predate the
+ *  sync that just finished (its counters, its failing status). */
 export async function safeSyncOne(
   ctx: WorkspaceContext,
   mailbox: Pick<Mailbox, 'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'>,
@@ -1656,6 +1715,45 @@ export async function safeSyncOne(
   // must neither count towards the auto-pause nor push the backoff.
   await assertGate(ctx, 'inbox_sync');
 
+  const leased = await withWorkLease(
+    ctx,
+    {
+      kind: 'mailbox.sync',
+      resource: mailbox.id,
+      purpose: isAutomatic(ctx) ? 'IMAP tick' : 'manual sync',
+    },
+    async () => safeSyncHeld(ctx, (await currentMailboxRow(ctx, mailbox.id)) ?? mailbox),
+  );
+  if (leased.status === 'ran') return leased.value;
+  return { kind: 'busy', message: mailboxBusyMessage(leased.held), held: leased.held };
+}
+
+type SyncableMailbox = Pick<
+  Mailbox,
+  'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'
+>;
+
+/** The mailbox's row as it is now (null when it is gone). */
+async function currentMailboxRow(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+): Promise<SyncableMailbox | null> {
+  const [row] = await db
+    .select({
+      id: mailboxes.id,
+      status: mailboxes.status,
+      imapHost: mailboxes.imapHost,
+      imapConsecutiveFailures: mailboxes.imapConsecutiveFailures,
+      imapEmptySyncs: mailboxes.imapEmptySyncs,
+    })
+    .from(mailboxes)
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** safeSyncOne's work; the caller holds the mailbox's sync lease. */
+async function safeSyncHeld(ctx: WorkspaceContext, mailbox: SyncableMailbox): Promise<SafeSyncOutcome> {
   let recovered = false;
   if (mailbox.status === 'failing') {
     const check = await recheckFailingMailbox(ctx, mailbox);
@@ -1678,7 +1776,8 @@ export async function safeSyncOne(
   const scope = and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id));
 
   try {
-    const result = await syncInbound(ctx, mailbox.id);
+    // This call holds the lease already (syncInbound would find it held).
+    const result = await syncInboundHeld(ctx, mailbox.id);
     // Success — reset failure counters, apply adaptive empty-sync delay.
     const nextEmpty = result.fetched === 0 ? priorEmpty + 1 : 0;
     const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);

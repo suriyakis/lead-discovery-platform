@@ -31,6 +31,13 @@ import { mailThreads } from './mailing';
  *
  * Status semantics:
  *   pending  — scheduled, waiting for its tick.
+ *   processing — PC-12 (I064): claimed by one follow-up pass
+ *              (UPDATE … SET status='processing' WHERE status='pending'),
+ *              so two overlapping ticks never compose or send the same
+ *              step. The pass moves it on (sent / skipped / awaiting
+ *              approval / failed) or hands it back to 'pending' (a
+ *              deferral); the stuck-work reaper settles a claim whose
+ *              pass died (services/stuck-work.ts).
  *   sent     — queued + delivered; final state.
  *   skipped  — short-circuited because the operator's situation changed
  *              (reply / bounce / manual cancel). Permanent.
@@ -39,6 +46,7 @@ import { mailThreads } from './mailing';
  */
 export const followUpStatus = [
   'pending',
+  'processing',
   'awaiting_approval',
   'sent',
   'skipped',
@@ -117,6 +125,14 @@ export const outreachFollowUps = pgTable(
       mode: 'date',
       withTimezone: true,
     }),
+    /** PC-12: when a pass claimed the row ('pending' → 'processing'),
+     *  from the database clock. NULL while it is not claimed. */
+    claimedAt: timestamp('claimed_at', { mode: 'date', withTimezone: true }),
+    /** PC-12: set just before the claimed step is handed to the mail
+     *  server. A dead pass's claim without it sent nothing (the reaper
+     *  schedules it again); with it, delivery is unknown (the reaper fails
+     *  it as interrupted unless the sent copy is found — never re-sent). */
+    sendingAt: timestamp('sending_at', { mode: 'date', withTimezone: true }),
 
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .notNull()

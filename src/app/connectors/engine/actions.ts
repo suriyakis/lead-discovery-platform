@@ -10,6 +10,7 @@ import {
   CrawlEngineError,
   createCrawlPlan,
   deleteCrawlPlan,
+  describeRecipeSkips,
   runCrawlPlanNow,
   updateCrawlPlan,
 } from '@/lib/services/crawl-engine';
@@ -118,8 +119,8 @@ export async function runPlanAction(formData: FormData): Promise<void> {
     const parts: string[] = [];
     if (r.startedRuns.length > 0)
       parts.push(`${r.startedRuns.length} run(s) started`);
-    if (r.skippedRecipes.length > 0)
-      parts.push(`${r.skippedRecipes.length} recipe(s) skipped (archived/missing)`);
+    // PC-12: why each was skipped (a run still in progress, switched off, deleted).
+    if (r.recipeSkips.length > 0) parts.push(describeRecipeSkips(r.recipeSkips));
     if (r.failedRecipes.length > 0)
       parts.push(`${r.failedRecipes.length} recipe(s) failed`);
     redirect(

@@ -78,6 +78,13 @@
 // neither: the gate's refusal is not a tick failure. Cadences and labels
 // live in tick-catalog.ts; the schedule registration stamps registered_at
 // and boot_id on each tick's heartbeat.
+//
+// PC-12 (I064, I067): the work a tick starts runs under work leases
+// (services/work-leases.ts) — autopilot runOnce, the drain and the
+// follow-up pass per workspace, each mailbox sync per mailbox — so a tick
+// never overlaps a Run now, a "Send due emails now", a manual Sync or its
+// own previous slot still running. A workspace (or mailbox) whose lease is
+// held is counted as `busy`: neither a failure nor a success.
 
 import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -160,17 +167,24 @@ function shouldRun(ws: TickWorkspacePolicy, tick: AutomationTick, onHeld: () => 
  */
 export async function runAutopilotTick(
   incidents: TickIncidents = NOOP_TICK_INCIDENTS,
-): Promise<{ workspaces: number; stepsRun: number; failed: number; held: number }> {
+): Promise<{ workspaces: number; stepsRun: number; failed: number; held: number; busy: number }> {
   const wss = await workspacesForTick();
   let ran = 0;
   let failed = 0;
   let held = 0;
+  let busy = 0;
   for (const ws of wss) {
     // Autopilot off: no run, and no 'autopilot_disabled' log row every
     // 5 minutes.
     if (!shouldRun(ws, 'autopilot.tick', () => held++)) continue;
     try {
-      const result = await runOnce(ws.ctx);
+      const result = await runOnce(ws.ctx, { purpose: 'tick' });
+      // PC-12: a run already in progress (Run now, the post-crawl hook, a
+      // tick still running) — neither a success nor a failure.
+      if (result.leaseHeld) {
+        busy++;
+        continue;
+      }
       ran += result.steps.length;
     } catch (err) {
       failed++;
@@ -183,7 +197,7 @@ export async function runAutopilotTick(
     }
     await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
-  return { workspaces: wss.length, stepsRun: ran, failed, held };
+  return { workspaces: wss.length, stepsRun: ran, failed, held, busy };
 }
 
 const handleAutopilotTick: InstrumentedHandler = (_payload, { incidents }) =>
@@ -198,16 +212,23 @@ export async function runDrainTick(
   totalSkipped: number;
   failed: number;
   held: number;
+  /** PC-12: workspaces whose send pass was already running (lease held). */
+  busy: number;
 }> {
   const wss = await workspacesForTick();
   let totalSent = 0;
   let totalSkipped = 0;
   let failed = 0;
   let held = 0;
+  let busy = 0;
   for (const ws of wss) {
     if (!shouldRun(ws, 'outreach.drain.tick', () => held++)) continue;
     try {
-      const r = await drainQueue(ws.ctx);
+      const r = await drainQueue(ws.ctx, { purpose: 'tick' });
+      if (r.blocked === 'send_pass_running') {
+        busy++;
+        continue;
+      }
       totalSent += r.sent;
       totalSkipped += r.skipped;
       if (r.heldReason) held++;
@@ -222,7 +243,7 @@ export async function runDrainTick(
     }
     await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
-  return { workspaces: wss.length, totalSent, totalSkipped, failed, held };
+  return { workspaces: wss.length, totalSent, totalSkipped, failed, held, busy };
 }
 
 const handleDrainTick: InstrumentedHandler = (_payload, { incidents }) =>
@@ -263,6 +284,8 @@ export async function runImapTick(
   recovered: number;
   adopted: number;
   held: number;
+  /** PC-12: mailboxes another sync or check was already working on. */
+  busy: number;
   /** Workspaces whose adoption pass threw. */
   workspacesFailed: number;
 }> {
@@ -293,6 +316,7 @@ export async function runImapTick(
   let rechecked = 0;
   let recovered = 0;
   let held = 0;
+  let busy = 0;
   for (const ws of tickWss) {
     // Auto-sync off (P61-23): the operator pulls by hand only — not
     // counted as held even when a hold also applies.
@@ -346,6 +370,14 @@ export async function runImapTick(
         await incidents.failed(subject, err);
         continue;
       }
+      // PC-12: a manual Sync or Test connection of this mailbox is running
+      // (its lease): not a failure, and not a success that would resolve
+      // an incident either. The next tick syncs it.
+      if (outcome.kind === 'busy') {
+        busy++;
+        if (mb.status === 'failing') rechecked--; // this tick did not re-check it
+        continue;
+      }
       await incidents.succeeded(subject);
       if (outcome.kind === 'synced') {
         synced++;
@@ -373,6 +405,7 @@ export async function runImapTick(
     recovered,
     adopted,
     held,
+    busy,
     workspacesFailed,
   };
 }
@@ -390,6 +423,8 @@ export async function runFollowUpTick(
   skipped: number;
   failed: number;
   held: number;
+  /** PC-12: workspaces whose follow-up pass was already running. */
+  busy: number;
   workspacesFailed: number;
 }> {
   // Phase 58 / PC-13: every active workspace whose policy has follow-ups
@@ -400,11 +435,16 @@ export async function runFollowUpTick(
   let failed = 0;
   let checked = 0;
   let held = 0;
+  let busy = 0;
   let workspacesFailed = 0;
   for (const ws of wss) {
     if (!shouldRun(ws, 'outreach.follow_up.tick', () => held++)) continue;
     try {
-      const result = await processDueFollowUps(ws.ctx);
+      const result = await processDueFollowUps(ws.ctx, { purpose: 'tick' });
+      if (result.followUpPass) {
+        busy++;
+        continue;
+      }
       checked += result.checked;
       sent += result.sent;
       skipped += result.skipped;
@@ -421,7 +461,7 @@ export async function runFollowUpTick(
     }
     await incidents.succeeded({ workspaceId: ws.workspaceId });
   }
-  return { workspaces: wss.length, checked, sent, skipped, failed, held, workspacesFailed };
+  return { workspaces: wss.length, checked, sent, skipped, failed, held, busy, workspacesFailed };
 }
 
 const handleFollowUpTick: InstrumentedHandler = (_payload, { incidents }) =>
@@ -643,7 +683,9 @@ const handleHealthCheckTick: InstrumentedHandler = (_payload, { incidents }) =>
 /**
  * PC-10: settle stuck work — sends stuck in 'sending' for more than 10
  * minutes, runs without progress for 15 (or pending for 60 with their job
- * gone from the queue). Every active workspace, plus any other workspace
+ * gone from the queue), PC-12: follow-up claims a dead pass left for 30
+ * (claims a live lease holder may own are left alone). Every active
+ * workspace, plus any other workspace
  * with stuck work (an archived one's stuck rows are settled too).
  * Platform maintenance, not automation: it sends nothing and starts
  * nothing, so it runs whatever the workspace's pause or holds say.
@@ -660,6 +702,9 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
   let sendsFailed = 0;
   let runsFailed = 0;
   let runsCancelled = 0;
+  let followUpsRequeued = 0;
+  let followUpsSettledSent = 0;
+  let followUpsFailed = 0;
   let workspacesFailed = 0;
   for (const workspaceId of wss.values()) {
     try {
@@ -668,6 +713,9 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
       sendsFailed += r.sendsFailed;
       runsFailed += r.runsFailed;
       runsCancelled += r.runsCancelled;
+      followUpsRequeued += r.followUpsRequeued;
+      followUpsSettledSent += r.followUpsSettledSent;
+      followUpsFailed += r.followUpsFailed;
     } catch (err) {
       workspacesFailed++;
       console.error(
@@ -696,6 +744,9 @@ const handleStuckWorkTick: InstrumentedHandler = async (_payload, { incidents })
     sendsFailed,
     runsFailed,
     runsCancelled,
+    followUpsRequeued,
+    followUpsSettledSent,
+    followUpsFailed,
     workspacesFailed,
     runIncidentsClosed,
   };

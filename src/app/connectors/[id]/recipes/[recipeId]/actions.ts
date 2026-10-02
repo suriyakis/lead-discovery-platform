@@ -9,7 +9,11 @@ import { redirect } from 'next/navigation';
 import { requireActionContext } from '@/lib/action-context';
 import { describeActionError, withFlash } from '@/lib/action-errors';
 import { AutomationGateError } from '@/lib/services/automation-gate';
-import { ConnectorServiceError, startRun } from '@/lib/services/connector-run';
+import {
+  ConnectorServiceError,
+  RecipeRunInFlightError,
+  startRun,
+} from '@/lib/services/connector-run';
 import { TokenError } from '@/lib/services/token-ledger';
 
 function parseId(raw: unknown): bigint | null {
@@ -31,6 +35,10 @@ export async function runRecipeNowAction(
     const { run } = await startRun(ctx, { connectorId, recipeId });
     runId = run.id;
   } catch (err) {
+    // PC-12 (I068): a recipe runs once at a time — show the run in progress.
+    if (err instanceof RecipeRunInFlightError) {
+      redirect(withFlash(`/connectors/${connectorId}/runs/${err.runId}`, { message: err.message }));
+    }
     const failure = describeActionError(
       err,
       [ConnectorServiceError, TokenError, AutomationGateError],

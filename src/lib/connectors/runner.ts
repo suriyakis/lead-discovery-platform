@@ -31,6 +31,7 @@ import {
   connectorRunLogs,
   connectors,
   sourceRecords,
+  type ConnectorRun,
   type ConnectorRunStatus,
   type NewConnectorRunLog,
   type NewSourceRecord,
@@ -39,6 +40,12 @@ import type { WorkspaceContext } from '@/lib/services/context';
 import { classifySourceRecord } from '@/lib/services/qualification';
 import { seedReviewItem } from '@/lib/services/review';
 import { reportRunFailed, resolveRunIncidents, resolveRunStuck } from '@/lib/ops/work-incidents';
+import {
+  acquireWorkLease,
+  describeLeaseHolder,
+  type LeaseHolder,
+  type WorkLease,
+} from '@/lib/services/work-leases';
 import { getConnector } from './registry';
 
 // Side-effect imports: each connector implementation calls
@@ -79,6 +86,21 @@ export interface RunResult {
 /** The heartbeat is written at least this often while events flow. */
 export const PROGRESS_TOUCH_MS = 5_000;
 
+/** PC-12: why a run stopped when another run of its recipe took the
+ *  recipe lease over (it made no progress for the lease's whole TTL). */
+export const RUN_TAKEN_OVER_MESSAGE =
+  'Stopped: this run made no progress for 15 minutes and another run of the recipe took over. Records found before that are kept.';
+
+/**
+ * Execute a pending run. PC-12 (I068): a recipe's run executes under the
+ * recipe's 'connector.recipe' work lease, renewed at the run's progress
+ * checkpoints (its TTL is the reaper's 15-minute no-progress window), so
+ * two runs of one recipe never execute side by side — not even when the
+ * reaper gave up on a run whose worker is in fact still going. startRun
+ * already refuses a second run while one is pending or running; a run
+ * that finds the lease held anyway ends 'cancelled' with why, before it
+ * starts (a queue retry could not wait out the lease).
+ */
 export async function runConnectorRun(
   ctx: WorkspaceContext,
   runId: bigint,
@@ -97,7 +119,58 @@ export async function runConnectorRun(
   if (run.status !== 'pending') {
     return notStarted(runId, run.status, run.recordCount);
   }
+  if (run.recipeId === null) return executeRun(ctx, run, options, null);
 
+  const got = await acquireWorkLease(ctx, {
+    kind: 'connector.recipe',
+    resource: run.recipeId,
+    purpose: `run ${runId}`,
+  });
+  if (!got.acquired) return refuseOverlappingRun(run, got.held);
+  try {
+    return await executeRun(ctx, run, options, got.lease);
+  } finally {
+    try {
+      await got.lease.release();
+    } catch (err) {
+      console.error(
+        `[runner] run ${runId}: recipe lease not released (it expires on its own):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}
+
+/** PC-12: another run of the recipe still holds its lease — end this one
+ *  before it starts, saying why (only while it is still pending). */
+async function refuseOverlappingRun(run: ConnectorRun, held: LeaseHolder): Promise<RunResult> {
+  const message =
+    `Not started: another run of this recipe was still executing ${describeLeaseHolder(held)}. ` +
+    'A recipe runs once at a time; start it again when that run has ended.';
+  const now = new Date();
+  const [cancelled] = await db
+    .update(connectorRuns)
+    .set({
+      status: 'cancelled',
+      startedAt: now,
+      completedAt: now,
+      errorPayload: { message, reason: 'recipe_busy' },
+      updatedAt: now,
+    })
+    .where(and(eq(connectorRuns.id, run.id), eq(connectorRuns.status, 'pending')))
+    .returning({ id: connectorRuns.id });
+  if (!cancelled) return notStarted(run.id, null, run.recordCount);
+  await insertLog(run.id, 'warn', message, { reason: 'recipe_busy' });
+  return { status: 'cancelled', recordCount: 0, error: { message } };
+}
+
+async function executeRun(
+  ctx: WorkspaceContext,
+  run: ConnectorRun,
+  options: { signal?: AbortSignal },
+  lease: WorkLease | null,
+): Promise<RunResult> {
+  const runId = run.id;
   const connectorRows = await db
     .select()
     .from(connectors)
@@ -153,6 +226,8 @@ export async function runConnectorRun(
   let cancelRequested = false;
   /** The run left 'running' under us (the reaper failed it). */
   let lost = false;
+  /** PC-12: another run of the recipe took the recipe lease over. */
+  let takenOver = false;
   let nonFatalErrors = 0;
   let firstNonFatal: string | null = null;
 
@@ -163,7 +238,8 @@ export async function runConnectorRun(
   options.signal?.addEventListener('abort', forwardAbort, { once: true });
 
   let lastTouch = Date.now();
-  /** Heartbeat + cancel poll in one write; extra columns ride along. */
+  /** Heartbeat + cancel poll in one write; extra columns ride along.
+   *  PC-12: the recipe lease is renewed on the same beat (when due). */
   const checkpoint = async (extra: { progress?: number; recordCount?: number } = {}) => {
     lastTouch = Date.now();
     const now = new Date();
@@ -177,6 +253,12 @@ export async function runConnectorRun(
       controller.abort();
     } else if (row.cancelRequestedAt) {
       cancelRequested = true;
+      controller.abort();
+    } else if (lease && !(await lease.checkpoint())) {
+      // The lease expired (no progress for its whole TTL) and another run
+      // of the recipe took it: stop here, failed, and leave the recipe to
+      // that run.
+      takenOver = true;
       controller.abort();
     }
   };
@@ -231,7 +313,7 @@ export async function runConnectorRun(
       if (event.kind !== 'progress' && Date.now() - lastTouch >= PROGRESS_TOUCH_MS) {
         await checkpoint();
       }
-      if (cancelRequested || lost) break;
+      if (cancelRequested || lost || takenOver) break;
     }
   } catch (err) {
     fatalError = {
@@ -244,6 +326,10 @@ export async function runConnectorRun(
 
   if (lost) {
     return finishedElsewhere(runId, recordCount);
+  }
+  if (takenOver) {
+    fatalError = { message: RUN_TAKEN_OVER_MESSAGE };
+    await insertLog(runId, 'error', RUN_TAKEN_OVER_MESSAGE);
   }
 
   const finalStatus: RunOutcome =
@@ -318,6 +404,10 @@ export async function runConnectorRun(
   // permission gates + emergency-pause check, and any failure here
   // must NOT propagate back into the connector run status. Inline
   // import to avoid a top-level cycle between runner and autopilot.
+  // PC-12 (I064): runOnce holds the workspace's autopilot lease, so this
+  // hook never overlaps the tick or Run now; when a run is already in
+  // progress it returns at once (leaseHeld) and that run, or the next
+  // tick, picks the new records up.
   // Fire-and-forget (see above). Skipped under Vitest: a background runOnce
   // that outlives the run leaks across the next test's truncate and
   // intermittently deadlocks it. runOnce is covered directly in
@@ -330,7 +420,7 @@ export async function runConnectorRun(
     void (async () => {
       try {
         const { runOnce } = await import('@/lib/services/autopilot');
-        await runOnce(ctx);
+        await runOnce(ctx, { purpose: 'post-crawl' });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('[runner] autopilot.runOnce after-crawl hook failed:', message);

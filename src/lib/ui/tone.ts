@@ -376,6 +376,7 @@ export const REPLY_TRIAGE_TRUSTED = false;
 
 export const FOLLOW_UP_STATUS_TONE = {
   pending: 'neutral',
+  processing: 'info',
   awaiting_approval: 'attention',
   sent: 'success',
   skipped: 'neutral',

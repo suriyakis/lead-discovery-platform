@@ -2,6 +2,12 @@
 // per-workspace cadence with quiet-hour gating + recipe/product
 // selection. The cron tick lives in repeatables.ts and just calls
 // processDueCrawlPlans(); manual run uses runCrawlPlanNow().
+//
+// PC-12 (I068): a recipe runs once at a time. A plan whose recipe still has
+// a run pending or running (a slow run on a short interval) skips that
+// recipe with the reason (recipeSkips, kept on last_run_summary) instead
+// of starting a second run that pays for the same searches again;
+// startRun enforces it for every caller.
 
 import { and, asc, eq, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -20,7 +26,7 @@ import {
   isAutomatic,
   type WorkspaceContext,
 } from './context';
-import { startRun } from './connector-run';
+import { RecipeRunInFlightError, startRun } from './connector-run';
 
 export class CrawlEngineError extends Error {
   public readonly code: string;
@@ -325,10 +331,45 @@ async function assertProductsBelong(
 
 // ---- run path ------------------------------------------------------
 
+/** PC-12 (I068): why a plan did not start a recipe. */
+export type RecipeSkipReason =
+  /** The recipe was switched off since the plan was saved. */
+  | 'recipe_inactive'
+  /** The recipe no longer exists in the workspace. */
+  | 'recipe_missing'
+  /** A run of the recipe is still pending or running (a slow run on a
+   *  short interval): a recipe runs once at a time. */
+  | 'run_in_flight';
+
+export interface RecipeSkip {
+  recipeId: bigint;
+  reason: RecipeSkipReason;
+  /** For the operator. */
+  message: string;
+  /** run_in_flight: the run still in progress. */
+  runId?: bigint;
+}
+
+/** "2 recipe(s) skipped: 1 still running from an earlier run, 1 switched off". */
+export function describeRecipeSkips(skips: ReadonlyArray<Pick<RecipeSkip, 'reason'>>): string {
+  const counts = new Map<RecipeSkipReason, number>();
+  for (const s of skips) counts.set(s.reason, (counts.get(s.reason) ?? 0) + 1);
+  const words: Record<RecipeSkipReason, string> = {
+    run_in_flight: 'still running from an earlier run (a recipe runs once at a time)',
+    recipe_inactive: 'switched off',
+    recipe_missing: 'deleted',
+  };
+  const parts = [...counts.entries()].map(([reason, n]) => `${n} ${words[reason]}`);
+  return `${skips.length} recipe(s) skipped: ${parts.join(', ')}`;
+}
+
 export interface RunPlanResult {
   planId: bigint;
   startedRuns: bigint[];
+  /** Every recipe not started (ids); recipeSkips says why for each. */
   skippedRecipes: bigint[];
+  /** PC-12: one entry per skipped recipe, with the reason. */
+  recipeSkips: RecipeSkip[];
   failedRecipes: Array<{ recipeId: bigint; error: string }>;
   /** PC-05: the automation gate stopped the plan before every recipe ran
    *  (the pause, a hold, an empty wallet); the rest were not started. */
@@ -361,7 +402,7 @@ async function executePlan(
   const now = new Date();
   const automatic = isAutomatic(ctx);
   const startedRuns: bigint[] = [];
-  const skippedRecipes: bigint[] = [];
+  const recipeSkips: RecipeSkip[] = [];
   const failedRecipes: Array<{ recipeId: bigint; error: string }> = [];
   let heldReason: string | null = null;
   // Resolve eligible recipes: must belong to workspace AND be active.
@@ -383,7 +424,11 @@ async function executePlan(
           );
   for (const r of eligible) {
     if (!r.active) {
-      skippedRecipes.push(r.id);
+      recipeSkips.push({
+        recipeId: r.id,
+        reason: 'recipe_inactive',
+        message: 'The recipe is switched off.',
+      });
       continue;
     }
     // PC-05: the tick re-checks before every recipe. A pause or hold
@@ -411,6 +456,18 @@ async function executePlan(
         heldReason = err.message;
         break;
       }
+      // PC-12 (I068): its previous run is still going (a slow run on a
+      // short interval). Skipped with the reason, not a failure, and no
+      // second run paying for the same searches again.
+      if (err instanceof RecipeRunInFlightError) {
+        recipeSkips.push({
+          recipeId: r.id,
+          reason: 'run_in_flight',
+          message: err.message,
+          runId: err.runId,
+        });
+        continue;
+      }
       failedRecipes.push({
         recipeId: r.id,
         error: err instanceof Error ? err.message : String(err),
@@ -420,15 +477,29 @@ async function executePlan(
   // PC-05: held before anything ran — the plan stays as it was (not
   // run, still due), so it runs on the first tick after the hold lifts.
   if (heldReason && startedRuns.length === 0 && failedRecipes.length === 0) {
-    return { planId: plan.id, startedRuns, skippedRecipes, failedRecipes, heldReason };
+    return {
+      planId: plan.id,
+      startedRuns,
+      skippedRecipes: recipeSkips.map((s) => s.recipeId),
+      recipeSkips,
+      failedRecipes,
+      heldReason,
+    };
   }
 
   // Recipes referenced by plan but no longer in workspace (e.g. deleted)
   // count as skipped.
   const seenIds = new Set(eligible.map((r) => r.id.toString()));
   for (const id of plan.recipeIds) {
-    if (!seenIds.has(id.toString())) skippedRecipes.push(id);
+    if (!seenIds.has(id.toString())) {
+      recipeSkips.push({
+        recipeId: id,
+        reason: 'recipe_missing',
+        message: 'The recipe no longer exists.',
+      });
+    }
   }
+  const skippedRecipes = recipeSkips.map((s) => s.recipeId);
 
   const summary = {
     started: startedRuns.length,
@@ -436,6 +507,13 @@ async function executePlan(
     failed: failedRecipes.length,
     startedRuns: startedRuns.map(String),
     skippedRecipes: skippedRecipes.map(String),
+    // PC-12: why each recipe was skipped (a run still in progress, …).
+    recipeSkips: recipeSkips.map((s) => ({
+      recipeId: s.recipeId.toString(),
+      reason: s.reason,
+      message: s.message,
+      ...(s.runId !== undefined ? { runId: s.runId.toString() } : {}),
+    })),
     failedRecipes: failedRecipes.map((f) => ({
       recipeId: f.recipeId.toString(),
       error: f.error,
@@ -464,6 +542,7 @@ async function executePlan(
     planId: plan.id,
     startedRuns,
     skippedRecipes,
+    recipeSkips,
     failedRecipes,
     ...(heldReason ? { heldReason } : {}),
   };

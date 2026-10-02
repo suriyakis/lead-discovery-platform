@@ -30,14 +30,25 @@
 //          'pending', so a reaped run never starts late — not even as a
 //          queue retry of its connector.run job (PC-36).
 //
+//   follow-ups  PC-12: 'processing' (claimed by a follow-up pass) for more
+//          than 30 minutes since the claim →
+//          'pending'  when it never reached the mail server (sending_at
+//                     NULL): nothing was sent, so it is scheduled again;
+//          'sent'     when a sent outbound copy is on its thread from
+//                     sending_at on;
+//          'failed'   otherwise, "Interrupted: delivery unknown" — never
+//                     sent again automatically.
+//
 // Every write is conditional on the state the reaper read, so a runner or
 // drain that wakes up meanwhile is never overwritten (and a runner that
 // finds its run reaped stops). The reaper's own changes are audited as
 // system events (user_id NULL).
 //
-// Not here yet: work leases (PC-12). Once the drain holds a lease, "stuck"
-// also means "no live lease"; until then the 10-minute margin (an SMTP
-// submission times out in about 2) stands in for it.
+// PC-12: work leases. A send or follow-up claim is "stuck" only when no
+// pass holds the workspace's lease for that work any more (the drain's
+// 'outreach.drain', the follow-up tick's 'outreach.follow_up'): a pass
+// that is alive and renewing may simply be slow (an SMTP submission that
+// takes minutes). The age margins stay as a second guard.
 
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
@@ -48,6 +59,7 @@ import {
   connectors,
   type ConnectorRun,
 } from '@/lib/db/schema/connectors';
+import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
 import { mailMessages } from '@/lib/db/schema/mailing';
 import { opsEvents } from '@/lib/db/schema/ops';
 import { outreachQueue, type OutreachQueueEntry } from '@/lib/db/schema/outreach';
@@ -63,11 +75,15 @@ import { getJobQueue } from '@/lib/jobs';
 import { recordSystemAuditEvent } from './audit';
 import type { WorkspaceContext } from './context';
 import { resolveOpsEvent } from './ops-events';
+import { leaseCoversClaim, liveWorkLease } from './work-leases';
 
 export const SEND_STUCK_AFTER_MS = 10 * 60 * 1000;
 export const RUN_STUCK_AFTER_MS = 15 * 60 * 1000;
 export const RUN_PENDING_STUCK_AFTER_MS = 60 * 60 * 1000;
 export const RUN_CANCEL_GRACE_MS = 2 * 60 * 1000;
+/** PC-12: a follow-up claim is old enough to settle after this (one step
+ *  is an AI composition, a translation and one send). */
+export const FOLLOW_UP_STUCK_AFTER_MS = 30 * 60 * 1000;
 
 /** The last_error prefix of a reaped send (spec wording). */
 export const INTERRUPTED_SEND_REASON = 'Interrupted: delivery unknown';
@@ -84,25 +100,42 @@ export interface ReapRunsResult {
   cancelled: bigint[];
 }
 
+export interface ReapFollowUpsResult {
+  /** Claims that never reached the mail server: scheduled again. */
+  requeued: bigint[];
+  /** Claims whose sent copy was found: 'sent'. */
+  settledSent: bigint[];
+  /** Claims cut off mid-send with no copy found: failed as interrupted. */
+  failed: bigint[];
+}
+
 export interface ReapResult {
   sendsSettledSent: number;
   sendsFailed: number;
   runsFailed: number;
   runsCancelled: number;
+  /** PC-12. */
+  followUpsRequeued: number;
+  followUpsSettledSent: number;
+  followUpsFailed: number;
 }
 
-/** Settle one workspace's stuck sends and runs. */
+/** Settle one workspace's stuck sends, runs and follow-up claims. */
 export async function reapStuckWork(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   now: Date = new Date(),
 ): Promise<ReapResult> {
   const sends = await reapStuckSends(ctx, now);
   const runs = await reapStuckRuns(ctx, now);
+  const followUps = await reapStuckFollowUps(ctx, now);
   return {
     sendsSettledSent: sends.settledSent.length,
     sendsFailed: sends.failed.length,
     runsFailed: runs.failed.length,
     runsCancelled: runs.cancelled.length,
+    followUpsRequeued: followUps.requeued.length,
+    followUpsSettledSent: followUps.settledSent.length,
+    followUpsFailed: followUps.failed.length,
   };
 }
 
@@ -131,10 +164,16 @@ export async function reapStuckSends(
     .from(outreachQueue)
     .where(and(eq(outreachQueue.workspaceId, ctx.workspaceId), sendingSince(cutoff)))
     .orderBy(asc(outreachQueue.id));
+  // PC-12: every claim is made by a pass holding the drain lease (the
+  // drain, Retry now). A claim the pass holding it now may have made is
+  // that pass's slow send, not a stuck one; a claim older than the live
+  // lease belongs to a pass that is gone.
+  const live = stuck.length > 0 ? await liveWorkLease(ctx, 'outreach.drain') : null;
 
   const result: ReapSendsResult = { settledSent: [], failed: [] };
   for (const row of stuck) {
     const claimedAt = row.claimedAt ?? row.updatedAt;
+    if (leaseCoversClaim(live, claimedAt)) continue;
     const copy = row.draftId ? await findSentCopy(ctx, row.draftId, claimedAt) : null;
     if (copy) {
       if (await settleSent(ctx, row, copy.id, cutoff)) result.settledSent.push(row.id);
@@ -230,6 +269,120 @@ async function settleInterrupted(
     claimedAt,
   });
   return true;
+}
+
+// ---- follow-up claims (PC-12) -------------------------------------------
+
+/** Claimed ('processing') since before `cutoff`. */
+function followUpClaimedSince(cutoff: Date): SQL {
+  return and(
+    eq(outreachFollowUps.status, 'processing'),
+    lt(outreachFollowUps.claimedAt, cutoff),
+  ) as SQL;
+}
+
+/**
+ * PC-12: settle follow-up steps whose pass died with them claimed. A claim
+ * without sending_at never reached the mail server, so it is scheduled
+ * again (due now); with sending_at it may have gone out — 'sent' when the
+ * copy is on its thread, otherwise failed as interrupted, never re-sent.
+ */
+export async function reapStuckFollowUps(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  now: Date = new Date(),
+): Promise<ReapFollowUpsResult> {
+  const cutoff = new Date(now.getTime() - FOLLOW_UP_STUCK_AFTER_MS);
+  const stuck = await db
+    .select()
+    .from(outreachFollowUps)
+    .where(and(eq(outreachFollowUps.workspaceId, ctx.workspaceId), followUpClaimedSince(cutoff)))
+    .orderBy(asc(outreachFollowUps.id));
+  const live = stuck.length > 0 ? await liveWorkLease(ctx, 'outreach.follow_up') : null;
+
+  const result: ReapFollowUpsResult = { requeued: [], settledSent: [], failed: [] };
+  for (const row of stuck) {
+    // claimed_at is set with the status (CHECK constraint).
+    const claimedAt = row.claimedAt ?? row.updatedAt;
+    // A pass holding the follow-up lease now may still be on it.
+    if (leaseCoversClaim(live, claimedAt)) continue;
+    const guard = and(eq(outreachFollowUps.id, row.id), followUpClaimedSince(cutoff));
+
+    if (!row.sendingAt) {
+      const [done] = await db
+        .update(outreachFollowUps)
+        .set({
+          status: 'pending',
+          claimedAt: null,
+          scheduledFor: now,
+          lastError:
+            `Picked up at ${formatUtc(claimedAt)} and not finished (the worker stopped before it was sent). ` +
+            'Nothing was sent; it is scheduled again.',
+          updatedAt: new Date(),
+        })
+        .where(guard)
+        .returning({ id: outreachFollowUps.id });
+      if (!done) continue;
+      result.requeued.push(row.id);
+      await auditBestEffort(ctx.workspaceId, {
+        kind: 'follow_up.reaped',
+        entityType: 'mail_thread',
+        entityId: row.threadId,
+        payload: { followUpId: row.id.toString(), outcome: 'requeued', claimedAt: claimedAt.toISOString() },
+      });
+      continue;
+    }
+
+    const [copy] = await db
+      .select({ id: mailMessages.id })
+      .from(mailMessages)
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.threadId, row.threadId),
+          eq(mailMessages.direction, 'outbound'),
+          inArray(mailMessages.status, ['sent', 'delivered']),
+          gte(mailMessages.createdAt, row.sendingAt),
+        ),
+      )
+      .orderBy(asc(mailMessages.createdAt))
+      .limit(1);
+    const [done] = await db
+      .update(outreachFollowUps)
+      .set(
+        copy
+          ? {
+              status: 'sent',
+              sentMessageId: copy.id,
+              processedAt: now,
+              lastError: `Recovered by the stuck-work check: the sent copy (message ${copy.id}) was found.`,
+              updatedAt: new Date(),
+            }
+          : {
+              status: 'failed',
+              processedAt: now,
+              lastError:
+                `${INTERRUPTED_SEND_REASON}. Handed to the mail server at ${formatUtc(row.sendingAt)} and never ` +
+                'finished, and no sent copy was found on the thread. Check the Sent folder before you send it again.',
+              updatedAt: new Date(),
+            },
+      )
+      .where(guard)
+      .returning({ id: outreachFollowUps.id });
+    if (!done) continue;
+    (copy ? result.settledSent : result.failed).push(row.id);
+    await auditBestEffort(ctx.workspaceId, {
+      kind: 'follow_up.reaped',
+      entityType: 'mail_thread',
+      entityId: row.threadId,
+      payload: {
+        followUpId: row.id.toString(),
+        outcome: copy ? 'sent' : 'failed',
+        ...(copy ? { messageId: copy.id.toString() } : { reason: 'interrupted' }),
+        sendingAt: row.sendingAt.toISOString(),
+      },
+    });
+  }
+  return result;
 }
 
 // ---- runs ------------------------------------------------------------
@@ -444,7 +597,11 @@ export async function listWorkspacesWithStuckWork(now: Date = new Date()): Promi
     .selectDistinct({ workspaceId: connectorRuns.workspaceId })
     .from(connectorRuns)
     .where(stuckRunPredicates(now).any);
-  return uniqueIds([...sends, ...runs].map((r) => r.workspaceId));
+  const followUps = await db
+    .selectDistinct({ workspaceId: outreachFollowUps.workspaceId })
+    .from(outreachFollowUps)
+    .where(followUpClaimedSince(new Date(now.getTime() - FOLLOW_UP_STUCK_AFTER_MS)));
+  return uniqueIds([...sends, ...runs, ...followUps].map((r) => r.workspaceId));
 }
 
 // ---- run incidents nothing can resolve any more ------------------------

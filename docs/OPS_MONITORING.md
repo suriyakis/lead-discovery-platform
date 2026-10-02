@@ -159,6 +159,7 @@ every workspace, active or archived:
 | `ops_alert_deliveries` | the owner-alert delivery log | 90 days | `created_at` |
 | `ops_alert_state` | owner-alert keys not alerted since | 90 days | `last_alerted_at` |
 | `job_heartbeats.retired` | heartbeat rows of jobs that are no longer catalogued ticks (a catalogued tick's row is never deleted) | 90 days | `updated_at` |
+| `work_leases.expired` | PC-12: work leases a dead holder left that no acquire took over since (a deleted mailbox's or recipe's, mostly) | 7 days | `expires_at` |
 
 Nothing else is deleted: every other audit kind, `usage_log` (it backs
 token debits), mail and every tenant record stay. Each policy deletes at
@@ -208,6 +209,35 @@ reaper's own changes are audited as system events (`user_id` NULL,
 | `connector_runs` `running`, no `last_progress_at` | 15 min | `failed` + `run.stuck` + the tenant's `run.failed` notification |
 | `connector_runs` `running` with an unanswered cancel request | 2 min | `cancelled` |
 | `connector_runs` `pending` | 60 min, and its `connector.run` job no longer waiting, delayed (a retry) or active in the job queue | `failed` (never started). Under BullMQ a run can wait behind other long runs on the runs lane (concurrency 2, PC-36), so a run whose job is still queued is left alone; when the queue cannot answer (Redis down) it waits for the next pass. The runner only starts `pending` runs, so a reaped run never starts late, and a queue retry of a run (3 attempts, PC-36) that was claimed or reaped meanwhile is skipped. |
+| `outreach_follow_ups` in `processing` (PC-12) | 30 min after `claimed_at` | `pending` again when it never reached the mail server (`sending_at` NULL); `sent` when an outbound copy is on its thread from `sending_at` on; otherwise `failed`, "Interrupted: delivery unknown". Never re-sent automatically. Audited `follow_up.reaped`. |
+
+PC-12: a send or follow-up claim is settled only when no pass that is
+alive may own it — the workspace's `outreach.drain` / `outreach.follow_up`
+lease is not held, or was taken after the claim (by a later pass).
+
+### Work leases (PC-12)
+
+Work that must not overlap in a workspace holds a row in `work_leases`
+(`src/lib/services/work-leases.ts`): `autopilot.run`, `outreach.drain`,
+`outreach.follow_up`, `mailbox.sync` (per mailbox) and `connector.recipe`
+(per recipe). A second caller does nothing and the ticks count it as
+`busy` in their heartbeat summary (`autopilot.tick`,
+`outreach.drain.tick`, `outreach.follow_up.tick`, `mail.imap.tick`); it is
+neither a failure nor an incident. A lease lasts 2 minutes without renewal
+(a discovery run's 15, renewed at its progress checkpoints), so a crashed
+holder blocks its work for that long at most; a holder gives its lease up
+after 10–50 minutes whatever happens. `listWorkLeases(PlatformContext)` is
+the console's read model; until the console page ships, read it with psql:
+
+```sql
+SELECT workspace_id, kind, resource_key, purpose, holder_label,
+       acquired_at, renewed_at, expires_at, expires_at > now() AS live
+FROM work_leases ORDER BY live DESC, workspace_id, kind;
+```
+
+A row with `live = false` is a holder that died; the next acquire takes it
+over. Deleting a live row by hand lets a second pass start beside the
+first — wait for it to expire instead.
 
 Send failures are classified before the queue acts
 (`src/lib/mail/send-failure.ts`): transient (SMTP 4xx, no reply) 5

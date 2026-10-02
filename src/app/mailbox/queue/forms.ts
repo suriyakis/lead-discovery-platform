@@ -257,6 +257,9 @@ function heldBecause(reason: SendGateRefusal | undefined, message: string | unde
       return message ?? 'Sending is on hold, so it goes out once the hold is released.';
     case 'daily_limit':
       return "Today's email limit is used up, so it goes out when there is room again.";
+    case 'send_pass_running':
+      // PC-12: another pass holds the workspace's drain lease.
+      return 'A send pass is running in this workspace right now, so it goes out with the next pass (within a minute).';
     case undefined:
       return 'It goes out with the next send pass.';
   }
@@ -264,7 +267,8 @@ function heldBecause(reason: SendGateRefusal | undefined, message: string | unde
 
 /** The Send now flash when the send gate kept the whole pass from sending:
  *  the automation gate's sentence for its refusals (PC-05 / PC-06), our
- *  own for the daily limit (PC-10). */
+ *  own for the daily limit (PC-10) and for another pass in progress
+ *  (PC-12; `message` then says since when and by whom). */
 export function describeDrainBlocked(reason: SendGateRefusal, message?: string): string {
   switch (reason) {
     case 'paused':
@@ -275,6 +279,10 @@ export function describeDrainBlocked(reason: SendGateRefusal, message?: string):
       return `Nothing was sent. ${message ?? 'Sending is on hold in this workspace.'}`;
     case 'daily_limit':
       return "Nothing was sent: today's email limit has been reached.";
+    case 'send_pass_running':
+      return `Nothing was sent by this click: a send pass is already running in this workspace${
+        message ? ` ${message}` : ''
+      }. It sends the emails that are due.`;
   }
 }
 

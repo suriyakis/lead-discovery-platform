@@ -1,7 +1,7 @@
 // Connector / Run service. Workspace-scoped CRUD on connectors + recipes,
 // plus run lifecycle (start, status, list).
 
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   connectorRecipes,
@@ -34,6 +34,31 @@ export class ConnectorServiceError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * PC-12 (I068): a recipe runs once at a time. startRun refuses a run of a
+ * recipe that already has one pending or running (code 'run_in_flight');
+ * the crawl tick records the recipe as skipped with this reason, Run now
+ * shows the run in progress.
+ */
+export class RecipeRunInFlightError extends ConnectorServiceError {
+  readonly recipeId: bigint;
+  readonly runId: bigint;
+  readonly runStatus: 'pending' | 'running';
+  constructor(recipeId: bigint, runId: bigint, runStatus: 'pending' | 'running') {
+    super(
+      `A run of this recipe is already ${runStatus === 'running' ? 'running' : 'waiting to start'} (run ${runId}). A recipe runs once at a time.`,
+      'run_in_flight',
+    );
+    this.name = 'RecipeRunInFlightError';
+    this.recipeId = recipeId;
+    this.runId = runId;
+    this.runStatus = runStatus;
+  }
+}
+
+/** PC-12: run statuses that make a recipe busy. */
+export const IN_FLIGHT_RUN_STATUSES = ['pending', 'running'] as const;
 
 const permissionDenied = (op: string) =>
   new ConnectorServiceError(`Permission denied: ${op}`, 'permission_denied');
@@ -606,6 +631,9 @@ export interface StartRunInput {
  * and enqueues a `connector.run` job. The job handler (registered via
  * registerJobHandlers) drives the execution.
  *
+ * PC-12 (I068): a recipe that already has a run pending or running gets
+ * no second one — RecipeRunInFlightError (code 'run_in_flight').
+ *
  * - With JOB_QUEUE_PROVIDER=memory the handler runs on the next microtask.
  * - With JOB_QUEUE_PROVIDER=bullmq the handler runs in a Worker process.
  *
@@ -655,9 +683,46 @@ export async function startRun(
     recipeSnapshot,
   };
 
-  const inserted = await db.insert(connectorRuns).values(newRow).returning();
-  const created = inserted[0];
-  if (!created) throw invariant('connector_runs insert returned no row');
+  // PC-12 (I068): one active run per recipe. The recipe row is locked
+  // (FOR NO KEY UPDATE: two starts of one recipe queue up here, while its
+  // runs' own foreign-key checks are not blocked) for the check and the
+  // insert, so two starts at once cannot both see "none in flight".
+  const created = await db.transaction(async (tx) => {
+    if (recipeId !== null) {
+      await tx
+        .select({ id: connectorRecipes.id })
+        .from(connectorRecipes)
+        .where(
+          and(
+            eq(connectorRecipes.workspaceId, ctx.workspaceId),
+            eq(connectorRecipes.id, recipeId),
+          ),
+        )
+        .for('no key update');
+      const [inFlight] = await tx
+        .select({ id: connectorRuns.id, status: connectorRuns.status })
+        .from(connectorRuns)
+        .where(
+          and(
+            eq(connectorRuns.workspaceId, ctx.workspaceId),
+            eq(connectorRuns.recipeId, recipeId),
+            inArray(connectorRuns.status, [...IN_FLIGHT_RUN_STATUSES]),
+          ),
+        )
+        .orderBy(asc(connectorRuns.id))
+        .limit(1);
+      if (inFlight) {
+        throw new RecipeRunInFlightError(
+          recipeId,
+          inFlight.id,
+          inFlight.status === 'running' ? 'running' : 'pending',
+        );
+      }
+    }
+    const [row] = await tx.insert(connectorRuns).values(newRow).returning();
+    if (!row) throw invariant('connector_runs insert returned no row');
+    return row;
+  });
 
   await recordAuditEvent(ctx, {
     kind: 'connector_run.start',

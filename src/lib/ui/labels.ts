@@ -324,9 +324,11 @@ export const REPLY_CLASS_LABEL = {
   bounce: 'Bounce',
 } as const satisfies Record<ReplyClass, string>;
 
-/** 'pending' is a scheduled follow-up waiting for its send time. */
+/** 'pending' is a scheduled follow-up waiting for its send time;
+ *  'processing' (PC-12) one a follow-up pass is writing or sending now. */
 export const FOLLOW_UP_STATUS_LABEL = {
   pending: 'Scheduled',
+  processing: 'Being sent',
   awaiting_approval: 'Awaiting approval',
   sent: 'Sent',
   skipped: 'Skipped',
@@ -567,6 +569,7 @@ export const USER_ROLE_DESCRIPTION = {
 
 export const FOLLOW_UP_STATUS_DESCRIPTION = {
   pending: 'Scheduled, waiting for its send time.',
+  processing: 'Its send time has come: it is being written or sent right now.',
   awaiting_approval: 'Written by AI, waiting for you to approve or reject it.',
   sent: 'Delivered to the prospect.',
   skipped: 'Cancelled: a reply arrived, the lead closed, or someone stopped it.',
@@ -805,6 +808,7 @@ export const AUDIT_KIND_LABEL = {
   'connector_run.cancel': 'Search run cancelled',
   'connector_run.reaped': 'Stuck search run closed',
   'outreach.queue.reaped': 'Stuck send settled',
+  'follow_up.reaped': 'Stuck follow-up settled',
   'outreach.queue.requeue': 'Email put back in the queue',
   'outreach.queue.retry': 'Email retried',
   'outreach.queue.mark_delivered': 'Email marked as delivered',

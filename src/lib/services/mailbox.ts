@@ -20,6 +20,7 @@ import {
   type WorkspaceContext,
 } from './context';
 import { deleteSecret, getSecret, setSecret } from './secrets';
+import { describeLeaseHolder, withWorkLease } from './work-leases';
 import {
   createMailProvider,
   type ConnectionTestResult,
@@ -851,6 +852,12 @@ export async function buildProviderFor(
  * (recordMailboxConnectionCheck): a pass brings a failing mailbox back to
  * active (an operator's pause is left alone); a failure marks it failing
  * with backoff and the deduped notification.
+ *
+ * PC-12: under the mailbox's 'mailbox.sync' lease, like every sync: while
+ * a sync or another check of it runs this throws MAILBOX_BUSY ('busy'
+ * code) without logging in — one more login beside a running one is what
+ * a provider's rate limit (fail2ban) counts, and the two would record
+ * their results over each other.
  */
 export async function testMailboxConnection(
   ctx: WorkspaceContext,
@@ -858,6 +865,23 @@ export async function testMailboxConnection(
   providerOverride?: IMailProvider,
 ): Promise<ConnectionTestResult> {
   if (!canWrite(ctx)) throw permissionDenied('mailbox.test_connection');
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'mailbox.sync', resource: mailboxId, purpose: 'connection test' },
+    () => testConnectionHeld(ctx, mailboxId, providerOverride),
+  );
+  if (leased.status === 'ran') return leased.value;
+  throw new MailboxServiceError(
+    `A sync or connection check of this mailbox is already running ${describeLeaseHolder(leased.held)}. Try again when it has finished.`,
+    'busy',
+  );
+}
+
+async function testConnectionHeld(
+  ctx: WorkspaceContext,
+  mailboxId: bigint,
+  providerOverride?: IMailProvider,
+): Promise<ConnectionTestResult> {
   const { provider, mailbox } = await buildProviderFor(ctx, mailboxId, providerOverride);
   const result = await runConnectionTest(provider);
   const outcome = await recordMailboxConnectionCheck(ctx, mailbox, result);

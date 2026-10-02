@@ -755,8 +755,9 @@ describe('autopilot service', { timeout: DB_TEST_TIMEOUT_MS }, () => {
 
     // The post-crawl hook (skipped under Vitest, so pinned at source). PC-10:
     // a 'partial' run (some queries failed) that found records counts too.
+    // PC-12: under the autopilot lease like every run, labelled post-crawl.
     expect(readSrc('lib/connectors/runner.ts')).toMatch(
-      /\(finalStatus === 'succeeded' \|\| finalStatus === 'partial'\) &&\s+recordCount > 0[\s\S]{0,400}await runOnce\(ctx\)/,
+      /\(finalStatus === 'succeeded' \|\| finalStatus === 'partial'\) &&\s+recordCount > 0[\s\S]{0,400}await runOnce\(ctx, \{ purpose: 'post-crawl' \}\)/,
     );
 
     const s = await setup();

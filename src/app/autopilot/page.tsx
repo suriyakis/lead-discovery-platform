@@ -20,6 +20,7 @@ import { redirect } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { cx } from '@/lib/ui/cx';
 import styles from './autopilot.module.css';
+import { describeRunNow } from './run-now';
 import { auth } from '@/lib/auth';
 import {
   AccountInactiveError,
@@ -234,18 +235,10 @@ export default async function AutopilotPage({
   async function runNow() {
     'use server';
     const c = await getWorkspaceContext();
-    const r = await runOnce(c);
-    // PC-06: a held run stops at the guard step — say why. PC-35: the guard
-    // is logged only when its state changes, so a run it stopped may add
-    // no activity row; the message says why instead.
-    const first = r.steps[0];
-    const guard = first?.step === 'guard' && first.outcome === 'skipped' ? first : null;
-    const message = guard?.detail?.startsWith('held: ')
-      ? `Nothing ran. ${guard.detail.slice('held: '.length)}`
-      : guard
-        ? `Autopilot did not run: ${guard.detail ?? 'guard'}`
-        : `runOnce — ${r.steps.length} steps`;
-    redirect(`/autopilot?message=${encodeURIComponent(message)}`);
+    const r = await runOnce(c, { purpose: 'manual' });
+    // PC-06 / PC-35 / PC-12: why a run did nothing (held, off, already
+    // running) or what it did — run-now.ts.
+    redirect(`/autopilot?message=${encodeURIComponent(describeRunNow(r))}`);
   }
 
   return (

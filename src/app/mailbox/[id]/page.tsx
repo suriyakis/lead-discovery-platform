@@ -121,6 +121,10 @@ export default async function MailboxDetail({
           `Synced — fetched ${outcome.fetched}, new ${outcome.inserted}, deduped ${outcome.duplicates}.`;
         redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
       }
+      // PC-12: the IMAP tick (or someone's Sync / Test) is on it right now.
+      if (outcome.kind === 'busy') {
+        redirect(`/mailbox/${id}?message=${encodeURIComponent(outcome.message)}`);
+      }
       const m =
         outcome.kind === 'failing'
           ? `Sync failed — the mailbox is failing: ${outcome.message}`

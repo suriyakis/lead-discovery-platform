@@ -44,6 +44,13 @@ import {
 import { sendMessage } from './mail';
 import { isSuppressed } from './suppression';
 import { classifySmtpError } from '@/lib/mail/smtp-errors';
+import { isAfterDelivery } from '@/lib/mail/send-failure';
+import {
+  withWorkLease,
+  type LeaseHolder,
+  type WorkLease,
+  type WorkLeaseSpec,
+} from './work-leases';
 import { OUTREACH_LINKED_RELEVANCE_VALUES, isOutreachLinked } from '@/lib/mail/relevance';
 import { prepareOutboundDualBody } from './language-resolution';
 import { getWorkspaceNativeLanguage } from './workspace';
@@ -262,10 +269,16 @@ export async function scheduleFollowUps(
   return inserted;
 }
 
+/** PC-12: the statuses a cancellation stops — scheduled steps and the one
+ *  a pass is working on right now (its send re-checks the claim and finds
+ *  it gone). */
+const CANCELLABLE_STATUSES = ['pending', 'processing'] as const;
+
 /**
  * Cancel every pending follow-up for a thread. Set status='skipped',
  * stamp the reason, leave the row for audit. Returns the number
- * cancelled.
+ * cancelled. PC-12: a step a pass has claimed ('processing') is
+ * cancelled too; the pass sees it before sending and stops.
  */
 export async function cancelFollowUps(
   ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
@@ -284,7 +297,7 @@ export async function cancelFollowUps(
       and(
         eq(outreachFollowUps.workspaceId, ctx.workspaceId),
         eq(outreachFollowUps.threadId, threadId),
-        eq(outreachFollowUps.status, 'pending'),
+        inArray(outreachFollowUps.status, [...CANCELLABLE_STATUSES]),
       ),
     )
     .returning();
@@ -343,7 +356,7 @@ export async function cancelFollowUpsForRecipient(
     .where(
       and(
         eq(outreachFollowUps.workspaceId, ctx.workspaceId),
-        inArray(outreachFollowUps.status, ['pending', 'awaiting_approval']),
+        inArray(outreachFollowUps.status, [...CANCELLABLE_STATUSES, 'awaiting_approval']),
         or(...scope),
       ),
     )
@@ -366,6 +379,10 @@ export interface ProcessDueFollowUpsDeps {
   /** Test seam — used by unit tests to inject a MockMailProvider so the
    *  follow-up's send doesn't try to reach a real SMTP server. */
   mailProviderOverride?: IMailProvider;
+  /** PC-12: what started the pass, shown on its lease ('tick'). */
+  purpose?: string;
+  /** Test seam: overrides of the follow-up lease's TTL / maximum hold. */
+  lease?: Pick<WorkLeaseSpec, 'ttlMs' | 'maxHoldMs' | 'autoRenew'>;
 }
 
 /** PC-05: what the follow-up tick asks the gate — automatic Sending of
@@ -373,10 +390,7 @@ export interface ProcessDueFollowUpsDeps {
  *  wallet must not be empty). */
 const FOLLOW_UP_GATE: GateOptions = { manual: false, origin: 'follow_up', spendsTokens: true };
 
-export async function processDueFollowUps(
-  ctx: WorkspaceContext,
-  deps: ProcessDueFollowUpsDeps = {},
-): Promise<{
+export interface ProcessDueFollowUpsResult {
   checked: number;
   sent: number;
   skipped: number;
@@ -384,7 +398,27 @@ export async function processDueFollowUps(
   /** PC-06: the automation gate stopped the tick (a Sending hold, the
    *  platform outbound stop, no accountable owner); due rows stay pending. */
   heldReason?: string;
-}> {
+  /** PC-12: another follow-up pass holds the workspace's lease; this one
+   *  did nothing. Who holds it, since when. */
+  followUpPass?: LeaseHolder;
+  /** PC-12: the pass stopped early because it no longer held its lease;
+   *  the steps it did not reach stay pending for the next pass. */
+  leaseLost?: true;
+}
+
+/**
+ * PC-12 (I064): one pass per workspace at a time — the 'outreach.follow_up'
+ * lease — and each step is claimed before anything is composed
+ * (UPDATE … SET status = 'processing' WHERE status = 'pending' RETURNING),
+ * so even two passes that overlap (a lease taken over after a stall) never
+ * compose or send the same step. A claimed step ends sent, skipped,
+ * awaiting approval or failed, or goes back to 'pending' (a deferral); a
+ * claim whose pass died is settled by the stuck-work reaper.
+ */
+export async function processDueFollowUps(
+  ctx: WorkspaceContext,
+  deps: ProcessDueFollowUpsDeps = {},
+): Promise<ProcessDueFollowUpsResult> {
   const settings = await loadSettings(ctx.workspaceId);
   if (!settings.enabled) return { checked: 0, sent: 0, skipped: 0, failed: 0 };
 
@@ -398,6 +432,20 @@ export async function processDueFollowUps(
     return { checked: 0, sent: 0, skipped: 0, failed: 0, heldReason: gate.message };
   }
 
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'outreach.follow_up', purpose: deps.purpose ?? 'follow-up pass', ...deps.lease },
+    (lease) => processDueUnderLease(ctx, deps, lease),
+  );
+  if (leased.status === 'ran') return leased.value;
+  return { checked: 0, sent: 0, skipped: 0, failed: 0, followUpPass: leased.held };
+}
+
+async function processDueUnderLease(
+  ctx: WorkspaceContext,
+  deps: ProcessDueFollowUpsDeps,
+  lease: WorkLease,
+): Promise<ProcessDueFollowUpsResult> {
   const due = await db
     .select()
     .from(outreachFollowUps)
@@ -415,7 +463,14 @@ export async function processDueFollowUps(
   let skipped = 0;
   let failed = 0;
   let heldReason: string | undefined;
+  let leaseLost = false;
   for (const [i, row] of due.entries()) {
+    // PC-12: still this pass's lease? Otherwise leave the rest to the
+    // pass that holds it now.
+    if (!(await lease.checkpoint())) {
+      leaseLost = true;
+      break;
+    }
     // PC-06 + PC-05: re-check before each composition (AI spend); the
     // send re-checks again inside sendMessage.
     if (i > 0) {
@@ -425,29 +480,46 @@ export async function processDueFollowUps(
         break;
       }
     }
+    // PC-12: claim the step. Lost = another pass took it, or it was
+    // cancelled / rescheduled since the select.
+    const claimed = await claimFollowUp(ctx, row.id);
+    if (!claimed) continue;
     try {
-      const verdict = await processOne(ctx, row, deps);
+      const verdict = await processOne(ctx, claimed, deps);
       if (verdict === 'sent') sent++;
       else if (verdict === 'skipped') skipped++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // PC-06 / PC-05: the gate refused the send after composition. Never
-      // a failure of the step: it stays pending with the reason. An item
-      // refusal (its mailbox stopped being active) defers just this step;
-      // a workspace one (the pause or a hold landed mid-tick) stops the tick.
+      // a failure of the step: it goes back to pending with the reason. An
+      // item refusal (its mailbox stopped being active) defers just this
+      // step; a workspace one (the pause or a hold landed mid-tick) stops
+      // the tick.
       if (err instanceof AutomationGateError) {
         skipped++;
-        await db
-          .update(outreachFollowUps)
-          .set({
-            lastError: msg.slice(0, 2000),
-            ...(err.scope === 'item' ? { scheduledFor: deferUntil(new Date()) } : {}),
-            updatedAt: new Date(),
-          })
-          .where(eq(outreachFollowUps.id, row.id));
+        await releaseFollowUpClaim(row.id, {
+          lastError: msg.slice(0, 2000),
+          ...(err.scope === 'item' ? { scheduledFor: deferUntil(new Date()) } : {}),
+        });
         if (err.scope === 'item') continue;
         heldReason = msg;
         break;
+      }
+      // The mail server took the email; only recording it failed. It went
+      // out — never 'failed' (an operator would send it again).
+      if (isAfterDelivery(err)) {
+        sent++;
+        await db
+          .update(outreachFollowUps)
+          .set({
+            status: 'sent',
+            skipReason: null,
+            lastError: `Sent, but recording it failed: ${msg}`.slice(0, 2000),
+            processedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(outreachFollowUps.id, row.id), ne(outreachFollowUps.status, 'sent')));
+        continue;
       }
       // flow:F-05: a refused SMTP login is the mailbox's problem
       // (sendMessage marked it failing). Leave the step pending; the
@@ -455,10 +527,7 @@ export async function processDueFollowUps(
       // the mailbox is fixed.
       if (classifySmtpError(err, []).kind === 'auth') {
         skipped++;
-        await db
-          .update(outreachFollowUps)
-          .set({ lastError: msg.slice(0, 2000), updatedAt: new Date() })
-          .where(eq(outreachFollowUps.id, row.id));
+        await releaseFollowUpClaim(row.id, { lastError: msg.slice(0, 2000) });
         continue;
       }
       failed++;
@@ -470,10 +539,86 @@ export async function processDueFollowUps(
           processedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(outreachFollowUps.id, row.id));
+        .where(and(eq(outreachFollowUps.id, row.id), eq(outreachFollowUps.status, 'processing')));
     }
   }
-  return { checked: due.length, sent, skipped, failed, ...(heldReason ? { heldReason } : {}) };
+  return {
+    checked: due.length,
+    sent,
+    skipped,
+    failed,
+    ...(heldReason ? { heldReason } : {}),
+    ...(leaseLost ? { leaseLost: true as const } : {}),
+  };
+}
+
+/**
+ * PC-12: claim a due step for this pass — 'pending' → 'processing',
+ * claimed_at from the database clock. Null when it is no longer a due
+ * pending step (another pass claimed it, it was cancelled or deferred).
+ */
+async function claimFollowUp(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  id: bigint,
+): Promise<OutreachFollowUp | null> {
+  const [row] = await db
+    .update(outreachFollowUps)
+    .set({
+      status: 'processing',
+      claimedAt: sql`clock_timestamp()`,
+      sendingAt: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(outreachFollowUps.workspaceId, ctx.workspaceId),
+        eq(outreachFollowUps.id, id),
+        eq(outreachFollowUps.status, 'pending'),
+        lte(outreachFollowUps.scheduledFor, new Date()),
+      ),
+    )
+    .returning();
+  return row ?? null;
+}
+
+/** PC-12: hand a claimed step back to 'pending' (a deferral, or a refusal
+ *  that is not the step's failure) — only while it is still claimed. */
+async function releaseFollowUpClaim(
+  id: bigint,
+  set: { lastError: string; scheduledFor?: Date },
+): Promise<void> {
+  await db
+    .update(outreachFollowUps)
+    .set({ status: 'pending', claimedAt: null, sendingAt: null, ...set, updatedAt: new Date() })
+    .where(and(eq(outreachFollowUps.id, id), eq(outreachFollowUps.status, 'processing')));
+}
+
+/** PC-12: a step that went out. Whatever happened to the row meanwhile (a
+ *  cancel that landed during the send), the email was delivered. */
+function sentFollowUpFields(messageId: bigint) {
+  const now = new Date();
+  return {
+    status: 'sent',
+    skipReason: null,
+    sentMessageId: messageId,
+    processedAt: now,
+    updatedAt: now,
+  } as const;
+}
+
+/**
+ * PC-12: the claimed step is about to go to the mail server. Stamps
+ * sending_at (the reaper's "delivery may be unknown" marker) only while
+ * the step is still this pass's claim: false when it was cancelled since
+ * (a reply arrived, the lead closed) — then nothing is sent.
+ */
+async function markFollowUpSending(id: bigint): Promise<boolean> {
+  const rows = await db
+    .update(outreachFollowUps)
+    .set({ sendingAt: sql`clock_timestamp()`, updatedAt: new Date() })
+    .where(and(eq(outreachFollowUps.id, id), eq(outreachFollowUps.status, 'processing')))
+    .returning({ id: outreachFollowUps.id });
+  return rows.length > 0;
 }
 
 /**
@@ -608,15 +753,10 @@ async function processOne(
     )
     .limit(1);
   if (mailbox && mailbox.status !== 'active') {
-    const now = new Date();
-    await db
-      .update(outreachFollowUps)
-      .set({
-        lastError: mailboxHeldMessage(mailbox.status),
-        scheduledFor: deferUntil(now),
-        updatedAt: now,
-      })
-      .where(and(eq(outreachFollowUps.id, row.id), eq(outreachFollowUps.status, 'pending')));
+    await releaseFollowUpClaim(row.id, {
+      lastError: mailboxHeldMessage(mailbox.status),
+      scheduledFor: deferUntil(new Date()),
+    });
     return 'skipped';
   }
 
@@ -637,15 +777,10 @@ async function processOne(
   {
     const productPause = await productPauseOf(ctx, product.id);
     if (productPause) {
-      const now = new Date();
-      await db
-        .update(outreachFollowUps)
-        .set({
-          lastError: productPausedMessage(productPause.productName),
-          scheduledFor: deferUntil(now),
-          updatedAt: now,
-        })
-        .where(and(eq(outreachFollowUps.id, row.id), eq(outreachFollowUps.status, 'pending')));
+      await releaseFollowUpClaim(row.id, {
+        lastError: productPausedMessage(productPause.productName),
+        scheduledFor: deferUntil(new Date()),
+      });
       return 'skipped';
     }
   }
@@ -717,7 +852,9 @@ async function processOne(
   // via the Follow-ups tab (approveFollowUp helper below). Cuts the
   // automated send loop for high-touch workflows.
   if (settings.requireApproval) {
-    await db
+    // PC-12: only while still this pass's claim — a step cancelled during
+    // composition (a reply arrived) stays cancelled.
+    const staged = await db
       .update(outreachFollowUps)
       .set({
         status: 'awaiting_approval',
@@ -726,7 +863,9 @@ async function processOne(
         processedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(outreachFollowUps.id, row.id));
+      .where(and(eq(outreachFollowUps.id, row.id), eq(outreachFollowUps.status, 'processing')))
+      .returning({ id: outreachFollowUps.id });
+    if (staged.length === 0) return 'skipped';
     await recordAuditEvent(ctx, {
       kind: 'follow_up.awaiting_approval',
       entityType: 'mail_thread',
@@ -760,6 +899,10 @@ async function processOne(
     productProfileId: lead.productProfileId,
     nativeBody: verdict.body,
   });
+  // PC-12: still claimed (not cancelled while it was being written)? Then
+  // it is marked as going out — from here on, a pass that dies leaves its
+  // delivery unknown and the reaper never sends it again.
+  if (!(await markFollowUpSending(row.id))) return 'skipped';
   const sent = await sendMessage(ctx, {
     // flow:F-05: follow-ups belong to the outreach sequence — they keep
     // the unsubscribe footer and List-Unsubscribe headers.
@@ -782,18 +925,23 @@ async function processOne(
     automatic: true,
     // flow:F-07: follow-ups wait for go-live.
     origin: 'follow_up',
+    // PC-12: 'sent' commits with the message row, so a delivered step is
+    // never left claimed (or failed) by a crash after the send.
+    onPersisted: async (tx, message) => {
+      await tx
+        .update(outreachFollowUps)
+        .set(sentFollowUpFields(message.id))
+        .where(eq(outreachFollowUps.id, row.id));
+    },
     providerOverride: deps.mailProviderOverride,
   });
 
+  // The hook's write is rolled back when the message had to be recorded
+  // alone (sendMessage's fallback); record it here then.
   await db
     .update(outreachFollowUps)
-    .set({
-      status: 'sent',
-      sentMessageId: sent.id,
-      processedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(outreachFollowUps.id, row.id));
+    .set(sentFollowUpFields(sent.id))
+    .where(and(eq(outreachFollowUps.id, row.id), ne(outreachFollowUps.status, 'sent')));
 
   await recordAuditEvent(ctx, {
     kind: 'follow_up.sent',
@@ -1053,7 +1201,11 @@ export async function listFollowUps(
 ): Promise<FollowUpRow[]> {
   const limit = Math.min(filter.limit ?? 200, 1000);
   const baseConditions = [eq(outreachFollowUps.workspaceId, ctx.workspaceId)];
-  if (filter.status && filter.status !== 'all') {
+  if (filter.status === 'pending') {
+    // PC-12: a step a pass is working on right now is still a scheduled
+    // one to the operator.
+    baseConditions.push(inArray(outreachFollowUps.status, ['pending', 'processing']));
+  } else if (filter.status && filter.status !== 'all') {
     baseConditions.push(eq(outreachFollowUps.status, filter.status));
   }
   const rows = await db
@@ -1121,7 +1273,9 @@ export async function countFollowUpsByStatus(
     failed: 0,
   };
   for (const r of rows) {
-    if (r.status === 'pending') out.pending++;
+    // PC-12: 'processing' (being written or sent right now) counts with
+    // the scheduled ones, like the Scheduled tab lists it.
+    if (r.status === 'pending' || r.status === 'processing') out.pending++;
     else if (r.status === 'awaiting_approval') out.awaiting_approval++;
     else if (r.status === 'sent') out.sent++;
     else if (r.status === 'skipped') out.skipped++;

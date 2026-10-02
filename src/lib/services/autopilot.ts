@@ -42,6 +42,11 @@
 // 5-minute tick alone). The tick itself only runs workspaces whose policy
 // runs autopilot and that the gate lets through (jobs/repeatables.ts,
 // tickVerdict), so a switched-off workspace writes nothing at all.
+//
+// PC-12 (I064): one run per workspace at a time. runOnce holds the
+// 'autopilot.run' work lease (services/work-leases.ts) for the whole run;
+// a second caller (the tick, Run now, the post-crawl hook) gets
+// `leaseHeld` back and does nothing.
 
 import {
   and,
@@ -106,7 +111,13 @@ import {
   type AutopilotStepErrors,
 } from './autopilot-incidents';
 import { plausibleEmailSql } from './contacts';
-import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
+import { canAdminWorkspace, canWrite, isAutomatic, type WorkspaceContext } from './context';
+import {
+  withWorkLease,
+  type LeaseHolder,
+  type WorkLease,
+  type WorkLeaseSpec,
+} from './work-leases';
 import { autopilotApproveReviewItem } from './review';
 import { approveOutreachDraft, generateOutreachDraft } from './outreach';
 import { enqueueDraft } from './outreach-queue';
@@ -552,7 +563,17 @@ export interface AutopilotRunResult {
     outcome: 'success' | 'skipped' | 'error';
     detail: string | null;
   }>;
+  /** PC-12 (I064): another run held the workspace's autopilot lease, so
+   *  this one did nothing (its only step is the guard, detail
+   *  'lease_held'). Who holds it, and since when. */
+  leaseHeld?: LeaseHolder;
 }
+
+/** PC-12: the guard detail of a run that found another run in progress. */
+export const AUTOPILOT_LEASE_HELD = 'lease_held';
+/** PC-12: the detail of the step a run stopped at because it no longer
+ *  held its lease (held past its maximum, or taken over after expiring). */
+export const AUTOPILOT_LEASE_LOST = 'lease_lost: the run stopped; the next run picks up the rest';
 
 export interface RunOptions {
   /** Test seam — the CRM connector the CRM steps push through. */
@@ -560,19 +581,55 @@ export interface RunOptions {
   /** PC-11: where step errors are reported, once per step and run (default:
    *  PC-07's incident stream, raiseOpsEvent). */
   incidentSink?: AutopilotIncidentSink;
+  /** PC-12: what started the run, shown on its lease in the ops console
+   *  ('tick', 'manual', 'post-crawl'). */
+  purpose?: string;
+  /** Test seam: overrides of the autopilot lease's TTL / maximum hold. */
+  lease?: Pick<WorkLeaseSpec, 'ttlMs' | 'maxHoldMs' | 'autoRenew'>;
 }
 
+/**
+ * One autopilot run. PC-12 (I064): under the workspace's 'autopilot.run'
+ * lease — the 5-minute tick, Run now and the post-crawl hook can all start
+ * one, and only one runs at a time; the others return at once with
+ * `leaseHeld` (nothing done, nothing logged). The lease is renewed while
+ * the run works and checked before every step and every item: a run that
+ * held it past its maximum (or lost it after a stall) stops there.
+ */
 export async function runOnce(
   ctx: WorkspaceContext,
   options: RunOptions = {},
 ): Promise<AutopilotRunResult> {
   if (!canWrite(ctx)) throw denied('autopilot.run');
+  const runId = randomUUID();
+  const ranAt = new Date();
+  const leased = await withWorkLease(
+    ctx,
+    {
+      kind: 'autopilot.run',
+      purpose: options.purpose ?? (isAutomatic(ctx) ? 'automatic' : 'manual'),
+      ...options.lease,
+    },
+    (lease) => runUnderLease(ctx, options, { runId, ranAt, lease }),
+  );
+  if (leased.status === 'ran') return leased.value;
+  return {
+    runId,
+    ranAt,
+    steps: [{ step: 'guard', outcome: 'skipped', detail: AUTOPILOT_LEASE_HELD }],
+    leaseHeld: leased.held,
+  };
+}
+
+async function runUnderLease(
+  ctx: WorkspaceContext,
+  options: RunOptions,
+  { runId, ranAt, lease }: { runId: string; ranAt: Date; lease: WorkLease },
+): Promise<AutopilotRunResult> {
   // The settings row exists from the first run on; its guard_state is the
   // guard's last recorded verdict (PC-35).
   const settings = await getAutopilotSettings(ctx);
   const policy = await resolveAutomationPolicy(ctx);
-  const runId = randomUUID();
-  const ranAt = new Date();
   const steps: AutopilotRunResult['steps'] = [];
 
   // The guard's verdict is always in the returned steps; it reaches
@@ -608,11 +665,19 @@ export async function runOnce(
   // step, recorded with why). Each step re-checks before every item too
   // (itemHeld), and PC-13 re-reads the item's product pause.
   const tally = new StepErrorTally();
+  const run: StepRun = { ctx, runId, policy, options, tally, lease, leaseLost: false };
   for (const step of AUTOPILOT_STEP_KEYS) {
     if (!policy.autopilot.steps[step]) continue;
+    // PC-12: still this run's lease? (A step's items check it too.)
+    if (run.leaseLost || !(await lease.checkpoint())) {
+      if (!run.leaseLost) await recordStep(ctx, runId, step, 'skipped', AUTOPILOT_LEASE_LOST);
+      run.leaseLost = true;
+      steps.push({ step, outcome: 'skipped', detail: AUTOPILOT_LEASE_LOST });
+      break;
+    }
     const capability = AUTOPILOT_STEP_CAPABILITY[step];
     const held = capability ? await heldStep(ctx, runId, step, capability) : null;
-    steps.push(held ?? (await runStep(step, { ctx, runId, policy, options, tally })));
+    steps.push(held ?? (await runStep(step, run)));
   }
 
   // PC-11: each step that had errors → one incident report for this run.
@@ -628,13 +693,17 @@ export async function runOnce(
 
 type StepResult = AutopilotRunResult['steps'][number];
 
-/** What a step runner gets: the run, its policy and the error tally. */
+/** What a step runner gets: the run, its policy, the error tally and the
+ *  run's lease (PC-12). */
 interface StepRun {
   ctx: WorkspaceContext;
   runId: string;
   policy: AutomationPolicy;
   options: RunOptions;
   tally: StepErrorTally;
+  lease: WorkLease;
+  /** Set once a checkpoint found the lease gone: the run stops. */
+  leaseLost: boolean;
 }
 
 type StepRunner = (run: StepRun) => Promise<StepResult>;
@@ -701,13 +770,19 @@ async function heldStep(
 
 /** PC-05: re-check before each item of a step (a candidate, a lead). A
  *  pause or hold placed mid-step stops the step at the next item, recorded
- *  as skipped with why; true = stop. */
+ *  as skipped with why; true = stop. PC-12: so does the run's lease being
+ *  gone (held past its maximum, or taken over after a stall). */
 async function itemHeld(
-  ctx: WorkspaceContext,
-  runId: string,
+  run: StepRun,
   step: string,
   capabilities: readonly AutomationCapability[],
 ): Promise<boolean> {
+  const { ctx, runId } = run;
+  if (run.leaseLost || !(await run.lease.checkpoint())) {
+    if (!run.leaseLost) await recordStep(ctx, runId, step, 'skipped', AUTOPILOT_LEASE_LOST);
+    run.leaseLost = true;
+    return true;
+  }
   const gate = await checkGates(ctx, capabilities, { manual: false });
   if (gate.allowed) return false;
   await recordStep(ctx, runId, step, 'skipped', `held: ${gate.message}`.slice(0, 500));
@@ -876,7 +951,7 @@ async function stepAutoApproveProjects(run: StepRun): Promise<StepResult> {
   let approved = 0;
   let productSkipped = 0;
   for (const c of candidates) {
-    if (await itemHeld(ctx, runId, step, ['autopilot'])) break;
+    if (await itemHeld(run, step, ['autopilot'])) break;
     // PC-13: a product paused since the run started no longer counts.
     const products: bigint[] = [];
     for (const productId of productsByItem.get(c.reviewItemId.toString()) ?? []) {
@@ -1039,7 +1114,7 @@ async function stepAutoEnqueueOutreach(run: StepRun): Promise<StepResult> {
   let enqueued = 0;
   let productSkipped = 0;
   for (const row of candidates) {
-    if (await itemHeld(ctx, runId, step, ['autopilot', 'sending'])) break;
+    if (await itemHeld(run, step, ['autopilot', 'sending'])) break;
     if (await productSkips(ctx, policy, step, row.q.productProfileId)) {
       productSkipped++;
       continue;
@@ -1182,7 +1257,7 @@ async function stepAutoCrmContactSync(run: StepRun): Promise<StepResult> {
   let synced = 0;
   let productSkipped = 0;
   for (const lead of candidates) {
-    if (await itemHeld(ctx, runId, step, ['autopilot', 'crm_sync'])) break;
+    if (await itemHeld(run, step, ['autopilot', 'crm_sync'])) break;
     if (await productSkips(ctx, policy, step, lead.productProfileId)) {
       productSkipped++;
       continue;
@@ -1252,7 +1327,7 @@ async function stepAutoCrmDealOnQualified(run: StepRun): Promise<StepResult> {
   let created = 0;
   let productSkipped = 0;
   for (const lead of candidates) {
-    if (await itemHeld(ctx, runId, step, ['autopilot', 'crm_sync'])) break;
+    if (await itemHeld(run, step, ['autopilot', 'crm_sync'])) break;
     if (await productSkips(ctx, policy, step, lead.productProfileId)) {
       productSkipped++;
       continue;
