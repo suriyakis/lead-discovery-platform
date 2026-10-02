@@ -95,7 +95,12 @@ export async function reportSendInterrupted(input: {
   }
 }
 
-/** An operator retried / requeued the interrupted row: close its incident. */
+/**
+ * The interrupted row no longer needs anyone: an operator retried,
+ * requeued or marked it delivered (`resolvedBy` = that user, resolution
+ * 'manual'), or its email turned out to have gone out — a late drain or an
+ * Errors-folder retry settled it 'sent' (`resolvedBy` null, 'auto').
+ */
 export async function resolveSendInterrupted(
   workspaceId: bigint,
   entryId: bigint,
@@ -103,7 +108,7 @@ export async function resolveSendInterrupted(
 ): Promise<void> {
   try {
     await resolveOpsEvent(sendInterruptedFingerprint(workspaceId, entryId), {
-      resolution: 'manual',
+      resolution: resolvedBy ? 'manual' : 'auto',
       resolvedBy,
     });
   } catch (err) {

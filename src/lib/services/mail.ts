@@ -55,7 +55,13 @@ import {
 } from '@/lib/mail/smtp-errors';
 import { isAfterDelivery, tagAfterDelivery, tagTransportFailure } from '@/lib/mail/send-failure';
 import { outreachQueue } from '@/lib/db/schema/outreach';
-import { markDraftQueueEntriesSent } from './outreach-queue-sent';
+import { resolveSendInterrupted } from '@/lib/ops/work-incidents';
+import {
+  draftIsBeingSent,
+  findDeliveredCopyOfDraft,
+  markDraftQueueEntriesSent,
+  trashEarlierFailedCopies,
+} from './outreach-queue-sent';
 import {
   defaultSignature,
   renderSignatureHtml,
@@ -1868,6 +1874,14 @@ export interface RetryResult {
   retried: bigint[];
   skippedHardBounce: bigint[];
   skippedIneligible: bigint[];
+  /** PC-10: copies of a draft whose email has already gone out (a sent
+   *  copy exists, or a queue row of the draft is 'sent'). Not re-sent:
+   *  moved to Trash with the draft's other failed copies. */
+  skippedAlreadySent: bigint[];
+  /** PC-10: further copies of a draft already tried earlier in the same
+   *  batch. Automatic retries leave one failed copy per attempt; one
+   *  email is tried once per Retry. */
+  skippedDuplicate: bigint[];
   errors: Array<{ id: bigint; error: string }>;
   /** PC-10: outreach queue rows settled as 'sent' by a successful retry
    *  of their draft's email (failed ones, and waiting ones that would
@@ -1875,12 +1889,26 @@ export interface RetryResult {
   queueEntriesSent: bigint[];
 }
 
+/** Why a retry of a draft-backed copy waits: the queue has it in flight. */
+export const RETRY_DRAFT_IN_FLIGHT_ERROR =
+  'The send queue is sending this email right now. Check Sent in a few minutes before retrying it.';
+
 /** Re-send a batch of failed messages. For each id we look up the
  *  original row, skip ineligible ones (not outbound, not in
  *  failed/bounced), skip hard bounces, and otherwise call sendMessage
  *  with the original payload. On success we trash the original so the
  *  Errors folder stays clean — the new send gets its own row + its own
- *  messageId and threads onto the same conversation. */
+ *  messageId and threads onto the same conversation.
+ *
+ *  PC-10: a draft's email goes out once. Automatic queue retries leave a
+ *  failed copy per attempt, so Errors can hold several copies of one
+ *  email. Before each draft-backed copy the database is asked again (not
+ *  the batch read) whether the draft's email has gone out — by an earlier
+ *  copy in this batch, by the queue, or by another operator — and if so
+ *  the copy is trashed, not sent. A draft is tried once per batch, and
+ *  not while the queue is sending it. A delivered retry trashes every
+ *  failed copy of its draft and settles the draft's queue rows in the same
+ *  transaction as its mail row. */
 export async function retrySend(
   ctx: WorkspaceContext,
   ids: ReadonlyArray<bigint>,
@@ -1891,6 +1919,8 @@ export async function retrySend(
     retried: [],
     skippedHardBounce: [],
     skippedIneligible: [],
+    skippedAlreadySent: [],
+    skippedDuplicate: [],
     errors: [],
     queueEntriesSent: [],
   };
@@ -1904,8 +1934,11 @@ export async function retrySend(
         eq(mailMessages.workspaceId, ctx.workspaceId),
         inArray(mailMessages.id, [...ids]),
       ),
-    );
+    )
+    .orderBy(asc(mailMessages.id));
 
+  /** Drafts already tried in this batch (sent or not). */
+  const draftsTried = new Set<string>();
   for (const original of originals) {
     if (
       original.direction !== 'outbound' ||
@@ -1919,6 +1952,28 @@ export async function retrySend(
       continue;
     }
     const draftId = original.sourceDraftId;
+    if (draftId !== null) {
+      const delivered = await findDeliveredCopyOfDraft(db, {
+        workspaceId: ctx.workspaceId,
+        draftId,
+      });
+      if (delivered) {
+        await trashStaleCopies(ctx, original.id, draftId, delivered.messageId);
+        result.skippedAlreadySent.push(original.id);
+        continue;
+      }
+      if (draftsTried.has(draftId.toString())) {
+        result.skippedDuplicate.push(original.id);
+        continue;
+      }
+      if (await draftIsBeingSent(db, { workspaceId: ctx.workspaceId, draftId })) {
+        result.errors.push({ id: original.id, error: RETRY_DRAFT_IN_FLIGHT_ERROR });
+        continue;
+      }
+      draftsTried.add(draftId.toString());
+    }
+    /** Queue rows of the draft the reaper had failed as interrupted. */
+    let interruptedSettled: bigint[] = [];
     let sent: MailMessage | null = null;
     try {
       sent = await sendMessage(ctx, {
@@ -1934,15 +1989,22 @@ export async function retrySend(
         inReplyTo: original.inReplyTo ?? undefined,
         references: original.references,
         sourceDraftId: draftId ?? undefined,
-        // PC-10 (I013): the queue row behind this draft is settled in the
-        // same transaction — it no longer stays 'failed' after the email
-        // went out, and a requeued copy cannot send it again.
+        // PC-10 (I013): the queue rows behind this draft are settled in the
+        // same transaction — they no longer stay 'failed' after the email
+        // went out, and a requeued copy cannot send it again. Every other
+        // failed copy of the draft leaves Errors in the same step.
         onPersisted: draftId
           ? async (tx, message) => {
-              await markDraftQueueEntriesSent(tx, {
+              const settled = await markDraftQueueEntriesSent(tx, {
                 workspaceId: ctx.workspaceId,
                 draftId,
                 messageId: message.id,
+              });
+              interruptedSettled = settled.interrupted;
+              await trashEarlierFailedCopies(tx, {
+                workspaceId: ctx.workspaceId,
+                draftId,
+                deliveredMessageId: message.id,
               });
             }
           : undefined,
@@ -1982,7 +2044,7 @@ export async function retrySend(
     result.retried.push(original.id);
     if (sent && draftId) {
       // Read back what the hook settled (it may have been rolled back if
-      // the message had to be recorded on its own). For the audit only.
+      // the message had to be recorded on its own).
       try {
         const settled = await db
           .select({ id: outreachQueue.id })
@@ -1995,6 +2057,14 @@ export async function retrySend(
             ),
           );
         result.queueEntriesSent.push(...settled.map((r) => r.id));
+        // The email went out: an interrupted row of the draft no longer
+        // needs anyone — close its incident (only rows the hook settled).
+        const settledIds = new Set(settled.map((r) => r.id.toString()));
+        for (const entryId of interruptedSettled) {
+          if (settledIds.has(entryId.toString())) {
+            await resolveSendInterrupted(ctx.workspaceId, entryId, null);
+          }
+        }
       } catch (err) {
         console.error(
           `[mail.retry_send] settled queue rows for message ${sent.id} not read:`,
@@ -2007,7 +2077,9 @@ export async function retrySend(
   if (
     result.retried.length > 0 ||
     result.errors.length > 0 ||
-    result.skippedHardBounce.length > 0
+    result.skippedHardBounce.length > 0 ||
+    result.skippedAlreadySent.length > 0 ||
+    result.skippedDuplicate.length > 0
   ) {
     await recordAuditEvent(ctx, {
       kind: 'mail.retry_send',
@@ -2016,6 +2088,8 @@ export async function retrySend(
         retried: result.retried.map(String),
         skippedHardBounce: result.skippedHardBounce.map(String),
         skippedIneligible: result.skippedIneligible.map(String),
+        skippedAlreadySent: result.skippedAlreadySent.map(String),
+        skippedDuplicate: result.skippedDuplicate.map(String),
         errors: result.errors.map((e) => ({
           id: e.id.toString(),
           error: e.error,
@@ -2026,6 +2100,41 @@ export async function retrySend(
   }
 
   return result;
+}
+
+/** A failed copy of a draft whose email has gone out: it and the draft's
+ *  other failed copies leave Errors (best-effort — skipping the send is
+ *  what matters). */
+async function trashStaleCopies(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  originalId: bigint,
+  draftId: bigint,
+  deliveredMessageId: bigint | null,
+): Promise<void> {
+  try {
+    const now = new Date();
+    await db
+      .update(mailMessages)
+      .set({ trashedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.id, originalId),
+          isNull(mailMessages.trashedAt),
+        ),
+      );
+    await trashEarlierFailedCopies(db, {
+      workspaceId: ctx.workspaceId,
+      draftId,
+      deliveredMessageId,
+      now,
+    });
+  } catch (err) {
+    console.error(
+      `[mail.retry_send] stale copies of draft ${draftId} not moved to Trash:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 // ---- threading -----------------------------------------------------

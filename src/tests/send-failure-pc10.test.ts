@@ -36,7 +36,7 @@ import {
 } from '@/lib/mail/send-failure';
 import { classifySmtpError } from '@/lib/mail/smtp-errors';
 import { reportSendInterrupted } from '@/lib/ops/work-incidents';
-import { retrySend } from '@/lib/services/mail';
+import { RETRY_DRAFT_IN_FLIGHT_ERROR, retrySend } from '@/lib/services/mail';
 import { updateMailbox } from '@/lib/services/mailbox';
 import {
   MAILBOX_PAUSED_HOLD_REASON,
@@ -623,5 +623,137 @@ describe('retrySend settles the linked queue row (I013)', () => {
     expect(q.sentMessageId).toBe(sent!.id);
     const [audit] = await db.select().from(auditLog).where(eq(auditLog.kind, 'mail.retry_send'));
     expect(audit!.payload).toMatchObject({ queueEntriesSent: [entry.id.toString()] });
+  });
+});
+
+// ---- one draft goes out once (review: PC-10 duplicate sends) ---------------
+
+/** Five greylisted attempts: the queue gives up and Errors holds five
+ *  failed copies of the one email. */
+async function gaveUpWithFiveCopies(s: Setup) {
+  const created = await queuedDraft(s, 'anna@target.com');
+  const provider = new FlakyProvider(greylisted);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (attempt > 1) await dueNow(created.entry.id);
+    await drainQueue(ctx(s), { providerOverride: provider });
+  }
+  const q = await row(created.entry.id);
+  expect(q.status).toBe('failed');
+  const copies = (await outbound(s.workspaceId)).filter(
+    (m) => m.status === 'failed' && m.trashedAt === null,
+  );
+  expect(copies).toHaveLength(5);
+  return { ...created, entry: q, copies };
+}
+
+describe('one draft goes out once (PC-10 review)', () => {
+  it('after the queue gives up, a bulk Errors retry of every copy sends the email once', async () => {
+    const s = await setup();
+    const { entry, copies } = await gaveUpWithFiveCopies(s);
+    const ids = copies.map((c) => c.id);
+
+    const provider = new FlakyProvider(greylisted, 0);
+    const result = await retrySend(ctx(s), ids, provider);
+    expect(provider.calls).toBe(1);
+    expect(result.retried).toEqual([ids[0]]);
+    expect(result.skippedAlreadySent).toEqual(ids.slice(1));
+    expect(result.queueEntriesSent).toEqual([entry.id]);
+    expect((await row(entry.id)).status).toBe('sent');
+
+    const rows = await outbound(s.workspaceId);
+    expect(rows.filter((m) => m.status === 'sent')).toHaveLength(1);
+    // Every failed copy left Errors.
+    expect(rows.filter((m) => m.status === 'failed' && m.trashedAt === null)).toHaveLength(0);
+
+    // Retrying any copy again (a stale page) sends nothing.
+    const again = await retrySend(ctx(s), [ids[3]!], provider);
+    expect(provider.calls).toBe(1);
+    expect(again.retried).toEqual([]);
+    expect(again.skippedAlreadySent).toEqual([ids[3]]);
+  });
+
+  it('a batch tries one email once: when the retry fails again, its other copies are skipped', async () => {
+    const s = await setup();
+    const { copies } = await gaveUpWithFiveCopies(s);
+    const ids = copies.map((c) => c.id);
+
+    const provider = new FlakyProvider(greylisted);
+    const result = await retrySend(ctx(s), ids, provider);
+    expect(provider.calls).toBe(1);
+    expect(result.errors.map((e) => e.id)).toEqual([ids[0]]);
+    expect(result.skippedDuplicate).toEqual(ids.slice(1));
+  });
+
+  it('the Errors retry waits while the queue is sending the same draft', async () => {
+    const s = await setup();
+    const { entry, copies } = await gaveUpWithFiveCopies(s);
+    // An operator requeued the row and the drain has it in flight.
+    await db
+      .update(outreachQueue)
+      .set({ status: 'sending', claimedAt: new Date() })
+      .where(eq(outreachQueue.id, entry.id));
+
+    const provider = new FlakyProvider(greylisted, 0);
+    const result = await retrySend(ctx(s), [copies[0]!.id], provider);
+    expect(provider.calls).toBe(0);
+    expect(result.errors).toEqual([{ id: copies[0]!.id, error: RETRY_DRAFT_IN_FLIGHT_ERROR }]);
+  });
+
+  it('a failed row whose draft went out through another row cannot be put back, and the drain skips it', async () => {
+    const s = await setup();
+    const { entry: first, draft } = await failedEntry(s);
+    // The draft is queued again and goes out through a second row.
+    const [second] = await db
+      .insert(outreachQueue)
+      .values({
+        workspaceId: s.workspaceId,
+        mailboxId: s.mailboxId,
+        draftId: draft.id,
+        toAddresses: ['anna@target.com'],
+        subject: draft.subject!,
+        bodyText: draft.body,
+        status: 'queued',
+        scheduledSendAt: new Date(Date.now() - 1000),
+      })
+      .returning();
+    const provider = new FlakyProvider(greylisted, 0);
+    expect((await drainQueue(ctx(s), { providerOverride: provider })).sent).toBe(1);
+    expect((await row(second!.id)).status).toBe('sent');
+
+    await expect(requeueQueueEntry(ctx(s), first.id)).rejects.toThrow(/already been sent/);
+    await expect(
+      retryQueueEntry(ctx(s), first.id, { providerOverride: provider }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect((await row(first.id)).status).toBe('failed');
+
+    // Even if it gets back into the queue some other way, the drain does
+    // not send the draft a second time.
+    await db
+      .update(outreachQueue)
+      .set({ status: 'queued', scheduledSendAt: new Date(Date.now() - 1000) })
+      .where(eq(outreachQueue.id, first.id));
+    const r = await drainQueue(ctx(s), { providerOverride: provider });
+    expect(r).toMatchObject({ sent: 0, skipped: 1 });
+    expect(provider.calls).toBe(1);
+    const skipped = await row(first.id);
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.lastError).toMatch(/already been sent/);
+  });
+
+  it('a row recorded sent without a mail row (after-delivery failure) also blocks a re-send', async () => {
+    const s = await setup();
+    const { entry: first, draft } = await failedEntry(s);
+    await db.insert(outreachQueue).values({
+      workspaceId: s.workspaceId,
+      mailboxId: s.mailboxId,
+      draftId: draft.id,
+      toAddresses: ['anna@target.com'],
+      subject: 'x',
+      bodyText: 'x',
+      status: 'sent',
+      scheduledSendAt: new Date(),
+      lastError: 'Sent, but recording it failed: boom',
+    });
+    await expect(requeueQueueEntry(ctx(s), first.id)).rejects.toThrow(/queue entry \d+/);
   });
 });

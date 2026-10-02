@@ -49,7 +49,13 @@ import {
   type WorkspaceContext,
 } from './context';
 import { MailServiceError, sendMessage, type SendMode } from './mail';
-import { markQueueEntrySent, trashEarlierFailedCopies } from './outreach-queue-sent';
+import {
+  DELIVERED_MESSAGE_STATUSES,
+  alreadyDeliveredMessage,
+  findDeliveredCopyOfDraft,
+  markQueueEntrySent,
+  trashEarlierFailedCopies,
+} from './outreach-queue-sent';
 import { prepareOutboundDualBody } from './language-resolution';
 import { isSuppressed } from './suppression';
 import {
@@ -494,7 +500,7 @@ async function remainingDailyCap(
 /** Outbound mail_messages statuses that mean the email went out. Caps and
  *  the domain cooldown count these only; a failed or refused attempt
  *  reached nobody. */
-const DELIVERED_STATUSES = ['sent', 'delivered'] as const;
+const DELIVERED_STATUSES = DELIVERED_MESSAGE_STATUSES;
 
 async function processEntry(
   ctx: WorkspaceContext,
@@ -519,6 +525,24 @@ async function processEntry(
   if (claim.length === 0) return 'skipped';
 
   try {
+    // PC-10: one draft = one email. Another queue row of the draft, the
+    // Errors-folder Retry or a manual compose may already have sent it.
+    if (entry.draftId) {
+      const delivered = await findDeliveredCopyOfDraft(db, {
+        workspaceId: ctx.workspaceId,
+        draftId: entry.draftId,
+        excludeQueueEntryId: entry.id,
+      });
+      if (delivered) {
+        await settleClaimed(entry.id, {
+          status: 'skipped',
+          nextAttemptAt: null,
+          lastError: alreadyDeliveredMessage(delivered),
+        });
+        return 'skipped';
+      }
+    }
+
     // Suppression check (any recipient).
     for (const addr of entry.toAddresses) {
       if (await isSuppressed(ctx, addr)) {
@@ -966,6 +990,15 @@ async function putBack(
         `Its draft is now ${draft.status.replace('_', ' ')}, and only an approved draft is sent. Approve it (or queue its replacement) instead.`,
       );
     }
+    // PC-10: one draft = one email. Drafts have no 'sent' status, so ask
+    // whether its email went out through another queue row, the
+    // Errors-folder Retry or a manual compose.
+    const delivered = await findDeliveredCopyOfDraft(db, {
+      workspaceId: ctx.workspaceId,
+      draftId: existing.draftId,
+      excludeQueueEntryId: id,
+    });
+    if (delivered) throw conflict(alreadyDeliveredMessage(delivered));
   }
 
   let updated: OutreachQueueEntry | undefined;
