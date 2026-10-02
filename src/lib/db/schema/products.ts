@@ -23,8 +23,9 @@ import { workspaces } from './workspaces';
  *
  * Reserved fields (`pricingSnapshotId`, `crmMapping`) are present from
  * day 1 so future phases can attach without migrations (the dead
- * `document_source_ids` array went in KL-05: knowledge reaches a product
- * through knowledge_source_products):
+ * `document_source_ids` array is deprecated since KL-05 — knowledge
+ * reaches a product through knowledge_source_products — and is dropped by
+ * the knowledge-foundation contract PR):
  *   - pricingSnapshotId → optional commercial module (Quote/Pricing)
  *   - crmMapping        → Phase 13 (CRM/Export)
  */
@@ -107,6 +108,14 @@ export const productProfiles = pgTable(
     // ---- reserved for future phases (nullable / default-empty) ----
     pricingSnapshotId: bigint('pricing_snapshot_id', { mode: 'bigint' }),
     crmMapping: jsonb('crm_mapping').notNull().default(sql`'{}'::jsonb`),
+    /** @deprecated never read (KL-05). Kept DECLARED until the
+     *  knowledge-foundation contract PR drops it, so this lane's migration
+     *  stays purely additive (no column drop, no drizzle-kit rename
+     *  prompt). Do not use (src/tests/knowledge-scope.test.ts). */
+    legacyDocumentSourceIds: bigint('document_source_ids', { mode: 'bigint' })
+      .array()
+      .notNull()
+      .default(sql`'{}'::bigint[]`),
 
     // ---- audit ----
     createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
@@ -124,8 +133,9 @@ export const productProfiles = pgTable(
       table.active,
     ),
     /** Target of composite (workspace_id, product_profile_id) FKs from
-     *  scope join tables (lesson_scopes, KL-01): a row there can only
-     *  point at a product of its own workspace. */
+     *  scope join tables (lesson_scopes, knowledge_source_products): a row
+     *  there can only point at a product of its own workspace. Those FKs
+     *  are DB-only (see lessonScopes in schema/learning.ts). */
     workspaceIdUnique: unique('product_profiles_workspace_id_id_unique').on(
       table.workspaceId,
       table.id,
@@ -133,5 +143,6 @@ export const productProfiles = pgTable(
   }),
 );
 
-export type ProductProfile = typeof productProfiles.$inferSelect;
+/** A product row without the deprecated legacy column (KL-05 expand phase). */
+export type ProductProfile = Omit<typeof productProfiles.$inferSelect, 'legacyDocumentSourceIds'>;
 export type NewProductProfile = typeof productProfiles.$inferInsert;

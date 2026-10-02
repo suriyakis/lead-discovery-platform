@@ -1,8 +1,8 @@
-// KL-03 migration: p1_knowledge_foundation_learning_processor applies on a
-// database with KL-02 learning events and lessons (they keep their data),
+// KL-03 migration: p1_knowledge_foundation_learning_knowledge applies on a
+// database with pre-lane learning events and lessons (they keep their data),
 // the ledger's constraints hold (one forward row per (event, rule), one
 // compensation per row, delta = after - before, same-tenant rule), and
-// drizzle/rollback/…learning_processor.down.sql restores the previous
+// drizzle/rollback/…learning_knowledge.down.sql restores the previous
 // shape. Runs in its own scratch database (<test db>_kl03mig), like the
 // KL-01 / KL-02 migration tests.
 
@@ -17,11 +17,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const drizzleDir = path.join(repoRoot, 'drizzle');
-const TAG = '_p1_knowledge_foundation_learning_processor';
+const TAG = '_p1_knowledge_foundation_learning_knowledge';
 const ROLLBACK_FILE = path.join(
   drizzleDir,
   'rollback',
-  'p1_knowledge_foundation_learning_processor.down.sql',
+  'p1_knowledge_foundation_learning_knowledge.down.sql',
 );
 
 const baseUrl = new URL(
@@ -111,13 +111,13 @@ afterAll(async () => {
 }, 30_000);
 
 describe('KL-03 migration on a seeded database', () => {
-  it('applies over KL-02 rows, enforces the ledger constraints, and the rollback restores the previous shape', async () => {
+  it('applies over pre-lane rows, enforces the ledger constraints, and the rollback restores the previous shape', async () => {
     expect(migrationIdx).toBeGreaterThan(0);
     await migrateTo(migrationIdx);
     const before = await shape();
     expect(before.tables).toEqual([]);
 
-    // KL-02 rows: two workspaces, a decision event and a rule in each.
+    // Pre-lane rows: two workspaces, a review event and a rule in each.
     await client`INSERT INTO users (id, email) VALUES ('u-a', 'a@kl03.test'), ('u-b', 'b@kl03.test')`;
     const [wsA] = await client`
       INSERT INTO workspaces (name, slug, owner_user_id) VALUES ('A', 'kl03-a', 'u-a') RETURNING id`;
@@ -127,15 +127,15 @@ describe('KL-03 migration on a seeded database', () => {
     const b = String(wsB!.id);
     const [ev] = await client`
       INSERT INTO learning_events (workspace_id, user_id, entity_type, entity_id, action_type,
-                                   original_comment, processing_status)
-      VALUES (${a}, 'u-a', 'review_item', '1', 'qualification_positive', 'good', 'pending')
+                                   original_comment)
+      VALUES (${a}, 'u-a', 'review_item', '1', 'qualification_positive', 'good')
       RETURNING id`;
     const [lessonA] = await client`
-      INSERT INTO learning_lessons (workspace_id, category, rule, polarity, confidence)
-      VALUES (${a}, 'qualification_positive', 'Prefer roofers.', 1, 60) RETURNING id`;
+      INSERT INTO learning_lessons (workspace_id, category, rule, confidence)
+      VALUES (${a}, 'qualification_positive', 'Prefer roofers.', 60) RETURNING id`;
     const [lessonB] = await client`
-      INSERT INTO learning_lessons (workspace_id, category, rule, polarity, confidence)
-      VALUES (${b}, 'qualification_positive', 'Prefer roofers.', 1, 60) RETURNING id`;
+      INSERT INTO learning_lessons (workspace_id, category, rule, confidence)
+      VALUES (${b}, 'qualification_positive', 'Prefer roofers.', 60) RETURNING id`;
     const e = String(ev!.id);
     const la = String(lessonA!.id);
     const lb = String(lessonB!.id);
@@ -146,8 +146,9 @@ describe('KL-03 migration on a seeded database', () => {
     const [kept] = await client`
       SELECT processing_status, claimed_at, processing_note, original_comment
       FROM learning_events WHERE id = ${e}`;
+    // Processed inline before the lane: the column default 'done'.
     expect(kept).toEqual({
-      processing_status: 'pending',
+      processing_status: 'done',
       claimed_at: null,
       processing_note: null,
       original_comment: 'good',

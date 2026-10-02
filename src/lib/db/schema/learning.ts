@@ -416,10 +416,29 @@ export const learningLessons = pgTable(
     updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
       .notNull()
       .defaultNow(),
+
+    // ---- DEPRECATED (KL-01 expand phase) ----------------------------------
+    // The pre-KL-01 columns stay DECLARED until the knowledge-foundation
+    // contract PR drops them, so this lane's migration is purely additive
+    // and regenerates from this file in one pass: the custom block of
+    // p1_knowledge_foundation_* reads them to backfill scope_kind /
+    // lesson_scopes / lifecycle. Nothing reads or writes them any more
+    // (src/tests/learning-legacy-columns.test.ts fails the build on a use
+    // outside this file); their values freeze at the backfill.
+    /** @deprecated replaced by scope_kind + lesson_scopes. ON DELETE SET
+     *  NULL (was CASCADE): deleting a product must not hard-delete a rule
+     *  through the legacy column (I109). */
+    legacyProductProfileId: bigint('product_profile_id', { mode: 'bigint' }).references(
+      () => productProfiles.id,
+      { onDelete: 'set null' },
+    ),
+    /** @deprecated replaced by lifecycle. */
+    legacyEnabled: boolean('enabled').notNull().default(true),
   },
   (table) => ({
-    /** Target of the composite FK from lesson_scopes: a scope row can only
-     *  join a lesson and a product of the SAME workspace. */
+    /** Target of the composite FKs from lesson_scopes and
+     *  lesson_reinforcements: a scope or ledger row can only join a lesson
+     *  of the SAME workspace. Those FKs are DB-only (see lessonScopes). */
     workspaceIdUnique: unique('learning_lessons_workspace_id_id_unique').on(
       table.workspaceId,
       table.id,
@@ -453,6 +472,17 @@ export const learningLessons = pgTable(
  * that joins a rule to another tenant's product (I167) — there is no code
  * path to forget. Deleting a product cascades its scope rows; a rule left
  * with none applies nowhere.
+ *
+ * DB-only constraints (deliberately NOT declared here): the two composite
+ * FKs lesson_scopes_lesson_fk (workspace_id, lesson_id) -> learning_lessons
+ * (workspace_id, id) and lesson_scopes_product_fk (workspace_id,
+ * product_profile_id) -> product_profiles (workspace_id, id), both ON
+ * DELETE CASCADE. They reference UNIQUE(workspace_id, id) constraints this
+ * lane adds to EXISTING tables, which drizzle-kit always emits after every
+ * FK, so a generated migration would create the FK first and Postgres would
+ * refuse it. The custom block of the p1_knowledge_foundation_* migration
+ * creates them after the UNIQUEs; src/tests/db-only-constraints.test.ts
+ * fails if a regeneration loses them.
  */
 export const lessonScopes = pgTable(
   'lesson_scopes',
@@ -469,16 +499,6 @@ export const lessonScopes = pgTable(
       name: 'lesson_scopes_pk',
       columns: [table.lessonId, table.productProfileId],
     }),
-    lessonFk: foreignKey({
-      name: 'lesson_scopes_lesson_fk',
-      columns: [table.workspaceId, table.lessonId],
-      foreignColumns: [learningLessons.workspaceId, learningLessons.id],
-    }).onDelete('cascade'),
-    productFk: foreignKey({
-      name: 'lesson_scopes_product_fk',
-      columns: [table.workspaceId, table.productProfileId],
-      foreignColumns: [productProfiles.workspaceId, productProfiles.id],
-    }).onDelete('cascade'),
     workspaceProductIdx: index('lesson_scopes_ws_product_idx').on(
       table.workspaceId,
       table.productProfileId,
@@ -539,13 +559,10 @@ export const lessonReinforcements = pgTable(
       .defaultNow(),
   },
   (table) => ({
-    /** Composite on workspace_id: a ledger row can only move a rule of
-     *  its own workspace. */
-    lessonFk: foreignKey({
-      name: 'lesson_reinforcements_lesson_fk',
-      columns: [table.workspaceId, table.lessonId],
-      foreignColumns: [learningLessons.workspaceId, learningLessons.id],
-    }).onDelete('cascade'),
+    // lesson_reinforcements_lesson_fk (workspace_id, lesson_id) ->
+    // learning_lessons (workspace_id, id) ON DELETE CASCADE — a ledger row
+    // can only move a rule of its own workspace — is DB-only, created by
+    // the migration's custom block (same reason as lessonScopes).
     compensatesFk: foreignKey({
       name: 'lesson_reinforcements_compensates_fk',
       columns: [table.compensatesId],
@@ -583,7 +600,11 @@ export type LearningDecision = typeof learningDecisions.$inferSelect;
 export type NewLearningDecision = typeof learningDecisions.$inferInsert;
 export type LearningEvent = typeof learningEvents.$inferSelect;
 export type NewLearningEvent = typeof learningEvents.$inferInsert;
-export type LearningLesson = typeof learningLessons.$inferSelect;
+/** A rule row without the deprecated legacy columns (KL-01 expand phase). */
+export type LearningLesson = Omit<
+  typeof learningLessons.$inferSelect,
+  'legacyProductProfileId' | 'legacyEnabled'
+>;
 export type NewLearningLesson = typeof learningLessons.$inferInsert;
 export type LessonScope = typeof lessonScopes.$inferSelect;
 export type LessonReinforcement = typeof lessonReinforcements.$inferSelect;

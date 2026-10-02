@@ -1,8 +1,8 @@
-// KL-06 migration: p1_knowledge_foundation_index_pipeline applies over
-// KL-05 data — legacy runs nobody will finish are closed, the one-queued /
+// KL-06 migration: p1_knowledge_foundation_learning_knowledge applies over
+// pre-lane data — legacy runs nobody will finish are closed, the one-queued /
 // one-running-per-source indexes hold, every source gets its honest
 // index_status (queued / failed / stale / indexed) — and
-// drizzle/rollback/…index_pipeline.down.sql restores the previous shape.
+// drizzle/rollback/…learning_knowledge.down.sql restores the previous shape.
 // Runs in its own scratch database (<test db>_kl06mig), like the KL-01 …
 // KL-05 migration tests.
 
@@ -17,11 +17,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const drizzleDir = path.join(repoRoot, 'drizzle');
-const TAG = '_p1_knowledge_foundation_index_pipeline';
+const TAG = '_p1_knowledge_foundation_learning_knowledge';
 const ROLLBACK_FILE = path.join(
   drizzleDir,
   'rollback',
-  'p1_knowledge_foundation_index_pipeline.down.sql',
+  'p1_knowledge_foundation_learning_knowledge.down.sql',
 );
 
 const baseUrl = new URL(
@@ -136,11 +136,11 @@ describe('KL-06 migration on a seeded database', () => {
     ) => {
       const [row] = await client`
         INSERT INTO knowledge_sources (workspace_id, kind, document_id, url, text_excerpt, title,
-                                       scope_kind, external_status, external_error,
+                                       external_status, external_error,
                                        external_indexed_at, created_at, updated_at)
         VALUES (${a}, ${kind}, ${kind === 'document' ? d : null},
                 ${kind === 'url' ? 'https://x.test/' + key : null},
-                ${kind === 'text' ? 'text ' + key : null}, ${`Source ${key}`}, 'workspace',
+                ${kind === 'text' ? 'text ' + key : null}, ${`Source ${key}`},
                 ${extra.status ?? 'pending'}, ${extra.error ?? null}, ${extra.indexedAt ?? null},
                 ${t0}, ${extra.updatedAt ?? t0})
         RETURNING id`;

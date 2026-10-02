@@ -1,5 +1,8 @@
 // KL-01 acceptance 5 (grep guard): learning_lessons.enabled and
-// learning_lessons.product_profile_id are gone. A rule is in service when
+// learning_lessons.product_profile_id are retired. They stay DECLARED in
+// src/lib/db/schema/learning.ts as the deprecated legacyEnabled /
+// legacyProductProfileId (so the lane migration is purely additive; the
+// contract PR drops them) and nothing else may touch them. A rule is in service when
 // lifecycle = 'active', and applies where lessonInScope() says (scope_kind +
 // lesson_scopes). Any remaining reference to the old columns — in Drizzle
 // form or raw SQL — would silently read nothing (or break at runtime), so
@@ -16,9 +19,14 @@ const THIS_FILE = path
   .relative(repoRoot, fileURLToPath(import.meta.url))
   .split(path.sep)
   .join('/');
-/** Files that name the old columns on purpose: this guard, and the
- *  migration test that seeds the pre-KL-01 shape and checks the rollback. */
-const ALLOWED = new Set([THIS_FILE, 'src/tests/learning-scope-migration.test.ts']);
+/** Files that name the old columns on purpose: this guard, the schema that
+ *  still declares them (deprecated), and the migration test that seeds the
+ *  pre-KL-01 shape and checks the rollback. */
+const ALLOWED = new Set([
+  THIS_FILE,
+  'src/lib/db/schema/learning.ts',
+  'src/tests/learning-scope-migration.test.ts',
+]);
 
 const FORBIDDEN: Array<{ pattern: RegExp; why: string }> = [
   { pattern: /learningLessons\s*\.\s*enabled\b/, why: 'use learningLessons.lifecycle' },
@@ -28,7 +36,11 @@ const FORBIDDEN: Array<{ pattern: RegExp; why: string }> = [
   },
   {
     pattern: /learning_lessons"?\s*\.\s*"?(enabled|product_profile_id)\b/,
-    why: 'raw SQL on a dropped learning_lessons column',
+    why: 'raw SQL on a retired learning_lessons column',
+  },
+  {
+    pattern: /\blegacy(?:ProductProfileId|Enabled)\b/,
+    why: 'deprecated column, dropped by the contract PR',
   },
 ];
 
@@ -48,7 +60,7 @@ function walk(dir: string, out: string[]): void {
   }
 }
 
-describe('no reference to the dropped learning_lessons columns', () => {
+describe('no reference to the retired learning_lessons columns', () => {
   it('src/, scripts/ and e2e/ are clean', () => {
     const files: string[] = [];
     for (const d of SCAN_DIRS) walk(path.join(repoRoot, d), files);
@@ -68,11 +80,13 @@ describe('no reference to the dropped learning_lessons columns', () => {
     expect(hits).toEqual([]);
   });
 
-  it('the schema no longer declares them', async () => {
+  it('the schema declares them only as deprecated legacy* columns', async () => {
     const { learningLessons } = await import('@/lib/db/schema/learning');
     const columns = Object.keys(learningLessons);
     expect(columns).not.toContain('enabled');
     expect(columns).not.toContain('productProfileId');
+    expect(columns).toContain('legacyEnabled');
+    expect(columns).toContain('legacyProductProfileId');
     expect(columns).toContain('lifecycle');
     expect(columns).toContain('scopeKind');
   });

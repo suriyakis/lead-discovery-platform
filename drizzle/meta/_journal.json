@@ -467,50 +467,8 @@
     {
       "idx": 66,
       "version": "7",
-      "when": 1790899874507,
-      "tag": "0066_p1_knowledge_foundation_lesson_scopes",
-      "breakpoints": true
-    },
-    {
-      "idx": 67,
-      "version": "7",
-      "when": 1790899968437,
-      "tag": "0067_p1_knowledge_foundation_lesson_scopes_contract",
-      "breakpoints": true
-    },
-    {
-      "idx": 68,
-      "version": "7",
-      "when": 1790904510638,
-      "tag": "0068_p1_knowledge_foundation_decision_record",
-      "breakpoints": true
-    },
-    {
-      "idx": 69,
-      "version": "7",
-      "when": 1790908931786,
-      "tag": "0069_p1_knowledge_foundation_learning_processor",
-      "breakpoints": true
-    },
-    {
-      "idx": 70,
-      "version": "7",
-      "when": 1790911988752,
-      "tag": "0070_p1_knowledge_foundation_knowledge_scope",
-      "breakpoints": true
-    },
-    {
-      "idx": 71,
-      "version": "7",
-      "when": 1790912117284,
-      "tag": "0071_p1_knowledge_foundation_knowledge_scope_contract",
-      "breakpoints": true
-    },
-    {
-      "idx": 72,
-      "version": "7",
-      "when": 1790916858579,
-      "tag": "0072_p1_knowledge_foundation_index_pipeline",
+      "when": 1790920955337,
+      "tag": "0066_p1_knowledge_foundation_learning_knowledge",
       "breakpoints": true
     }
   ]

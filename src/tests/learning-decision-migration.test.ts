@@ -1,7 +1,7 @@
-// KL-02 migration: p1_knowledge_foundation_decision_record applies on a
+// KL-02 migration: p1_knowledge_foundation_learning_knowledge applies on a
 // database with pre-KL-02 learning events and qualifications (they keep
 // their data and take the documented defaults), its CHECK constraints hold,
-// and drizzle/rollback/…decision_record.down.sql restores the previous
+// and drizzle/rollback/…learning_knowledge.down.sql restores the previous
 // shape. Runs in its own scratch database (<test db>_kl02mig), like the
 // KL-01 migration test.
 
@@ -16,11 +16,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const drizzleDir = path.join(repoRoot, 'drizzle');
-const TAG = '_p1_knowledge_foundation_decision_record';
+const TAG = '_p1_knowledge_foundation_learning_knowledge';
 const ROLLBACK_FILE = path.join(
   drizzleDir,
   'rollback',
-  'p1_knowledge_foundation_decision_record.down.sql',
+  'p1_knowledge_foundation_learning_knowledge.down.sql',
 );
 
 const baseUrl = new URL(

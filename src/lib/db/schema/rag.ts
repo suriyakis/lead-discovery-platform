@@ -5,7 +5,6 @@ import {
   boolean,
   check,
   customType,
-  foreignKey,
   index,
   integer,
   jsonb,
@@ -72,8 +71,17 @@ export const documentChunks = pgTable(
       () => documents.id,
       { onDelete: 'cascade' },
     ),
-    /** The owning knowledge source (KL-05). FK: document_chunks_knowledge_source_fk. */
-    knowledgeSourceId: bigint('knowledge_source_id', { mode: 'bigint' }).notNull(),
+    /** The owning knowledge source (KL-05). NOT NULL in the database, with
+     *  the composite FK document_chunks_knowledge_source_fk (workspace_id,
+     *  knowledge_source_id) -> knowledge_sources (workspace_id, id) ON
+     *  DELETE CASCADE — both DB-only, set by the custom block of the
+     *  p1_knowledge_foundation_* migration AFTER its backfill has given
+     *  every legacy document-level chunk an owner (a generated SET NOT NULL
+     *  would run before the backfill and fail on them; the FK references a
+     *  UNIQUE that drizzle-kit emits after every FK). Declared nullable here
+     *  only for that reason; the contract PR declares notNull().
+     *  src/tests/db-only-constraints.test.ts guards both. */
+    knowledgeSourceId: bigint('knowledge_source_id', { mode: 'bigint' }),
 
     /** 0-based chunk index within the source. */
     chunkIndex: integer('chunk_index').notNull().default(0),
@@ -108,12 +116,8 @@ export const documentChunks = pgTable(
       table.workspaceId,
       table.knowledgeSourceId,
     ),
-    /** KL-05: a chunk can only belong to a source of its own workspace. */
-    knowledgeSourceFk: foreignKey({
-      name: 'document_chunks_knowledge_source_fk',
-      columns: [table.workspaceId, table.knowledgeSourceId],
-      foreignColumns: [knowledgeSources.workspaceId, knowledgeSources.id],
-    }).onDelete('cascade'),
+    // KL-05: document_chunks_knowledge_source_fk (a chunk can only belong
+    // to a source of its own workspace) is DB-only; see knowledgeSourceId.
     // The vector index is created out-of-band in the migration SQL so we can
     // pick HNSW vs IVFFlat per environment. Drizzle's index() builder does
     // not yet support `USING hnsw (embedding vector_cosine_ops)`.

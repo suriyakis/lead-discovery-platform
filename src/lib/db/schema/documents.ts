@@ -2,7 +2,6 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
-  foreignKey,
   index,
   integer,
   pgEnum,
@@ -13,7 +12,6 @@ import {
   unique,
 } from 'drizzle-orm/pg-core';
 import { users } from './auth';
-import { productProfiles } from './products';
 import { workspaces } from './workspaces';
 
 /**
@@ -201,8 +199,12 @@ export const knowledgeSources = pgTable(
       .notNull()
       .default(sql`'{}'::text[]`),
     /** KL-05: 'workspace' (every product) or 'products' (exactly the
-     *  knowledge_source_products rows). No default: every writer states it. */
-    scopeKind: knowledgeScopeKind('scope_kind').notNull(),
+     *  knowledge_source_products rows). Every writer states it. The default
+     *  'products' exists only so the additive migration can add the column
+     *  to existing rows (the backfill then decides each one); a writer that
+     *  forgot it would get a source that "Needs a scope" and is retrieved
+     *  nowhere — never a workspace-wide one. The contract PR drops it. */
+    scopeKind: knowledgeScopeKind('scope_kind').notNull().default('products'),
 
     /** Phase 50: which vector-storage provider indexed this source, e.g.
      *  'pgvector' (chunks live in `document_chunks`) or 'openai' (file
@@ -244,6 +246,18 @@ export const knowledgeSources = pgTable(
     updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })
       .notNull()
       .defaultNow(),
+
+    /** @deprecated KL-05 expand phase: the FK-less product id array that
+     *  knowledge_source_products replaced. Kept DECLARED until the
+     *  knowledge-foundation contract PR drops it, so this lane's migration
+     *  is purely additive and its custom block can read it for the
+     *  backfill. Nothing reads or writes it any more
+     *  (src/tests/knowledge-scope.test.ts fails the build on a use outside
+     *  this file); its values freeze at the backfill. */
+    legacyProductProfileIds: bigint('product_profile_ids', { mode: 'bigint' })
+      .array()
+      .notNull()
+      .default(sql`'{}'::bigint[]`),
   },
   (table) => ({
     workspaceIdx: index('knowledge_sources_ws_idx').on(table.workspaceId),
@@ -266,7 +280,8 @@ export const knowledgeSources = pgTable(
   }),
 );
 
-export type KnowledgeSource = typeof knowledgeSources.$inferSelect;
+/** A source row without the deprecated legacy column (KL-05 expand phase). */
+export type KnowledgeSource = Omit<typeof knowledgeSources.$inferSelect, 'legacyProductProfileIds'>;
 export type NewKnowledgeSource = typeof knowledgeSources.$inferInsert;
 export type KnowledgeSourceKind = (typeof knowledgeSourceKind.enumValues)[number];
 
@@ -276,6 +291,12 @@ export type KnowledgeSourceKind = (typeof knowledgeSourceKind.enumValues)[number
  * refuses a row joining a source to another tenant's product, and
  * deleting a product (or the source) cascades its rows. Replaces the
  * FK-less knowledge_sources.product_profile_ids array.
+ *
+ * Both FKs (knowledge_source_products_source_fk, _product_fk) are DB-only,
+ * created by the custom block of the p1_knowledge_foundation_* migration:
+ * they reference UNIQUE(workspace_id, id) constraints added to existing
+ * tables, which drizzle-kit emits after every FK (see lessonScopes in
+ * schema/learning.ts). src/tests/db-only-constraints.test.ts guards them.
  */
 export const knowledgeSourceProducts = pgTable(
   'knowledge_source_products',
@@ -292,16 +313,6 @@ export const knowledgeSourceProducts = pgTable(
       name: 'knowledge_source_products_pk',
       columns: [table.sourceId, table.productProfileId],
     }),
-    sourceFk: foreignKey({
-      name: 'knowledge_source_products_source_fk',
-      columns: [table.workspaceId, table.sourceId],
-      foreignColumns: [knowledgeSources.workspaceId, knowledgeSources.id],
-    }).onDelete('cascade'),
-    productFk: foreignKey({
-      name: 'knowledge_source_products_product_fk',
-      columns: [table.workspaceId, table.productProfileId],
-      foreignColumns: [productProfiles.workspaceId, productProfiles.id],
-    }).onDelete('cascade'),
     workspaceProductIdx: index('knowledge_source_products_ws_product_idx').on(
       table.workspaceId,
       table.productProfileId,

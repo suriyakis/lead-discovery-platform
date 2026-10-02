@@ -573,7 +573,7 @@ describe('Suggest reply', () => {
 });
 
 describe('explicit scope', () => {
-  it('scope is required, an empty product list is refused, and the column has no default', async () => {
+  it('scope is required, an empty product list is refused, and the column default never widens', async () => {
     const s = await setup();
     await expect(
       createKnowledgeSource(s.a, {
@@ -590,7 +590,11 @@ describe('explicit scope', () => {
       WHERE table_name = 'knowledge_sources' AND column_name = 'scope_kind'`)) as unknown as Array<{
       column_default: string | null;
     }>;
-    expect(col!.column_default).toBeNull();
+    // The default exists only for the additive migration (the contract PR
+    // drops it). It is the safe side: a row written without a scope is a
+    // 'products' source with no products ("Needs a scope", retrieved
+    // nowhere), never a workspace-wide one.
+    expect(col!.column_default).toBe("'products'::knowledge_scope_kind");
   });
 
   it('the upload and edit forms carry the explicit line', async () => {
@@ -612,14 +616,24 @@ describe('explicit scope', () => {
 });
 
 describe('legacy columns', () => {
-  it('nothing in src/ or scripts/ reads the dropped arrays or the old filter', () => {
+  it('nothing in src/ or scripts/ reads the deprecated arrays or the old filter', () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    // knowledge_sources.product_profile_ids and product_profiles.
+    // document_source_ids stay DECLARED (as legacyProductProfileIds /
+    // legacyDocumentSourceIds) until the contract PR drops them, so the
+    // lane migration is purely additive. Only their declarations may name
+    // them; the read-only KL-05 report reads the array in raw SQL.
+    const declarations = new Set([
+      'src/lib/db/schema/documents.ts',
+      'src/lib/db/schema/products.ts',
+    ]);
     const banned = [
       /\bdocumentSourceIds\b/,
       /\bdocument_source_ids\b/,
       /\bsanitizeProductIds\b/,
       /knowledgeSources\.productProfileIds/,
       /\b(?:source|ks|src)\.productProfileIds\b/,
+      /\blegacy(?:ProductProfileIds|DocumentSourceIds)\b/,
     ];
     const offenders: string[] = [];
     const walk = (dir: string) => {
@@ -630,6 +644,7 @@ describe('legacy columns', () => {
           continue;
         }
         if (!/\.(ts|tsx)$/.test(name)) continue;
+        if (declarations.has(path.relative(root, p).split(path.sep).join('/'))) continue;
         // Code only: comments may name what was removed.
         const code = readFileSync(p, 'utf8')
           .split('\n')

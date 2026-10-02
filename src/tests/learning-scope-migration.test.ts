@@ -1,10 +1,11 @@
-// KL-01 acceptance 6: the two migrations apply on a seeded database with
-// workspace and product rules (backfilling scope, lifecycle, polarity and
-// retiring removed categories), and the rollback SQL restores the previous
-// shape. Runs in its own scratch database (<test db>_kl01mig): migrations
-// up to just before KL-01, seed rows in the OLD shape, apply KL-01 (expand +
-// contract), check, run drizzle/rollback/…down.sql, compare with the shape
-// captured before KL-01.
+// KL-01 acceptance 6: the lane migration (p1_knowledge_foundation_
+// learning_knowledge) applies on a seeded database with workspace and
+// product rules (backfilling scope, lifecycle, polarity and retiring
+// removed categories), and the rollback SQL restores the previous shape.
+// Runs in its own scratch database (<test db>_kl01mig): migrations up to
+// just before the lane, seed rows in the OLD shape, apply the migration,
+// check, run drizzle/rollback/…down.sql, compare with the shape captured
+// before.
 
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -17,12 +18,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const drizzleDir = path.join(repoRoot, 'drizzle');
-const EXPAND_TAG = '_p1_knowledge_foundation_lesson_scopes';
-const CONTRACT_TAG = '_p1_knowledge_foundation_lesson_scopes_contract';
+const TAG = '_p1_knowledge_foundation_learning_knowledge';
 const ROLLBACK_FILE = path.join(
   drizzleDir,
   'rollback',
-  'p1_knowledge_foundation_lesson_scopes.down.sql',
+  'p1_knowledge_foundation_learning_knowledge.down.sql',
 );
 
 const baseUrl = new URL(
@@ -45,8 +45,7 @@ const journal = JSON.parse(
 ) as {
   entries: JournalEntry[];
 };
-const expandIdx = journal.entries.findIndex((e) => e.tag.endsWith(EXPAND_TAG));
-const contractIdx = journal.entries.findIndex((e) => e.tag.endsWith(CONTRACT_TAG));
+const migrationIdx = journal.entries.findIndex((e) => e.tag.endsWith(TAG));
 
 const tempDirs: string[] = [];
 /** A copy of drizzle/ whose journal stops after the first `count` entries. */
@@ -183,24 +182,32 @@ afterAll(async () => {
 }, 30_000);
 
 describe('KL-01 migrations on a seeded database', () => {
-  it('expand + contract backfill the old rows, and the rollback restores the previous shape', async () => {
-    expect(expandIdx).toBeGreaterThan(0);
-    expect(contractIdx).toBe(expandIdx + 1);
+  it('the migration backfills the old rows, and the rollback restores the previous shape', async () => {
+    expect(migrationIdx).toBeGreaterThan(0);
 
-    await migrateTo(expandIdx);
+    await migrateTo(migrationIdx);
     const before = await shape();
     expect(before.columns.some((c) => c.startsWith('learning_lessons.enabled '))).toBe(true);
     const seeded = await seedOldShape();
     const L = seeded.lessons;
 
-    await migrateTo(contractIdx + 1);
+    await migrateTo(migrationIdx + 1);
 
     // ---- shape after KL-01 ----
     const after = await shape();
-    expect(after.columns.some((c) => c.startsWith('learning_lessons.enabled '))).toBe(false);
+    // The legacy columns stay (deprecated, frozen) until the contract PR;
+    // the legacy FK no longer cascades a product delete into the rule
+    // (I109) and their two indexes are gone.
+    expect(after.columns.some((c) => c.startsWith('learning_lessons.enabled '))).toBe(true);
     expect(after.columns.some((c) => c.startsWith('learning_lessons.product_profile_id '))).toBe(
-      false,
+      true,
     );
+    expect(
+      after.constraints.find((c) =>
+        c.includes('learning_lessons_product_profile_id_product_profiles_id_fk'),
+      ),
+    ).toMatch(/ON DELETE SET NULL/);
+    expect(after.indexes.some((i) => i.includes('learning_lessons_ws_enabled_idx'))).toBe(false);
     for (const col of ['scope_kind', 'lifecycle', 'polarity', 'retired_reason', 'merged_into_id']) {
       expect(
         after.columns.some((c) => c.startsWith(`learning_lessons.${col} `)),
@@ -264,6 +271,13 @@ describe('KL-01 migrations on a seeded database', () => {
       // it now applies nowhere ("Needs a scope") instead of leaking.
       [L.bRule, seeded.wsB, seeded.pB],
     ]);
+
+    // The composite FKs (DB-only, custom block): a scope row cannot join a
+    // rule to another tenant's product.
+    await expect(
+      client`INSERT INTO lesson_scopes (lesson_id, workspace_id, product_profile_id)
+             VALUES (${L.wsWide!}, ${seeded.wsA}, ${seeded.pB})`,
+    ).rejects.toThrow(/lesson_scopes_product_fk/);
 
     // ---- rollback ----
     await client.unsafe(readFileSync(ROLLBACK_FILE, 'utf8'));

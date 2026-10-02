@@ -1,6 +1,7 @@
-// KL-05 owner-review report: what the knowledge-scope migration
-// (drizzle p1_knowledge_foundation_knowledge_scope + _contract) does to a
-// database, before it runs — and what it left behind, after.
+// KL-05 owner-review report: what the knowledge-scope part of the lane
+// migration (drizzle p1_knowledge_foundation_learning_knowledge, custom
+// block part C) does to a database, before it runs — and what it left
+// behind, after.
 //
 // READ-ONLY. It never writes; the CLI (scripts/remediation/
 // knowledge-scope-report.ts) runs it inside a READ ONLY transaction.
@@ -11,12 +12,17 @@
 //   * the counts the design asks for in the PR: documents, sources,
 //     document-level chunks, source chunks and documents having both;
 //   * SHADOWED — document-level chunks of documents that have a source with
-//     products ticked (the I039 leak). The migration deletes them;
+//     products ticked (the I039 leak). The migration deletes them; a
+//     product source with no chunks of its own first ADOPTS a copy (it was
+//     getting the document only through the shadow copy), so the list
+//     shows each product source's own chunk count;
 //   * BECOMES WORKSPACE-WIDE — documents whose document-level chunks are
 //     not shadowed. The migration turns each into one workspace-wide
-//     source, i.e. available to every product (as they already were). This
-//     is the owner-review list: archive a document that must not be used,
-//     or tick products on its source after the deploy (no re-index);
+//     source, i.e. available to every product (as they already were): the
+//     document's existing (unscoped) source when it has one — the oldest;
+//     its own duplicate chunks go — else a new one. This is the
+//     owner-review list: archive a document that must not be used, or tick
+//     products on its source after the deploy (no re-index);
 //   * NEEDS A SCOPE — sources left with no valid product (an empty array,
 //     or only another tenant's / deleted products). Retrieved nowhere
 //     until someone ticks products or makes them workspace-wide;
@@ -26,8 +32,8 @@
 // sources the migration created (from its audit rows) with their current
 // scope, and every source that needs a scope.
 //
-// Raw SQL on purpose: the pre-migration columns are no longer in the
-// Drizzle schema. Every value is a bound parameter.
+// Raw SQL on purpose: it reads the deprecated legacy columns and must run
+// on both shapes. Every value is a bound parameter.
 
 import type postgres from 'postgres';
 
@@ -49,6 +55,21 @@ export interface WorkspaceWideCandidate {
   chunks: number;
   /** Sources already wrapping the document with NO product ticked. */
   unscopedSourceIds: string[];
+  /** The one the migration turns workspace-wide (the oldest), or null when
+   *  it creates a new source. The others still "Need a scope". */
+  reusedSourceId: string | null;
+  /** The reused source's own chunks, deleted as duplicates of the
+   *  document-level ones it takes over. */
+  duplicateChunks: number;
+}
+
+export interface ShadowedProductSource {
+  sourceId: string;
+  /** The source's own chunks before the migration. */
+  chunks: number;
+  /** No chunks of its own: it adopts a copy of the document-level chunks
+   *  instead of losing the document. */
+  adoptsChunks: boolean;
 }
 
 export interface ShadowedDocument {
@@ -57,6 +78,7 @@ export interface ShadowedDocument {
   name: string | null;
   chunks: number;
   productSourceIds: string[];
+  productSources: ShadowedProductSource[];
 }
 
 export interface NeedsScopeSource {
@@ -85,6 +107,8 @@ export interface MigratedSource {
   scope: 'workspace' | 'products' | 'needs_scope' | 'gone';
   documentStatus: string | null;
   chunksAtMigration: number;
+  /** The source existed before the migration (converted, not created). */
+  reused: boolean;
 }
 
 export interface KnowledgeScopeReport {
@@ -117,15 +141,17 @@ const str = (v: unknown): string => String(v);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)) : []);
 const iso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
 
+/** pre_kl05 until the migration created knowledge_source_products (the
+ *  legacy product_profile_ids array stays until the contract PR, so its
+ *  presence says nothing). */
 export async function detectShape(sql: ReportSql): Promise<'pre_kl05' | 'post_kl05'> {
   const rows = await sql.unsafe(
     `SELECT EXISTS (
-       SELECT 1 FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'knowledge_sources'
-         AND column_name = 'product_profile_ids'
-     ) AS pre`,
+       SELECT 1 FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = 'knowledge_source_products'
+     ) AS post`,
   );
-  return rows[0]?.pre ? 'pre_kl05' : 'post_kl05';
+  return rows[0]?.post ? 'post_kl05' : 'pre_kl05';
 }
 
 export async function buildKnowledgeScopeReport(
@@ -205,7 +231,14 @@ async function preReport(
               WHERE ks.document_id = c.document_id AND ks.workspace_id = c.workspace_id
                 AND ${HAS_TICKED_PRODUCTS}
               ORDER BY ks.id
-            ) AS product_source_ids
+            ) AS product_source_ids,
+            array(
+              SELECT (SELECT count(*) FROM document_chunks o WHERE o.knowledge_source_id = ks.id)::text
+              FROM knowledge_sources ks
+              WHERE ks.document_id = c.document_id AND ks.workspace_id = c.workspace_id
+                AND ${HAS_TICKED_PRODUCTS}
+              ORDER BY ks.id
+            ) AS product_source_chunks
      FROM document_chunks c
      LEFT JOIN documents d ON d.id = c.document_id AND d.workspace_id = c.workspace_id
      WHERE ${WS_FILTER('c')} AND c.knowledge_source_id IS NULL AND c.document_id IS NOT NULL
@@ -217,13 +250,22 @@ async function preReport(
      ORDER BY c.workspace_id, c.document_id`,
     [ws],
   );
-  report.shadowed = shadowed.map((r) => ({
-    workspaceId: str(r.workspace_id),
-    documentId: str(r.document_id),
-    name: r.name === null ? null : str(r.name),
-    chunks: num(r.chunks),
-    productSourceIds: strs(r.product_source_ids),
-  }));
+  report.shadowed = shadowed.map((r) => {
+    const ids = strs(r.product_source_ids);
+    const counts = strs(r.product_source_chunks).map(num);
+    return {
+      workspaceId: str(r.workspace_id),
+      documentId: str(r.document_id),
+      name: r.name === null ? null : str(r.name),
+      chunks: num(r.chunks),
+      productSourceIds: ids,
+      productSources: ids.map((sourceId, i) => ({
+        sourceId,
+        chunks: counts[i] ?? 0,
+        adoptsChunks: (counts[i] ?? 0) === 0,
+      })),
+    };
+  });
 
   const wide = await sql.unsafe(
     `SELECT d.workspace_id::text AS workspace_id, w.name AS workspace_name,
@@ -233,7 +275,12 @@ async function preReport(
               SELECT ks.id::text FROM knowledge_sources ks
               WHERE ks.document_id = d.id AND ks.workspace_id = d.workspace_id
               ORDER BY ks.id
-            ) AS unscoped_source_ids
+            ) AS unscoped_source_ids,
+            (SELECT count(*) FROM document_chunks o
+              WHERE o.knowledge_source_id = (
+                SELECT min(ks.id) FROM knowledge_sources ks
+                WHERE ks.document_id = d.id AND ks.workspace_id = d.workspace_id
+              ))::int AS duplicate_chunks
      FROM document_chunks c
      JOIN documents d ON d.id = c.document_id AND d.workspace_id = c.workspace_id
      LEFT JOIN workspaces w ON w.id = d.workspace_id
@@ -256,7 +303,12 @@ async function preReport(
     createdAt: iso(r.created_at),
     chunks: num(r.chunks),
     unscopedSourceIds: strs(r.unscoped_source_ids),
+    reusedSourceId: strs(r.unscoped_source_ids)[0] ?? null,
+    duplicateChunks: strs(r.unscoped_source_ids).length > 0 ? num(r.duplicate_chunks) : 0,
   }));
+  const reused = new Set(
+    report.becomesWorkspaceWide.flatMap((d) => (d.reusedSourceId ? [d.reusedSourceId] : [])),
+  );
 
   const sources = await sql.unsafe(
     `SELECT ks.workspace_id::text AS workspace_id, w.name AS workspace_name,
@@ -281,6 +333,8 @@ async function preReport(
   for (const r of sources) {
     const kept = strs(r.kept);
     const dropped = strs(r.dropped);
+    // The migration turns this one workspace-wide (C4a).
+    if (reused.has(str(r.source_id))) continue;
     if (kept.length === 0) {
       report.needsScope.push({
         workspaceId: str(r.workspace_id),
@@ -311,8 +365,18 @@ async function preReport(
     orphanChunks: num(c?.orphan_chunks),
     shadowedDocuments: report.shadowed.length,
     shadowedChunks: report.shadowed.reduce((n, d) => n + d.chunks, 0),
+    adoptingSources: report.shadowed.reduce(
+      (n, d) => n + d.productSources.filter((s) => s.adoptsChunks).length,
+      0,
+    ),
+    adoptedChunks: report.shadowed.reduce(
+      (n, d) => n + d.chunks * d.productSources.filter((s) => s.adoptsChunks).length,
+      0,
+    ),
     becomesWorkspaceWideDocuments: report.becomesWorkspaceWide.length,
     becomesWorkspaceWideChunks: report.becomesWorkspaceWide.reduce((n, d) => n + d.chunks, 0),
+    reusedSources: reused.size,
+    duplicateChunksDeleted: report.becomesWorkspaceWide.reduce((n, d) => n + d.duplicateChunks, 0),
     sourcesNeedingScope: report.needsScope.length,
     droppedProductIds: num(c?.dropped_product_ids),
     guardBlockingChunks: num(c?.guard_blocking_chunks),
@@ -361,6 +425,7 @@ async function postReport(
     `SELECT a.workspace_id::text AS workspace_id, a.entity_id AS source_id,
             a.payload->>'documentId' AS document_id,
             coalesce((a.payload->>'chunks')::int, 0) AS chunks,
+            coalesce((a.payload->>'reused')::boolean, false) AS reused,
             ks.title, ks.scope_kind::text AS scope_kind,
             (${NEEDS_SCOPE.replace(/\n\s*/g, ' ')}) AS needs_scope,
             d.status::text AS document_status
@@ -386,6 +451,7 @@ async function postReport(
             : 'products',
     documentStatus: r.document_status === null ? null : str(r.document_status),
     chunksAtMigration: num(r.chunks),
+    reused: r.reused === true,
   }));
 
   const needs = await sql.unsafe(
@@ -434,32 +500,35 @@ export function renderKnowledgeScopeReport(report: KnowledgeScopeReport): string
     out.push('## Owner review: documents that become available to every product');
     out.push('');
     out.push(
-      'Each document below has workspace-wide (document-level) chunks and no source with products ticked, so every product\'s drafts read it today. The migration turns each into ONE knowledge source available to every product, keeping its chunks. For each one, confirm it, or after the deploy either archive the document (excluded at once; restore brings it back) or tick products on its knowledge source (no re-index).',
+      'Each document below has workspace-wide (document-level) chunks and no source with products ticked, so every product\'s drafts read it today. The migration turns each into ONE knowledge source available to every product, keeping its chunks: its existing unscoped source when it has one (the oldest; that source\'s own duplicate chunks are deleted), else a new one. For each one, confirm it, or after the deploy either archive the document (excluded at once; restore brings it back) or tick products on its knowledge source (no re-index).',
     );
     out.push('');
     if (report.becomesWorkspaceWide.length === 0) {
       out.push('_None._');
     } else {
-      out.push('| Workspace | Document | Name | File | Status | Chunks | Uploaded | Unscoped sources already wrapping it |');
-      out.push('| --- | ---: | --- | --- | --- | ---: | --- | --- |');
+      out.push('| Workspace | Document | Name | File | Status | Chunks | Uploaded | Unscoped sources already wrapping it | Becomes workspace-wide | Duplicate chunks deleted |');
+      out.push('| --- | ---: | --- | --- | --- | ---: | --- | --- | --- | ---: |');
       for (const d of report.becomesWorkspaceWide) {
         out.push(
-          `| ${cell(d.workspaceName ? `${d.workspaceId} ${d.workspaceName}` : d.workspaceId)} | ${d.documentId} | ${cell(d.name)} | ${cell(d.filename)} | ${d.status} | ${d.chunks} | ${d.createdAt.slice(0, 10)} | ${cell(d.unscopedSourceIds.join(', '))} |`,
+          `| ${cell(d.workspaceName ? `${d.workspaceId} ${d.workspaceName}` : d.workspaceId)} | ${d.documentId} | ${cell(d.name)} | ${cell(d.filename)} | ${d.status} | ${d.chunks} | ${d.createdAt.slice(0, 10)} | ${cell(d.unscopedSourceIds.join(', '))} | ${d.reusedSourceId ? `source ${d.reusedSourceId}` : 'a new source'} | ${d.duplicateChunks} |`,
         );
       }
     }
     out.push('');
     out.push('## Deleted: shadowed document-level chunks (the I039 leak)');
     out.push('');
-    out.push('These documents have a source with products ticked; their second, workspace-wide chunk set is deleted before anything is converted.');
+    out.push('These documents have a source with products ticked; their second, workspace-wide chunk set is deleted before anything is converted. A product source with no chunks of its own (never indexed, or its attach failed) first adopts a copy, so its products keep the document.');
     out.push('');
     if (report.shadowed.length === 0) {
       out.push('_None._');
     } else {
-      out.push('| Workspace | Document | Name | Chunks deleted | Product-scoped sources |');
+      out.push('| Workspace | Document | Name | Chunks deleted | Product-scoped sources (own chunks) |');
       out.push('| --- | ---: | --- | ---: | --- |');
       for (const d of report.shadowed) {
-        out.push(`| ${d.workspaceId} | ${d.documentId} | ${cell(d.name)} | ${d.chunks} | ${cell(d.productSourceIds.join(', '))} |`);
+        const list = d.productSources
+          .map((s) => `${s.sourceId} (${s.chunks}${s.adoptsChunks ? ', adopts a copy' : ''})`)
+          .join(', ');
+        out.push(`| ${d.workspaceId} | ${d.documentId} | ${cell(d.name)} | ${d.chunks} | ${cell(list)} |`);
       }
     }
     out.push('');
@@ -480,16 +549,16 @@ export function renderKnowledgeScopeReport(report: KnowledgeScopeReport): string
       out.push('');
     }
   } else {
-    out.push('## Sources the migration created (available to every product unless changed since)');
+    out.push('## Sources the migration made workspace-wide (available to every product unless changed since)');
     out.push('');
     if (report.migratedSources.length === 0) {
       out.push('_None._');
     } else {
-      out.push('| Workspace | Source | Document | Title | Scope now | Document status | Chunks moved |');
-      out.push('| --- | ---: | ---: | --- | --- | --- | ---: |');
+      out.push('| Workspace | Source | Document | Title | Created or reused | Scope now | Document status | Chunks moved |');
+      out.push('| --- | ---: | ---: | --- | --- | --- | --- | ---: |');
       for (const s of report.migratedSources) {
         out.push(
-          `| ${s.workspaceId} | ${s.sourceId} | ${cell(s.documentId)} | ${cell(s.title)} | ${s.scope} | ${cell(s.documentStatus)} | ${s.chunksAtMigration} |`,
+          `| ${s.workspaceId} | ${s.sourceId} | ${cell(s.documentId)} | ${cell(s.title)} | ${s.reused ? 'reused' : 'created'} | ${s.scope} | ${cell(s.documentStatus)} | ${s.chunksAtMigration} |`,
         );
       }
     }

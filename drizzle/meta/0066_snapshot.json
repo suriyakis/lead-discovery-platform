@@ -1,5 +1,5 @@
 {
-  "id": "b7212f5b-4bac-455e-885b-2f0a180fad1e",
+  "id": "3f8a52b1-ce17-43e2-af27-05436e974bad",
   "prevId": "bb55643f-5b11-48a9-bc33-1cc949007c41",
   "version": "7",
   "dialect": "postgresql",
@@ -1293,13 +1293,6 @@
           "notNull": true,
           "default": "'What does {company} ({domain}) do, what are their main products and target customers, and what recent news or projects from the past 6 months would matter for a B2B introduction?'"
         },
-        "document_source_ids": {
-          "name": "document_source_ids",
-          "type": "bigint[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::bigint[]"
-        },
         "pricing_snapshot_id": {
           "name": "pricing_snapshot_id",
           "type": "bigint",
@@ -1312,6 +1305,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
+        },
+        "document_source_ids": {
+          "name": "document_source_ids",
+          "type": "bigint[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::bigint[]"
         },
         "created_by": {
           "name": "created_by",
@@ -2652,6 +2652,152 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.learning_decisions": {
+      "name": "learning_decisions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision_key": {
+          "name": "decision_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_type": {
+          "name": "subject_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "learning_decisions_ws_subject_idx": {
+          "name": "learning_decisions_ws_subject_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "learning_decisions_workspace_id_workspaces_id_fk": {
+          "name": "learning_decisions_workspace_id_workspaces_id_fk",
+          "tableFrom": "learning_decisions",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "learning_decisions_user_id_users_id_fk": {
+          "name": "learning_decisions_user_id_users_id_fk",
+          "tableFrom": "learning_decisions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "learning_decisions_ws_key_unique": {
+          "name": "learning_decisions_ws_key_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "decision_key"
+          ]
+        },
+        "learning_decisions_workspace_id_id_unique": {
+          "name": "learning_decisions_workspace_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "learning_decisions_origin_check": {
+          "name": "learning_decisions_origin_check",
+          "value": "\"learning_decisions\".\"origin\" IN ('operator', 'autopilot', 'system')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.learning_events": {
       "name": "learning_events",
       "schema": "",
@@ -2717,6 +2863,129 @@
           "notNull": true,
           "default": 50
         },
+        "decision_id": {
+          "name": "decision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'operator'"
+        },
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "polarity": {
+          "name": "polarity",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "weight": {
+          "name": "weight",
+          "type": "numeric(3, 2)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'1.00'"
+        },
+        "explicit": {
+          "name": "explicit",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "reason_codes": {
+          "name": "reason_codes",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "context": {
+          "name": "context",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "processing_status": {
+          "name": "processing_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'done'"
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "processing_note": {
+          "name": "processing_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "voided_at": {
+          "name": "voided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "voided_by_event_id": {
+          "name": "voided_by_event_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "void_reason": {
+          "name": "void_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "overrides_autopilot": {
+          "name": "overrides_autopilot",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -2767,6 +3036,108 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "learning_events_ws_decision_idx": {
+          "name": "learning_events_ws_decision_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "decision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "learning_events_ws_subject_idx": {
+          "name": "learning_events_ws_subject_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "learning_events_outbox_idx": {
+          "name": "learning_events_outbox_idx",
+          "columns": [
+            {
+              "expression": "processing_status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"learning_events\".\"processing_status\" IN ('pending', 'processing')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "learning_events_waiting_tokens_idx": {
+          "name": "learning_events_waiting_tokens_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"learning_events\".\"processing_status\" = 'skipped_no_tokens'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "learning_events_voided_by_idx": {
+          "name": "learning_events_voided_by_idx",
+          "columns": [
+            {
+              "expression": "voided_by_event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"learning_events\".\"voided_by_event_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -2808,12 +3179,69 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "learning_events_decision_fk": {
+          "name": "learning_events_decision_fk",
+          "tableFrom": "learning_events",
+          "tableTo": "learning_decisions",
+          "columnsFrom": [
+            "workspace_id",
+            "decision_id"
+          ],
+          "columnsTo": [
+            "workspace_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "learning_events_voided_by_fk": {
+          "name": "learning_events_voided_by_fk",
+          "tableFrom": "learning_events",
+          "tableTo": "learning_events",
+          "columnsFrom": [
+            "voided_by_event_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "learning_events_origin_check": {
+          "name": "learning_events_origin_check",
+          "value": "\"learning_events\".\"origin\" IN ('operator', 'autopilot', 'system')"
+        },
+        "learning_events_verdict_check": {
+          "name": "learning_events_verdict_check",
+          "value": "\"learning_events\".\"verdict\" IS NULL OR \"learning_events\".\"verdict\" IN ('fit', 'not_fit')"
+        },
+        "learning_events_polarity_check": {
+          "name": "learning_events_polarity_check",
+          "value": "\"learning_events\".\"polarity\" IN (-1, 0, 1)"
+        },
+        "learning_events_weight_check": {
+          "name": "learning_events_weight_check",
+          "value": "\"learning_events\".\"weight\" > 0 AND \"learning_events\".\"weight\" <= 1"
+        },
+        "learning_events_processing_status_check": {
+          "name": "learning_events_processing_status_check",
+          "value": "\"learning_events\".\"processing_status\" IN ('pending', 'processing', 'done', 'no_rule', 'below_floor', 'skipped_no_tokens', 'skipped', 'failed')"
+        },
+        "learning_events_void_reason_check": {
+          "name": "learning_events_void_reason_check",
+          "value": "\"learning_events\".\"void_reason\" IS NULL OR \"learning_events\".\"void_reason\" IN ('changed_mind', 'undo', 'autopilot_override')"
+        },
+        "learning_events_voided_check": {
+          "name": "learning_events_voided_check",
+          "value": "(\"learning_events\".\"voided_at\" IS NULL) = (\"learning_events\".\"void_reason\" IS NULL) AND (\"learning_events\".\"voided_by_event_id\" IS NULL OR \"learning_events\".\"voided_at\" IS NOT NULL)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.learning_lessons": {
@@ -2831,12 +3259,6 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
-        },
-        "product_profile_id": {
-          "name": "product_profile_id",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
         },
         "scope_kind": {
           "name": "scope_kind",
@@ -2878,13 +3300,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::bigint[]"
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
         },
         "lifecycle": {
           "name": "lifecycle",
@@ -3002,57 +3417,22 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "product_profile_id": {
+          "name": "product_profile_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         }
       },
       "indexes": {
-        "learning_lessons_ws_enabled_idx": {
-          "name": "learning_lessons_ws_enabled_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "enabled",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "learning_lessons_product_category_idx": {
-          "name": "learning_lessons_product_category_idx",
-          "columns": [
-            {
-              "expression": "product_profile_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "category",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "enabled",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "learning_lessons_ws_lifecycle_category_idx": {
           "name": "learning_lessons_ws_lifecycle_category_idx",
           "columns": [
@@ -3095,19 +3475,6 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "learning_lessons_product_profile_id_product_profiles_id_fk": {
-          "name": "learning_lessons_product_profile_id_product_profiles_id_fk",
-          "tableFrom": "learning_lessons",
-          "tableTo": "product_profiles",
-          "columnsFrom": [
-            "product_profile_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "learning_lessons_created_by_users_id_fk": {
           "name": "learning_lessons_created_by_users_id_fk",
           "tableFrom": "learning_lessons",
@@ -3127,6 +3494,19 @@
           "tableTo": "users",
           "columnsFrom": [
             "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "learning_lessons_product_profile_id_product_profiles_id_fk": {
+          "name": "learning_lessons_product_profile_id_product_profiles_id_fk",
+          "tableFrom": "learning_lessons",
+          "tableTo": "product_profiles",
+          "columnsFrom": [
+            "product_profile_id"
           ],
           "columnsTo": [
             "id"
@@ -3172,6 +3552,218 @@
         "learning_lessons_merged_into_check": {
           "name": "learning_lessons_merged_into_check",
           "value": "\"learning_lessons\".\"merged_into_id\" IS NULL OR (\"learning_lessons\".\"lifecycle\" = 'retired' AND \"learning_lessons\".\"merged_into_id\" <> \"learning_lessons\".\"id\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.lesson_reinforcements": {
+      "name": "lesson_reinforcements",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lesson_id": {
+          "name": "lesson_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delta_requested": {
+          "name": "delta_requested",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delta_applied": {
+          "name": "delta_applied",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confidence_before": {
+          "name": "confidence_before",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confidence_after": {
+          "name": "confidence_after",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "compensates_id": {
+          "name": "compensates_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "lesson_reinforcements_event_lesson_unique": {
+          "name": "lesson_reinforcements_event_lesson_unique",
+          "columns": [
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lesson_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"lesson_reinforcements\".\"compensates_id\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lesson_reinforcements_event_idx": {
+          "name": "lesson_reinforcements_event_idx",
+          "columns": [
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lesson_reinforcements_ws_lesson_idx": {
+          "name": "lesson_reinforcements_ws_lesson_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lesson_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "lesson_reinforcements_workspace_id_workspaces_id_fk": {
+          "name": "lesson_reinforcements_workspace_id_workspaces_id_fk",
+          "tableFrom": "lesson_reinforcements",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "lesson_reinforcements_event_id_learning_events_id_fk": {
+          "name": "lesson_reinforcements_event_id_learning_events_id_fk",
+          "tableFrom": "lesson_reinforcements",
+          "tableTo": "learning_events",
+          "columnsFrom": [
+            "event_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "lesson_reinforcements_compensates_fk": {
+          "name": "lesson_reinforcements_compensates_fk",
+          "tableFrom": "lesson_reinforcements",
+          "tableTo": "lesson_reinforcements",
+          "columnsFrom": [
+            "compensates_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "lesson_reinforcements_compensates_unique": {
+          "name": "lesson_reinforcements_compensates_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "compensates_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "lesson_reinforcements_kind_check": {
+          "name": "lesson_reinforcements_kind_check",
+          "value": "\"lesson_reinforcements\".\"kind\" IN ('cited', 'dedup_match', 'compensation')"
+        },
+        "lesson_reinforcements_compensation_check": {
+          "name": "lesson_reinforcements_compensation_check",
+          "value": "(\"lesson_reinforcements\".\"kind\" = 'compensation') = (\"lesson_reinforcements\".\"compensates_id\" IS NOT NULL)"
+        },
+        "lesson_reinforcements_confidence_check": {
+          "name": "lesson_reinforcements_confidence_check",
+          "value": "\"lesson_reinforcements\".\"confidence_before\" BETWEEN 0 AND 100 AND \"lesson_reinforcements\".\"confidence_after\" BETWEEN 0 AND 100 AND \"lesson_reinforcements\".\"confidence_after\" - \"lesson_reinforcements\".\"confidence_before\" = \"lesson_reinforcements\".\"delta_applied\""
         }
       },
       "isRLSEnabled": false
@@ -3229,38 +3821,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "lesson_scopes_lesson_fk": {
-          "name": "lesson_scopes_lesson_fk",
-          "tableFrom": "lesson_scopes",
-          "tableTo": "learning_lessons",
-          "columnsFrom": [
-            "workspace_id",
-            "lesson_id"
-          ],
-          "columnsTo": [
-            "workspace_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "lesson_scopes_product_fk": {
-          "name": "lesson_scopes_product_fk",
-          "tableFrom": "lesson_scopes",
-          "tableTo": "product_profiles",
-          "columnsFrom": [
-            "workspace_id",
-            "product_profile_id"
-          ],
-          "columnsTo": [
-            "workspace_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {
         "lesson_scopes_pk": {
           "name": "lesson_scopes_pk",
@@ -3509,6 +4070,42 @@
           "notNull": true,
           "default": "'no_gate'"
         },
+        "operator_verdict": {
+          "name": "operator_verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "operator_decided_by": {
+          "name": "operator_decided_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "operator_decided_at": {
+          "name": "operator_decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "operator_event_id": {
+          "name": "operator_event_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "geo_confirmed_by": {
+          "name": "geo_confirmed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "geo_confirmed_at": {
+          "name": "geo_confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3634,12 +4231,60 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "qualifications_operator_decided_by_users_id_fk": {
+          "name": "qualifications_operator_decided_by_users_id_fk",
+          "tableFrom": "qualifications",
+          "tableTo": "users",
+          "columnsFrom": [
+            "operator_decided_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "qualifications_operator_event_id_learning_events_id_fk": {
+          "name": "qualifications_operator_event_id_learning_events_id_fk",
+          "tableFrom": "qualifications",
+          "tableTo": "learning_events",
+          "columnsFrom": [
+            "operator_event_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "qualifications_geo_confirmed_by_users_id_fk": {
+          "name": "qualifications_geo_confirmed_by_users_id_fk",
+          "tableFrom": "qualifications",
+          "tableTo": "users",
+          "columnsFrom": [
+            "geo_confirmed_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "qualifications_operator_verdict_check": {
+          "name": "qualifications_operator_verdict_check",
+          "value": "\"qualifications\".\"operator_verdict\" IS NULL OR \"qualifications\".\"operator_verdict\" IN ('fit', 'not_fit')"
+        },
+        "qualifications_operator_decided_check": {
+          "name": "qualifications_operator_decided_check",
+          "value": "(\"qualifications\".\"operator_verdict\" IS NULL) = (\"qualifications\".\"operator_decided_at\" IS NULL)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.outreach_drafts": {
@@ -4703,6 +5348,42 @@
           "notNull": true,
           "default": "'{}'::text[]"
         },
+        "extracted_text": {
+          "name": "extracted_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extractor": {
+          "name": "extractor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extracted_at": {
+          "name": "extracted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extracted_sha256": {
+          "name": "extracted_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detected_language": {
+          "name": "detected_language",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "page_count": {
+          "name": "page_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by": {
           "name": "created_by",
           "type": "text",
@@ -4817,6 +5498,74 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.knowledge_source_products": {
+      "name": "knowledge_source_products",
+      "schema": "",
+      "columns": {
+        "source_id": {
+          "name": "source_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_profile_id": {
+          "name": "product_profile_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "knowledge_source_products_ws_product_idx": {
+          "name": "knowledge_source_products_ws_product_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "product_profile_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "knowledge_source_products_pk": {
+          "name": "knowledge_source_products_pk",
+          "columns": [
+            "source_id",
+            "product_profile_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.knowledge_sources": {
       "name": "knowledge_sources",
       "schema": "",
@@ -4892,12 +5641,13 @@
           "notNull": true,
           "default": "'{}'::text[]"
         },
-        "product_profile_ids": {
-          "name": "product_profile_ids",
-          "type": "bigint[]",
+        "scope_kind": {
+          "name": "scope_kind",
+          "type": "knowledge_scope_kind",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
-          "default": "'{}'::bigint[]"
+          "default": "'products'"
         },
         "external_provider_id": {
           "name": "external_provider_id",
@@ -4930,6 +5680,38 @@
           "primaryKey": false,
           "notNull": false
         },
+        "index_status": {
+          "name": "index_status",
+          "type": "knowledge_index_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'stale'"
+        },
+        "indexed_at": {
+          "name": "indexed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "indexed_content_hash": {
+          "name": "indexed_content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "indexed_embedding_model": {
+          "name": "indexed_embedding_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_index_error": {
+          "name": "last_index_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by": {
           "name": "created_by",
           "type": "text",
@@ -4949,6 +5731,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "product_profile_ids": {
+          "name": "product_profile_ids",
+          "type": "bigint[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::bigint[]"
         }
       },
       "indexes": {
@@ -4978,6 +5767,42 @@
             },
             {
               "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "knowledge_sources_document_idx": {
+          "name": "knowledge_sources_document_idx",
+          "columns": [
+            {
+              "expression": "document_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "knowledge_sources_ws_index_status_idx": {
+          "name": "knowledge_sources_ws_index_status_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "index_status",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -5031,7 +5856,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "knowledge_sources_workspace_id_id_unique": {
+          "name": "knowledge_sources_workspace_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -7541,19 +8375,6 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "document_chunks_knowledge_source_id_knowledge_sources_id_fk": {
-          "name": "document_chunks_knowledge_source_id_knowledge_sources_id_fk",
-          "tableFrom": "document_chunks",
-          "tableTo": "knowledge_sources",
-          "columnsFrom": [
-            "knowledge_source_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -7616,6 +8437,38 @@
           "primaryKey": false,
           "notNull": false
         },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "force_ocr": {
+          "name": "force_ocr",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
@@ -7669,6 +8522,27 @@
           "columns": [
             {
               "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "indexing_jobs_source_status_idx": {
+          "name": "indexing_jobs_source_status_idx",
+          "columns": [
+            {
+              "expression": "knowledge_source_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -7743,7 +8617,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "indexing_jobs_status_check": {
+          "name": "indexing_jobs_status_check",
+          "value": "\"indexing_jobs\".\"status\" IN ('queued', 'running', 'succeeded', 'failed')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.product_vector_stores": {
@@ -10756,6 +11635,17 @@
         "archived"
       ]
     },
+    "public.knowledge_index_status": {
+      "name": "knowledge_index_status",
+      "schema": "public",
+      "values": [
+        "queued",
+        "indexing",
+        "indexed",
+        "stale",
+        "failed"
+      ]
+    },
     "public.knowledge_purpose_category": {
       "name": "knowledge_purpose_category",
       "schema": "public",
@@ -10766,6 +11656,14 @@
         "internal_note",
         "objection_handling",
         "general"
+      ]
+    },
+    "public.knowledge_scope_kind": {
+      "name": "knowledge_scope_kind",
+      "schema": "public",
+      "values": [
+        "workspace",
+        "products"
       ]
     },
     "public.knowledge_source_kind": {
