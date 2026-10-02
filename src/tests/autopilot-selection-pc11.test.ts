@@ -41,10 +41,12 @@ import {
   type AutopilotIncidentInput,
 } from '@/lib/services/autopilot-incidents';
 import {
+  ENQUEUE_RETRY_MS,
   runOnce,
   updateAutopilotSettings,
   upsertProductAutopilotSettings,
 } from '@/lib/services/autopilot';
+import * as outreachService from '@/lib/services/outreach';
 import { isPlausibleEmail, plausibleEmailSql } from '@/lib/services/contacts';
 import {
   type WorkspaceContext,
@@ -407,6 +409,130 @@ describe(
       const run = await runOnce(t.auto);
       expect(run.steps[0]!.detail).toBe('enqueued=1/1');
       expect(await queuedReviewItems(t)).toEqual(new Set([b.reviewItem.id.toString()]));
+    });
+
+    it('pairs on an archived product never take the cap: newer eligible pairs are queued in the first run', async () => {
+      const t = await tenant();
+      await makeMailbox(t);
+      const A = await product(t, 'Archived later');
+      const B = await product(t, 'Beta');
+      // The oldest approvals are on A, with a lead and an email; then A is
+      // archived. Drafting for an archived product throws, so before the
+      // fix these pairs failed on every run and held every slot.
+      const onArchived = [];
+      for (let i = 0; i < 3; i++) {
+        onArchived.push(
+          await item(t, 'approved', [{ id: A.id, email: `a${i}@archived.example` }], {
+            approvedAt: minutesAgo(100 - i),
+          }),
+        );
+      }
+      // An item without an email on A is not "waiting" for a contact either.
+      await item(t, 'approved', [{ id: A.id, email: null }], { approvedAt: minutesAgo(95) });
+      await db.update(productProfiles).set({ active: false }).where(eq(productProfiles.id, A.id));
+      const eligible = [];
+      for (let i = 0; i < 2; i++) {
+        eligible.push(
+          await item(t, 'approved', [{ id: B.id, email: `b${i}@beta.example` }], {
+            approvedAt: minutesAgo(10 - i),
+          }),
+        );
+      }
+      await updateAutopilotSettings(t.owner, {
+        autopilotEnabled: true,
+        enableAutoEnqueueOutreach: true,
+        maxEnqueuesPerRun: 2,
+      });
+
+      const run = await runOnce(t.auto);
+      expect(run.steps).toEqual([
+        { step: 'auto_enqueue_outreach', outcome: 'success', detail: 'enqueued=2/2' },
+      ]);
+      expect(await queuedReviewItems(t)).toEqual(
+        new Set(eligible.map((e) => e.reviewItem.id.toString())),
+      );
+      for (const a of onArchived) expect(await draftCount(t, a.reviewItem.id)).toBe(0);
+      expect(await errorRows(t)).toHaveLength(0);
+    });
+
+    it('auto-approve leaves an item relevant only to an archived product for the operator', async () => {
+      const t = await tenant();
+      const A = await product(t, 'Archived');
+      const B = await product(t, 'Beta');
+      const onArchived = await item(t, 'new', [{ id: A.id, score: 99 }]);
+      const onBoth = await item(t, 'new', [
+        { id: A.id, score: 99 },
+        { id: B.id, score: 90 },
+      ]);
+      await db.update(productProfiles).set({ active: false }).where(eq(productProfiles.id, A.id));
+      await updateAutopilotSettings(t.owner, {
+        autopilotEnabled: true,
+        enableAutoApproveProjects: true,
+        autoApproveThreshold: 80,
+      });
+
+      const run = await runOnce(t.auto);
+      expect(run.steps[0]).toMatchObject({ step: 'auto_approve_projects', outcome: 'success' });
+      expect((await reviewRow(onArchived.reviewItem.id)).state).toBe('new');
+      expect((await reviewRow(onBoth.reviewItem.id)).state).toBe('approved');
+      // Approved for the active product only.
+      const audits = await auditFor(t, 'review.approved', onBoth.reviewItem.id);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]!.payload).toMatchObject({ productProfileIds: [B.id.toString()] });
+    });
+
+    it('a pair that fails waits ENQUEUE_RETRY_MS: the next runs reach newer pairs and count it as retry_later', async () => {
+      const t = await tenant();
+      await makeMailbox(t);
+      const A = await product(t, 'Alpha');
+      const failing = await item(t, 'approved', [{ id: A.id, email: 'old@failing.example' }], {
+        approvedAt: minutesAgo(100),
+      });
+      const newer = [];
+      for (let i = 0; i < 2; i++) {
+        newer.push(
+          await item(t, 'approved', [{ id: A.id, email: `n${i}@newer.example` }], {
+            approvedAt: minutesAgo(50 - i),
+          }),
+        );
+      }
+      await updateAutopilotSettings(t.owner, {
+        autopilotEnabled: true,
+        enableAutoEnqueueOutreach: true,
+        maxEnqueuesPerRun: 1,
+      });
+      const ops = new FakeOpsStream();
+      vi.spyOn(outreachService, 'generateOutreachDraft').mockRejectedValueOnce(
+        new Error('drafting failed'),
+      );
+
+      const r1 = await runOnce(t.auto, { incidentSink: ops.sink });
+      expect(r1.steps[0]!.detail).toBe('enqueued=0/1');
+      const errors = await errorRows(t);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({
+        entityType: 'review_item',
+        entityId: failing.reviewItem.id.toString(),
+        payload: { productProfileId: A.id.toString() },
+      });
+
+      // The failed pair no longer takes the only slot.
+      const r2 = await runOnce(t.auto, { incidentSink: ops.sink });
+      expect(r2.steps[0]!.detail).toBe('enqueued=1/1 retry_later=1');
+      const r3 = await runOnce(t.auto, { incidentSink: ops.sink });
+      expect(r3.steps[0]!.detail).toBe('enqueued=1/1 retry_later=1');
+      expect(await queuedReviewItems(t)).toEqual(
+        new Set(newer.map((n) => n.reviewItem.id.toString())),
+      );
+
+      // An hour later it is tried again (and now succeeds).
+      await db
+        .update(autopilotLog)
+        .set({ createdAt: new Date(Date.now() - ENQUEUE_RETRY_MS - 60_000) })
+        .where(eq(autopilotLog.id, errors[0]!.id));
+      const r4 = await runOnce(t.auto, { incidentSink: ops.sink });
+      expect(r4.steps[0]!.detail).toBe('enqueued=1/1');
+      expect((await queuedReviewItems(t)).has(failing.reviewItem.id.toString())).toBe(true);
     });
 
     it('the candidate query uses the Drizzle builder (notExists / exists / inArray), no raw ANY', () => {

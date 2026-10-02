@@ -19,12 +19,14 @@
 //
 // PC-11 (I018): every candidate query filters in SQL before its LIMIT, so
 // the per-run cap only counts work the step will do and a backlog drains
-// across runs. Auto-approve: the product's enablement and threshold, one
-// candidate per review item (approved once, origin 'autopilot', via
-// autopilotApproveReviewItem). Generate + queue: no live draft for the pair
-// yet, its pipeline lead has a plausible contact email (I001: no draft is
-// written for a lead nobody can be emailed at — those pairs are counted as
-// needs_contact), oldest approval first. The CRM steps push with origin
+// across runs. Both steps skip archived products. Auto-approve: the
+// product's enablement and threshold, one candidate per review item
+// (approved once, origin 'autopilot', via autopilotApproveReviewItem).
+// Generate + queue: no live draft for the pair yet, its pipeline lead has a
+// plausible contact email (I001: no draft is written for a lead nobody can
+// be emailed at — those pairs are counted as needs_contact), no failure of
+// the pair in the last hour (ENQUEUE_RETRY_MS, counted as retry_later),
+// oldest approval first. The CRM steps push with origin
 // 'autopilot' and every succeeded push is on the lead's timeline. A step's
 // errors are reported once per run as an ops incident, one per step per
 // day (autopilot-incidents.ts).
@@ -640,9 +642,10 @@ async function itemError(
   message: string,
   entityType: string,
   entityId: string,
+  payload?: Record<string, unknown>,
 ): Promise<void> {
   run.tally.add(step, message);
-  await recordStep(run.ctx, run.runId, step, 'error', message, entityType, entityId);
+  await recordStep(run.ctx, run.runId, step, 'error', message, entityType, entityId, payload);
 }
 
 /** Run one step. A step that throws (its candidate query, say) is recorded
@@ -730,6 +733,28 @@ function itemQualificationJoin(): SQL | undefined {
   );
 }
 
+/**
+ * The qualification's product is active (not archived), in SQL. An
+ * archived product gets no automatic approvals or drafts: drafting for it
+ * throws ("product profile is archived"), so without this filter such a
+ * pair stayed a candidate forever and, oldest first, took the per-run cap
+ * on every run (I018 again).
+ */
+function productIsActive(): SQL {
+  return exists(
+    db
+      .select({ id: productProfiles.id })
+      .from(productProfiles)
+      .where(
+        and(
+          eq(productProfiles.id, qualifications.productProfileId),
+          eq(productProfiles.workspaceId, reviewItems.workspaceId),
+          eq(productProfiles.active, true),
+        ),
+      ),
+  );
+}
+
 /** PC-11 (I018): the score reaches the product's threshold — the policy's
  *  (the higher of the workspace's and the product's) — in SQL. */
 function reachesApprovalThreshold(policy: AutomationPolicy): SQL | undefined {
@@ -757,15 +782,16 @@ function reachesApprovalThreshold(policy: AutomationPolicy): SQL | undefined {
 /**
  * PC-11 (I018): a qualification that makes autopilot approve its review
  * item, in SQL, so the per-run cap only counts items autopilot acts on: the
- * item is still 'new', the qualification relevant, its product runs the
- * step (not switched off or paused, autopilot not off for it) and the score
- * reaches that product's threshold.
+ * item is still 'new', the qualification relevant, its product active and
+ * running the step (not switched off or paused, autopilot not off for it)
+ * and the score reaches that product's threshold.
  */
 function autoApproveEligible(ctx: WorkspaceContext, policy: AutomationPolicy): SQL | undefined {
   return and(
     eq(reviewItems.workspaceId, ctx.workspaceId),
     eq(reviewItems.state, 'new'),
     eq(qualifications.isRelevant, true),
+    productIsActive(),
     excludeProducts(policy, 'auto_approve_projects', qualifications.productProfileId),
     reachesApprovalThreshold(policy),
   );
@@ -853,18 +879,52 @@ async function stepAutoApproveProjects(run: StepRun): Promise<StepResult> {
   };
 }
 
+/** A pair whose draft or enqueue failed waits this long before generate +
+ *  queue tries it again (instead of on every 5-minute run), like a failed
+ *  CRM push (CRM_PUSH_RETRY_MS). */
+export const ENQUEUE_RETRY_MS = 60 * 60 * 1000;
+
+/**
+ * The pair (the outer review item x the qualification's product) failed in
+ * generate + queue since `since`: an error row on the run log for the item
+ * that names the product (itemError's payload). Correlated, for (NOT) EXISTS.
+ */
+function enqueueFailedSince(since: Date) {
+  return db
+    .select({ id: autopilotLog.id })
+    .from(autopilotLog)
+    .where(
+      and(
+        eq(autopilotLog.workspaceId, reviewItems.workspaceId),
+        eq(autopilotLog.step, 'auto_enqueue_outreach'),
+        eq(autopilotLog.outcome, 'error'),
+        eq(autopilotLog.entityType, 'review_item'),
+        eq(autopilotLog.entityId, sql`${reviewItems.id}::text`),
+        eq(
+          sql`${autopilotLog.payload}->>'productProfileId'`,
+          sql`${qualifications.productProfileId}::text`,
+        ),
+        gte(autopilotLog.createdAt, since),
+      ),
+    );
+}
+
 /**
  * PC-11 (I018, I001): the (approved item, relevant product) pairs generate
- * + queue still has to do, in SQL before the LIMIT: the product runs the
- * step; the pair has no draft other than superseded ones (a drafted pair
- * never uses up the cap again); and the pair's pipeline lead has a
- * plausible contact email — `contact: 'waiting'` selects the pairs that
- * lack one instead (counted for the run log, never drafted).
+ * + queue still has to do, in SQL before the LIMIT: the product is active
+ * and runs the step; the pair has no draft other than superseded ones (a
+ * drafted pair never uses up the cap again); and the pair's pipeline lead
+ * has a plausible contact email. `select` picks:
+ *   ready        drafted now: has an email, no failure in ENQUEUE_RETRY_MS
+ *   retry_later  has an email, but failed within ENQUEUE_RETRY_MS
+ *   waiting      no plausible email yet (needs_contact, never drafted)
+ * retry_later and waiting are only counted, for the run log.
  */
 function enqueuePairs(
   ctx: WorkspaceContext,
   policy: AutomationPolicy,
-  contact: 'has_email' | 'waiting',
+  select: 'ready' | 'retry_later' | 'waiting',
+  now: Date,
 ): SQL | undefined {
   const leadWithEmail = db
     .select({ id: qualifiedLeads.id })
@@ -877,10 +937,12 @@ function enqueuePairs(
         plausibleEmailSql(qualifiedLeads.contactEmail),
       ),
     );
+  const failedRecently = enqueueFailedSince(new Date(now.getTime() - ENQUEUE_RETRY_MS));
   return and(
     eq(reviewItems.workspaceId, ctx.workspaceId),
     eq(reviewItems.state, 'approved'),
     eq(qualifications.isRelevant, true),
+    productIsActive(),
     excludeProducts(policy, 'auto_enqueue_outreach', qualifications.productProfileId),
     notExists(
       db
@@ -895,7 +957,12 @@ function enqueuePairs(
           ),
         ),
     ),
-    contact === 'has_email' ? exists(leadWithEmail) : notExists(leadWithEmail),
+    select === 'waiting' ? notExists(leadWithEmail) : exists(leadWithEmail),
+    select === 'ready'
+      ? notExists(failedRecently)
+      : select === 'retry_later'
+        ? exists(failedRecently)
+        : undefined,
   );
 }
 
@@ -912,19 +979,24 @@ async function stepAutoEnqueueOutreach(run: StepRun): Promise<StepResult> {
     return { step, outcome: 'skipped', detail: 'no default mailbox' };
   }
   // Oldest approval first, so every pair gets its turn across runs.
+  const now = new Date();
   const candidates = await db
     .select({ ri: reviewItems, q: qualifications })
     .from(reviewItems)
     .innerJoin(qualifications, itemQualificationJoin())
-    .where(enqueuePairs(ctx, policy, 'has_email'))
+    .where(enqueuePairs(ctx, policy, 'ready', now))
     .orderBy(asc(reviewItems.approvedAt), asc(reviewItems.id), asc(qualifications.productProfileId))
     .limit(policy.autopilot.maxEnqueuesPerRun);
-  const [waiting] = await db
-    .select({ n: count() })
-    .from(reviewItems)
-    .innerJoin(qualifications, itemQualificationJoin())
-    .where(enqueuePairs(ctx, policy, 'waiting'));
-  const needsContact = Number(waiting?.n ?? 0);
+  const countPairs = async (select: 'retry_later' | 'waiting') => {
+    const [row] = await db
+      .select({ n: count() })
+      .from(reviewItems)
+      .innerJoin(qualifications, itemQualificationJoin())
+      .where(enqueuePairs(ctx, policy, select, now));
+    return Number(row?.n ?? 0);
+  };
+  const needsContact = await countPairs('waiting');
+  const retryLater = await countPairs('retry_later');
 
   let enqueued = 0;
   let productSkipped = 0;
@@ -963,7 +1035,11 @@ async function stepAutoEnqueueOutreach(run: StepRun): Promise<StepResult> {
         draft.id.toString(),
       );
     } catch (err) {
-      await itemError(run, step, errorMessage(err), 'review_item', row.ri.id.toString());
+      // The product on the error row lets the next runs leave this pair
+      // alone for ENQUEUE_RETRY_MS (enqueueFailedSince).
+      await itemError(run, step, errorMessage(err), 'review_item', row.ri.id.toString(), {
+        productProfileId: row.q.productProfileId.toString(),
+      });
     }
   }
   return {
@@ -971,7 +1047,7 @@ async function stepAutoEnqueueOutreach(run: StepRun): Promise<StepResult> {
     outcome: 'success',
     detail: `enqueued=${enqueued}/${candidates.length}${
       needsContact > 0 ? ` needs_contact=${needsContact}` : ''
-    }${productSkipNote(productSkipped)}`,
+    }${retryLater > 0 ? ` retry_later=${retryLater}` : ''}${productSkipNote(productSkipped)}`,
   };
 }
 
@@ -1179,6 +1255,7 @@ async function recordStep(
   detail: string | null,
   entityType?: string,
   entityId?: string,
+  payload?: Record<string, unknown>,
 ): Promise<void> {
   await db.insert(autopilotLog).values({
     workspaceId: ctx.workspaceId,
@@ -1188,6 +1265,7 @@ async function recordStep(
     detail,
     entityType: entityType ?? null,
     entityId: entityId ?? null,
+    ...(payload ? { payload } : {}),
   });
 }
 
