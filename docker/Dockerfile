@@ -3,10 +3,14 @@
 # Final image is the Next.js standalone server: just node + the minimal
 # files needed to serve. Roughly 200 MB on top of node:22-alpine.
 #
-# Build:    docker compose -f docker-compose.prod.yml build
-# Run:      docker compose -f docker-compose.prod.yml up -d
-# Migrate:  docker compose -f docker-compose.prod.yml exec app node scripts/migrate.cjs
-#           (or pnpm db:migrate before bringing up app)
+# PC-36: the same image also carries the background-job worker, bundled
+# with its dependencies into worker/worker.cjs (scripts/build-worker.mjs;
+# the image has no tsx and no full node_modules). docker-compose.prod.yml
+# runs it twice: `app` (node server.js, ROLE=web) and `worker`
+# (node worker/worker.cjs, ROLE=worker).
+#
+# Build + run:  scripts/deploy/deploy-agregat.sh (docs/DEPLOYMENT.md)
+# Migrate:      host-side `pnpm db:migrate` (the image has no tsx)
 
 FROM node:22-alpine AS base
 WORKDIR /app
@@ -22,7 +26,7 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build
+RUN pnpm build && pnpm build:worker
 
 # ---- runner ----
 FROM node:22-alpine AS runner
@@ -33,6 +37,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+# PC-07: the commit this image was built from, reported in the
+# token-protected /api/ready detail (docs/OPS_MONITORING.md). Pass it with
+# BUILD_SHA=$(git rev-parse --short HEAD) docker-compose ... build app.
+ARG BUILD_SHA=unknown
+ENV BUILD_SHA=$BUILD_SHA
+
 RUN addgroup --system --gid 1001 nodejs \
  && adduser --system --uid 1001 nextjs
 
@@ -41,6 +51,9 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# PC-36: the background-job worker (the `worker` service's command).
+COPY --from=builder --chown=nextjs:nodejs /app/dist/worker ./worker
 
 # Drizzle migrations — copied in so we can run them inside the container.
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle

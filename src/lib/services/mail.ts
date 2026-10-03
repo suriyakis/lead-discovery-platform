@@ -2,6 +2,7 @@
 // outbound + inbound message is persisted, threaded by header heuristic,
 // and audit-logged. Suppression list is checked before every send.
 
+import { appOrigin } from '@/lib/app-origin';
 import {
   and,
   asc,
@@ -15,6 +16,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   or,
   sql,
   type SQL,
@@ -32,13 +34,23 @@ import {
 } from '@/lib/db/schema/mailing';
 import type { MailFolder } from './mail-folders';
 import {
-  classifyImapError,
+  classifySyncFailure,
   computeBackoffMs,
   nextSyncAfterEmpty,
-  TRANSIENT_FAILURE_PAUSE_THRESHOLD,
+  syncFailureThreshold,
 } from './imap-backoff';
 import { recordAuditEvent } from './audit';
-import { canWrite, type WorkspaceContext } from './context';
+import {
+  AutomationGateError,
+  assertGate,
+  checkGate,
+  decideGate,
+  loadAutomationState,
+  originForDraft,
+  reconcileOwnerIncident,
+  type SendOrigin,
+} from './automation-gate';
+import { canWrite, isAutomatic, type WorkspaceContext } from './context';
 import {
   buildProviderFor,
   markMailboxFailing,
@@ -53,11 +65,17 @@ import {
   hardRejectedFromPartial,
   isRecipientHardBounceText,
 } from '@/lib/mail/smtp-errors';
+import { isAfterDelivery, tagAfterDelivery, tagTransportFailure } from '@/lib/mail/send-failure';
+import { outreachQueue } from '@/lib/db/schema/outreach';
+import { resolveSendInterrupted } from '@/lib/ops/work-incidents';
 import {
-  defaultSignature,
-  renderSignatureHtml,
-  renderSignatureText,
-} from './signatures';
+  DELIVERED_MESSAGE_STATUSES,
+  draftIsBeingSent,
+  findDeliveredCopyOfDraft,
+  markDraftQueueEntriesSent,
+  trashEarlierFailedCopies,
+} from './outreach-queue-sent';
+import { defaultSignature, renderSignatureHtml, renderSignatureText } from './signatures';
 import { analyseReply } from './reply-classifier';
 import { maybeAutoTranslateInbound } from './translation';
 import { assessInboundRelevance } from './inbound-relevance';
@@ -68,7 +86,12 @@ import {
 } from '@/lib/mail/relevance';
 import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
-import { describeConnectionError } from '@/lib/mail/connection-errors';
+import {
+  classifyMailboxFailure,
+  describeConnectionError,
+  type MailboxFailureClass,
+} from '@/lib/mail/connection-errors';
+import { describeLeaseHolder, withWorkLease, type LeaseHolder } from './work-leases';
 import {
   type IMailProvider,
   type InboundMessage,
@@ -146,19 +169,89 @@ export interface SendMailInput {
    *    null      → no signature
    *    bigint    → use that specific signature (validated against workspace) */
   signatureId?: bigint | null;
+  /** PC-06: true for sends the platform makes on its own (the queue
+   *  drain, a follow-up the tick sends without approval). Defaults to the
+   *  context (ctx.trigger). The automation gate refuses every send under
+   *  a Sending hold or the platform outbound stop; automatic ones also
+   *  when the workspace has no accountable owner. */
+  automatic?: boolean;
+  /** flow:F-07 / PC-05 — where this email comes from (SendOrigin): the
+   *  go-live hold holds cold, follow_up and ai_reply mail until the
+   *  workspace is live. Required on every send, like `mode`, so no caller
+   *  slips past the hold by accident. */
+  origin: SendOrigin;
+  /** PC-05: a person confirmed "send anyway" while automation is paused.
+   *  Only manual sends can be confirmed; each confirmed send is audited
+   *  (outbound.override) before it goes out. */
+  confirmPaused?: boolean;
+  /**
+   * PC-10 (I013): runs inside the transaction that inserts the sent
+   * message's mail_messages row, so the caller's own record of the send
+   * (the queue row turning 'sent') commits together with it. If the hook
+   * fails, the message is recorded on its own (it WAS delivered) and the
+   * caller's record is reconciled later (the stuck-work reaper finds the
+   * sent copy).
+   */
+  onPersisted?: (tx: SendTx, message: MailMessage) => Promise<void>;
   /** Test-only override; production passes undefined. */
   providerOverride?: IMailProvider;
 }
 
+/** The transaction handed to SendMailInput.onPersisted. */
+export type SendTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Send one email and record it.
+ *
+ * PC-10: errors are tagged for the queue's failure model
+ * (src/lib/mail/send-failure.ts) without changing them: a provider.send
+ * failure carries its SMTP classification, and anything thrown after the
+ * server accepted the message is marked "after delivery" — the email went
+ * out, so no caller may treat it as unsent and send it again.
+ */
 export async function sendMessage(
   ctx: WorkspaceContext,
   input: SendMailInput,
+): Promise<MailMessage> {
+  const phase: SendPhase = { delivered: false };
+  try {
+    return await sendAndRecord(ctx, input, phase);
+  } catch (err) {
+    if (phase.delivered) tagAfterDelivery(err);
+    throw err;
+  }
+}
+
+interface SendPhase {
+  /** Set once provider.send has returned: the server took the message. */
+  delivered: boolean;
+}
+
+async function sendAndRecord(
+  ctx: WorkspaceContext,
+  input: SendMailInput,
+  phase: SendPhase,
 ): Promise<MailMessage> {
   if (!canWrite(ctx)) throw permissionDenied('mail.send');
   if (input.to.length === 0) throw invalid('at least one recipient required');
   const subject = input.subject.trim();
   if (!subject) throw invalid('subject required');
   if (!input.text && !input.html) throw invalid('text or html body required');
+
+  // PC-06 + PC-05: holds, the platform outbound stop, (automatic sends)
+  // the accountable-owner rule, the workspace pause (a manual send only
+  // after "send anyway") and the go-live hold for this origin — before
+  // anything is rendered or sent.
+  const manual = input.automatic === undefined ? !isAutomatic(ctx) : !input.automatic;
+  const gateState = await loadAutomationState(ctx.workspaceId);
+  if (!manual) await reconcileOwnerIncident(gateState);
+  const gateItem = {
+    manual,
+    origin: input.origin,
+    confirmPaused: manual && input.confirmPaused === true,
+  };
+  const gate = decideGate(gateState, 'sending', gateItem);
+  if (!gate.allowed) throw new AutomationGateError(gate);
 
   // Suppression check — reject if ANY recipient is suppressed.
   for (const addr of [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])]) {
@@ -170,11 +263,40 @@ export async function sendMessage(
     input.mailboxId,
     input.providerOverride,
   );
+  // PC-05 (P0-F08, I095): an automatic send from a mailbox that is not
+  // active is held by the gate (the caller defers it, nothing fails); a
+  // person sending by hand gets the mailbox's own reason below.
+  const mailboxGate = decideGate(gateState, 'sending', {
+    ...gateItem,
+    mailboxStatus: mailbox.status,
+  });
+  if (!mailboxGate.allowed) throw new AutomationGateError(mailboxGate);
   if (mailbox.status === 'archived') {
     throw new MailServiceError('mailbox is archived', 'invalid_input');
   }
   if (mailbox.status === 'paused') {
-    throw new MailServiceError('mailbox is paused — re-enable it from Edit mailbox to resume sends', 'invalid_input');
+    throw new MailServiceError(
+      'mailbox is paused — re-enable it from Edit mailbox to resume sends',
+      'invalid_input',
+    );
+  }
+  // PC-05: a manual send the person confirmed while automation is paused
+  // is audited before it goes out, so it is on record even if the send
+  // then fails.
+  if (gate.pauseOverridden) {
+    await recordAuditEvent(ctx, {
+      kind: 'outbound.override',
+      entityType: 'mailbox',
+      entityId: mailbox.id,
+      payload: {
+        override: 'automation_paused',
+        origin: input.origin,
+        pausedAt: gateState.pause?.since.toISOString() ?? null,
+        pausedByUserId: gateState.pause?.byUserId ?? null,
+        to: input.to.map((a) => a.address),
+        subject,
+      },
+    });
   }
 
   const headers: Record<string, string> = { ...(input.headers ?? {}) };
@@ -199,10 +321,7 @@ export async function sendMessage(
         .select()
         .from(signatures)
         .where(
-          and(
-            eq(signatures.workspaceId, ctx.workspaceId),
-            eq(signatures.id, input.signatureId),
-          ),
+          and(eq(signatures.workspaceId, ctx.workspaceId), eq(signatures.id, input.signatureId)),
         )
         .limit(1);
       sig = rows[0] ?? null;
@@ -221,7 +340,9 @@ export async function sendMessage(
   // /api/track/<token>.gif. We embed it ONLY when the caller supplied an
   // HTML body (text-only emails skip the pixel).
   const trackingToken = randomUUID().replace(/-/g, '');
-  const appUrl = (process.env.APP_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
+  // The public origin (APP_URL, else AUTH_URL; never a loopback one in
+  // production): the base of the pixel and unsubscribe links.
+  const appUrl = appOrigin().origin;
   if (outboundHtml) {
     const pixelUrl = `${appUrl}/api/track/${trackingToken}.gif`;
     outboundHtml = `${outboundHtml}<img src="${pixelUrl}" width="1" height="1" alt="" style="display:block;margin:0;padding:0;border:0" />`;
@@ -269,9 +390,7 @@ export async function sendMessage(
     headers,
   };
 
-  const attempted = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])].map(
-    (a) => a.address,
-  );
+  const attempted = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])].map((a) => a.address);
 
   let sendResult;
   try {
@@ -299,7 +418,9 @@ export async function sendMessage(
       const primaryAddress = input.to[0]?.address ?? null;
       const isLoop =
         primaryAddress !== null &&
-        (await detectBounceLoop(ctx, mailbox.id, primaryAddress));
+        (await detectBounceLoop(ctx, mailbox.id, primaryAddress, {
+          excludeDraftId: input.sourceDraftId ?? null,
+        }));
       const failedThread = await ensureThread(ctx, mailbox.id, {
         subject,
         inReplyTo: input.inReplyTo ?? null,
@@ -328,10 +449,9 @@ export async function sendMessage(
         targetLanguage: input.targetLanguage ?? null,
         headers: headers as unknown as Record<string, unknown>,
         attachments: [],
-        failureReason:
-          responseCode
-            ? `${responseCode} ${failureReason}`.slice(0, 4000)
-            : failureReason.slice(0, 4000),
+        failureReason: responseCode
+          ? `${responseCode} ${failureReason}`.slice(0, 4000)
+          : failureReason.slice(0, 4000),
         sourceDraftId: input.sourceDraftId ?? null,
         spamAt: isLoop ? new Date() : null,
         spamReason: isLoop ? 'bounce_loop' : null,
@@ -371,18 +491,22 @@ export async function sendMessage(
       }
     }
     if (failure.kind === 'auth') {
+      // PC-09: class 'auth' — nothing retries the login automatically.
       try {
         await markMailboxFailing(ctx, mailbox.id, {
           protocol: 'smtp',
           message: e?.message ?? String(err),
-          auth: true,
+          failureClass: 'auth',
         });
       } catch (markErr) {
         console.error('[mail.send] could not mark the mailbox failing:', markErr);
       }
     }
+    // PC-10: the queue reads this to decide retry / hold / fail.
+    tagTransportFailure(err, failure);
     throw err;
   }
+  phase.delivered = true;
 
   // flow:F-05: the server accepted the message but refused some
   // recipients. A refusal that says the address does not exist suppresses
@@ -448,9 +572,12 @@ export async function sendMessage(
     createdBy: ctx.userId,
   };
 
-  const [created] = await db.insert(mailMessages).values(row).returning();
-  if (!created) throw invariant('mail_message insert returned no row');
+  const created = await persistSentMessage(row, input.onPersisted);
 
+  // PC-10 (I013): from here on the email is delivered AND recorded. The
+  // bookkeeping below is best-effort: a failure in it must not reach the
+  // caller, which would read it as a failed send (and the queue would
+  // mark a delivered email failed, or send it again).
   if (contactId) {
     try {
       await attachContact(ctx, contactId, {
@@ -479,33 +606,51 @@ export async function sendMessage(
     }
   }
 
-  await recordAuditEvent(ctx, {
-    kind: 'mail.send',
-    entityType: 'mail_message',
-    entityId: created.id,
-    payload: {
-      mailboxId: mailbox.id.toString(),
-      mode: input.mode,
-      to: input.to.map((a) => a.address),
-      threadId: thread.id.toString(),
-      sourceDraftId: input.sourceDraftId?.toString() ?? null,
-      ...(sendResult.rejected && sendResult.rejected.length > 0
-        ? {
-            rejected: sendResult.rejected.map((r) => ({
-              address: r.address,
-              response: r.response,
-              suppressed: partialHard.includes(r.address.trim().toLowerCase()),
-            })),
-          }
-        : {}),
-    },
-  });
+  try {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.send',
+      entityType: 'mail_message',
+      entityId: created.id,
+      payload: {
+        mailboxId: mailbox.id.toString(),
+        mode: input.mode,
+        to: input.to.map((a) => a.address),
+        threadId: thread.id.toString(),
+        sourceDraftId: input.sourceDraftId?.toString() ?? null,
+        ...(sendResult.rejected && sendResult.rejected.length > 0
+          ? {
+              rejected: sendResult.rejected.map((r) => ({
+                address: r.address,
+                response: r.response,
+                suppressed: partialHard.includes(r.address.trim().toLowerCase()),
+              })),
+            }
+          : {}),
+      },
+    });
+  } catch (err) {
+    console.error(
+      `[mail.send] audit row for sent message ${created.id} not written:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
-  await touchThread(thread.id);
+  try {
+    await touchThread(thread.id);
+  } catch (err) {
+    console.error(
+      `[mail.send] thread ${thread.id} counters not updated:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   // Phase 58: schedule auto follow-ups when this is the FIRST outbound
   // on a thread linked to a qualified lead. Best-effort — failures log
   // but never break the send.
+  // PC-10: the first DELIVERED outbound. A failed attempt reached nobody
+  // (as for the caps and the cooldown): a first touch that went out on an
+  // automatic retry shares the thread with its failed attempts and still
+  // gets its follow-ups.
   try {
     const outboundCount = await db
       .select({ id: mailMessages.id })
@@ -515,6 +660,7 @@ export async function sendMessage(
           eq(mailMessages.workspaceId, ctx.workspaceId),
           eq(mailMessages.threadId, thread.id),
           eq(mailMessages.direction, 'outbound'),
+          inArray(mailMessages.status, [...DELIVERED_MESSAGE_STATUSES]),
         ),
       );
     if (outboundCount.length === 1) {
@@ -542,6 +688,37 @@ export async function sendMessage(
   }
 
   return created;
+}
+
+/**
+ * PC-10: insert the delivered message's row and run the caller's
+ * onPersisted hook in one transaction. When the transaction fails with a
+ * hook, the row is inserted on its own: the email went out and must be
+ * on record; the caller's state (a queue row still 'sending') is settled
+ * by the stuck-work reaper, which matches it to this row. Without a hook
+ * an insert failure propagates as before.
+ */
+async function persistSentMessage(
+  row: NewMailMessage,
+  onPersisted: SendMailInput['onPersisted'],
+): Promise<MailMessage> {
+  try {
+    return await db.transaction(async (tx) => {
+      const [inserted] = await tx.insert(mailMessages).values(row).returning();
+      if (!inserted) throw invariant('mail_message insert returned no row');
+      if (onPersisted) await onPersisted(tx, inserted);
+      return inserted;
+    });
+  } catch (err) {
+    if (!onPersisted) throw err;
+    console.error(
+      '[mail.send] recording the send with its caller hook failed; recording the message alone:',
+      err instanceof Error ? err.message : err,
+    );
+    const [inserted] = await db.insert(mailMessages).values(row).returning();
+    if (!inserted) throw invariant('mail_message insert returned no row');
+    return inserted;
+  }
 }
 
 // ---- test email (Phase 52) -----------------------------------------
@@ -594,6 +771,12 @@ export async function sendTestEmail(
   if (!to) throw invalid('to required');
   if (!subject) throw invalid('subject required');
   if (!body || !body.trim()) throw invalid('body required');
+  // PC-05: a test send bypasses sendMessage, so it asks the gate itself.
+  // A Sending hold or the platform outbound stop refuses it like any send;
+  // the workspace pause does not — pressing "Send test" on the mailbox page
+  // is the person's explicit, audited (mail.send_test) choice, made to
+  // check the mailbox, which is what one does while paused.
+  await assertGate(ctx, 'sending', { manual: true, origin: 'manual', confirmPaused: true });
 
   const { mailbox, provider } = await buildProviderFor(
     ctx,
@@ -604,7 +787,10 @@ export async function sendTestEmail(
     throw new MailServiceError('mailbox is archived', 'invalid_input');
   }
   if (mailbox.status === 'paused') {
-    throw new MailServiceError('mailbox is paused — re-enable it from Edit mailbox to resume sends', 'invalid_input');
+    throw new MailServiceError(
+      'mailbox is paused — re-enable it from Edit mailbox to resume sends',
+      'invalid_input',
+    );
   }
 
   // Signature resolution: explicit id → that signature (validated);
@@ -618,12 +804,7 @@ export async function sendTestEmail(
     const rows = await db
       .select()
       .from(signatures)
-      .where(
-        and(
-          eq(signatures.workspaceId, ctx.workspaceId),
-          eq(signatures.id, input.signatureId),
-        ),
-      )
+      .where(and(eq(signatures.workspaceId, ctx.workspaceId), eq(signatures.id, input.signatureId)))
       .limit(1);
     if (!rows[0]) throw invalid('signature not found');
     sig = rows[0];
@@ -688,12 +869,45 @@ export interface SyncInboundResult {
   duplicates: number;
 }
 
+/** PC-12: the mailbox's sync lease is held by another sync or check. */
+export const MAILBOX_BUSY = 'mailbox_busy';
+
+/** "A sync or connection check of this mailbox is already running since …". */
+export function mailboxBusyMessage(held: LeaseHolder): string {
+  return `A sync or connection check of this mailbox is already running ${describeLeaseHolder(held)}. Try again when it has finished.`;
+}
+
+/**
+ * Fetch and store a mailbox's new inbound mail. PC-12 (I067): under the
+ * mailbox's 'mailbox.sync' lease, like every other sync and connection
+ * check of it; while another holds it this throws MAILBOX_BUSY and
+ * touches nothing. The IMAP tick and the Sync buttons go through
+ * safeSyncOne (backoff and failure bookkeeping); this is the bare sync.
+ */
 export async function syncInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   providerOverride?: IMailProvider,
 ): Promise<SyncInboundResult> {
   if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
+  // PC-06: an Inbox-sync hold stops the tick and manual Sync alike (X6:
+  // the disabled feature flag stopped nothing).
+  await assertGate(ctx, 'inbox_sync');
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'mailbox.sync', resource: mailboxId, purpose: 'sync' },
+    () => syncInboundHeld(ctx, mailboxId, providerOverride),
+  );
+  if (leased.status === 'ran') return leased.value;
+  throw new MailServiceError(mailboxBusyMessage(leased.held), MAILBOX_BUSY);
+}
+
+/** syncInbound's work; the caller holds the mailbox's sync lease. */
+async function syncInboundHeld(
+  ctx: WorkspaceContext,
+  mailboxId: bigint,
+  providerOverride?: IMailProvider,
+): Promise<SyncInboundResult> {
   const { mailbox, provider } = await buildProviderFor(ctx, mailboxId, providerOverride);
   const since = mailbox.lastSyncedAt ?? undefined;
   const messages = await provider.fetchInbound({ since, limit: 100 });
@@ -714,26 +928,26 @@ export async function syncInbound(
   await db
     .update(mailboxes)
     .set({ lastSyncedAt: new Date(), lastError: null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(mailboxes.workspaceId, ctx.workspaceId),
-        eq(mailboxes.id, mailbox.id),
-      ),
-    );
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id)));
 
-  await recordAuditEvent(ctx, {
-    kind: 'mail.sync_inbound',
-    entityType: 'mailbox',
-    entityId: mailbox.id,
-    payload: { fetched: messages.length, inserted, duplicates, relevance },
-  });
+  // PC-35 (I066): audited only when the sync stored something. An empty
+  // (or all-duplicate) sync changed nothing, and the 2-minute IMAP tick
+  // used to fill the audit log with them. The mailbox's last_synced_at
+  // above still says when it last synced. These rows are kept
+  // SYNC_AUDIT_RETENTION_DAYS (services/retention.ts).
+  if (inserted > 0) {
+    await recordAuditEvent(ctx, {
+      kind: 'mail.sync_inbound',
+      entityType: 'mailbox',
+      entityId: mailbox.id,
+      payload: { fetched: messages.length, inserted, duplicates, relevance },
+    });
+  }
 
   return { fetched: messages.length, inserted, duplicates };
 }
 
-type PersistInboundOutcome =
-  | { existed: true }
-  | { existed: false; relevance: OutreachRelevance };
+type PersistInboundOutcome = { existed: true } | { existed: false; relevance: OutreachRelevance };
 
 /**
  * Store one fetched message, then run the reply pipeline only when it is
@@ -749,13 +963,21 @@ type PersistInboundOutcome =
  * "classify" (analyseReply) also covers the outreach reply handler and
  * follow-up cancellation. A bounce's sender is the mailer daemon, so it is
  * never made a contact; lead.replied is for people answering us (I161).
+ *
+ * PC-12 (I067): the insert is ON CONFLICT (workspace, message_id) DO
+ * NOTHING. The same email can reach two of a workspace's mailboxes (CC'd
+ * to both) and their syncs run side by side; the one that stores it second
+ * used to hit the unique index, throw, and count a spurious IMAP failure
+ * against a healthy mailbox. Now it is a duplicate like any other, with no
+ * side effects.
  */
 async function persistInbound(
   ctx: WorkspaceContext,
   mailboxId: bigint,
   inbound: InboundMessage,
 ): Promise<PersistInboundOutcome> {
-  // Dedup by (workspace, message_id).
+  // Dedup by (workspace, message_id) — the cheap check; the insert below
+  // settles a race the check cannot see.
   const existing = await db
     .select()
     .from(mailMessages)
@@ -816,41 +1038,47 @@ async function persistInbound(
     }
   }
 
-  const [insertedRow] = await db.insert(mailMessages).values({
-    workspaceId: ctx.workspaceId,
-    mailboxId,
-    threadId: thread.id,
-    direction: 'inbound',
-    status: 'received',
-    messageId: inbound.messageId,
-    inReplyTo: inbound.inReplyTo,
-    references: inbound.references,
-    fromAddress: inbound.from.address,
-    fromName: inbound.from.name ?? null,
-    toAddresses: inbound.to.map((a) => a.address),
-    ccAddresses: inbound.cc.map((a) => a.address),
-    bccAddresses: [],
-    subject: inbound.subject,
-    bodyText: inbound.textBody,
-    bodyHtml: inbound.htmlBody,
-    contactId,
-    headers: inbound.headers as unknown as Record<string, unknown>,
-    attachments: inbound.attachments.map((a) => ({
-      filename: a.filename,
-      contentType: a.contentType,
-      sizeBytes: a.sizeBytes,
-      // Phase 10 leaves attachment bytes inline in the inbound stream.
-      // Phase 11+ can offload to IStorage when the bodies grow.
-    })),
-    receivedAt: inbound.receivedAt,
-    outreachRelevance: relevance,
-    relevanceSignals: assessment.signals,
-  } satisfies NewMailMessage).returning({ id: mailMessages.id });
+  const [insertedRow] = await db
+    .insert(mailMessages)
+    .values({
+      workspaceId: ctx.workspaceId,
+      mailboxId,
+      threadId: thread.id,
+      direction: 'inbound',
+      status: 'received',
+      messageId: inbound.messageId,
+      inReplyTo: inbound.inReplyTo,
+      references: inbound.references,
+      fromAddress: inbound.from.address,
+      fromName: inbound.from.name ?? null,
+      toAddresses: inbound.to.map((a) => a.address),
+      ccAddresses: inbound.cc.map((a) => a.address),
+      bccAddresses: [],
+      subject: inbound.subject,
+      bodyText: inbound.textBody,
+      bodyHtml: inbound.htmlBody,
+      contactId,
+      headers: inbound.headers as unknown as Record<string, unknown>,
+      attachments: inbound.attachments.map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        sizeBytes: a.sizeBytes,
+        // Phase 10 leaves attachment bytes inline in the inbound stream.
+        // Phase 11+ can offload to IStorage when the bodies grow.
+      })),
+      receivedAt: inbound.receivedAt,
+      outreachRelevance: relevance,
+      relevanceSignals: assessment.signals,
+    } satisfies NewMailMessage)
+    .onConflictDoNothing({ target: [mailMessages.workspaceId, mailMessages.messageId] })
+    .returning({ id: mailMessages.id });
+  // Another sync stored it between the check above and this insert.
+  if (!insertedRow) return { existed: true };
 
   await touchThread(thread.id);
 
   // Bulk and unrelated mail stops here: stored, threaded, no side effects.
-  if (!insertedRow || !isOutreachLinked(relevance)) {
+  if (!isOutreachLinked(relevance)) {
     return { existed: false, relevance };
   }
 
@@ -949,12 +1177,7 @@ export async function countThreadsByKind(
       outreach: sql<number>`COUNT(*) FILTER (WHERE ${outreachExists})::int`,
     })
     .from(mailThreads)
-    .where(
-      and(
-        eq(mailThreads.workspaceId, ctx.workspaceId),
-        eq(mailThreads.mailboxId, mailboxId),
-      ),
-    );
+    .where(and(eq(mailThreads.workspaceId, ctx.workspaceId), eq(mailThreads.mailboxId, mailboxId)));
   const all = rows[0]?.total ?? 0;
   const outreach = rows[0]?.outreach ?? 0;
   return { all, outreach, inbox: all - outreach };
@@ -967,23 +1190,13 @@ export async function getThread(
   const threadRows = await db
     .select()
     .from(mailThreads)
-    .where(
-      and(
-        eq(mailThreads.workspaceId, ctx.workspaceId),
-        eq(mailThreads.id, threadId),
-      ),
-    )
+    .where(and(eq(mailThreads.workspaceId, ctx.workspaceId), eq(mailThreads.id, threadId)))
     .limit(1);
   if (!threadRows[0]) throw notFound();
   const messages = await db
     .select()
     .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, threadId),
-      ),
-    )
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), eq(mailMessages.threadId, threadId)))
     .orderBy(asc(mailMessages.createdAt));
   return { thread: threadRows[0], messages };
 }
@@ -998,10 +1211,7 @@ function folderFilter(folder: MailFolder): SQL {
     case 'trash':
       return isNotNull(mailMessages.trashedAt);
     case 'spam':
-      return and(
-        isNull(mailMessages.trashedAt),
-        isNotNull(mailMessages.spamAt),
-      ) as SQL;
+      return and(isNull(mailMessages.trashedAt), isNotNull(mailMessages.spamAt)) as SQL;
     case 'errors':
       return and(
         isNull(mailMessages.trashedAt),
@@ -1205,12 +1415,7 @@ export async function getMessage(
   const rows = await db
     .select()
     .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.id, id),
-      ),
-    )
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), eq(mailMessages.id, id)))
     .limit(1);
   if (!rows[0]) throw notFound();
   return rows[0];
@@ -1388,10 +1593,7 @@ export async function permanentlyDelete(
   const deleted = await db
     .delete(mailMessages)
     .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        inArray(mailMessages.id, eligibleIds),
-      ),
+      and(eq(mailMessages.workspaceId, ctx.workspaceId), inArray(mailMessages.id, eligibleIds)),
     )
     .returning({ id: mailMessages.id });
   const deletedIds = deleted.map((r) => r.id);
@@ -1405,7 +1607,7 @@ export async function permanentlyDelete(
   return { affected: deletedIds.length, ids: deletedIds };
 }
 
-// ---- safe-sync (P61-25, flow:F-04) ---------------------------------
+// ---- safe-sync (P61-25, flow:F-04, PC-09) --------------------------
 
 export type SafeSyncOutcome =
   | {
@@ -1413,25 +1615,44 @@ export type SafeSyncOutcome =
       fetched: number;
       inserted: number;
       duplicates: number;
-      /** A failing mailbox passed its re-check and is active again. */
+      /** A failing mailbox passed its check and is active again. */
       recovered: boolean;
     }
-  /** The mailbox is failing and nothing was synced: it was just paused
-   *  (a refused login, or TRANSIENT_FAILURE_PAUSE_THRESHOLD failures in a
-   *  row), or it was already failing and its re-check failed again. */
+  /** The mailbox is failing and nothing was synced: it was just marked
+   *  failing (a refused login, or too many failures in a row for its
+   *  class), or it was already failing and a person's check failed again. */
   | {
       kind: 'failing';
       message: string;
-      /** A new mailbox.failing notification was raised (deduped while unread). */
+      /** PC-09: why it fails (decides how it may recover). */
+      failureClass: MailboxFailureClass | null;
+      /** A new mailbox.failing notification was raised. */
       notified: boolean;
-      /** When the tick may re-check it (null when it was not marked). */
-      nextSyncAfter: Date | null;
+      /** When the health probes look at it next (null: nothing retries it
+       *  automatically, or it was not marked). */
+      nextProbeAt: Date | null;
     }
   | {
       kind: 'transient_failed';
       message: string;
       consecutiveFailures: number;
       nextSyncAfter: Date;
+    }
+  /** PC-12 (I067): another sync or check of this mailbox holds its lease
+   *  (the tick and a Sync button at once). Nothing was done and nothing is
+   *  recorded: not a failure, no backoff. */
+  | {
+      kind: 'busy';
+      message: string;
+      held: LeaseHolder;
+    }
+  /** PC-09: automatic work found the mailbox no longer active under its
+   *  lease (it failed, or was paused, since the tick listed it). Nothing
+   *  was done: a failing mailbox's recovery is the health probes', never
+   *  a sync's login. */
+  | {
+      kind: 'skipped';
+      message: string;
     };
 
 /** Wraps syncInbound + the cron's post-result mailbox bookkeeping into
@@ -1440,41 +1661,106 @@ export type SafeSyncOutcome =
  *  this, manual clicks bypass the fail2ban defense and a broken
  *  mailbox can rack up failed LOGINs from operator impatience.
  *
- *  flow:F-04 — every failure leaves a non-null imap_next_sync_after:
- *    - transient (below the threshold): 2 min doubling to 60 min, status
- *      stays active;
- *    - a refused login or the threshold: markMailboxFailing (status
- *      'failing', a 1 h / 6 h re-check gate growing to 24 h, one deduped
- *      mailbox.failing notification);
- *    - a mailbox that is already failing is NOT synced: it gets a full
- *      SMTP + IMAP re-check first (recordMailboxConnectionCheck). A pass
- *      makes it active and the sync runs; a failure refreshes the error,
- *      the gate and the (deduped) notification.
+ *  flow:F-04 / PC-09 — every failure is classified
+ *  (lib/mail/connection-errors.ts) and leaves a non-null gate:
+ *    - below its class's threshold (a network failure: 10 in a row; an
+ *      unclear error: 3 — syncFailureThreshold): 2 min doubling to
+ *      60 min, status stays active;
+ *    - a refused login, or the threshold: markMailboxFailing with the
+ *      class (its probe schedule, the incident, one notification);
+ *    - a mailbox that is already failing is NOT synced. A person's Sync
+ *      runs a full SMTP + IMAP check first (recordMailboxConnectionCheck):
+ *      a pass makes it active and the sync runs. Automatic work never
+ *      logs in to a failing mailbox: it is 'skipped' (the health probes
+ *      own its recovery, services/mailbox-probes.ts).
  *
  *  Caller passes the resolved mailbox row — this helper does NOT
  *  enforce the imap_next_sync_after cooldown gate; that's the cron's
- *  job. Manual sync is explicitly "do it now". */
+ *  job. Manual sync is explicitly "do it now".
+ *
+ *  PC-12 (I067): this is the one automatic inbound path (autopilot's own
+ *  sync step is gone, PC-13), and it runs under the mailbox's
+ *  'mailbox.sync' lease: a second sync or check of the same mailbox while
+ *  one is running returns `busy` without logging in, so the two can no
+ *  longer race on the message-id index and record a spurious failure.
+ *  The row is re-read under the lease — the caller's copy may predate the
+ *  sync that just finished (its counters, its failing status). */
 export async function safeSyncOne(
   ctx: WorkspaceContext,
-  mailbox: Pick<Mailbox, 'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'>,
+  mailbox: Pick<
+    Mailbox,
+    'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'
+  >,
 ): Promise<SafeSyncOutcome> {
   // Outside the try: a permission error is the caller's, not the server's,
   // and must not count as a mailbox failure.
   if (!canWrite(ctx)) throw permissionDenied('mail.sync_inbound');
+  // PC-06: also outside the try. A hold is not a mailbox failure, so it
+  // must neither count towards the auto-pause nor push the backoff.
+  await assertGate(ctx, 'inbox_sync');
 
+  const leased = await withWorkLease(
+    ctx,
+    {
+      kind: 'mailbox.sync',
+      resource: mailbox.id,
+      purpose: isAutomatic(ctx) ? 'IMAP tick' : 'manual sync',
+    },
+    async () => safeSyncHeld(ctx, (await currentMailboxRow(ctx, mailbox.id)) ?? mailbox),
+  );
+  if (leased.status === 'ran') return leased.value;
+  return { kind: 'busy', message: mailboxBusyMessage(leased.held), held: leased.held };
+}
+
+type SyncableMailbox = Pick<
+  Mailbox,
+  'id' | 'status' | 'imapHost' | 'imapConsecutiveFailures' | 'imapEmptySyncs'
+>;
+
+/** The mailbox's row as it is now (null when it is gone). */
+async function currentMailboxRow(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  mailboxId: bigint,
+): Promise<SyncableMailbox | null> {
+  const [row] = await db
+    .select({
+      id: mailboxes.id,
+      status: mailboxes.status,
+      imapHost: mailboxes.imapHost,
+      imapConsecutiveFailures: mailboxes.imapConsecutiveFailures,
+      imapEmptySyncs: mailboxes.imapEmptySyncs,
+    })
+    .from(mailboxes)
+    .where(and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailboxId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** safeSyncOne's work; the caller holds the mailbox's sync lease. */
+async function safeSyncHeld(
+  ctx: WorkspaceContext,
+  mailbox: SyncableMailbox,
+): Promise<SafeSyncOutcome> {
   let recovered = false;
+  if (isAutomatic(ctx) && mailbox.status !== 'active') {
+    return {
+      kind: 'skipped',
+      message: `the mailbox is ${mailbox.status}; automatic sync only reads active mailboxes`,
+    };
+  }
   if (mailbox.status === 'failing') {
     const check = await recheckFailingMailbox(ctx, mailbox);
     if (!check.ok) {
       return {
         kind: 'failing',
         message: check.lastError ?? 'failed',
+        failureClass: check.failureClass,
         notified: check.notified,
-        nextSyncAfter: check.nextSyncAfter,
+        nextProbeAt: check.nextProbeAt,
       };
     }
     recovered = check.recovered;
-    // Outbound-only mailbox: the re-check was the whole job.
+    // Outbound-only mailbox: the check was the whole job.
     if (!mailbox.imapHost) {
       return { kind: 'synced', fetched: 0, inserted: 0, duplicates: 0, recovered };
     }
@@ -1484,7 +1770,8 @@ export async function safeSyncOne(
   const scope = and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id));
 
   try {
-    const result = await syncInbound(ctx, mailbox.id);
+    // This call holds the lease already (syncInbound would find it held).
+    const result = await syncInboundHeld(ctx, mailbox.id);
     // Success — reset failure counters, apply adaptive empty-sync delay.
     const nextEmpty = result.fetched === 0 ? priorEmpty + 1 : 0;
     const adaptiveNext = nextSyncAfterEmpty(new Date(), nextEmpty);
@@ -1510,26 +1797,26 @@ export async function safeSyncOne(
     // describeConnectionError keeps imapflow's response code and text —
     // its refused LOGIN is otherwise a bare "Command failed".
     const msg = describeConnectionError(err);
-    const cls = classifyImapError(err);
+    const failureClass = classifySyncFailure(err);
     const nextCount = priorFailures + 1;
 
-    // Auto-pause when:
-    //   - error signature matches an auth failure, OR
-    //   - we've crossed the transient-failure threshold without ever
-    //     getting a clean sync (slow-burn fail2ban defense).
-    if (cls === 'auth' || nextCount >= TRANSIENT_FAILURE_PAUSE_THRESHOLD) {
+    // Failing when the error is a refused login, or this class has failed
+    // too often in a row (slow-burn fail2ban defense; an unclear error
+    // sooner than a network one).
+    if (nextCount >= syncFailureThreshold(failureClass)) {
       const marked = await markMailboxFailing(ctx, mailbox.id, {
         protocol: 'imap',
         message: msg,
-        auth: cls === 'auth',
+        failureClass,
         consecutiveFailures: nextCount,
       });
       if (marked.marked) {
         return {
           kind: 'failing',
           message: msg,
+          failureClass: marked.failureClass,
           notified: marked.notified,
-          nextSyncAfter: marked.nextSyncAfter,
+          nextProbeAt: marked.nextProbeAt,
         };
       }
       // Paused / archived (a manual Sync): keep the operator's status and
@@ -1557,9 +1844,10 @@ export async function safeSyncOne(
   }
 }
 
-/** A failing mailbox is re-checked (SMTP + IMAP), never just synced: an
- *  IMAP sync passing says nothing about the SMTP login that may be what
- *  failed. Counts as one more consecutive failed check when it fails. */
+/** A person's Sync of a failing mailbox checks it first (SMTP + IMAP),
+ *  never just syncs it: an IMAP sync passing says nothing about the SMTP
+ *  login that may be what failed. Counts as one more consecutive failed
+ *  check when it fails. Never automatic (safeSyncHeld skips those). */
 async function recheckFailingMailbox(
   ctx: WorkspaceContext,
   mailbox: Pick<Mailbox, 'id' | 'imapConsecutiveFailures'>,
@@ -1576,6 +1864,7 @@ async function recheckFailingMailbox(
     const marked = await markMailboxFailing(ctx, mailbox.id, {
       protocol,
       message,
+      failureClass: classifyMailboxFailure({ error: err }),
       consecutiveFailures,
     });
     return {
@@ -1583,7 +1872,8 @@ async function recheckFailingMailbox(
       recovered: false,
       lastError: `${protocol === 'smtp' ? 'SMTP' : 'IMAP'}: ${message}`.slice(0, 2000),
       notified: marked.notified,
-      nextSyncAfter: marked.nextSyncAfter,
+      failureClass: marked.failureClass,
+      nextProbeAt: marked.nextProbeAt,
     };
   }
   const result = await runConnectionTest(built.provider);
@@ -1599,6 +1889,9 @@ export const TRASH_RETENTION_DAYS_DEFAULT = 30;
 export interface TrashPurgeResult {
   deleted: number;
   retentionDays: number;
+  /** PC-05: the automation gate held the purge (the workspace pause, a
+   *  Trash purge hold, no accountable owner); nothing was deleted. */
+  heldReason?: string;
 }
 
 /** Unattended (cron) version: hard-delete rows in this workspace whose
@@ -1606,9 +1899,7 @@ export interface TrashPurgeResult {
  *  A retention of 0 disables auto-purge (operator can still manually
  *  Empty trash now). Returns the count + the resolved retention so the
  *  cron logs are self-explanatory. */
-export async function purgeOldTrashUnattended(
-  workspaceId: bigint,
-): Promise<TrashPurgeResult> {
+export async function purgeOldTrashUnattended(workspaceId: bigint): Promise<TrashPurgeResult> {
   const { workspaces } = await import('@/lib/db/schema/workspaces');
   const rows = await db
     .select({ retentionDays: workspaces.trashRetentionDays })
@@ -1617,6 +1908,13 @@ export async function purgeOldTrashUnattended(
     .limit(1);
   const retentionDays = rows[0]?.retentionDays ?? TRASH_RETENTION_DAYS_DEFAULT;
   if (retentionDays <= 0) return { deleted: 0, retentionDays };
+  // PC-05: the purge is automatic work — it stops while automation is
+  // paused (and under a Trash purge hold), so nothing is lost while a
+  // workspace is being looked at.
+  const gate = await checkGate({ workspaceId, trigger: 'automation' }, 'trash_purge', {
+    manual: false,
+  });
+  if (!gate.allowed) return { deleted: 0, retentionDays, heldReason: gate.message };
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
   const deleted = await db
     .delete(mailMessages)
@@ -1633,19 +1931,12 @@ export async function purgeOldTrashUnattended(
 
 /** Admin-gated "Empty trash now" — hard-deletes EVERY trashed message
  *  in the workspace regardless of age. Emits an audit event. */
-export async function emptyTrashNow(
-  ctx: WorkspaceContext,
-): Promise<{ deleted: number }> {
+export async function emptyTrashNow(ctx: WorkspaceContext): Promise<{ deleted: number }> {
   const { canAdminWorkspace } = await import('./context');
   if (!canAdminWorkspace(ctx)) throw permissionDenied('mail.empty_trash_now');
   const deleted = await db
     .delete(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        isNotNull(mailMessages.trashedAt),
-      ),
-    )
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), isNotNull(mailMessages.trashedAt)))
     .returning({ id: mailMessages.id });
   if (deleted.length > 0) {
     await recordAuditEvent(ctx, {
@@ -1688,10 +1979,7 @@ export async function updateTrashRetentionDays(
   const { canAdminWorkspace } = await import('./context');
   if (!canAdminWorkspace(ctx)) throw permissionDenied('mail.update_retention');
   if (!Number.isInteger(days)) throw invalid('trash_retention_days must be an integer');
-  const clamped = Math.max(
-    TRASH_RETENTION_DAYS_MIN,
-    Math.min(TRASH_RETENTION_DAYS_MAX, days),
-  );
+  const clamped = Math.max(TRASH_RETENTION_DAYS_MIN, Math.min(TRASH_RETENTION_DAYS_MAX, days));
   const { workspaces } = await import('@/lib/db/schema/workspaces');
   await db
     .update(workspaces)
@@ -1720,15 +2008,27 @@ export const BOUNCE_LOOP_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  *
  *  Workspace-scoped, mailbox-scoped, recipient-exact-match. The address
  *  is checked against the `to_addresses[]` array, not against from /
- *  cc / bcc — bounce loops only make sense for the primary recipient. */
+ *  cc / bcc — bounce loops only make sense for the primary recipient.
+ *
+ *  PC-10: a loop is different EMAILS failing, not one email retried. The
+ *  queue retries a temporary failure up to 5 times and every attempt
+ *  leaves a failed copy, so copies are counted per email: the failed
+ *  copies of one draft count once, and those of `excludeDraftId` (the
+ *  email being sent now) not at all. Mail without a draft counts per row. */
 export async function detectBounceLoop(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   mailboxId: bigint,
   recipient: string,
+  options: { excludeDraftId?: bigint | null } = {},
 ): Promise<boolean> {
   const cutoff = new Date(Date.now() - BOUNCE_LOOP_WINDOW_MS);
+  const excludeDraftId = options.excludeDraftId ?? null;
   const rows = await db
-    .select({ c: sql<number>`COUNT(*)::int` })
+    .select({
+      // Raw SQL: one key per email — the draft when there is one, else
+      // the row itself.
+      c: sql<number>`COUNT(DISTINCT COALESCE('d' || ${mailMessages.sourceDraftId}::text, 'm' || ${mailMessages.id}::text))::int`,
+    })
     .from(mailMessages)
     .where(
       and(
@@ -1738,6 +2038,9 @@ export async function detectBounceLoop(
         inArray(mailMessages.status, ['failed', 'bounced']),
         sql`${recipient} = ANY (${mailMessages.toAddresses})`,
         gt(mailMessages.createdAt, cutoff),
+        excludeDraftId !== null
+          ? or(isNull(mailMessages.sourceDraftId), ne(mailMessages.sourceDraftId, excludeDraftId))
+          : undefined,
       ),
     );
   const count = rows[0]?.c ?? 0;
@@ -1763,19 +2066,74 @@ export function isHardBounce(msg: {
   return isRecipientHardBounceText(msg.failureReason);
 }
 
+/** flow:F-07: the origin of an email we already tried to send — from its
+ *  draft when it had one (cold first touch or AI reply), otherwise a
+ *  sequence email without a draft is a follow-up and anything else was
+ *  written by a person. */
+async function originOfSentMessage(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  msg: Pick<MailMessage, 'sourceDraftId' | 'headers'>,
+): Promise<SendOrigin> {
+  if (msg.sourceDraftId !== null) {
+    const { outreachDrafts } = await import('@/lib/db/schema/outreach');
+    const [draft] = await db
+      .select({
+        stage: outreachDrafts.stage,
+        triggeredByMessageId: outreachDrafts.triggeredByMessageId,
+      })
+      .from(outreachDrafts)
+      .where(
+        and(
+          eq(outreachDrafts.workspaceId, ctx.workspaceId),
+          eq(outreachDrafts.id, msg.sourceDraftId),
+        ),
+      )
+      .limit(1);
+    // A draft that no longer exists was outreach: fail closed (cold).
+    return draft ? originForDraft(draft) : 'cold';
+  }
+  return sendModeFromHeaders(msg.headers) === 'sequence' ? 'follow_up' : 'manual';
+}
+
 export interface RetryResult {
   retried: bigint[];
   skippedHardBounce: bigint[];
   skippedIneligible: bigint[];
+  /** PC-10: copies of a draft whose email has already gone out (a sent
+   *  copy exists, or a queue row of the draft is 'sent'). Not re-sent:
+   *  moved to Trash with the draft's other failed copies. */
+  skippedAlreadySent: bigint[];
+  /** PC-10: further copies of a draft already tried earlier in the same
+   *  batch. Automatic retries leave one failed copy per attempt; one
+   *  email is tried once per Retry. */
+  skippedDuplicate: bigint[];
   errors: Array<{ id: bigint; error: string }>;
+  /** PC-10: outreach queue rows settled as 'sent' by a successful retry
+   *  of their draft's email (failed ones, and waiting ones that would
+   *  otherwise have sent it a second time). */
+  queueEntriesSent: bigint[];
 }
+
+/** Why a retry of a draft-backed copy waits: the queue has it in flight. */
+export const RETRY_DRAFT_IN_FLIGHT_ERROR =
+  'The send queue is sending this email right now. Check Sent in a few minutes before retrying it.';
 
 /** Re-send a batch of failed messages. For each id we look up the
  *  original row, skip ineligible ones (not outbound, not in
  *  failed/bounced), skip hard bounces, and otherwise call sendMessage
  *  with the original payload. On success we trash the original so the
  *  Errors folder stays clean — the new send gets its own row + its own
- *  messageId and threads onto the same conversation. */
+ *  messageId and threads onto the same conversation.
+ *
+ *  PC-10: a draft's email goes out once. Automatic queue retries leave a
+ *  failed copy per attempt, so Errors can hold several copies of one
+ *  email. Before each draft-backed copy the database is asked again (not
+ *  the batch read) whether the draft's email has gone out — by an earlier
+ *  copy in this batch, by the queue, or by another operator — and if so
+ *  the copy is trashed, not sent. A draft is tried once per batch, and
+ *  not while the queue is sending it. A delivered retry trashes every
+ *  failed copy of its draft and settles the draft's queue rows in the same
+ *  transaction as its mail row. */
 export async function retrySend(
   ctx: WorkspaceContext,
   ids: ReadonlyArray<bigint>,
@@ -1786,20 +2144,39 @@ export async function retrySend(
     retried: [],
     skippedHardBounce: [],
     skippedIneligible: [],
+    skippedAlreadySent: [],
+    skippedDuplicate: [],
     errors: [],
+    queueEntriesSent: [],
   };
   if (ids.length === 0) return result;
+  // PC-06: refuse the whole batch up front under a Sending hold instead of
+  // collecting the same refusal once per message. PC-05: also while
+  // automation is paused — a bulk retry has no per-message "send anyway".
+  {
+    const gate = await checkGate(ctx, 'sending');
+    if (!gate.allowed) {
+      throw new AutomationGateError(
+        gate.reason === 'paused'
+          ? {
+              ...gate,
+              overridable: false,
+              message:
+                'Automation is paused, so failed emails are not retried. An owner or admin can resume it; to send one email now, reply from its thread and confirm "send anyway".',
+            }
+          : gate,
+      );
+    }
+  }
 
   const originals = await db
     .select()
     .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        inArray(mailMessages.id, [...ids]),
-      ),
-    );
+    .where(and(eq(mailMessages.workspaceId, ctx.workspaceId), inArray(mailMessages.id, [...ids])))
+    .orderBy(asc(mailMessages.id));
 
+  /** Drafts already tried in this batch (sent or not). */
+  const draftsTried = new Set<string>();
   for (const original of originals) {
     if (
       original.direction !== 'outbound' ||
@@ -1812,8 +2189,32 @@ export async function retrySend(
       result.skippedHardBounce.push(original.id);
       continue;
     }
+    const draftId = original.sourceDraftId;
+    if (draftId !== null) {
+      const delivered = await findDeliveredCopyOfDraft(db, {
+        workspaceId: ctx.workspaceId,
+        draftId,
+      });
+      if (delivered) {
+        await trashStaleCopies(ctx, original.id, draftId, delivered.messageId);
+        result.skippedAlreadySent.push(original.id);
+        continue;
+      }
+      if (draftsTried.has(draftId.toString())) {
+        result.skippedDuplicate.push(original.id);
+        continue;
+      }
+      if (await draftIsBeingSent(db, { workspaceId: ctx.workspaceId, draftId })) {
+        result.errors.push({ id: original.id, error: RETRY_DRAFT_IN_FLIGHT_ERROR });
+        continue;
+      }
+      draftsTried.add(draftId.toString());
+    }
+    /** Queue rows of the draft the reaper had failed as interrupted. */
+    let interruptedSettled: bigint[] = [];
+    let sent: MailMessage | null = null;
     try {
-      await sendMessage(ctx, {
+      sent = await sendMessage(ctx, {
         // flow:F-05: a retry keeps the original's kind of mail.
         mode: sendModeFromHeaders(original.headers),
         mailboxId: original.mailboxId,
@@ -1825,30 +2226,101 @@ export async function retrySend(
         html: original.bodyHtml ?? undefined,
         inReplyTo: original.inReplyTo ?? undefined,
         references: original.references,
-        sourceDraftId: original.sourceDraftId ?? undefined,
+        sourceDraftId: draftId ?? undefined,
+        // flow:F-07: a retry is the original email again, so it keeps the
+        // original's origin (a retried cold email waits for go-live too).
+        origin: await originOfSentMessage(ctx, original),
+        // PC-10 (I013): the queue rows behind this draft are settled in the
+        // same transaction — they no longer stay 'failed' after the email
+        // went out, and a requeued copy cannot send it again. Every other
+        // failed copy of the draft leaves Errors in the same step.
+        onPersisted: draftId
+          ? async (tx, message) => {
+              const settled = await markDraftQueueEntriesSent(tx, {
+                workspaceId: ctx.workspaceId,
+                draftId,
+                messageId: message.id,
+              });
+              interruptedSettled = settled.interrupted;
+              await trashEarlierFailedCopies(tx, {
+                workspaceId: ctx.workspaceId,
+                draftId,
+                deliveredMessageId: message.id,
+              });
+            }
+          : undefined,
         providerOverride,
       });
-      // Trash the original so a successful retry actually clears the
-      // Errors folder. The full history stays in audit_log + the row
-      // is recoverable from Trash if the operator needs to inspect it.
+    } catch (err) {
+      // PC-10: an error after the server took the message is not a failed
+      // retry — the email went out. Treat it as retried, or the original
+      // stays in Errors and the next Retry sends it a second time.
+      if (!isAfterDelivery(err)) {
+        result.errors.push({
+          id: original.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      console.error(
+        `[mail.retry_send] message ${original.id} was re-sent but not fully recorded:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    // Trash the original so a successful retry actually clears the
+    // Errors folder. The full history stays in audit_log + the row
+    // is recoverable from Trash if the operator needs to inspect it.
+    try {
       const now = new Date();
       await db
         .update(mailMessages)
         .set({ trashedAt: now, updatedAt: now })
         .where(eq(mailMessages.id, original.id));
-      result.retried.push(original.id);
     } catch (err) {
-      result.errors.push({
-        id: original.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      console.error(
+        `[mail.retry_send] re-sent message ${original.id} not moved to Trash:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    result.retried.push(original.id);
+    if (sent && draftId) {
+      // Read back what the hook settled (it may have been rolled back if
+      // the message had to be recorded on its own).
+      try {
+        const settled = await db
+          .select({ id: outreachQueue.id })
+          .from(outreachQueue)
+          .where(
+            and(
+              eq(outreachQueue.workspaceId, ctx.workspaceId),
+              eq(outreachQueue.draftId, draftId),
+              eq(outreachQueue.sentMessageId, sent.id),
+            ),
+          );
+        result.queueEntriesSent.push(...settled.map((r) => r.id));
+        // The email went out: an interrupted row of the draft no longer
+        // needs anyone — close its incident (only rows the hook settled).
+        const settledIds = new Set(settled.map((r) => r.id.toString()));
+        for (const entryId of interruptedSettled) {
+          if (settledIds.has(entryId.toString())) {
+            await resolveSendInterrupted(ctx.workspaceId, entryId, null);
+          }
+        }
+      } catch (err) {
+        console.error(
+          `[mail.retry_send] settled queue rows for message ${sent.id} not read:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
 
   if (
     result.retried.length > 0 ||
     result.errors.length > 0 ||
-    result.skippedHardBounce.length > 0
+    result.skippedHardBounce.length > 0 ||
+    result.skippedAlreadySent.length > 0 ||
+    result.skippedDuplicate.length > 0
   ) {
     await recordAuditEvent(ctx, {
       kind: 'mail.retry_send',
@@ -1857,15 +2329,53 @@ export async function retrySend(
         retried: result.retried.map(String),
         skippedHardBounce: result.skippedHardBounce.map(String),
         skippedIneligible: result.skippedIneligible.map(String),
+        skippedAlreadySent: result.skippedAlreadySent.map(String),
+        skippedDuplicate: result.skippedDuplicate.map(String),
         errors: result.errors.map((e) => ({
           id: e.id.toString(),
           error: e.error,
         })),
+        queueEntriesSent: result.queueEntriesSent.map(String),
       },
     });
   }
 
   return result;
+}
+
+/** A failed copy of a draft whose email has gone out: it and the draft's
+ *  other failed copies leave Errors (best-effort — skipping the send is
+ *  what matters). */
+async function trashStaleCopies(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  originalId: bigint,
+  draftId: bigint,
+  deliveredMessageId: bigint | null,
+): Promise<void> {
+  try {
+    const now = new Date();
+    await db
+      .update(mailMessages)
+      .set({ trashedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(mailMessages.workspaceId, ctx.workspaceId),
+          eq(mailMessages.id, originalId),
+          isNull(mailMessages.trashedAt),
+        ),
+      );
+    await trashEarlierFailedCopies(db, {
+      workspaceId: ctx.workspaceId,
+      draftId,
+      deliveredMessageId,
+      now,
+    });
+  } catch (err) {
+    console.error(
+      `[mail.retry_send] stale copies of draft ${draftId} not moved to Trash:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 // ---- threading -----------------------------------------------------
@@ -1912,10 +2422,7 @@ async function ensureThread(
         .where(eq(mailThreads.id, linked[0].threadId))
         .limit(1);
       if (threadRows[0]) {
-        const merged = mergeUniqueLower([
-          ...threadRows[0].participants,
-          ...input.participants,
-        ]);
+        const merged = mergeUniqueLower([...threadRows[0].participants, ...input.participants]);
         if (merged.length !== threadRows[0].participants.length) {
           await db
             .update(mailThreads)
@@ -1940,10 +2447,7 @@ async function ensureThread(
     .limit(1);
   if (existing[0]) {
     // Merge participants (lowercased + deduped).
-    const merged = mergeUniqueLower([
-      ...existing[0].participants,
-      ...input.participants,
-    ]);
+    const merged = mergeUniqueLower([...existing[0].participants, ...input.participants]);
     if (merged.length !== existing[0].participants.length) {
       await db
         .update(mailThreads)

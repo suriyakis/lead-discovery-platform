@@ -132,6 +132,7 @@ describe('scheduleFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -184,6 +185,7 @@ describe('scheduleFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -229,6 +231,7 @@ describe('scheduleFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -268,6 +271,7 @@ describe('cancelFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -324,6 +328,7 @@ describe('sendMessage auto-schedule trigger (P58)', () => {
     // Send first — no lead link yet.
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -358,6 +363,7 @@ describe('sendMessage auto-schedule trigger (P58)', () => {
     });
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Re: Hi',
@@ -435,6 +441,7 @@ describe('processDueFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -508,6 +515,7 @@ describe('processDueFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -563,6 +571,7 @@ describe('processDueFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -633,6 +642,7 @@ describe('processDueFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -706,6 +716,7 @@ describe('processDueFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -795,6 +806,7 @@ describe('processDueFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -864,6 +876,7 @@ describe('processDueFollowUps (P58)', () => {
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',
@@ -968,6 +981,7 @@ describe('processDueFollowUps — inbound relevance on the thread (flow:F-01)', 
     const provider = new MockMailProvider();
     const sent = await sendMessage(c, {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: mb.id,
       to: [{ address: 'lead@target.com' }],
       subject: 'Hi',

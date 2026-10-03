@@ -25,6 +25,8 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import bcrypt from 'bcryptjs';
 import * as s from '../src/lib/db/schema';
+import { polarityForRule, type LessonCategory } from '../src/lib/services/learning-categories';
+import type { UsageKind } from '../src/lib/kinds/usage';
 
 // Only ever usable against the throwaway databases allowed below.
 const DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD || 'demo-local-only-password';
@@ -551,11 +553,14 @@ async function main(): Promise<void> {
       autoTopupEnabled: true,
       autoTopupPackId: 'pack_m',
       autoTopupLastAt: null,
+      // flow:F-07: the demo workspace shows a live outreach pipeline, so it
+      // is released (new workspaces start not live).
+      outreachLiveAt: ago(30),
+      outreachLiveByUserId: ADMIN_ID,
       healthCheckEnabled: true,
       healthCheckIntervalDays: 7,
       healthCheckLastAt: ago(1, 4),
       autoDraftReplies: true,
-      autoSendReplies: false,
       followUpEnabled: true,
       followUpIntervalDays: 6,
       followUpMaxSteps: 3,
@@ -1544,7 +1549,6 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     fixedDelayMinutes: 15,
     randomDelayMinMinutes: 4,
     randomDelayMaxMinutes: 25,
-    emergencyPause: false,
     updatedBy: ADMIN_ID,
     updatedAt: ago(12),
   });
@@ -2960,12 +2964,9 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   await db.insert(s.autopilotSettings).values({
     workspaceId: A,
     autopilotEnabled: true,
-    emergencyPause: false,
     enableAutoApproveProjects: true,
     autoApproveThreshold: 82,
     enableAutoEnqueueOutreach: true,
-    enableAutoDrainQueue: true,
-    enableAutoSyncInbound: true,
     enableAutoCrmContactSync: true,
     enableAutoCrmDealOnQualified: false,
     maxApprovalsPerRun: 15,
@@ -2985,11 +2986,9 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     const runId = uuidish();
     const at = ago(d, h);
     const steps: [string, string, string, string | null][] = [
-      ['guard', 'success', 'Plan Pro · tokens OK · emergency pause off', null],
-      ['auto_sync_inbound', 'success', `Synced 2 mailbox(es): ${between(0, 4)} new inbound message(s)`, null],
+      ['guard', 'success', 'Plan Pro · tokens OK · not paused', null],
       ['auto_approve_projects', d === 4 ? 'skipped' : 'success', d === 4 ? 'No review items above threshold 82' : `Auto-approved ${between(1, 3)} item(s) ≥ 82`, d === 4 ? null : 'review_item'],
       ['auto_enqueue_outreach', 'success', `Enqueued ${between(1, 3)} approved draft(s) to sales@${MAIL_DOMAIN}`, 'outreach_queue'],
-      ['auto_drain_queue', d === 1 ? 'error' : 'success', d === 1 ? 'SMTP 421 from smtp.example.com — 1 item will retry' : `Dispatched ${between(1, 4)} queued message(s)`, null],
       ['auto_crm_contact_sync', 'success', 'Pushed 1 contact to HubSpot', 'qualified_lead'],
       ['auto_crm_deal_on_qualified', 'skipped', 'Disabled in workspace settings', null],
     ];
@@ -3016,34 +3015,56 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   const ksRows = await db
     .insert(s.knowledgeSources)
     .values([
-      { workspaceId: A, kind: 'document', documentId: doc(0).id, title: 'AG10 datasheet', summary: 'Thermal conductivity, temperature range, thickness tables and installation notes for NW-AG10.', language: 'en', purposeCategory: 'technical', tags: ['datasheet'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(33), createdBy: MEMBER_ID, createdAt: ago(33), updatedAt: ago(33) },
-      { workspaceId: A, kind: 'document', documentId: doc(1).id, title: 'Karta techniczna NW-MW Facade', summary: 'Parametry płyt 70/90/110 kg/m³, klasyfikacje ogniowe, zalecenia montażowe.', language: 'pl', purposeCategory: 'technical', tags: ['karta-techniczna'], productProfileIds: [P.wool], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(31), createdBy: MEMBER_ID, createdAt: ago(31), updatedAt: ago(31) },
-      { workspaceId: A, kind: 'document', documentId: doc(2).id, title: 'EN 1366-3 test configurations', summary: 'Tested penetration configurations (cables, PVC/PE pipes, metal pipes) with EI ratings.', language: 'en', purposeCategory: 'technical', tags: ['test-report'], productProfileIds: [P.sealant], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(28), createdBy: ADMIN_ID, createdAt: ago(28), updatedAt: ago(28) },
-      { workspaceId: A, kind: 'document', documentId: doc(3).id, title: 'Teesside retrofit case study', summary: '600 m of cold lines re-insulated in half the usual time using 10 mm AG10.', language: 'en', purposeCategory: 'case_study', tags: ['case-study'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(21), createdBy: MEMBER_ID, createdAt: ago(21), updatedAt: ago(21) },
-      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/products/aerogel-blankets', title: 'Aerogel blankets — product page', summary: 'Public product page with applications and FAQs.', language: 'en', purposeCategory: 'marketing', tags: ['website'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(19), createdBy: ADMIN_ID, createdAt: ago(19), updatedAt: ago(19) },
-      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/guides/fire-stopping-installation', title: 'Fire stopping installation guide', summary: null, language: 'en', purposeCategory: 'technical', tags: ['guide'], productProfileIds: [P.sealant], externalProviderId: 'pgvector', externalStatus: 'failed', externalError: 'Fetch failed: HTTP 404 Not Found', createdBy: MEMBER_ID, createdAt: ago(6), updatedAt: ago(6) },
-      { workspaceId: A, kind: 'text', textExcerpt: 'Objection: "Aerogel is too expensive." Answer: compare installed cost per metre, not material cost — thinner insulation saves scaffolding days and avoids re-spacing lines. Typical payback via labour alone on congested racks.', title: 'Objection handling — price', summary: 'How to answer the "too expensive" objection.', language: 'en', purposeCategory: 'objection_handling', tags: ['sales'], productProfileIds: [P.aerogel], externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(12), createdBy: MEMBER_ID, createdAt: ago(12), updatedAt: ago(12) },
-      { workspaceId: A, kind: 'text', textExcerpt: 'Internal: we do not yet hold a German abZ for the sealant range; quote EN 1366-3 classification only. Expected abZ Q2 2027.', title: 'Internal note — DE approvals', summary: null, language: 'en', purposeCategory: 'internal_note', tags: ['internal', 'de'], productProfileIds: [P.sealant], externalStatus: 'pending', createdBy: ADMIN_ID, createdAt: ago(0, 6), updatedAt: ago(0, 6) },
+      { workspaceId: A, kind: 'document', documentId: doc(0).id, title: 'AG10 datasheet', summary: 'Thermal conductivity, temperature range, thickness tables and installation notes for NW-AG10.', language: 'en', purposeCategory: 'technical', tags: ['datasheet'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(33), indexStatus: 'indexed', indexedAt: ago(33), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: MEMBER_ID, createdAt: ago(33), updatedAt: ago(33) },
+      { workspaceId: A, kind: 'document', documentId: doc(1).id, title: 'Karta techniczna NW-MW Facade', summary: 'Parametry płyt 70/90/110 kg/m³, klasyfikacje ogniowe, zalecenia montażowe.', language: 'pl', purposeCategory: 'technical', tags: ['karta-techniczna'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(31), indexStatus: 'indexed', indexedAt: ago(31), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: MEMBER_ID, createdAt: ago(31), updatedAt: ago(31) },
+      { workspaceId: A, kind: 'document', documentId: doc(2).id, title: 'EN 1366-3 test configurations', summary: 'Tested penetration configurations (cables, PVC/PE pipes, metal pipes) with EI ratings.', language: 'en', purposeCategory: 'technical', tags: ['test-report'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(28), indexStatus: 'indexed', indexedAt: ago(28), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: ADMIN_ID, createdAt: ago(28), updatedAt: ago(28) },
+      { workspaceId: A, kind: 'document', documentId: doc(3).id, title: 'Teesside retrofit case study', summary: '600 m of cold lines re-insulated in half the usual time using 10 mm AG10.', language: 'en', purposeCategory: 'case_study', tags: ['case-study'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(21), indexStatus: 'indexed', indexedAt: ago(21), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: MEMBER_ID, createdAt: ago(21), updatedAt: ago(21) },
+      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/products/aerogel-blankets', title: 'Aerogel blankets — product page', summary: 'Public product page with applications and FAQs.', language: 'en', purposeCategory: 'marketing', tags: ['website'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(19), indexStatus: 'indexed', indexedAt: ago(19), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: ADMIN_ID, createdAt: ago(19), updatedAt: ago(19) },
+      { workspaceId: A, kind: 'url', url: 'https://northwind-insulation.example.com/guides/fire-stopping-installation', title: 'Fire stopping installation guide', summary: null, language: 'en', purposeCategory: 'technical', tags: ['guide'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'failed', externalError: 'Fetch failed: HTTP 404 Not Found', indexStatus: 'failed', lastIndexError: 'Fetch failed: HTTP 404 Not Found', createdBy: MEMBER_ID, createdAt: ago(6), updatedAt: ago(6) },
+      { workspaceId: A, kind: 'text', textExcerpt: 'Objection: "Aerogel is too expensive." Answer: compare installed cost per metre, not material cost — thinner insulation saves scaffolding days and avoids re-spacing lines. Typical payback via labour alone on congested racks.', title: 'Objection handling — price', summary: 'How to answer the "too expensive" objection.', language: 'en', purposeCategory: 'objection_handling', tags: ['sales'], scopeKind: 'products', externalProviderId: 'pgvector', externalStatus: 'indexed', externalIndexedAt: ago(12), indexStatus: 'indexed', indexedAt: ago(12), indexedEmbeddingModel: 'text-embedding-3-small', createdBy: MEMBER_ID, createdAt: ago(12), updatedAt: ago(12) },
+      { workspaceId: A, kind: 'text', textExcerpt: 'Internal: we do not yet hold a German abZ for the sealant range; quote EN 1366-3 classification only. Expected abZ Q2 2027.', title: 'Internal note — DE approvals', summary: null, language: 'en', purposeCategory: 'internal_note', tags: ['internal', 'de'], scopeKind: 'products', externalStatus: 'pending', indexStatus: 'stale', createdBy: ADMIN_ID, createdAt: ago(0, 6), updatedAt: ago(0, 6) },
     ])
     .returning();
-  await db.update(s.productProfiles).set({ documentSourceIds: [doc(0).id, doc(3).id] }).where(eqId(s.productProfiles.id, P.aerogel));
-  await db.update(s.productProfiles).set({ documentSourceIds: [doc(1).id] }).where(eqId(s.productProfiles.id, P.wool));
-  await db.update(s.productProfiles).set({ documentSourceIds: [doc(2).id] }).where(eqId(s.productProfiles.id, P.sealant));
+  // KL-05: scope rows (knowledge_source_products), one list per source above.
+  const KS_PRODUCTS: bigint[][] = [
+    [P.aerogel],
+    [P.wool],
+    [P.sealant],
+    [P.aerogel],
+    [P.aerogel],
+    [P.sealant],
+    [P.aerogel],
+    [P.sealant],
+  ];
+  await db.insert(s.knowledgeSourceProducts).values(
+    ksRows.flatMap((ks, i) =>
+      must(KS_PRODUCTS[i], `ks products ${i}`).map((productProfileId) => ({
+        sourceId: ks.id,
+        workspaceId: A,
+        productProfileId,
+      })),
+    ),
+  );
 
   const chunkRows: s.NewDocumentChunk[] = [];
   const jobRows: s.NewIndexingJob[] = [];
   for (const ks of ksRows) {
-    if (ks.externalStatus !== 'indexed') {
-      jobRows.push({ workspaceId: A, knowledgeSourceId: ks.id, status: ks.externalStatus === 'failed' ? 'failed' : 'queued', error: ks.externalError ?? null, startedAt: ks.externalStatus === 'failed' ? ks.createdAt : null, finishedAt: ks.externalStatus === 'failed' ? plus(ks.createdAt, 4_000) : null, triggeredBy: ks.createdBy, createdAt: ks.createdAt });
+    // KL-06 honest status: a seeded source is never left 'queued' — with
+    // no worker draining the outbox (e2e and demo copies run with
+    // SCHEDULE_BACKGROUND_JOBS=0) it would never settle and /knowledge
+    // would poll forever. The never-indexed one is 'stale' ("Not indexed
+    // yet", Re-index) with no run; the failed one keeps its failed run.
+    if (ks.externalStatus === 'failed') {
+      jobRows.push({ workspaceId: A, knowledgeSourceId: ks.id, status: 'failed', error: ks.externalError ?? null, attempts: 1, reason: 'create', startedAt: ks.createdAt, finishedAt: plus(ks.createdAt, 4_000), triggeredBy: ks.createdBy, createdAt: ks.createdAt });
       continue;
     }
+    if (ks.externalStatus !== 'indexed') continue;
     const n = between(2, 5);
     const base = ks.summary ?? ks.textExcerpt ?? ks.title;
     for (let i = 0; i < n; i++) {
       const content = `${ks.title} — part ${i + 1}. ${base} ${i === 0 ? '' : 'See section ' + (i + 1) + ' for installation details, tolerances and worked examples.'}`.trim();
       chunkRows.push({
         workspaceId: A,
-        documentId: ks.documentId,
         knowledgeSourceId: ks.id,
         chunkIndex: i,
         startChar: i * 1800,
@@ -3057,9 +3078,12 @@ async function seedRest(ctx: RestCtx): Promise<void> {
         createdAt: ks.createdAt,
       });
     }
-    jobRows.push({ workspaceId: A, documentId: ks.documentId, knowledgeSourceId: ks.id, status: 'succeeded', chunkCount: n, embeddingModel: 'text-embedding-3-small', startedAt: ks.createdAt, finishedAt: plus(ks.createdAt, between(3, 40) * 1000), triggeredBy: ks.createdBy, createdAt: ks.createdAt });
+    jobRows.push({ workspaceId: A, knowledgeSourceId: ks.id, status: 'succeeded', chunkCount: n, embeddingModel: 'text-embedding-3-small', startedAt: ks.createdAt, finishedAt: plus(ks.createdAt, between(3, 40) * 1000), triggeredBy: ks.createdBy, createdAt: ks.createdAt });
   }
-  jobRows.push({ workspaceId: A, documentId: doc(4).id, status: 'running', startedAt: ago(0, 0, 1), triggeredBy: ADMIN_ID, createdAt: ago(0, 0, 1) });
+  // A document-level run from before KL-05, closed the way the KL-06
+  // migration closes such rows (history only: documents index through
+  // their source now).
+  jobRows.push({ workspaceId: A, documentId: doc(4).id, status: 'failed', error: 'Document-level run from before KL-05; documents are indexed through their knowledge source.', startedAt: ago(0, 0, 1), finishedAt: ago(0, 0, 1), triggeredBy: ADMIN_ID, createdAt: ago(0, 0, 1) });
   await db.insert(s.documentChunks).values(chunkRows);
   await db.insert(s.indexingJobs).values(jobRows);
   await db.insert(s.productVectorStores).values([
@@ -3069,7 +3093,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   ]);
 
   // ======================= learning =======================
-  const LESSONS: { cat: string; rule: string; src: 'operator' | 'draft_edit' | 'synthesis'; product: ProductKey | null; conf: number; enabled?: boolean; apps: number; d: number }[] = [
+  const LESSONS: { cat: LessonCategory; rule: string; src: 'operator' | 'draft_edit' | 'synthesis'; product: ProductKey | null; conf: number; enabled?: boolean; apps: number; d: number }[] = [
     { cat: 'qualification_negative', rule: 'Skip residential loft / cavity-wall installers for aerogel — they never buy industrial blankets.', src: 'operator', product: 'aerogel', conf: 92, apps: 41, d: 26 },
     { cat: 'qualification_positive', rule: 'Companies mentioning CUI programmes or cryogenic lines are strong aerogel fits even with a thin website.', src: 'synthesis', product: 'aerogel', conf: 78, apps: 33, d: 18 },
     { cat: 'false_positive', rule: 'Online insulation shops are retailers, not installers — reject even if keywords match.', src: 'operator', product: null, conf: 88, apps: 12, d: 25 },
@@ -3077,8 +3101,8 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     { cat: 'outreach_style', rule: 'Do not mention price in the first email; offer a datasheet instead.', src: 'operator', product: 'aerogel', conf: 90, apps: 49, d: 24 },
     { cat: 'contact_role', rule: 'For PL facade contractors, the "Kierownik zakupów" or technical director picks insulation — not the CEO.', src: 'synthesis', product: 'wool', conf: 72, apps: 14, d: 15 },
     { cat: 'sector_preference', rule: 'Data-centre fit-out contractors convert best for fire-rated sealants.', src: 'synthesis', product: 'sealant', conf: 68, apps: 9, d: 11 },
-    { cat: 'connector_quality', rule: 'IT directory listings older than 2 years are often defunct companies — verify the website is live.', src: 'operator', product: null, conf: 64, apps: 6, d: 14 },
-    { cat: 'dedupe_hint', rule: 'Branches of the same group (e.g. "Berlin" office of Brandschutz Krüger) should be merged as duplicates.', src: 'operator', product: null, conf: 75, apps: 4, d: 2 },
+    { cat: 'qualification_negative', rule: 'IT directory listings older than 2 years are often defunct companies — reject unless the website is live.', src: 'operator', product: null, conf: 64, apps: 6, d: 14 },
+    { cat: 'general_instruction', rule: 'Treat branches of the same group (e.g. the Berlin office of Brandschutz Krüger) as one company.', src: 'operator', product: null, conf: 75, apps: 4, d: 2 },
     { cat: 'general_instruction', rule: 'Always write to Polish prospects in Polish, with formal "Pan/Pani" tone.', src: 'operator', product: 'wool', conf: 95, apps: 28, d: 30 },
     { cat: 'reply_quality', rule: 'When a prospect asks for documents, answer in the same thread and summarise the key number in the body.', src: 'draft_edit', product: null, conf: 77, apps: 11, d: 3 },
     { cat: 'product_positioning', rule: 'Position aerogel on installed cost per metre, not material cost per m².', src: 'synthesis', product: 'aerogel', conf: 70, apps: 7, d: 9 },
@@ -3094,13 +3118,14 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   const lessonRows = await db
     .insert(s.learningLessons)
     .values(
-      LESSONS.map((l) => ({
+      LESSONS.map((l): s.NewLearningLesson => ({
         workspaceId: A,
-        productProfileId: l.product ? P[l.product] : null,
+        scopeKind: l.product ? 'products' : 'workspace',
         category: l.cat,
         rule: l.rule,
+        polarity: polarityForRule(l.cat, l.rule),
         source: l.src,
-        enabled: l.enabled ?? true,
+        lifecycle: l.enabled === false ? 'disabled' : 'active',
         confidence: l.conf,
         applicationCount: l.apps,
         lastAppliedAt: l.apps > 0 ? ago(between(0, Math.max(0, l.d - 1)), between(0, 20)) : null,
@@ -3111,6 +3136,13 @@ async function seedRest(ctx: RestCtx): Promise<void> {
       })),
     )
     .returning();
+  // KL-01: product rules name their product through lesson_scopes.
+  const scopeRows: (typeof s.lessonScopes.$inferInsert)[] = [];
+  lessonRows.forEach((lesson, i) => {
+    const product = must(LESSONS[i], 'lesson spec').product;
+    if (product) scopeRows.push({ lessonId: lesson.id, workspaceId: A, productProfileId: P[product] });
+  });
+  if (scopeRows.length > 0) await db.insert(s.lessonScopes).values(scopeRows);
   const eventRows: s.NewLearningEvent[] = [];
   lessonRows.forEach((lesson, i) => {
     const spec = must(LESSONS[i], 'lesson spec');
@@ -3122,7 +3154,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
         userId: spec.src === 'synthesis' ? pick([MEMBER_ID, ADMIN_ID]) : lesson.createdBy,
         entityType: spec.src === 'draft_edit' ? 'outreach_draft' : 'review_item',
         entityId: sd.reviewItemId.toString(),
-        productProfileId: lesson.productProfileId,
+        productProfileId: spec.product ? P[spec.product] : null,
         actionType: spec.cat,
         originalComment: spec.src === 'draft_edit' ? 'Operator shortened the draft and removed the price mention.' : pick(['Not our customer.', 'Good fit — keep these.', 'Wrong person, redirect next time.', 'Duplicate branch.', null]),
         extractedLessonId: lesson.id,
@@ -3231,7 +3263,10 @@ async function seedRest(ctx: RestCtx): Promise<void> {
   ]);
 
   // ======================= usage + token ledger =======================
-  const USAGE_KINDS: { kind: string; provider: string; perDay: [number, number]; units: [number, number]; cents: [number, number] }[] = [
+  // Kinds are the registered usage kinds (src/lib/kinds/usage.ts), so the
+  // Usage page shows the demo with the labels production rows get.
+  // `uploads` marks the knowledge-upload bursts (embedding + OCR days).
+  const USAGE_KINDS: { kind: UsageKind; provider: string; perDay: [number, number]; units: [number, number]; cents: [number, number]; uploads?: true }[] = [
     { kind: 'ai.qualification', provider: 'gemini', perDay: [1, 3], units: [18_000, 90_000], cents: [10, 32] },
     { kind: 'ai.outreach', provider: 'openai', perDay: [1, 3], units: [3_000, 9_000], cents: [6, 18] },
     { kind: 'ai.suggestion', provider: 'openai', perDay: [0, 2], units: [1_500, 4_000], cents: [3, 9] },
@@ -3239,14 +3274,14 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     { kind: 'research.query', provider: 'gemini', perDay: [0, 2], units: [1, 1], cents: [6, 14] },
     { kind: 'search.query', provider: 'serpapi', perDay: [1, 3], units: [4, 12], cents: [5, 15] },
     { kind: 'embedding.embed', provider: 'openai', perDay: [0, 1], units: [5_000, 60_000], cents: [1, 3] },
-    { kind: 'rag.index_knowledge_source', provider: 'openai', perDay: [0, 0], units: [3, 12], cents: [1, 2] },
+    { kind: 'embedding.embed', provider: 'openai', perDay: [0, 0], units: [3_000, 12_000], cents: [1, 2], uploads: true },
     { kind: 'ocr.pdf', provider: 'mistral', perDay: [0, 0], units: [2, 14], cents: [2, 8] },
     { kind: 'ai.health_check', provider: 'anthropic', perDay: [0, 0], units: [20_000, 40_000], cents: [40, 70] },
     { kind: 'ai.learning_synthesis', provider: 'openai', perDay: [0, 0], units: [10_000, 30_000], cents: [15, 35] },
   ];
   const usagePayload = (kind: string, provider: string, units: number): Record<string, unknown> => {
     const model =
-      provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'anthropic' ? 'claude-sonnet-4-6' : provider === 'mistral' ? 'mistral-ocr-latest' : kind === 'embedding.embed' || kind.startsWith('rag.') ? 'text-embedding-3-small' : 'gpt-5-mini';
+      provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'anthropic' ? 'claude-sonnet-4-6' : provider === 'mistral' ? 'mistral-ocr-latest' : kind === 'embedding.embed' ? 'text-embedding-3-small' : 'gpt-5-mini';
     if (kind.startsWith('ai.')) {
       const inputTokens = Math.round(units * 0.82);
       return { model, inputTokens, outputTokens: units - inputTokens, keySource: 'platform' };
@@ -3255,7 +3290,6 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     if (kind === 'search.query') return { query: pick(RECIPES.flatMap((r) => r.queries)), keySource: 'platform' };
     if (kind === 'research.query') return { keySource: 'platform', inputTokens: between(800, 2400), outputTokens: between(300, 900), searchQueries: between(2, 5) };
     if (kind === 'ocr.pdf') return { model, filename: pick(['NW-FS-EN1366-3-summary.pdf', 'supplier-cert-scan.pdf']), pages: units, keySource: 'platform' };
-    if (kind.startsWith('rag.')) return { chunkCount: units, model };
     return { keySource: 'platform' };
   };
   const usageRows: s.NewUsageLogEntry[] = [];
@@ -3263,7 +3297,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
     for (const k of USAGE_KINDS) {
       let n = between(k.perDay[0], k.perDay[1]);
       if ((k.kind === 'ai.health_check' && (d === 8 || d === 1)) || (k.kind === 'ai.learning_synthesis' && (d === 4 || d === 11 || d === 18 || d === 25))) n = 1;
-      if ((k.kind === 'rag.index_knowledge_source' || k.kind === 'ocr.pdf') && [33, 31, 28, 21, 19, 12, 6].map((x) => x - 4).includes(d)) n = 1;
+      if ((k.uploads || k.kind === 'ocr.pdf') && [33, 31, 28, 21, 19, 12, 6].map((x) => x - 4).includes(d)) n = 1;
       for (let i = 0; i < n; i++) {
         const cents = between(k.cents[0], k.cents[1]);
         const units = between(k.units[0], k.units[1]);

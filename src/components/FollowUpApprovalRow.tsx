@@ -8,6 +8,7 @@
 
 import { useState, type CSSProperties } from 'react';
 import { Languages } from 'lucide-react';
+import { ExpectedWorkspaceField, useExpectedWorkspaceHeaders } from './WorkspaceGuard';
 
 interface Props {
   id: string;
@@ -16,6 +17,9 @@ interface Props {
   /** Recipient's resolved language, or null when it matches native / no lead. */
   targetLanguage: string | null;
   approveAction: (formData: FormData) => void | Promise<void>;
+  /** PC-05: automation is paused — approving sends only after "send
+   *  anyway" (posted as confirmPaused, audited by the server). */
+  automationPaused?: boolean;
 }
 
 export function FollowUpApprovalRow({
@@ -24,6 +28,7 @@ export function FollowUpApprovalRow({
   stagedBody,
   targetLanguage,
   approveAction,
+  automationPaused = false,
 }: Props) {
   const [subject, setSubject] = useState(stagedSubject);
   const [body, setBody] = useState(stagedBody);
@@ -32,6 +37,10 @@ export function FollowUpApprovalRow({
   const [shown, setShown] = useState(false);
   const [translating, setTranslating] = useState(false);
   const [error, setError] = useState('');
+
+  // MOB-06: the translation spends and the approval sends in the page's
+  // workspace — both carry it.
+  const guardHeaders = useExpectedWorkspaceHeaders();
 
   const canTranslate = Boolean(targetLanguage);
   const isRtl = targetLanguage === 'he' || targetLanguage === 'ar';
@@ -43,7 +52,7 @@ export function FollowUpApprovalRow({
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guardHeaders },
         body: JSON.stringify({ subject, body, targetLanguage }),
       });
       const j = (await res.json().catch(() => ({}))) as {
@@ -80,6 +89,7 @@ export function FollowUpApprovalRow({
       style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}
     >
       <input type="hidden" name="id" value={id} />
+      <ExpectedWorkspaceField />
       <label style={col}>
         <span style={lbl} className="muted">
           Subject
@@ -108,7 +118,7 @@ export function FollowUpApprovalRow({
             if (shown) setShown(false);
           }}
           required
-          style={{ width: '100%', fontSize: '0.88rem', lineHeight: 1.55, padding: '0.5rem', resize: 'vertical' }}
+          style={{ width: '100%' }}
         />
       </label>
 
@@ -161,7 +171,7 @@ export function FollowUpApprovalRow({
               value={tBody}
               onChange={(e) => setTBody(e.target.value)}
               dir={isRtl ? 'rtl' : 'ltr'}
-              style={{ width: '100%', fontSize: '0.88rem', lineHeight: 1.55, padding: '0.5rem', resize: 'vertical' }}
+              style={{ width: '100%' }}
             />
           </label>
         </>
@@ -171,6 +181,15 @@ export function FollowUpApprovalRow({
         <span className="form-error" style={{ fontSize: '0.8em' }}>
           {error}
         </span>
+      ) : null}
+
+      {automationPaused ? (
+        <label className="checkbox-row">
+          <input type="checkbox" name="confirmPaused" value="on" required />
+          <span>
+            Automation is paused. Send this follow-up anyway (recorded in the audit log).
+          </span>
+        </label>
       ) : null}
 
       <div className="action-row" style={{ display: 'flex', gap: '0.4rem' }}>

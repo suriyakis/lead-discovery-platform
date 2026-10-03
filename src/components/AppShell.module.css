@@ -1,0 +1,135 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* AppShell's god-mode banner (DS-08: the crown is a Lucide icon and the
+ * colours are tokens, not inline literals). The Direction A banner in the
+ * danger tone: a danger tint over the page, a danger rule beneath, the
+ * crown in danger, text in --fg.
+ *
+ * The header's right slot (DS-05; moved out of legacy.css in the DS-06
+ * review): the notifications bell and the account menu, a plain <details>
+ * (no JS) at every width: who you are, My account, Help & support and
+ * Sign out. */
+
+@layer components {
+  .godMode {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+    padding: var(--space-2) var(--gutter);
+    background: color-mix(in oklab, var(--danger) 12%, var(--bg));
+    border-bottom: 1px solid var(--danger-line);
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+
+  .godModeIcon {
+    flex: none;
+    color: var(--danger);
+  }
+
+  .godModeText {
+    min-width: 0;
+  }
+
+  /* The legacy .ghost-btn greys its text and border; on the banner they
+     follow the banner's text. */
+  .godModeExit,
+  .godModeExit:hover {
+    color: inherit;
+    border-color: currentColor;
+  }
+
+  /* ---- The bell: it counts events, so its count is neutral ---- */
+  .bell {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-1);
+    color: var(--fg-muted);
+    text-decoration: none;
+  }
+
+  .bell:hover {
+    color: var(--fg);
+    text-decoration: none;
+  }
+
+  .bellCount {
+    position: absolute;
+    top: calc(-1 * var(--space-1));
+    right: calc(-1 * var(--space-2));
+    min-width: 1.1rem;
+    padding: 1px var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--surface-input);
+    color: var(--fg);
+    font-size: var(--text-label);
+    font-weight: var(--weight-numeral);
+    text-align: center;
+  }
+
+  /* ---- The account menu ---- */
+  .accountMenu {
+    display: block;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .accountMenu > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+    padding: var(--space-1_5);
+    list-style: none;
+  }
+
+  .accountMenu > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .accountPanel {
+    position: absolute;
+    top: calc(100% + var(--space-2));
+    right: 0;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+    width: max-content;
+    min-width: 12rem;
+    max-width: calc(100vw - 2rem);
+    padding: calc(var(--space-3) + var(--space-0_5)) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-pop);
+  }
+
+  .accountWho {
+    overflow-wrap: anywhere;
+  }
+
+  .accountLinks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .accountLinks a {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--fg);
+  }
+}

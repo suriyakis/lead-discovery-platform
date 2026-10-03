@@ -3,6 +3,10 @@
 // Generic on-demand translation for compose/reply UIs: translate a subject +
 // body into a target language (hinting the workspace native language as the
 // source). No-op when the target equals the native language. Workspace-scoped.
+//
+// MOB-06: guarded (it spends tokens) — the caller sends the page's
+// workspace as the x-expected-workspace header; after a switch in another
+// tab it answers 409 workspace_changed before anything is spent.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -12,7 +16,8 @@ import { authErrorToResponse } from '@/lib/services/http';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
 import { translateText } from '@/lib/services/translation';
 import { TokenError, assertTokens } from '@/lib/services/token-ledger';
-import { rateLimitAllow } from '@/lib/rate-limit';
+import { rateLimitCheck, retryAfterHeaders } from '@/lib/rate-limit';
+import { withWorkspaceGuardRoute } from '@/lib/workspace-guard/server';
 
 const InputSchema = z.object({
   subject: z.string().max(998).optional().default(''),
@@ -20,7 +25,7 @@ const InputSchema = z.object({
   targetLanguage: z.string().min(2).max(10),
 });
 
-export async function POST(req: Request): Promise<NextResponse> {
+async function handlePost(req: Request): Promise<NextResponse> {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -48,10 +53,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, subject: parsed.subject, body: parsed.body });
   }
 
-  if (!rateLimitAllow(`translate:ws:${ctx.workspaceId}`, 30, 60_000)) {
+  const limit = await rateLimitCheck(`translate:ws:${ctx.workspaceId}`, 30, 60_000);
+  if (!limit.allowed) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many translations — try again in a minute.' },
-      { status: 429 },
+      { status: 429, headers: retryAfterHeaders(limit) },
     );
   }
 
@@ -85,3 +91,5 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'translate_failed', detail }, { status: 500 });
   }
 }
+
+export const POST = withWorkspaceGuardRoute('communication.translate', handlePost);

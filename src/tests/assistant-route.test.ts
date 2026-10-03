@@ -25,6 +25,7 @@ import {
 } from '@/lib/ai';
 import { _resetRateLimitsForTests } from '@/lib/rate-limit';
 import { makeWorkspaceContext } from '@/lib/services/context';
+import { resolveWorkspaceContextForUser } from '@/lib/services/workspace-resolution';
 import { updateProviderSettings } from '@/lib/services/provider-settings';
 import { summarizeUsage, summarizeUsageByKeySource } from '@/lib/services/usage';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
@@ -67,8 +68,33 @@ function post(url: string, body: unknown): Request {
   });
 }
 
-function ask(question: string): Promise<Response> {
-  return assistantPOST(post('/api/assistant', { question }));
+/**
+ * MOB-06: /api/assistant is guarded — the panel sends the workspace its
+ * page was rendered for, i.e. the one the signed-in user resolves to.
+ */
+async function askPost(body: unknown): Promise<Request> {
+  const signed = await authMock();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (signed) {
+    try {
+      const page = await resolveWorkspaceContextForUser(
+        signed.user.id,
+        signed.user.role === 'super_admin',
+      );
+      headers['x-expected-workspace'] = page.workspaceId.toString();
+    } catch {
+      // no workspace: the route answers that itself
+    }
+  }
+  return new Request('http://localhost/api/assistant', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+async function ask(question: string): Promise<Response> {
+  return assistantPOST(await askPost({ question }));
 }
 
 class StubProvider implements IAIProvider {
@@ -107,7 +133,7 @@ async function world(): Promise<World> {
 
 beforeEach(async () => {
   await truncateAll();
-  _resetRateLimitsForTests();
+  await _resetRateLimitsForTests();
   authMock.mockReset();
 });
 
@@ -202,6 +228,8 @@ describe('POST /api/assistant', () => {
     expect(body.source).toBe('deterministic');
     expect(body.answer).toContain('[/settings/billing]');
     expect(body.findings).toContain('tokens.empty');
+    // MOB-06: the answer says which workspace its links belong to.
+    expect(body.workspaceId).toBe(w.workspaceId.toString());
   });
 
   it('a 5,000-character earlier answer in the history is clipped, not a 400', async () => {
@@ -215,7 +243,7 @@ describe('POST /api/assistant', () => {
     });
     _setAIProviderForTests(stub);
     const res = await assistantPOST(
-      post('/api/assistant', {
+      await askPost({
         question: 'and the emergency pause?',
         history: [
           { role: 'user', content: 'explain autopilot' },

@@ -1,14 +1,17 @@
-// flow:F-04 (X7, I095, I021) — failing-mailbox visibility and backoff.
+// flow:F-04 (X7, I095, I021) — failing-mailbox visibility and backoff, as
+// PC-09 left it:
 //   - every failed sync leaves a non-null imap_next_sync_after;
 //   - crossing the failure threshold (or a refused login) marks the
-//     mailbox failing and raises exactly one mailbox.failing
-//     notification; repeats are deduped while it is unread;
-//   - a failing mailbox is re-checked (SMTP + IMAP) on a gate that grows
-//     with the episode (1 h / 6 h after a refused login, cap 24 h) and
-//     recovers on a pass, resolving its notification;
-//   - the IMAP tick adopts legacy failing rows (no gate) without a
-//     connection attempt — one notification each, within one tick;
+//     mailbox failing with a failure class and raises exactly one
+//     mailbox.failing notification per owner / admin; a repeat in the same
+//     class adds none, a class change replaces it;
+//   - a person's Sync of a failing mailbox checks it (SMTP + IMAP) first
+//     and recovers it on a pass, resolving its notification;
+//   - the IMAP tick never touches a failing mailbox (no adoption pass, no
+//     re-check): recovery is the health probes' (mailbox-health-pc09);
 //   - the health check lists every failing mailbox by name with a link.
+// The PC-09 probe schedule, incidents and backfill are pinned in
+// src/tests/mailbox-health-pc09.test.ts.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
@@ -16,6 +19,7 @@ import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { mailboxes, type Mailbox } from '@/lib/db/schema/mailing';
 import { notifications } from '@/lib/db/schema/notifications';
+import { opsEvents } from '@/lib/db/schema/ops';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import type {
   ConnectionTestResult,
@@ -31,6 +35,7 @@ import { safeSyncOne } from '@/lib/services/mail';
 import {
   _setMailProviderFactoryForTests,
   createMailbox,
+  mailboxFailingDedupeKey,
   markMailboxFailing,
   pauseMailbox,
   reactivateMailbox,
@@ -135,11 +140,23 @@ function imapflowAuthError(): Error {
   });
 }
 
-function expectGate(mb: Mailbox, fromNowMs: number, slackMs = 2 * MINUTE): void {
-  expect(mb.imapNextSyncAfter).not.toBeNull();
-  const delta = mb.imapNextSyncAfter!.getTime() - Date.now();
+function expectWithin(at: Date | null, fromNowMs: number, slackMs = 2 * MINUTE): void {
+  expect(at).not.toBeNull();
+  const delta = at!.getTime() - Date.now();
   expect(delta).toBeGreaterThan(fromNowMs - slackMs);
   expect(delta).toBeLessThan(fromNowMs + slackMs);
+}
+
+/** PC-09: the next health probe of a failing mailbox. */
+function expectProbeIn(mb: Mailbox, fromNowMs: number): void {
+  expectWithin(mb.nextProbeAt, fromNowMs);
+}
+
+async function openIncidents(workspaceId: bigint) {
+  return db
+    .select()
+    .from(opsEvents)
+    .where(and(eq(opsEvents.workspaceId, workspaceId), eq(opsEvents.kind, 'mailbox.failing')));
 }
 
 let provider: ScriptedProvider;
@@ -178,24 +195,30 @@ describe('safeSyncOne failure bookkeeping (F-04)', () => {
     }
     expect(await failingNotices(s.workspaceId)).toHaveLength(0);
 
-    // The threshold-th failure pauses it.
+    // The threshold-th failure pauses it: a network failure, so class
+    // 'connection' and the first credential-free probe in 30 minutes.
     const paused = await safeSyncOne(s.c, await row(mb.id));
     expect(paused.kind).toBe('failing');
     let r = await row(mb.id);
     expect(r.status).toBe('failing');
     expect(r.failingSince).not.toBeNull();
-    expectGate(r, HOUR);
+    expect(r.failureClass).toBe('connection');
+    expectProbeIn(r, 30 * MINUTE);
     let notes = await failingNotices(s.workspaceId);
     expect(notes).toHaveLength(1);
-    expect(notes[0]!.href).toBe(`/mailbox/${mb.id}`);
-    // Targeted at the workspace's only admin (its owner), deduped per admin.
+    expect(notes[0]!.href).toBe(`/mailbox/${mb.id}#fix`);
+    // Targeted at the workspace's only admin (its owner), deduped per admin
+    // under the incident's fingerprint (PC-09).
     expect(notes[0]!.userId).toBe(s.ownerId);
-    expect(notes[0]!.dedupeKey).toBe(`mailbox.failing:${mb.id}:user:${s.ownerId}`);
+    expect(notes[0]!.dedupeKey).toBe(
+      `${mailboxFailingDedupeKey(s.workspaceId, mb.id)}:user:${s.ownerId}`,
+    );
     expect(notes[0]!.title).toBe('Mailbox "sales" is failing');
     expect(notes[0]!.body).toContain('Replies to it are not read');
 
-    // A failing mailbox is re-checked, not synced; the failed re-check
-    // refreshes the gate but the unread notification is not repeated.
+    // A person's Sync of a failing mailbox checks it, it does not sync it;
+    // the failed check (same class) keeps the probe schedule and repeats
+    // no notification.
     provider.test = { smtp: { ok: true }, imap: { ok: false, detail: 'Socket timed out after 20000ms' } };
     const fetchesBefore = provider.fetchCalls;
     const again = await safeSyncOne(s.c, r);
@@ -206,14 +229,19 @@ describe('safeSyncOne failure bookkeeping (F-04)', () => {
     r = await row(mb.id);
     expect(r.status).toBe('failing');
     expect(r.imapConsecutiveFailures).toBe(TRANSIENT_FAILURE_PAUSE_THRESHOLD + 1);
-    expect(r.imapNextSyncAfter).not.toBeNull();
+    expect(r.failureClass).toBe('connection');
+    expectProbeIn(r, 30 * MINUTE);
     notes = await failingNotices(s.workspaceId);
     expect(notes).toHaveLength(1);
     expect(notes[0]!.readAt).toBeNull();
     expect(await auditKinds(s.workspaceId, 'mailbox.marked_failing')).toHaveLength(1);
+    // One incident, two occurrences (the sync and the check).
+    const incidents = await openIncidents(s.workspaceId);
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]!.occurrences).toBe(2);
   });
 
-  it('an imapflow refused LOGIN ("Command failed") pauses at once, keeps the server text and waits 6 h', async () => {
+  it('an imapflow refused LOGIN ("Command failed") pauses at once, keeps the server text and is never retried automatically', async () => {
     const s = await setup();
     const mb = await makeMailbox(s);
     provider.fetchError = imapflowAuthError();
@@ -224,7 +252,8 @@ describe('safeSyncOne failure bookkeeping (F-04)', () => {
     expect(r.status).toBe('failing');
     expect(r.imapConsecutiveFailures).toBe(1);
     expect(r.lastError).toBe('IMAP: Command failed: [AUTHENTICATIONFAILED] Authentication failed.');
-    expectGate(r, 6 * HOUR);
+    expect(r.failureClass).toBe('auth');
+    expect(r.nextProbeAt).toBeNull();
     const notes = await failingNotices(s.workspaceId);
     expect(notes).toHaveLength(1);
     expect(notes[0]!.body).toContain('refused the login');
@@ -253,6 +282,8 @@ describe('safeSyncOne failure bookkeeping (F-04)', () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]!.readAt).not.toBeNull();
     expect(await auditKinds(s.workspaceId, 'mailbox.recovered')).toHaveLength(1);
+    expect(r.failureClass).toBeNull();
+    expect((await openIncidents(s.workspaceId)).filter((e) => e.resolvedAt === null)).toHaveLength(0);
 
     provider.fetchError = imapflowAuthError();
     await safeSyncOne(s.c, await row(mb.id));
@@ -276,7 +307,7 @@ describe('safeSyncOne failure bookkeeping (F-04)', () => {
 // ---- markMailboxFailing ---------------------------------------------
 
 describe('markMailboxFailing (F-04)', () => {
-  it('dedupes while unread; a read notification is raised again by the next failure', async () => {
+  it('notifies when the episode starts or its class changes; a same-class repeat only counts on the incident', async () => {
     const s = await setup();
     const mb = await makeMailbox(s);
     const failure = { protocol: 'imap' as const, message: 'Socket timed out after 20000ms' };
@@ -286,34 +317,54 @@ describe('markMailboxFailing (F-04)', () => {
     let notes = await failingNotices(s.workspaceId);
     expect(notes).toHaveLength(1);
 
+    // Read, then the same failure again: still nothing new (PC-09).
     await markNotificationsRead(s.c, [notes[0]!.id]);
-    expect((await markMailboxFailing(s.c, mb.id, failure)).notified).toBe(true);
+    expect((await markMailboxFailing(s.c, mb.id, failure)).notified).toBe(false);
+    expect(await failingNotices(s.workspaceId)).toHaveLength(1);
+    const [incident] = await openIncidents(s.workspaceId);
+    expect(incident!.occurrences).toBe(3);
+
+    // A different class is news: the old notice is closed, a new one says what is wrong now.
+    const auth = await markMailboxFailing(s.c, mb.id, {
+      protocol: 'imap',
+      message: 'Command failed: [AUTHENTICATIONFAILED] Authentication failed.',
+    });
+    expect(auth).toMatchObject({ notified: true, failureClass: 'auth', nextProbeAt: null });
     notes = await failingNotices(s.workspaceId);
     expect(notes).toHaveLength(2);
     expect(notes.filter((n) => n.readAt === null)).toHaveLength(1);
+    expect(notes.find((n) => n.readAt === null)!.body).toContain('refused the login');
   });
 
-  it('the gate grows with the age of the episode, capped at 24 h; repeats keep failing_since', async () => {
+  it('each class gets its probe schedule; repeats keep failing_since and the schedule', async () => {
     const s = await setup();
     const mb = await makeMailbox(s);
-    const failure = { protocol: 'imap' as const, message: 'Socket timed out after 20000ms' };
+    const timeout = { protocol: 'imap' as const, message: 'Socket timed out after 20000ms' };
 
-    await markMailboxFailing(s.c, mb.id, failure);
-    expectGate(await row(mb.id), HOUR);
+    await markMailboxFailing(s.c, mb.id, timeout);
+    let r = await row(mb.id);
+    expect(r.failureClass).toBe('connection');
+    expectProbeIn(r, 30 * MINUTE);
 
     const fiveHoursAgo = new Date(Date.now() - 5 * HOUR);
-    await db.update(mailboxes).set({ failingSince: fiveHoursAgo }).where(eq(mailboxes.id, mb.id));
-    await markMailboxFailing(s.c, mb.id, failure);
-    let r = await row(mb.id);
-    expectGate(r, 5 * HOUR);
-    expect(r.failingSince!.getTime()).toBe(fiveHoursAgo.getTime());
-
-    const threeDaysAgo = new Date(Date.now() - 72 * HOUR);
-    await db.update(mailboxes).set({ failingSince: threeDaysAgo }).where(eq(mailboxes.id, mb.id));
-    await markMailboxFailing(s.c, mb.id, failure);
+    const later = new Date(Date.now() + 2 * HOUR);
+    await db
+      .update(mailboxes)
+      .set({ failingSince: fiveHoursAgo, nextProbeAt: later, probeAttempts: 2 })
+      .where(eq(mailboxes.id, mb.id));
+    await markMailboxFailing(s.c, mb.id, timeout);
     r = await row(mb.id);
-    expectGate(r, 24 * HOUR);
-    expect(r.failingSince!.getTime()).toBe(threeDaysAgo.getTime());
+    expect(r.failingSince!.getTime()).toBe(fiveHoursAgo.getTime());
+    expect(r.nextProbeAt!.getTime()).toBe(later.getTime());
+    expect(r.probeAttempts).toBe(2);
+
+    // An unclear error starts the ambiguous schedule (6 h, a fresh budget).
+    await markMailboxFailing(s.c, mb.id, { protocol: 'imap', message: 'Command failed' });
+    r = await row(mb.id);
+    expect(r.failureClass).toBe('ambiguous');
+    expect(r.probeAttempts).toBe(0);
+    expectProbeIn(r, 6 * HOUR);
+    expect(r.failingSince!.getTime()).toBe(fiveHoursAgo.getTime());
   });
 
   it('a refused SMTP connection on 587 explains that 465 (TLS on connect) is the fix', async () => {
@@ -325,7 +376,8 @@ describe('markMailboxFailing (F-04)', () => {
     });
     const r = await row(mb.id);
     expect(r.lastError).toBe('SMTP: connect ECONNREFUSED 51.89.234.14:587');
-    expectGate(r, HOUR);
+    expect(r.failureClass).toBe('connection');
+    expectProbeIn(r, 30 * MINUTE);
     const [note] = await failingNotices(s.workspaceId);
     expect(note!.body).toContain('port 465');
     expect(note!.body).toContain('Nothing can be sent from it');
@@ -354,10 +406,23 @@ describe('markMailboxFailing (F-04)', () => {
     await markMailboxFailing(s.c, mb.id, { protocol: 'imap', message: 'x' });
     await reactivateMailbox(s.c, mb.id);
     const r = await row(mb.id);
-    expect(r).toMatchObject({ status: 'active', lastError: null, lastErrorAt: null, failingSince: null });
+    expect(r).toMatchObject({
+      status: 'active',
+      lastError: null,
+      lastErrorAt: null,
+      failingSince: null,
+      failureClass: null,
+      smtpVerifiedAt: null,
+    });
+    // PC-09: the probe tick verifies the login at its next pass.
+    expect(r.nextProbeAt).not.toBeNull();
+    expect(r.nextProbeAt!.getTime()).toBeLessThanOrEqual(Date.now());
     const notes = await failingNotices(s.workspaceId);
     expect(notes).toHaveLength(1);
     expect(notes[0]!.readAt).not.toBeNull();
+    // The incident is closed by the person who reactivated it.
+    const [incident] = await openIncidents(s.workspaceId);
+    expect(incident).toMatchObject({ resolution: 'manual', resolvedBy: s.ownerId });
   });
 });
 
@@ -377,7 +442,8 @@ describe('testMailboxConnection / Test again (F-04)', () => {
     expect(r.status).toBe('failing');
     expect(r.lastError).toBe('SMTP: connect ECONNREFUSED 51.89.234.14:587');
     expect(r.lastErrorAt).not.toBeNull();
-    expect(r.imapNextSyncAfter).not.toBeNull();
+    expect(r.failureClass).toBe('connection');
+    expect(r.nextProbeAt).not.toBeNull();
     expect(await failingNotices(s.workspaceId)).toHaveLength(1);
   });
 
@@ -405,7 +471,7 @@ describe('testMailboxConnection / Test again (F-04)', () => {
 
 // ---- IMAP tick ---------------------------------------------------------
 
-describe('runImapTick (F-04)', () => {
+describe('runImapTick (F-04, PC-09)', () => {
   /** Prod as found (X7): failing rows with no gate, errors from before F-04. */
   async function legacyProd() {
     const ws1 = await setup('ws1');
@@ -436,74 +502,23 @@ describe('runImapTick (F-04)', () => {
     return { ws1, ws2, mb1, mb2, may8 };
   }
 
-  it('announces every failing mailbox within one tick without touching the servers, then stays quiet', async () => {
-    const { ws1, ws2, mb1, mb2, may8 } = await legacyProd();
-
-    const first = await runImapTick();
-    expect(first.adopted).toBe(2);
-    expect(provider.testCalls).toBe(0);
-    expect(provider.fetchCalls).toBe(0);
-
-    const n1 = await failingNotices(ws1.workspaceId);
-    const n2 = await failingNotices(ws2.workspaceId);
-    expect(n1).toHaveLength(1);
-    expect(n2).toHaveLength(1);
-    expect(n1[0]!.href).toBe(`/mailbox/${mb1.id}`);
-    expect(n1[0]!.body).toContain('port 465');
-    expect(n2[0]!.title).toBe('Mailbox "wandizz" is failing');
-
-    const r1 = await row(mb1.id);
-    expect(r1.lastError).toBe('SMTP: connect ECONNREFUSED 51.89.234.14:587');
-    expect(r1.lastErrorAt!.getTime()).toBe(may8.getTime());
-    expect(r1.failingSince!.getTime()).toBe(may8.getTime());
-    // Failing since May: the re-check waits the 24 h cap.
-    expectGate(r1, 24 * HOUR);
-    expect((await row(mb2.id)).imapNextSyncAfter).not.toBeNull();
-
-    const second = await runImapTick();
-    expect(second.adopted).toBe(0);
-    expect(provider.testCalls).toBe(0);
-    expect(await failingNotices(ws1.workspaceId)).toHaveLength(1);
-    expect(await failingNotices(ws2.workspaceId)).toHaveLength(1);
-  });
-
-  it('re-checks a failing mailbox once its gate passes (auto-sync workspaces only) and recovers it', async () => {
-    const { mb1, mb2, ws1 } = await legacyProd();
-    await runImapTick();
-    const past = new Date(Date.now() - MINUTE);
-    await db.update(mailboxes).set({ imapNextSyncAfter: past }).where(eq(mailboxes.id, mb1.id));
-    await db.update(mailboxes).set({ imapNextSyncAfter: past }).where(eq(mailboxes.id, mb2.id));
-
-    provider.test = HEALTHY;
-    const tick = await runImapTick();
-    expect(tick).toMatchObject({ rechecked: 1, recovered: 1, mailboxesSynced: 1 });
-    expect(provider.testCalls).toBe(1);
-    expect(provider.fetchCalls).toBe(1);
-    expect((await row(mb1.id)).status).toBe('active');
-    // ws2 has IMAP auto-sync off: nobody touches its mailbox.
-    expect((await row(mb2.id)).status).toBe('failing');
-    const [note] = await failingNotices(ws1.workspaceId);
-    expect(note!.readAt).not.toBeNull();
-  });
-
-  it('a failed re-check keeps the mailbox failing with a later gate and no second unread notification', async () => {
-    const { mb1, ws1 } = await legacyProd();
-    await runImapTick();
+  it('never touches a failing mailbox: no adoption, no re-check, no notification (the reviewed backfill announces them)', async () => {
+    const { ws1, ws2, mb1, mb2 } = await legacyProd();
+    // Even with its old gate passed, a failing mailbox is not the IMAP tick's.
     await db
       .update(mailboxes)
       .set({ imapNextSyncAfter: new Date(Date.now() - MINUTE) })
       .where(eq(mailboxes.id, mb1.id));
 
-    provider.test = { smtp: { ok: false, detail: 'connect ECONNREFUSED 51.89.234.14:587' }, imap: { ok: true } };
     const tick = await runImapTick();
-    expect(tick).toMatchObject({ rechecked: 1, recovered: 0, failed: 1, markedFailing: 0 });
-    const r = await row(mb1.id);
-    expect(r.status).toBe('failing');
-    expectGate(r, 24 * HOUR);
-    expect(r.lastErrorAt!.getTime()).toBeGreaterThan(Date.now() - 5 * MINUTE);
-    const notes = await failingNotices(ws1.workspaceId);
-    expect(notes).toHaveLength(1);
-    expect(notes[0]!.readAt).toBeNull();
+    expect(tick).toMatchObject({ mailboxesSynced: 0, failed: 0, markedFailing: 0 });
+    expect(provider.testCalls).toBe(0);
+    expect(provider.fetchCalls).toBe(0);
+    expect(await failingNotices(ws1.workspaceId)).toHaveLength(0);
+    expect(await failingNotices(ws2.workspaceId)).toHaveLength(0);
+    expect(await openIncidents(ws1.workspaceId)).toHaveLength(0);
+    expect((await row(mb1.id)).status).toBe('failing');
+    expect((await row(mb2.id)).failureClass).toBeNull();
   });
 
   it('syncs active mailboxes as before and records a failure gate for them', async () => {
@@ -511,13 +526,25 @@ describe('runImapTick (F-04)', () => {
     const mb = await makeMailbox(s);
     provider.fetchError = new Error('Socket timed out after 20000ms');
     const tick = await runImapTick();
-    expect(tick).toMatchObject({ mailboxesSynced: 0, failed: 1, rechecked: 0 });
+    expect(tick).toMatchObject({ mailboxesSynced: 0, failed: 1 });
     const r = await row(mb.id);
     expect(r.status).toBe('active');
     expect(r.imapNextSyncAfter).not.toBeNull();
     // Gated: the next tick leaves it alone.
     await runImapTick();
     expect(provider.fetchCalls).toBe(1);
+  });
+
+  it('a mailbox that turned failing after the tick listed it is skipped under its lease, with no login', async () => {
+    const s = await setup();
+    const mb = await makeMailbox(s);
+    const listed = await row(mb.id);
+    await markMailboxFailing(s.c, mb.id, { protocol: 'smtp', message: '535 5.7.8 Authentication failed' });
+    const auto = { ...s.c, trigger: 'automation' as const };
+    const outcome = await safeSyncOne(auto, listed);
+    expect(outcome.kind).toBe('skipped');
+    expect(provider.fetchCalls).toBe(0);
+    expect(provider.testCalls).toBe(0);
   });
 });
 
@@ -554,7 +581,7 @@ describe('mailbox.failing goes to workspace admins only (F-04)', () => {
     let notes = await failingNotices(workspaceId);
     expect(notes.map((n) => n.userId).sort()).toEqual([adminId, ownerId].sort());
     for (const n of notes) {
-      expect(n.dedupeKey).toBe(`mailbox.failing:${mb.id}:user:${n.userId}`);
+      expect(n.dedupeKey).toBe(`${mailboxFailingDedupeKey(workspaceId, mb.id)}:user:${n.userId}`);
     }
     for (const [userId, role] of [
       [managerId, 'manager'],
@@ -568,28 +595,40 @@ describe('mailbox.failing goes to workspace admins only (F-04)', () => {
       (await listNotifications(as(adminId, 'admin'))).filter((n) => n.kind === 'mailbox.failing'),
     ).toHaveLength(1);
 
-    // A repeat failure while both are unread adds nothing.
-    const repeat = await markMailboxFailing(s.c, mb.id, { protocol: 'smtp', message: 'again' });
+    // A repeat failure of the same class adds nothing — also after an
+    // admin read theirs (PC-09: the incident counts it).
+    const repeat = await markMailboxFailing(s.c, mb.id, { protocol: 'smtp', message: 'again', auth: true });
     expect(repeat.notified).toBe(false);
     expect(await failingNotices(workspaceId)).toHaveLength(2);
-
-    // The admin reads theirs: the next failure re-notifies only them.
     const adminNote = notes.find((n) => n.userId === adminId)!;
     await markNotificationsRead(as(adminId, 'admin'), [adminNote.id]);
-    const third = await markMailboxFailing(s.c, mb.id, { protocol: 'smtp', message: 'again' });
-    expect(third.notified).toBe(true);
+    const third = await markMailboxFailing(s.c, mb.id, { protocol: 'smtp', message: 'again', auth: true });
+    expect(third.notified).toBe(false);
+    expect(await failingNotices(workspaceId)).toHaveLength(2);
+
+    // A class change re-notifies every owner / admin with the new cause.
+    const moved = await markMailboxFailing(s.c, mb.id, {
+      protocol: 'smtp',
+      message: 'connect ECONNREFUSED 51.89.234.14:587',
+    });
+    expect(moved).toMatchObject({ notified: true, failureClass: 'connection' });
     notes = await failingNotices(workspaceId);
-    expect(notes).toHaveLength(3);
+    expect(notes).toHaveLength(4);
     expect(notes.filter((n) => n.readAt === null).map((n) => n.userId).sort()).toEqual(
       [adminId, ownerId].sort(),
     );
 
-    // Recovery resolves every admin's copy.
+    // Recovery resolves every admin's copy and tells each it is back online.
     provider.test = HEALTHY;
     await testMailboxConnection(s.c, mb.id);
     expect((await row(mb.id)).status).toBe('active');
     notes = await failingNotices(workspaceId);
     expect(notes.every((n) => n.readAt !== null)).toBe(true);
+    const back = await db
+      .select()
+      .from(notifications)
+      .where(and(eq(notifications.workspaceId, workspaceId), eq(notifications.kind, 'mailbox.recovered')));
+    expect(back.map((n) => n.userId).sort()).toEqual([adminId, ownerId].sort());
   });
 
   it('quotes at most 200 characters of the server error', async () => {
@@ -619,8 +658,9 @@ describe('health check: failing mailboxes (F-04)', () => {
     const failing = findings.filter((f) => f.code === 'mailbox.failing');
     expect(failing).toHaveLength(2);
     expect(failing.map((f) => f.href)).toEqual([`/mailbox/${a.id}`, `/mailbox/${b.id}`]);
-    expect(failing[0]!.severity).toBe('warning');
-    expect(failing[0]!.message).toContain('Mailbox "alpha" has been failing since');
+    // AP-06: a failing mailbox is critical — its inbox is not read.
+    expect(failing[0]!.severity).toBe('critical');
+    expect(failing[0]!.message).toContain('Mailbox "alpha" is failing. It has been failing since');
     expect(failing[0]!.message).toContain('port 465');
     expect(failing[1]!.message).toContain('Mailbox "beta"');
     expect(failing[1]!.message).toContain('refused the login');
@@ -628,19 +668,22 @@ describe('health check: failing mailboxes (F-04)', () => {
     const none = findings.find((f) => f.code === 'mailbox.none');
     expect(none?.message).toContain('failing or paused');
     expect(none?.message).toContain('queued on a failing mailbox are held');
-    expect(none?.message).toContain('on a paused mailbox are marked failed, not held');
+    // PC-05 (P0-F08): a paused mailbox now holds its due sends too.
+    expect(none?.message).toContain('on a paused mailbox are held (not sent, not failed)');
     expect(none?.message).not.toContain('approved drafts cannot be sent');
     expect(none?.href).toBe('/mailbox');
   });
 
-  it('only paused mailboxes: never claims the queue is held', async () => {
+  it('only paused mailboxes: their due sends are held until re-enabled (PC-05, P0-F08)', async () => {
     const s = await setup();
     const p = await makeMailbox(s, 'resting');
     await pauseMailbox(s.c, p.id);
     const none = (await collectRuleFindings(s.c)).find((f) => f.code === 'mailbox.none');
     expect(none?.message).toContain('(each one is paused)');
-    expect(none?.message).toContain('marked failed, not held');
-    expect(none?.message).not.toContain('are held until');
+    expect(none?.message).toContain('held (not sent, not failed) until you re-enable it');
+    expect(none?.message).not.toContain('marked failed');
+    // Only a failing mailbox stops reading replies.
+    expect(none?.message).not.toContain('queued on a failing mailbox');
   });
 
   it('only failing mailboxes: the queue is held', async () => {

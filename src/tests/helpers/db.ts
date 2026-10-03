@@ -26,6 +26,14 @@ const TENANT_TABLES = [
   'verification_tokens',
   'preauthorized_emails',
   'users',
+  // PC-07: not tenant-owned (no FK to workspaces), so list them explicitly.
+  'job_heartbeats',
+  'ops_events',
+  // PC-08: owner-alert state and delivery log.
+  'ops_alert_state',
+  'ops_alert_deliveries',
+  // PC-38: the shared rate limiter's windows (keys, no workspace FK).
+  'rate_limit_buckets',
 ];
 
 /**
@@ -56,6 +64,10 @@ export async function truncateAll(): Promise<void> {
   // RESTART IDENTITY resets sequences. CASCADE handles FKs.
   const ident = TENANT_TABLES.map((t) => `"${t}"`).join(', ');
   await db.execute(sql.raw(`TRUNCATE TABLE ${ident} RESTART IDENTITY CASCADE;`));
+  // AP-06: workspace ids restart at 1, so a memoised diagnostics result of
+  // the previous test's workspace 1 must not answer for the next one.
+  const { _resetDiagnosticsMemoForTests } = await import('@/lib/diagnostics/engine');
+  _resetDiagnosticsMemoForTests();
 }
 
 export async function seedUser(input: {
@@ -96,8 +108,14 @@ export async function seedWorkspace(input: {
    *  the limits themselves. Token debits are unaffected either way
    *  (billing_exempt stays false). */
   plan?: 'free' | 'starter' | 'pro';
+  /** flow:F-07 go-live hold. Real workspaces start NOT live (cold,
+   *  follow-up and AI-reply mail is held until a super-admin releases
+   *  them). Seeded test workspaces default to live so suites that are not
+   *  about the hold can send; pass false to test it. */
+  live?: boolean;
 }): Promise<bigint> {
   const plan = input.plan ?? 'pro';
+  const live = input.live ?? true;
   return db.transaction(async (tx) => {
     const ws = await tx
       .insert(workspaces)
@@ -108,6 +126,7 @@ export async function seedWorkspace(input: {
         ...(plan === 'free'
           ? {}
           : { plan, subscriptionStatus: 'active' as const }),
+        ...(live ? { outreachLiveAt: new Date() } : {}),
       })
       .returning();
     const workspaceId = ws[0]?.id;

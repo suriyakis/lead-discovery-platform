@@ -6,7 +6,7 @@
 // getWorkspaceContext() bare, so those users landed on Next's generic
 // error page. requireActionContext() (src/lib/action-context.ts) sends
 // them where the pages would: signed out to '/', inactive to '/pending',
-// no workspace to the no-workspace screen on '/dashboard'.
+// no workspace to the no-workspace screen on Today ('/today').
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db/client';
@@ -15,15 +15,15 @@ import {
   addMemberAction,
   changeMemberRoleAction,
   removeMemberAction,
-} from '@/app/settings/members/actions';
-import { saveFollowUp } from '@/app/settings/outreach/follow-up-actions';
-import { saveReplyAutoActions } from '@/app/settings/outreach/actions';
+} from '@/app/(app)/settings/members/actions';
+import { saveFollowUp } from '@/app/(app)/settings/outreach/follow-up-actions';
+import { saveReplyAutoActions } from '@/app/(app)/settings/outreach/actions';
 import {
   archiveCrmConnectionAction,
   restoreCrmConnectionAction,
   saveCrmConnectionAction,
   testCrmConnectionAction,
-} from '@/app/settings/crm/[id]/actions';
+} from '@/app/(app)/settings/crm/[id]/actions';
 import {
   deleteMailboxMessages,
   restoreMailboxMessages,
@@ -31,13 +31,13 @@ import {
   spamMailboxMessages,
   trashMailboxMessages,
   unspamMailboxMessages,
-} from '@/app/mailbox/[id]/actions';
+} from '@/app/(app)/mailbox/[id]/actions';
 import {
   cancelQueuedEmailAction,
   drainSendQueueAction,
   rescheduleQueuedEmailAction,
   saveSendSettingsAction,
-} from '@/app/mailbox/queue/actions';
+} from '@/app/(app)/mailbox/queue/actions';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect } from './helpers/next-render';
 
@@ -120,15 +120,15 @@ describe('requireActionContext', () => {
   it('sends a user without a workspace to the no-workspace screen', async () => {
     const user = await seedUser({ email: 'alone@test.local' });
     signInAs(user);
-    expect(await expectRedirect(() => requireActionContext())).toBe('/dashboard');
+    expect(await expectRedirect(() => requireActionContext())).toBe('/today');
   });
 });
 
 describe('lane actions redirect a stale session instead of erroring', () => {
-  it.each(ACTIONS)('%s: no workspace -> /dashboard', async (_name, run) => {
+  it.each(ACTIONS)('%s: no workspace -> /today', async (_name, run) => {
     const user = await seedUser({ email: 'alone@test.local' });
     signInAs(user);
-    expect(await expectRedirect(run)).toBe('/dashboard');
+    expect(await expectRedirect(run)).toBe('/today');
   });
 
   it.each(ACTIONS)('%s: account suspended -> /pending', async (_name, run) => {

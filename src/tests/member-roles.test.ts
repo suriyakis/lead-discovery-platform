@@ -41,8 +41,8 @@ import {
   addMemberAction,
   changeMemberRoleAction,
   removeMemberAction,
-} from '@/app/settings/members/actions';
-import MembersPage from '@/app/settings/members/page';
+} from '@/app/(app)/settings/members/actions';
+import MembersPage from '@/app/(app)/settings/members/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 

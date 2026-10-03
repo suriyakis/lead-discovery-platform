@@ -36,11 +36,6 @@ import {
 } from '@/lib/db/schema/workspaces';
 import { auditLog, usageLog } from '@/lib/db/schema/audit';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
-import {
-  featureFlags,
-  type FeatureFlag,
-  type NewFeatureFlag,
-} from '@/lib/db/schema/admin';
 import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
 import { isPlatformContext, type PlatformContext } from './platform-context';
 import { PLATFORM_AUDIT_KINDS, type NoWorkspaceOrigin } from '@/lib/audit-scope';
@@ -971,82 +966,13 @@ export async function listMembershipsForUser(
 // until a real, read-only "view as" feature is designed. To look inside a
 // tenant today, use the god-mode workspace switcher.
 
-// ---- feature flags ---------------------------------------------------
-
-export interface SetFeatureFlagInput {
-  workspaceId: bigint;
-  key: string;
-  enabled: boolean;
-  config?: Record<string, unknown>;
-}
-
-export async function setFeatureFlag(
-  pctx: PlatformContext,
-  input: SetFeatureFlagInput,
-): Promise<FeatureFlag> {
-  assertPlatform(pctx, 'admin.feature_flag.set');
-  const key = input.key.trim();
-  if (!/^[a-z][a-z0-9_.]*$/.test(key)) {
-    throw invalid('feature flag key must be lowercase a-z0-9_.');
-  }
-  const row: NewFeatureFlag = {
-    workspaceId: input.workspaceId,
-    key,
-    enabled: input.enabled,
-    config: input.config ?? {},
-    setBy: pctx.actorUserId,
-  };
-  await db
-    .insert(featureFlags)
-    .values(row)
-    .onConflictDoUpdate({
-      target: [featureFlags.workspaceId, featureFlags.key],
-      set: {
-        enabled: row.enabled,
-        config: row.config,
-        setBy: pctx.actorUserId,
-        setAt: new Date(),
-      },
-    });
-  const reloaded = await db
-    .select()
-    .from(featureFlags)
-    .where(
-      and(
-        eq(featureFlags.workspaceId, input.workspaceId),
-        eq(featureFlags.key, key),
-      ),
-    )
-    .limit(1);
-  if (!reloaded[0]) {
-    throw new AdminServiceError(
-      'feature_flag upsert returned no row',
-      'invariant_violation',
-    );
-  }
-  await recordAuditEvent(
-    { workspaceId: input.workspaceId, userId: pctx.actorUserId },
-    {
-      kind: 'admin.feature_flag.set',
-      entityType: 'feature_flag',
-      entityId: reloaded[0].id,
-      payload: { key, enabled: input.enabled },
-    },
-  );
-  return reloaded[0];
-}
-
-export async function listFeatureFlags(
-  pctx: PlatformContext,
-  workspaceId: bigint,
-): Promise<FeatureFlag[]> {
-  assertPlatform(pctx, 'admin.feature_flag.list');
-  return db
-    .select()
-    .from(featureFlags)
-    .where(eq(featureFlags.workspaceId, workspaceId))
-    .orderBy(featureFlags.key);
-}
+// ---- feature flags (removed, PC-06) -----------------------------------
+//
+// setFeatureFlag / listFeatureFlags are gone: nothing ever read the
+// flags (I048), so a "disabled" outreach.send or mailbox.imap_sync
+// stopped nothing (X6). Holds replace them (services/holds.ts, enforced
+// by services/automation-gate.ts); the legacy rows are imported as
+// pending_review holds by scripts/remediation/import-legacy-feature-flags.ts.
 
 // ---- platform users + recent audit -----------------------------------
 

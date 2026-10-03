@@ -1,7 +1,8 @@
 // Route smoke test: every page of the app, at desktop (1440) and phone
 // (390) width, signed in as the seeded super-admin. Each visit must
 //   - answer with HTTP status < 500,
-//   - land on the page itself (proves the session worked), and
+//   - land on the page itself (proves the session worked),
+//   - show the brand once: exactly one lead/sonar wordmark (DS-08), and
 //   - throw no uncaught error in the browser;
 // and the document may not be wider than the viewport (DS-03: no sideways
 // page scroll on any route, at either width). Defects already tracked
@@ -116,6 +117,10 @@ test.describe('every route renders', () => {
         route.landsOn,
       );
 
+      // DS-08: one wordmark per page, whichever chrome draws it (AppShell's
+      // header, the console topbar, a public page or a backstop).
+      await expect(page.locator('[data-brand-wordmark]'), 'wordmarks on the page').toHaveCount(1);
+
       {
         // DS-03: no sideways page scroll on a phone, and none introduced at
         // desktop width either.
@@ -149,10 +154,7 @@ test.describe('branded backstop pages', () => {
     await expect(page.getByRole('heading', { level: 1 })).toHaveText("We couldn't find that page");
     await expect(page.locator('main.status-page .status-card')).toBeVisible();
     await expect(page.locator('.brand-header')).toHaveCount(1);
-    await expect(page.getByRole('link', { name: 'Go to your dashboard' })).toHaveAttribute(
-      'href',
-      '/dashboard',
-    );
+    await expect(page.getByRole('link', { name: 'Go to Today' })).toHaveAttribute('href', '/today');
   });
 
   test('signed out, an unknown URL still gets the branded 404', async ({ browser, baseURL }) => {
@@ -229,8 +231,7 @@ test.describe('phone layout keeps the key controls on screen', () => {
   });
 
   test('header: e-mail and Sign out fold into the account menu', async ({ page }) => {
-    await visit(page, '/dashboard');
-    await expect(page.locator('.brand-header .header-account-inline').first()).toBeHidden();
+    await visit(page, '/today');
     const menu = page.locator('.brand-header details.header-account-menu');
     await menu.locator('summary').click();
     const signOut = menu.getByRole('button', { name: 'Sign out' });
@@ -241,32 +242,69 @@ test.describe('phone layout keeps the key controls on screen', () => {
     expect(box!.x + box!.width).toBeLessThanOrEqual(390);
   });
 
-  test('sidebar: only the current group (and Emergency) start open', async ({ page }) => {
-    await visit(page, '/review');
-    await expect(page.locator('aside.sidebar[data-compact-ready]')).toHaveCount(1);
-    const open = await page
-      .locator('aside.sidebar details.sidebar-group[open] > summary')
-      .allTextContents();
-    expect(open).toEqual(['Discovery', 'Emergency']);
+  // DS-05 (AP-03 Playwright acceptance): the registry's sidebar links
+  // render inside the current layout on a phone — one strip above the
+  // page that scrolls inside itself, never the page sideways.
+  test('sidebar: the area links render inside the phone layout', async ({ page }) => {
+    await visit(page, '/settings/usage');
+    const links = page.locator('aside.sidebar a[data-area]');
+    expect(await links.count()).toBe(9); // the seeded admin is a super-admin
+    const strip = await page.locator('aside.sidebar nav.sidebar-nav').boundingBox();
+    expect(strip!.x).toBeGreaterThanOrEqual(0);
+    expect(strip!.x + strip!.width).toBeLessThanOrEqual(390);
+    expect(strip!.height).toBeLessThan(80);
+    // The current area is scrolled into view inside the strip.
+    const current = await page.locator('aside.sidebar a[aria-current="page"]').boundingBox();
+    expect(current!.x).toBeGreaterThanOrEqual(0);
+    expect(current!.x + current!.width).toBeLessThanOrEqual(390);
+    await expect(page.locator('aside.sidebar a[aria-current="page"]')).toHaveAttribute(
+      'data-area',
+      'settings',
+    );
+    // …and the page's own Settings sub-nav sits above the page content.
+    await expect(page.locator('nav.area-subnav a[aria-current="page"]')).toHaveText('Usage');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(392);
   });
 });
 
 test.describe('desktop chrome is unchanged', () => {
   test.skip(({ isMobile }) => isMobile, 'desktop-width checks');
 
-  test('sidebar keeps its default open groups; header shows e-mail + Sign out', async ({
+  test('sidebar: Today and 8 areas under static headings; Search, account menu, one wordmark', async ({
     page,
   }) => {
     await visit(page, '/review');
-    await expect(page.locator('aside.sidebar[data-compact-ready]')).toHaveCount(1);
-    const open = await page
-      .locator('aside.sidebar details.sidebar-group[open] > summary')
-      .allTextContents();
-    expect(open).toEqual(['Discovery', 'Knowledge base', 'Pipeline', 'Outreach', 'Emergency']);
-    await expect(page.locator('.brand-header span.who.header-account-inline')).toHaveText(
-      ADMIN_EMAIL,
-    );
-    await expect(page.locator('.brand-header details.header-account-menu')).toBeHidden();
+    await expect(page.locator('aside.sidebar .sidebar-heading')).toHaveText([
+      'Work',
+      'Build',
+      'Workspace',
+      'Platform',
+    ]);
+    await expect(page.locator('aside.sidebar a[data-area] .sidebar-link-label')).toHaveText([
+      'Today',
+      'Review',
+      'Pipeline',
+      'Outreach',
+      'Conversations',
+      'Discovery',
+      'Products',
+      'Settings',
+      'Platform console',
+    ]);
+    await expect(page.locator('aside.sidebar a[aria-current="page"]')).toHaveAttribute('data-area', 'review');
+    await expect(page.locator('nav.area-tabs a[aria-current="page"]')).toHaveText('Queue');
+    await expect(page.getByText('lead/sonar', { exact: true })).toHaveCount(1);
+    await expect(page.locator('[data-command-palette-trigger]')).toBeVisible();
+    await expect(page.locator('.brand-header details.header-account-menu')).toBeVisible();
+  });
+
+  test('Cmd-K opens from the Search button and finds Providers in the console', async ({ page }) => {
+    await visit(page, '/admin');
+    await page.locator('[data-command-palette-trigger]').click();
+    const input = page.getByPlaceholder(/Jump to a page/);
+    await expect(input).toBeVisible();
+    await input.fill('providers');
+    await expect(page.locator('li.cmdk-item').first()).toHaveAttribute('data-href', '/admin/providers');
   });
 });
 
@@ -389,7 +427,7 @@ test.describe('legacy CSS fixes hold in the browser (DS-02)', () => {
           .map((a) => (a as CSSAnimation).animationName ?? a.constructor.name),
       );
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    for (const path of ['/dashboard', '/review', '/connectors']) {
+    for (const path of ['/today?view=overview', '/review', '/connectors']) {
       await visit(page, path);
       expect(await animations(page), `${path} animations`).toEqual([]);
     }

@@ -1,3 +1,5 @@
+import { pauseAutomation } from '@/lib/services/automation-pause';
+import { PAUSED_MESSAGE } from '@/lib/services/automation-gate';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import '@/lib/connectors/mock';
 import { eq } from 'drizzle-orm';
@@ -151,7 +153,6 @@ describe('send settings', () => {
     const settings = await getSendSettings(ctx(s.workspaceA, s.ownerA));
     expect(settings.dailyEmailLimit).toBe(50);
     expect(settings.defaultDelayMode).toBe('random');
-    expect(settings.emergencyPause).toBe(false);
   });
 
   it('updateSendSettings clamps and audits', async () => {
@@ -160,10 +161,8 @@ describe('send settings', () => {
       dailyEmailLimit: 12,
       domainCooldownHours: 48,
       defaultDelayMode: 'fixed',
-      emergencyPause: true,
     });
     expect(updated.dailyEmailLimit).toBe(12);
-    expect(updated.emergencyPause).toBe(true);
     expect(updated.defaultDelayMode).toBe('fixed');
   });
 
@@ -249,7 +248,7 @@ describe('drainQueue', () => {
     expect(all[0]!.sentMessageId).not.toBe(null);
   });
 
-  it('emergency pause halts everything', async () => {
+  it('the workspace pause halts the drain (PC-05)', async () => {
     const s = await setup();
     const { draft, mailbox } = await seedDraftableLead(s);
     await enqueueDraft(ctx(s.workspaceA, s.ownerA), {
@@ -257,11 +256,20 @@ describe('drainQueue', () => {
       mailboxId: mailbox.id,
       delayMode: 'immediate',
     });
-    await updateSendSettings(ctx(s.workspaceA, s.ownerA), { emergencyPause: true });
+    await pauseAutomation(ctx(s.workspaceA, s.ownerA), { source: 'api' });
     const r = await drainQueue(ctx(s.workspaceA, s.ownerA), {
       providerOverride: new MockMailProvider(),
     });
-    expect(r).toEqual({ picked: 0, sent: 0, failed: 0, skipped: 0 });
+    expect(r).toEqual({
+      picked: 0,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      deferred: 0,
+      retrying: 0,
+      blocked: 'paused',
+      heldReason: PAUSED_MESSAGE,
+    });
     const all = await listQueueEntries(ctx(s.workspaceA, s.ownerA));
     expect(all[0]!.status).toBe('queued');
   });

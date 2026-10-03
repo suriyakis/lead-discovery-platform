@@ -25,8 +25,8 @@ import {
   restoreCrmConnectionAction,
   saveCrmConnectionAction,
   testCrmConnectionAction,
-} from '@/app/settings/crm/[id]/actions';
-import CrmConnectionDetail from '@/app/settings/crm/[id]/page';
+} from '@/app/(app)/settings/crm/[id]/actions';
+import CrmConnectionDetail from '@/app/(app)/settings/crm/[id]/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 

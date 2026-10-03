@@ -54,7 +54,19 @@ export async function getEffectivePlan(
     .where(eq(workspaces.id, ctx.workspaceId))
     .limit(1);
   if (!ws) return { id: 'free', limits: FREE_LIMITS };
+  return resolveEffectivePlan(ws);
+}
 
+/**
+ * The resolution above as a pure function of the workspace's billing
+ * columns — shared with the automation gate (PC-05), which reads them
+ * from the workspace_automation_state view.
+ */
+export function resolveEffectivePlan(ws: {
+  plan: string;
+  subscriptionStatus: string;
+  billingExempt: boolean;
+}): EffectivePlan {
   if (ws.billingExempt) {
     const pro = getPlanById('pro');
     return { id: 'pro', limits: pro!.limits };

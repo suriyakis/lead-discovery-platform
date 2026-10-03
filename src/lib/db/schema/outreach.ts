@@ -195,7 +195,9 @@ export const outreachDrafts = pgTable(
 export type OutreachDraft = typeof outreachDrafts.$inferSelect;
 export type NewOutreachDraft = typeof outreachDrafts.$inferInsert;
 export type OutreachDraftStatus = (typeof outreachDraftStatus.enumValues)[number];
-export type OutreachDraftMethod = 'rules' | 'ai' | 'hybrid';
+/** outreach_drafts.method values (DS-09 registry; the column is text). */
+export const outreachDraftMethods = ['rules', 'ai', 'hybrid'] as const;
+export type OutreachDraftMethod = (typeof outreachDraftMethods)[number];
 
 /**
  * Phase 19: outreach queue. Approved drafts (or one-off scheduled sends)
@@ -203,12 +205,20 @@ export type OutreachDraftMethod = 'rules' | 'ai' | 'hybrid';
  * them up and dispatches via mail.sendMessage.
  *
  * status flow:
- *   queued    — waiting for scheduled_send_at to elapse
- *   sending   — worker has claimed and started the send
- *   sent      — provider returned a messageId
- *   failed    — provider error; last_error populated
- *   skipped   — domain cooldown / daily cap / suppression blocked send
+ *   queued    — waiting for scheduled_send_at (and next_attempt_at, after
+ *               a failed attempt) to elapse
+ *   sending   — worker has claimed and started the send (claimed_at)
+ *   sent      — provider returned a messageId; written in the same
+ *               transaction as the mail_messages row (PC-10)
+ *   failed    — permanent failure, or retries used up; last_error and
+ *               last_failure_kind populated
+ *   skipped   — domain cooldown / suppression / geography blocked send
  *   cancelled — operator cancelled before send
+ *
+ * PC-10: a row stuck in 'sending' for more than 10 minutes is settled by
+ * the stuck-work reaper (src/lib/services/stuck-work.ts): 'sent' when a
+ * sent copy of its draft exists from after the claim, otherwise 'failed'
+ * with last_failure_kind 'interrupted' ("delivery unknown").
  */
 export const outreachQueueStatus = pgEnum('outreach_queue_status', [
   'queued',
@@ -263,6 +273,22 @@ export const outreachQueue = pgTable(
 
     attemptCount: smallint('attempt_count').notNull().default(0),
     lastError: text('last_error'),
+    /** PC-10: what the last failed attempt was, one of SEND_FAILURE_KINDS
+     *  (src/lib/mail/send-failure.ts): transient | local | unknown |
+     *  sender_auth | recipient_hard | policy | interrupted. Decides whether
+     *  the queue retries it. CHECK constraint in the migration's custom
+     *  block. NULL until an attempt fails; cleared on success / requeue. */
+    lastFailureKind: text('last_failure_kind'),
+    /** When the drain last claimed the row ('queued' → 'sending'), from
+     *  the database clock. PC-05: the claim takes a share lock on the
+     *  workspace row and refuses while the workspace is paused, so no
+     *  claim is ever later than automation_paused_at. PC-10: the reaper
+     *  settles rows still 'sending' 10 minutes after it. */
+    claimedAt: timestamp('claimed_at', { mode: 'date', withTimezone: true }),
+    /** PC-10: exponential backoff after a retryable failure — the drain
+     *  skips the row until then. NULL = no backoff. Independent of
+     *  scheduled_send_at, which stays the planned send time. */
+    nextAttemptAt: timestamp('next_attempt_at', { mode: 'date', withTimezone: true }),
     /** mail_message id once sent. */
     sentMessageId: bigint('sent_message_id', { mode: 'bigint' }),
 
@@ -312,6 +338,12 @@ export const outreachSendSettings = pgTable('outreach_send_settings', {
   fixedDelayMinutes: smallint('fixed_delay_minutes').notNull().default(15),
   randomDelayMinMinutes: smallint('random_delay_min_minutes').notNull().default(5),
   randomDelayMaxMinutes: smallint('random_delay_max_minutes').notNull().default(30),
+  /**
+   * @deprecated PC-05: read by nothing. Migrated into the workspace pause
+   * (workspaces.automation_paused_at); kept one release as a write-only
+   * mirror of it (services/automation-pause.ts) so a rollback to the old
+   * code still sees a pause, then dropped.
+   */
   emergencyPause: boolean('emergency_pause').notNull().default(false),
   updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true })

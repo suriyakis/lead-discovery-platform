@@ -71,6 +71,14 @@ export const DEFAULT_ACTION_MESSAGES: Readonly<Record<string, string>> = {
 export const FALLBACK_ACTION_MESSAGE =
   "That didn't work. Try again — if it keeps happening, contact support.";
 
+/** Codes whose message is written for the operator and shown as is. */
+const PASSTHROUGH_CODES: ReadonlySet<string> = new Set([
+  'invalid_input',
+  'automation_held',
+  'rate_limited',
+  'already_running',
+]);
+
 const CODE_ALIASES: Readonly<Record<string, string>> = {
   forbidden: 'permission_denied',
 };
@@ -102,7 +110,11 @@ export function describeActionError(
 
   // Validation messages are written for the person who submitted the
   // form ("comment too long (5000 char max)") — show them, tidied up.
-  if (code === 'invalid_input' && typed.message.trim()) {
+  // PC-06: so is the automation gate's refusal (AutomationGateError,
+  // code 'automation_held'): it names the hold and its reason. PC-38: and
+  // an action guard's (ActionGuardError, 'rate_limited' / 'already_running'):
+  // it names the button and when to try again.
+  if (PASSTHROUGH_CODES.has(code) && typed.message.trim()) {
     return { code, message: clampFlash(asSentence(typed.message)) };
   }
 

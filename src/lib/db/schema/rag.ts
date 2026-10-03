@@ -2,6 +2,8 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
+  boolean,
+  check,
   customType,
   index,
   integer,
@@ -44,16 +46,18 @@ const vector = customType<{ data: number[]; default: false; driverData: string }
 
 /**
  * `document_chunks` — output of the indexing job. Each chunk is a slice of a
- * document body (or a knowledge_source's text/url-extracted body), embedded
- * once and reused for retrieval.
+ * knowledge source's body (a document's extracted text, a URL's text, or a
+ * text excerpt), embedded once and reused for retrieval.
  *
- * Lifecycle:
- *   - On document upload, the indexer extracts plain text, splits into
- *     ~500-token chunks, and embeds each. One row per chunk.
- *   - When a document is re-indexed (e.g., model upgrade), we delete its
- *     chunks and re-embed.
- *   - Knowledge sources of kind `text` and `url` are also chunked here, with
- *     `document_id` null and `knowledge_source_id` set.
+ * KL-05 ownership: every chunk belongs to exactly one knowledge source
+ * (knowledge_source_id NOT NULL, composite FK on workspace_id, cascading).
+ * Retrieval decides scope from that source (scope_kind +
+ * knowledge_source_products) and reaches the document through
+ * knowledge_sources.document_id. document_id is legacy: the indexer no
+ * longer writes it (before KL-05, a NULL source meant "workspace-wide",
+ * which is how product-scoped documents leaked — I039).
+ *
+ * Re-indexing a source replaces its chunks in one transaction.
  */
 export const documentChunks = pgTable(
   'document_chunks',
@@ -67,10 +71,17 @@ export const documentChunks = pgTable(
       () => documents.id,
       { onDelete: 'cascade' },
     ),
-    knowledgeSourceId: bigint('knowledge_source_id', { mode: 'bigint' }).references(
-      () => knowledgeSources.id,
-      { onDelete: 'cascade' },
-    ),
+    /** The owning knowledge source (KL-05). NOT NULL in the database, with
+     *  the composite FK document_chunks_knowledge_source_fk (workspace_id,
+     *  knowledge_source_id) -> knowledge_sources (workspace_id, id) ON
+     *  DELETE CASCADE — both DB-only, set by the custom block of the
+     *  p1_knowledge_foundation_* migration AFTER its backfill has given
+     *  every legacy document-level chunk an owner (a generated SET NOT NULL
+     *  would run before the backfill and fail on them; the FK references a
+     *  UNIQUE that drizzle-kit emits after every FK). Declared nullable here
+     *  only for that reason; the contract PR declares notNull().
+     *  src/tests/db-only-constraints.test.ts guards both. */
+    knowledgeSourceId: bigint('knowledge_source_id', { mode: 'bigint' }),
 
     /** 0-based chunk index within the source. */
     chunkIndex: integer('chunk_index').notNull().default(0),
@@ -105,6 +116,8 @@ export const documentChunks = pgTable(
       table.workspaceId,
       table.knowledgeSourceId,
     ),
+    // KL-05: document_chunks_knowledge_source_fk (a chunk can only belong
+    // to a source of its own workspace) is DB-only; see knowledgeSourceId.
     // The vector index is created out-of-band in the migration SQL so we can
     // pick HNSW vs IVFFlat per environment. Drizzle's index() builder does
     // not yet support `USING hnsw (embedding vector_cosine_ops)`.
@@ -116,10 +129,25 @@ export type NewDocumentChunk = typeof documentChunks.$inferInsert;
 
 export const VECTOR_DIMENSION = VECTOR_DIM;
 
+/** KL-06: the outbox states of an indexing run. */
+export const INDEXING_JOB_STATUSES = ['queued', 'running', 'succeeded', 'failed'] as const;
+export type IndexingJobStatus = (typeof INDEXING_JOB_STATUSES)[number];
+
 /**
- * `indexing_jobs` — operational log of (re)indexing runs over a document or
- * knowledge_source. Drives the UI status panel ("Indexing… / 23 chunks /
- * complete") and gives us a place to stash retry/error metadata.
+ * `indexing_jobs` — one (re)indexing run of a knowledge source, and since
+ * KL-06 the knowledge.index job's OUTBOX: a request writes the row
+ * 'queued' inside its own transaction (with the source's index_status),
+ * the job claims it ('running', attempts + 1), and it ends 'succeeded' or
+ * 'failed'. A retryable failure puts it back to 'queued' with
+ * next_attempt_at (backoff); knowledge.index.sweep re-enqueues due rows
+ * and fails runs older than 15 minutes. Drives the status panel and the
+ * receipts on /knowledge/[id] and /documents/[id].
+ *
+ * Two partial unique indexes (created in the KL-06 migration's custom
+ * block, after closing legacy rows, so drizzle does not declare them):
+ * at most one 'queued' and at most one 'running' row per knowledge source
+ * — requests coalesce and two workers never index one source at once.
+ * document_id rows are pre-KL-05 history.
  */
 export const indexingJobs = pgTable(
   'indexing_jobs',
@@ -139,11 +167,28 @@ export const indexingJobs = pgTable(
       { onDelete: 'cascade' },
     ),
 
-    /** queued | running | succeeded | failed */
+    /** queued | running | succeeded | failed (CHECK). */
     status: text('status').notNull().default('queued'),
     chunkCount: integer('chunk_count').notNull().default(0),
     embeddingModel: text('embedding_model'),
     error: text('error'),
+
+    /** KL-06: runs started (a claim counts). Retries stop at
+     *  MAX_INDEX_ATTEMPTS (knowledge-indexing.ts). */
+    attempts: integer('attempts').notNull().default(0),
+    /** A queued row is due when NULL or past (retry backoff, or deferred
+     *  while another run held the source). */
+    nextAttemptAt: timestamp('next_attempt_at', { mode: 'date', withTimezone: true }),
+    /** Admin "Re-extract with OCR": OCR the PDF even when the cached text
+     *  exists or the PDF has a text layer. Satisfied by an OCR extraction
+     *  newer than the row (so a retry or a second source never re-pays). */
+    forceOcr: boolean('force_ocr').notNull().default(false),
+    /** Why the run was requested: create | edit | reindex | document |
+     *  reextract_ocr. */
+    reason: text('reason'),
+    /** How it ended, for the receipt: unchanged (same text + model, nothing
+     *  re-embedded) | embedded | superseded | timed_out. */
+    note: text('note'),
 
     startedAt: timestamp('started_at', { mode: 'date', withTimezone: true }),
     finishedAt: timestamp('finished_at', { mode: 'date', withTimezone: true }),
@@ -163,6 +208,14 @@ export const indexingJobs = pgTable(
     workspaceStatusIdx: index('indexing_jobs_ws_status_idx').on(
       table.workspaceId,
       table.status,
+    ),
+    sourceStatusIdx: index('indexing_jobs_source_status_idx').on(
+      table.knowledgeSourceId,
+      table.status,
+    ),
+    statusCheck: check(
+      'indexing_jobs_status_check',
+      sql`${table.status} IN ('queued', 'running', 'succeeded', 'failed')`,
     ),
   }),
 );

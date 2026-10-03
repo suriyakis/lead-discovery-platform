@@ -1,0 +1,163 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* Text controls (DS-10): Input, Select, Textarea and SearchInput.
+ *
+ * The same values as the bare-element defaults in src/styles/base.css,
+ * restated here in @layer components so a component control looks the
+ * same inside a legacy context that restyles bare controls (.form-grid
+ * input, .inline-form input, …): this layer beats legacy whatever the
+ * specificity. Width stays with the context (a Field stretches its
+ * control; legacy's `input, select, textarea { max-width: 100% }` still
+ * applies). Heights are the control tokens: sm 28px, md 36px (44px on a
+ * coarse pointer), lg 44px; text is 16px on a coarse pointer. Tokens
+ * only; every state is shown at /dev/gallery#fields. */
+
+@layer components {
+  .control {
+    min-height: var(--control-md);
+    margin: 0;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface-input);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-regular);
+    line-height: var(--leading-sm);
+    letter-spacing: normal;
+    text-align: start;
+    text-transform: none;
+    vertical-align: middle;
+    color-scheme: dark;
+    box-shadow: none;
+    transition:
+      border-color var(--dur-1) var(--ease-out),
+      box-shadow var(--dur-1) var(--ease-out);
+  }
+
+  .control::placeholder {
+    color: var(--fg-subtle);
+    opacity: 1;
+  }
+
+  /* The ring is a border and a glow; the transparent outline is what
+     forced-colors mode paints instead. */
+  .control:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 0;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring-control);
+  }
+
+  .control[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+
+  .control:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .control[data-size='sm'] {
+    min-height: var(--control-sm);
+    padding: 0 var(--space-2);
+  }
+
+  .control[data-size='lg'] {
+    min-height: var(--control-lg);
+  }
+
+  /* Numbers read right to left in a column; the spin buttons stay. */
+  .control[data-align='end'] {
+    text-align: end;
+  }
+
+  .textarea {
+    padding: var(--space-2) var(--space-3);
+    line-height: var(--leading-prose);
+    resize: vertical;
+  }
+
+  .textarea[data-resize='none'] {
+    resize: none;
+  }
+
+  /* The drawn chevron (base.css draws the same one for a bare select). */
+  .select {
+    appearance: none;
+    padding-right: var(--space-8);
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+      linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 17px) 52%,
+      calc(100% - 12px) 52%;
+    background-size:
+      5px 5px,
+      5px 5px;
+    background-repeat: no-repeat;
+    cursor: pointer;
+  }
+
+  .select[data-size='sm'] {
+    padding-right: var(--space-6);
+    background-position:
+      calc(100% - 13px) 52%,
+      calc(100% - 8px) 52%;
+  }
+
+  /* Plain: no box of its own, for a select that sits inside a container
+     that draws one (the header workspace switcher). It keeps the chevron
+     and draws its own focus ring. */
+  .select[data-variant='plain'] {
+    border-color: transparent;
+    background-color: transparent;
+  }
+
+  .select[data-variant='plain']:focus-visible {
+    border-color: transparent;
+    box-shadow: none;
+    outline: var(--focus-outline);
+    outline-offset: var(--space-0_5);
+  }
+
+  /* SearchInput: a search field with the glyph inside its left padding. */
+  .search {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .search > .control {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    padding-left: calc(var(--space-3) + var(--space-4) + var(--space-2));
+  }
+
+  .search > .control[data-size='sm'] {
+    padding-left: calc(var(--space-2) + var(--space-4) + var(--space-1_5));
+  }
+
+  .searchIcon {
+    position: absolute;
+    left: var(--space-3);
+    width: var(--space-4);
+    height: var(--space-4);
+    color: var(--fg-subtle);
+    pointer-events: none;
+  }
+
+  .search[data-size='sm'] > .searchIcon {
+    left: var(--space-2);
+  }
+
+  @media (pointer: coarse) {
+    .control {
+      font-size: var(--text-md);
+    }
+  }
+}

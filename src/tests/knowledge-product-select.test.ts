@@ -10,8 +10,8 @@ import { db } from '@/lib/db/client';
 import { makeWorkspaceContext } from '@/lib/services/context';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { createKnowledgeSource } from '@/lib/services/knowledge-sources';
-import NewKnowledgeSourcePage from '@/app/knowledge/new/page';
-import KnowledgeSourceDetail from '@/app/knowledge/[id]/page';
+import NewKnowledgeSourcePage from '@/app/(app)/knowledge/new/page';
+import KnowledgeSourceDetail from '@/app/(app)/knowledge/[id]/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { renderToHtml } from './helpers/next-render';
 
@@ -69,7 +69,7 @@ describe('knowledge product select', () => {
       kind: 'text',
       title: 'Spec sheet',
       textExcerpt: 'Thermal conductivity 0.021 W/mK.',
-      productProfileIds: [alpha.id],
+      scope: { kind: 'products', productProfileIds: [alpha.id] },
     });
 
     const tree = await KnowledgeSourceDetail({

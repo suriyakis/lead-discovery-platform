@@ -31,8 +31,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
   }
 
-  const minted = await createSessionForUser(user.id);
-  const res = NextResponse.json({ ok: true, redirectTo: '/dashboard' });
+  const minted = await createSessionForUser(user.id, {
+    userAgent: req.headers.get('user-agent'),
+  });
+  const res = NextResponse.json({ ok: true, redirectTo: '/today' });
   res.cookies.set({
     name: minted.cookieName,
     value: minted.sessionToken,

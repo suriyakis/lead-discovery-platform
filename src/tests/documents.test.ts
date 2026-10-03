@@ -366,11 +366,13 @@ describe('knowledge_sources', () => {
       kind: 'document',
       title: 'Product specs',
       documentId: docA.document.id,
-      productProfileIds: [product.id],
+      scope: { kind: 'products', productProfileIds: [product.id] },
     });
     expect(ks.kind).toBe('document');
     expect(ks.documentId).toBe(docA.document.id);
-    expect(ks.productProfileIds.map((id) => id.toString())).toEqual([
+    expect(ks.scopeKind).toBe('products');
+    const got = await getKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id);
+    expect(got.scope.productProfileIds.map((id) => id.toString())).toEqual([
       product.id.toString(),
     ]);
 
@@ -380,6 +382,7 @@ describe('knowledge_sources', () => {
         kind: 'document',
         title: 'leak',
         documentId: docA.document.id,
+        scope: { kind: 'workspace' },
       }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
@@ -390,6 +393,7 @@ describe('knowledge_sources', () => {
       kind: 'url',
       title: 'Industry report',
       url: 'https://example.com/report.pdf',
+      scope: { kind: 'workspace' },
     });
     expect(ok.url).toBe('https://example.com/report.pdf');
 
@@ -398,6 +402,7 @@ describe('knowledge_sources', () => {
         kind: 'url',
         title: 'bad',
         url: 'ftp://example.com',
+        scope: { kind: 'workspace' },
       }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
   });
@@ -408,6 +413,7 @@ describe('knowledge_sources', () => {
       createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
         kind: 'text',
         title: 'snippet',
+        scope: { kind: 'workspace' },
       }),
     ).rejects.toMatchObject({ code: 'invalid_input' });
 
@@ -415,6 +421,7 @@ describe('knowledge_sources', () => {
       kind: 'text',
       title: 'snippet',
       textExcerpt: 'A short, useful piece of context.',
+      scope: { kind: 'workspace' },
     });
     expect(ok.textExcerpt).toContain('useful piece');
   });
@@ -428,19 +435,19 @@ describe('knowledge_sources', () => {
       kind: 'url',
       title: 'For P1',
       url: 'https://x.com/1',
-      productProfileIds: [p1.id],
+      scope: { kind: 'products', productProfileIds: [p1.id] },
     });
     await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
       kind: 'url',
       title: 'For P2',
       url: 'https://x.com/2',
-      productProfileIds: [p2.id],
+      scope: { kind: 'products', productProfileIds: [p2.id] },
     });
     await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
       kind: 'url',
       title: 'For both',
       url: 'https://x.com/3',
-      productProfileIds: [p1.id, p2.id],
+      scope: { kind: 'products', productProfileIds: [p1.id, p2.id] },
     });
 
     const onlyP1 = await listKnowledgeSources(
@@ -453,6 +460,7 @@ describe('knowledge_sources', () => {
   it('updateKnowledgeSource enforces kind on field changes', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'url',
       title: 'X',
       url: 'https://x.com',
@@ -479,7 +487,7 @@ describe('knowledge_sources', () => {
       kind: 'url',
       title: 'X',
       url: 'https://x.com',
-      productProfileIds: [p.id],
+      scope: { kind: 'products', productProfileIds: [p.id] },
     });
     const got = await getKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id);
     expect(got.products.map((pp) => pp.name)).toEqual(['P']);
@@ -488,14 +496,19 @@ describe('knowledge_sources', () => {
   it('deleteKnowledgeSource is admin-only and removes the row', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'url',
       title: 'X',
       url: 'https://x.com',
     });
     await expect(
-      deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA, 'member'), ks.id),
+      deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA, 'member'), ks.id, { confirm: 'X' }),
     ).rejects.toMatchObject({ code: 'permission_denied' });
-    await deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id);
+    // KL-06: never without the title typed as confirmation.
+    await expect(
+      deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id, { confirm: '' }),
+    ).rejects.toMatchObject({ code: 'confirmation_required' });
+    await deleteKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id, { confirm: 'X' });
     await expect(
       getKnowledgeSource(ctx(s.workspaceA, s.ownerA), ks.id),
     ).rejects.toMatchObject({ code: 'not_found' });
@@ -504,6 +517,7 @@ describe('knowledge_sources', () => {
   it('cross-workspace knowledge sources do not leak', async () => {
     const s = await setup();
     const ks = await createKnowledgeSource(ctx(s.workspaceA, s.ownerA), {
+      scope: { kind: 'workspace' },
       kind: 'url',
       title: 'A only',
       url: 'https://x.com',

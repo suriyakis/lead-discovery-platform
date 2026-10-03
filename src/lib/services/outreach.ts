@@ -87,10 +87,16 @@ export async function generateOutreachDraft(
   const { assertTokens } = await import('./token-ledger');
   await assertTokens(ctx);
 
-  const { reviewItem, sourceRecord, product, qualificationId } =
+  const { reviewItem, sourceRecord, product, qualificationId, operatorVerdict } =
     await resolvePair(ctx, input.reviewItemId, input.productProfileId);
 
   if (!product.active) throw invalid('product profile is archived');
+  // KL-02: the operator's Not a fit binds — no draft for that pair.
+  if (operatorVerdict === 'not_fit') {
+    throw conflict(
+      `This company was marked Not a fit for ${product.name}, so no draft is written for that product.`,
+    );
+  }
 
   // Semantic anchor: rank style/positioning lessons by relevance to this
   // record once the base outgrows the prompt budget.
@@ -651,6 +657,8 @@ interface ResolvedPair {
   sourceRecord: SourceRecord;
   product: ProductProfile;
   qualificationId: bigint | null;
+  /** KL-02: the operator's verdict on this (record, product), if any. */
+  operatorVerdict: 'fit' | 'not_fit' | null;
 }
 
 async function resolvePair(
@@ -693,6 +701,7 @@ async function resolvePair(
     sourceRecord: rows[0].sourceRecord,
     product: rows[0].product,
     qualificationId: qualRows[0]?.id ?? null,
+    operatorVerdict: qualRows[0]?.operatorVerdict ?? null,
   };
 }
 

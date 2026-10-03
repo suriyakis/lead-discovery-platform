@@ -2,7 +2,7 @@
 // lowercased email). Polymorphic associations let one contact attach to
 // multiple qualified_leads, mail_threads, mail_messages, source_records.
 
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   contactAssociations,
@@ -62,6 +62,18 @@ export function isPlausibleEmail(email: string): boolean {
   if (!EMAIL_RE.test(email)) return false;
   if (ASSET_EXT_RE.test(email)) return false;
   return true;
+}
+
+/**
+ * PC-11: isPlausibleEmail as a SQL condition on `column`, normalized the
+ * same way (trimmed, lowercased), for candidate queries that must filter
+ * before their LIMIT (autopilot's generate + enqueue). The same two
+ * patterns are bound as parameters, so the JS and SQL checks cannot drift
+ * (both regex dialects read them identically; pinned by a test).
+ */
+export function plausibleEmailSql(column: SQLWrapper): SQL {
+  const v = sql`lower(btrim(${column}, E' \\t\\r\\n'))`;
+  return sql`(${column} IS NOT NULL AND char_length(${v}) <= ${MAX_EMAIL_LEN} AND ${v} ~ ${EMAIL_RE.source} AND ${v} !~ ${ASSET_EXT_RE.source})`;
 }
 
 function deriveDomain(email: string): string | null {

@@ -12,6 +12,11 @@
 //   400 invalid_input · 429 rate_limited
 //   502 empty_answer (retryable) — the model returned no visible text
 //   500 assistant_failed (retryable) — anything else; logged server-side
+//   409 workspace_changed — MOB-06: the x-expected-workspace header (the
+//       page's workspace) no longer matches this browser's session
+//
+// The answer carries `workspaceId`, the workspace it was computed for, so
+// the panel can link its [/path] references there (through /go).
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -19,8 +24,9 @@ import { auth } from '@/lib/auth';
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { AssistantError, askAssistant } from '@/lib/services/assistant';
 import { authErrorToResponse } from '@/lib/services/http';
-import { rateLimitAllow } from '@/lib/rate-limit';
+import { rateLimitCheck, retryAfterHeaders } from '@/lib/rate-limit';
 import { HISTORY_TURN_MAX_CHARS } from '@/lib/assistant/panel-state';
+import { withWorkspaceGuardRoute } from '@/lib/workspace-guard/server';
 
 const InputSchema = z.object({
   question: z.string().min(1).max(2000),
@@ -38,7 +44,7 @@ const InputSchema = z.object({
     .optional(),
 });
 
-export async function POST(req: Request): Promise<NextResponse> {
+async function handlePost(req: Request): Promise<NextResponse> {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -61,14 +67,17 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // Cost-DoS guard: metering is post-hoc, so the wallet check alone can be
   // raced by concurrent floods (and billing-exempt tenants have no wallet
-  // gate at all). Cap per workspace AND per user.
-  if (
-    !rateLimitAllow(`assistant:ws:${ctx.workspaceId}`, 20, 60_000) ||
-    !rateLimitAllow(`assistant:user:${ctx.userId}`, 10, 60_000)
-  ) {
+  // gate at all). Cap per workspace AND per user. PC-38: the windows are
+  // shared (Postgres), so a deploy no longer resets them.
+  // The user's window is only counted when the workspace's lets it in.
+  const wsLimit = await rateLimitCheck(`assistant:ws:${ctx.workspaceId}`, 20, 60_000);
+  const limit = wsLimit.allowed
+    ? await rateLimitCheck(`assistant:user:${ctx.userId}`, 10, 60_000)
+    : wsLimit;
+  if (!limit.allowed) {
     return NextResponse.json(
       { error: 'rate_limited', detail: 'Too many questions — try again in a minute.', retryable: true },
-      { status: 429 },
+      { status: 429, headers: retryAfterHeaders(limit) },
     );
   }
 
@@ -78,6 +87,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       ok: true,
       answer: result.answer,
       source: result.source,
+      workspaceId: ctx.workspaceId.toString(),
       ...(result.findings ? { findings: result.findings } : {}),
     });
   } catch (err) {
@@ -101,3 +111,5 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 }
+
+export const POST = withWorkspaceGuardRoute('assistant.ask', handlePost);

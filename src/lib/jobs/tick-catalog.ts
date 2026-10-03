@@ -1,0 +1,168 @@
+// PC-07: the catalogue of repeatable ticks — names, cadences and labels
+// only, no handlers. repeatables.ts registers a handler for each entry;
+// readiness (/api/ready) and the ops views read this list to know which
+// heartbeats must stay fresh, without importing every service the
+// handlers call.
+//
+// A tick removed from this list stops counting for readiness even if its
+// old job_heartbeats row is still there.
+
+export const AUTOPILOT_TICK_MS = 5 * 60 * 1000;
+export const DRAIN_TICK_MS = 30 * 1000;
+export const IMAP_TICK_MS = 2 * 60 * 1000;
+/** PC-09: how often the mailbox-health probes look for due work. Each
+ *  mailbox's own cadence (a credential-free probe every 30 min, the login
+ *  once a day, the recovery backoff) lives in services/mailbox-health.ts;
+ *  this is only the granularity. */
+export const MAIL_PROBE_TICK_MS = 5 * 60 * 1000;
+export const FOLLOW_UP_TICK_MS = 60 * 60 * 1000;
+/** P60-05: knowledge compaction is heavy (AI per cluster). Weekly is enough
+ *  — lessons accumulate slowly and the platform can absorb a few days of
+ *  duplicates before the dilution matters. */
+export const KNOWLEDGE_COMPACT_TICK_MS = 7 * 24 * 60 * 60 * 1000;
+/** P61-09: daily mail trash purge. The actual retention window is
+ *  per-workspace (workspaces.trash_retention_days, default 30); this is
+ *  just how often we check. */
+export const MAIL_TRASH_PURGE_TICK_MS = 24 * 60 * 60 * 1000;
+/** P62-02: Crawl Engine cadence. 5 min is the finest granularity any
+ *  plan can ever fire at (validated by MIN_INTERVAL_MINUTES). Plans
+ *  with longer intervals just get checked-and-skipped until due. */
+export const CRAWL_ENGINE_TICK_MS = 5 * 60 * 1000;
+/** AP-06: every 6 hours the free diagnostics sweep runs for every active
+ *  workspace (notifications by policy, no AI), then the weekly health
+ *  reports that are due: their per-workspace interval (default 7 days,
+ *  switchable off) lives on the workspace row, and the service claims each
+ *  due workspace atomically. */
+export const HEALTH_CHECK_TICK_MS = 6 * 60 * 60 * 1000;
+/** PC-10: the stuck-work reaper (sends stuck in 'sending' > 10 min, runs
+ *  without progress > 15 min) — src/lib/services/stuck-work.ts. */
+export const STUCK_WORK_TICK_MS = 5 * 60 * 1000;
+/** PC-35: daily log retention (autopilot_log, routine sync audit rows, read
+ *  notifications, resolved incidents, …) — src/lib/services/retention.ts.
+ *  Under BullMQ it fires at 00:00 UTC (epoch-aligned slots). */
+export const RETENTION_TICK_MS = 24 * 60 * 60 * 1000;
+/** KL-03: the learning outbox's sweeper (services/learning-processor.ts). */
+export const LEARNING_SWEEP_TICK_MS = 2 * 60 * 1000;
+/** KL-06: the knowledge-indexing outbox's sweeper
+ *  (services/knowledge-indexing.ts). */
+export const KNOWLEDGE_INDEX_SWEEP_TICK_MS = 2 * 60 * 1000;
+
+export type TickName =
+  | 'autopilot.tick'
+  | 'outreach.drain.tick'
+  | 'mail.imap.tick'
+  | 'mail.probe.tick'
+  | 'outreach.follow_up.tick'
+  | 'knowledge.compact.tick'
+  | 'mail.trash.purge.tick'
+  | 'crawl.engine.tick'
+  | 'health.check.tick'
+  | 'ops.reaper.tick'
+  | 'ops.retention.tick'
+  | 'learning.sweep'
+  | 'knowledge.index.sweep';
+
+export interface TickDefinition {
+  readonly name: TickName;
+  readonly everyMs: number;
+  /** Stable schedule id handed to IJobQueue.enqueueRepeatable. */
+  readonly jobId: string;
+  /** Human name used in incident titles ("Autopilot failed for …"). */
+  readonly label: string;
+}
+
+export const TICK_CATALOG: readonly TickDefinition[] = [
+  {
+    name: 'autopilot.tick',
+    everyMs: AUTOPILOT_TICK_MS,
+    jobId: 'autopilot-tick',
+    label: 'Autopilot',
+  },
+  {
+    name: 'outreach.drain.tick',
+    everyMs: DRAIN_TICK_MS,
+    jobId: 'outreach-drain-tick',
+    label: 'Send queue',
+  },
+  { name: 'mail.imap.tick', everyMs: IMAP_TICK_MS, jobId: 'mail-imap-tick', label: 'Inbox sync' },
+  {
+    name: 'mail.probe.tick',
+    everyMs: MAIL_PROBE_TICK_MS,
+    jobId: 'mail-probe-tick',
+    label: 'Mailbox health',
+  },
+  {
+    name: 'outreach.follow_up.tick',
+    everyMs: FOLLOW_UP_TICK_MS,
+    jobId: 'outreach-follow-up-tick',
+    label: 'Follow-ups',
+  },
+  {
+    name: 'knowledge.compact.tick',
+    everyMs: KNOWLEDGE_COMPACT_TICK_MS,
+    jobId: 'knowledge-compact-tick',
+    label: 'Knowledge compaction',
+  },
+  {
+    name: 'mail.trash.purge.tick',
+    everyMs: MAIL_TRASH_PURGE_TICK_MS,
+    jobId: 'mail-trash-purge-tick',
+    label: 'Mail trash purge',
+  },
+  {
+    name: 'crawl.engine.tick',
+    everyMs: CRAWL_ENGINE_TICK_MS,
+    jobId: 'crawl-engine-tick',
+    label: 'Scheduled discovery',
+  },
+  {
+    name: 'health.check.tick',
+    everyMs: HEALTH_CHECK_TICK_MS,
+    jobId: 'health-check-tick',
+    label: 'Workspace health check',
+  },
+  {
+    name: 'ops.reaper.tick',
+    everyMs: STUCK_WORK_TICK_MS,
+    jobId: 'ops-reaper-tick',
+    label: 'Stuck-work reaper',
+  },
+  {
+    name: 'ops.retention.tick',
+    everyMs: RETENTION_TICK_MS,
+    jobId: 'ops-retention-tick',
+    label: 'Data retention',
+  },
+  {
+    name: 'learning.sweep',
+    everyMs: LEARNING_SWEEP_TICK_MS,
+    jobId: 'learning-sweep',
+    label: 'Learning sweep',
+  },
+  {
+    name: 'knowledge.index.sweep',
+    everyMs: KNOWLEDGE_INDEX_SWEEP_TICK_MS,
+    jobId: 'knowledge-index-sweep',
+    label: 'Knowledge indexing sweep',
+  },
+];
+
+/**
+ * Platform maintenance ticks (PC-10, PC-35, and the KL-03 / KL-06 outbox
+ * sweepers): they send nothing and start no new work, so no workspace
+ * pause, hold or the platform outbound stop gates them, and they are no
+ * line of a workspace's "What runs right now". The learning job a sweep
+ * re-drives asks the automation gate itself before any AI call. Every
+ * other catalogued tick is workspace automation
+ * (services/automation-policy.ts AUTOMATION_TICKS).
+ */
+export const MAINTENANCE_TICKS = [
+  'ops.reaper.tick',
+  'ops.retention.tick',
+  'learning.sweep',
+  'knowledge.index.sweep',
+] as const satisfies readonly TickName[];
+
+export function getTickDefinition(name: string): TickDefinition | undefined {
+  return TICK_CATALOG.find((t) => t.name === name);
+}

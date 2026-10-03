@@ -119,7 +119,28 @@ export const sessions = pgTable('sessions', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   expires: timestamp('expires', { mode: 'date' }).notNull(),
+  /**
+   * MOB-06: the workspace THIS session works in. Two browsers (or a phone
+   * and a laptop) signed in as one user each keep their own, so a switch
+   * in one never moves the other. Pinned on the session's first request
+   * from users.activeWorkspaceId (the last-used workspace), then changed
+   * only by a switch in this session (the header switcher, /go). The
+   * resolver re-checks membership on every request, so a pointer at a
+   * workspace the user has left is ignored and re-pinned. The FK to
+   * workspaces (ON DELETE SET NULL) lives in the migration's custom SQL,
+   * like users.activeWorkspaceId's: auth.ts cannot import workspaces.ts.
+   */
+  activeWorkspaceId: bigint('activeWorkspaceId', { mode: 'bigint' }),
+  createdAt: timestamp('createdAt', { mode: 'date', withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  /** Last request seen on this session (written at most every 5 minutes). */
+  lastSeenAt: timestamp('lastSeenAt', { mode: 'date', withTimezone: true }),
+  /** The browser's User-Agent (clipped), so a user can tell sessions apart. */
+  userAgent: text('userAgent'),
 });
+
+export type SessionRow = typeof sessions.$inferSelect;
 
 export const verificationTokens = pgTable(
   'verification_tokens',
@@ -135,3 +156,4 @@ export const verificationTokens = pgTable(
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
+export type UserRole = (typeof userRole.enumValues)[number];

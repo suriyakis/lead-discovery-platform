@@ -18,9 +18,9 @@ import { createConnector, createRecipe, startRun } from '@/lib/services/connecto
 import { archiveReviewItem } from '@/lib/services/review';
 import { preauthorizeEmail } from '@/lib/services/users';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ReviewDetailPage from '@/app/review/[id]/page';
-import * as reviewActions from '@/app/review/[id]/actions';
-import * as recipeActions from '@/app/connectors/[id]/recipes/[recipeId]/actions';
+import ReviewDetailPage from '@/app/(app)/review/[id]/page';
+import * as reviewActions from '@/app/(app)/review/[id]/actions';
+import * as recipeActions from '@/app/(app)/connectors/[id]/recipes/[recipeId]/actions';
 import * as adminUserActions from '@/app/admin/users/actions';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { platformCtx } from './helpers/platform';
@@ -43,11 +43,11 @@ vi.mock('@/lib/services/auth-context', () => {
     },
     // Console actions take a PlatformContext (PC-03); the real guard
     // redirects a signed-out user to '/' and anyone else who is not a
-    // super-admin to '/dashboard'.
+    // super-admin to Today ('/today').
     requirePlatformAdmin: async () => {
       const { redirect } = await import('next/navigation');
       if (!session.ctx) return redirect('/');
-      if (session.ctx.role !== 'super_admin') return redirect('/dashboard');
+      if (session.ctx.role !== 'super_admin') return redirect('/today');
       return platformCtx(session.ctx.userId);
     },
   };
@@ -85,9 +85,12 @@ async function redirectOf(run: Promise<unknown>): Promise<URL> {
   throw new Error('expected the action to redirect');
 }
 
+/** A form as the page posts it: with the page's workspace (MOB-06) —
+ *  the acting user's, as the page was rendered for them. */
 function form(fields: Record<string, string> = {}): FormData {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
+  if (session.ctx) fd.set('expectedWorkspaceId', session.ctx.workspaceId.toString());
   return fd;
 }
 
@@ -177,11 +180,11 @@ describe('review detail actions', () => {
     const id = s.itemId.toString();
     for (const run of [
       () => reviewActions.rejectReviewItemAction(id, form({ reason: 'no' })),
-      () => reviewActions.ignoreReviewItemAction(id),
-      () => reviewActions.flagReviewItemAction(id),
+      () => reviewActions.ignoreReviewItemAction(id, form()),
+      () => reviewActions.flagReviewItemAction(id, form()),
       () => reviewActions.commentOnReviewItemAction(id, form({ comment: 'hello' })),
       () => reviewActions.generateDraftAction(id, form({ productId: '1', method: 'rules' })),
-      () => reviewActions.archiveReviewItemAction(id),
+      () => reviewActions.archiveReviewItemAction(id, form()),
     ]) {
       const to = await redirectOf(run());
       expect(to.pathname).toBe(`/review/${id}`);
@@ -208,7 +211,7 @@ describe('review detail actions', () => {
   it('acting on an item that no longer exists lands on the queue with a notice', async () => {
     const s = await setup();
     actAs(s.member);
-    const to = await redirectOf(reviewActions.ignoreReviewItemAction('987654'));
+    const to = await redirectOf(reviewActions.ignoreReviewItemAction('987654', form()));
     expect(to.pathname).toBe('/review');
     expect(to.searchParams.get('message')).toMatch(/no longer exists/);
   });
@@ -252,10 +255,10 @@ describe('review detail actions', () => {
   it('archive is admin-only and says so', async () => {
     const s = await setup();
     actAs(s.member);
-    const to = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString()));
+    const to = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString(), form()));
     expect(to.searchParams.get('error')).toMatch(/Only workspace admins/);
     actAs(s.admin);
-    const ok = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString()));
+    const ok = await redirectOf(reviewActions.archiveReviewItemAction(s.itemId.toString(), form()));
     expect(ok.pathname).toBe('/review');
     expect(await itemState(s.itemId)).toBe('archived');
   });
@@ -271,14 +274,14 @@ describe('review detail actions', () => {
       reviewActions.generateDraftAction(s.itemId.toString(), form({ productId: 'abc' })),
     );
     expect(noProduct.searchParams.get('error')).toMatch(/Pick a product/);
-    const badId = await redirectOf(reviewActions.flagReviewItemAction('1; drop table'));
+    const badId = await redirectOf(reviewActions.flagReviewItemAction('1; drop table', form()));
     expect(badId.pathname).toBe('/review');
   });
 
   it('a stale form after sign-out goes to the sign-in page', async () => {
     const s = await setup();
     actAs(null);
-    const to = await redirectOf(reviewActions.flagReviewItemAction(s.itemId.toString()));
+    const to = await redirectOf(reviewActions.flagReviewItemAction(s.itemId.toString(), form()));
     expect(to.pathname).toBe('/');
   });
 });
@@ -470,7 +473,7 @@ describe('admin pre-authorisation Revoke', () => {
     const denied = await redirectOf(
       adminUserActions.revokePreauthorizationAction(form({ id: entry.id })),
     );
-    expect(denied.pathname).toBe('/dashboard');
+    expect(denied.pathname).toBe('/today');
     expect(await preauthExists(entry.id)).toBe(true);
 
     actAs(null);

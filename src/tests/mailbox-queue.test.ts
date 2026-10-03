@@ -7,22 +7,20 @@
 // permission check with no catch, and the user got Next's generic error
 // page. Cancel and reschedule had the same missing catch. These tests
 // render the page per role and run the actions from
-// src/app/mailbox/queue/actions.ts against the database.
+// src/app/(app)/mailbox/queue/actions.ts against the database.
 
+import { pauseAutomation } from '@/lib/services/automation-pause';
+import { PAUSED_MESSAGE } from '@/lib/services/automation-gate';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { mailboxes } from '@/lib/db/schema/mailing';
-import { outreachQueue, outreachSendSettings } from '@/lib/db/schema/outreach';
+import { outreachQueue } from '@/lib/db/schema/outreach';
+import { makeWorkspaceContext } from '@/lib/services/context';
 import { workspaceMembers, type WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
 import { OutreachQueueError, getSendSettings } from '@/lib/services/outreach-queue';
-import {
-  cancelQueuedEmailAction,
-  drainSendQueueAction,
-  rescheduleQueuedEmailAction,
-  saveSendSettingsAction,
-} from '@/app/mailbox/queue/actions';
+import * as queueActions from '@/app/(app)/mailbox/queue/actions';
 import {
   formatUtc,
   parseEntryId,
@@ -32,9 +30,10 @@ import {
   queueErrorMessage,
   queueHref,
   toUtcInputValue,
-} from '@/app/mailbox/queue/forms';
-import QueuePage from '@/app/mailbox/queue/page';
+} from '@/app/(app)/mailbox/queue/forms';
+import QueuePage from '@/app/(app)/mailbox/queue/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
+import { postedFromCurrentPage } from './helpers/workspace-guard';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 
 // Sign in through a plain session object instead of Auth.js;
@@ -49,6 +48,14 @@ vi.mock('@/lib/auth', () => ({ auth: async () => session.current }));
 vi.mock('@/components/AppShell', () => ({
   AppShell: ({ children }: { children: ReactNode }) => children,
 }));
+
+// MOB-06: the actions are guarded; each call posts from the page the
+// signed-in user would see right now (their current workspace).
+const currentUser = () => session.current?.user;
+const cancelQueuedEmailAction = postedFromCurrentPage(queueActions.cancelQueuedEmailAction, currentUser);
+const drainSendQueueAction = postedFromCurrentPage(queueActions.drainSendQueueAction, currentUser);
+const rescheduleQueuedEmailAction = postedFromCurrentPage(queueActions.rescheduleQueuedEmailAction, currentUser);
+const saveSendSettingsAction = postedFromCurrentPage(queueActions.saveSendSettingsAction, currentUser);
 
 function signInAs(userId: string): void {
   session.current = { user: { id: userId, role: 'member', accountStatus: 'active' } };
@@ -174,12 +181,12 @@ describe('queue form helpers', () => {
         fixedDelayMinutes: 20,
         randomDelayMinMinutes: 3,
         randomDelayMaxMinutes: 9,
-        emergencyPause: true,
       },
     });
-    // An unticked checkbox is absent from the form: pause goes off.
-    const off = parseSendSettingsForm(settingsForm());
-    expect(off.ok && off.value.emergencyPause).toBe(false);
+    // PC-05: the form no longer carries a pause; a stray field is ignored
+    // (pausing is the workspace pause control).
+    const parsed = parseSendSettingsForm(settingsForm({ emergencyPause: 'on' }));
+    expect(parsed.ok && 'emergencyPause' in parsed.value).toBe(false);
   });
 
   it.each([
@@ -268,7 +275,9 @@ describe('/mailbox/queue page', () => {
     const html = await renderQueue();
 
     expect(html).toContain('name="dailyEmailLimit"');
-    expect(html).toContain('name="emergencyPause"');
+    // PC-05: the pause is its own control, not a field of this form.
+    expect(html).not.toContain('name="emergencyPause"');
+    expect(html).toContain('Pause all automation');
     expect(html).toContain('Save settings');
     expect(html).not.toContain('Only workspace admins can change these settings.');
   });
@@ -319,20 +328,26 @@ describe('/mailbox/queue page', () => {
     expect(html).toContain('value="2099-10-01T14:30"');
   });
 
-  it('explains an emergency pause without internal function names', async () => {
+  it('PC-05: shows the workspace pause (who, what waits) without internal function names, and a member cannot resume', async () => {
     const f = await setup();
-    await getSendSettings({ workspaceId: f.workspaceId });
-    await db
-      .update(outreachSendSettings)
-      .set({ emergencyPause: true })
-      .where(eq(outreachSendSettings.workspaceId, f.workspaceId));
+    await pauseAutomation(
+      makeWorkspaceContext({ workspaceId: f.workspaceId, userId: f.users.member, role: 'member' }),
+      { source: 'send_queue_page', reason: 'wrong list' },
+    );
     signInAs(f.users.member);
 
     const html = await renderQueue();
 
-    expect(html).toContain('Queued emails are held while sending is paused.');
+    expect(html).toContain('Automation is paused');
+    expect(html).toContain('Reason: wrong list');
+    expect(html).toContain('1 queued email');
+    expect(html).toContain('Only owners and admins can resume automation.');
+    expect(html).not.toContain('Resume automation');
     expect(html).not.toContain('drainQueue');
     expect(html).not.toContain('no-op');
+
+    signInAs(f.users.admin);
+    expect(await renderQueue()).toContain('Resume automation');
   });
 
   it('carries the current view into every form so actions return to it', async () => {
@@ -353,7 +368,6 @@ describe('/mailbox/queue actions', () => {
     const f = await setup();
     signInAs(f.users.admin);
     const fd = settingsForm();
-    fd.set('emergencyPause', 'on');
 
     const target = await expectRedirect(() => saveSendSettingsAction(fd));
 
@@ -369,7 +383,6 @@ describe('/mailbox/queue actions', () => {
       fixedDelayMinutes: 20,
       randomDelayMinMinutes: 3,
       randomDelayMaxMinutes: 9,
-      emergencyPause: true,
       updatedBy: f.users.admin,
     });
   });
@@ -524,25 +537,22 @@ describe('/mailbox/queue actions', () => {
     const target = await expectRedirect(() => drainSendQueueAction(entryForm({})));
 
     expect(parseTarget(target).query.message).toBe(
-      "Nothing was sent: no emails are due yet, or today's limit has been reached.",
+      "Nothing was sent: no emails are due yet.",
     );
     expect((await loadEntry(f.entryId)).status).toBe('queued');
   });
 
-  it('send-now says sending is paused during an emergency pause', async () => {
+  it('send-now says why nothing was sent while automation is paused (PC-05)', async () => {
     const f = await setup();
     signInAs(f.users.owner);
-    await expectRedirect(() => {
-      const fd = settingsForm();
-      fd.set('emergencyPause', 'on');
-      return saveSendSettingsAction(fd);
-    });
+    await pauseAutomation(
+      makeWorkspaceContext({ workspaceId: f.workspaceId, userId: f.users.owner, role: 'owner' }),
+      { source: 'send_queue_page' },
+    );
 
     const target = await expectRedirect(() => drainSendQueueAction(entryForm({})));
 
-    expect(parseTarget(target).query.message).toBe(
-      'Sending is paused, so nothing was sent. Turn off the emergency pause to resume.',
-    );
+    expect(parseTarget(target).query.message).toBe(`Nothing was sent. ${PAUSED_MESSAGE}`);
   });
 
   it('refuses a viewer’s send-now with a flash', async () => {

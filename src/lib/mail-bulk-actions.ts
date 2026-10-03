@@ -1,7 +1,7 @@
 // Shared pieces of the mail bulk actions (trash, restore, spam, not-spam,
 // delete permanently, retry) behind the folder views on /communication
-// (src/app/communication/actions.ts) and /mailbox/[id]
-// (src/app/mailbox/[id]/actions.ts). The two used to carry line-for-line
+// (src/app/(app)/communication/actions.ts) and /mailbox/[id]
+// (src/app/(app)/mailbox/[id]/actions.ts). The two used to carry line-for-line
 // copies; only where they redirect differs.
 //
 // A plain module, not 'use server': these are helpers, and every export
@@ -32,6 +32,10 @@ export interface RetryOutcome {
   retried: readonly unknown[];
   skippedHardBounce: readonly unknown[];
   skippedIneligible: readonly unknown[];
+  /** PC-10: copies of an email that has already gone out (moved to Trash). */
+  skippedAlreadySent?: readonly unknown[];
+  /** PC-10: further copies of an email already retried in the same batch. */
+  skippedDuplicate?: readonly unknown[];
   errors: readonly unknown[];
 }
 
@@ -43,6 +47,18 @@ export function retrySummary(r: RetryOutcome): string {
   }
   if (r.skippedHardBounce.length > 0) {
     parts.push(`${r.skippedHardBounce.length} hard-bounced (skipped)`);
+  }
+  const alreadySent = r.skippedAlreadySent?.length ?? 0;
+  if (alreadySent > 0) {
+    parts.push(`${alreadySent} already sent earlier (not sent again, moved to Trash)`);
+  }
+  const duplicates = r.skippedDuplicate?.length ?? 0;
+  if (duplicates > 0) {
+    parts.push(
+      duplicates === 1
+        ? '1 extra copy of the same email skipped'
+        : `${duplicates} extra copies of the same email skipped`,
+    );
   }
   if (r.skippedIneligible.length > 0) parts.push(`${r.skippedIneligible.length} ineligible`);
   if (r.errors.length > 0) parts.push(`${r.errors.length} failed`);

@@ -9,6 +9,7 @@
 
 import { useState, useTransition } from 'react';
 import { Languages, Sparkles } from 'lucide-react';
+import { useExpectedWorkspaceHeaders } from './WorkspaceGuard';
 
 interface SignatureOption {
   id: string;
@@ -29,6 +30,9 @@ interface CommunicationReplyProps {
   nativeLanguage: string;
   /** Recipient's resolved language, or null when it matches native / no lead. */
   targetLanguage: string | null;
+  /** PC-05: automation is paused in this workspace — the reply needs an
+   *  explicit "send anyway" (audited). */
+  automationPaused?: boolean;
 }
 
 export function CommunicationReply({
@@ -42,6 +46,7 @@ export function CommunicationReply({
   defaultSignatureId,
   nativeLanguage,
   targetLanguage,
+  automationPaused = false,
 }: CommunicationReplyProps) {
   const [to, setTo] = useState(defaultTo);
   const [subject, setSubject] = useState(defaultSubject);
@@ -58,6 +63,13 @@ export function CommunicationReply({
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  // PC-05: the pause needs a "send anyway" — shown up front when the page
+  // knew it was paused, or after the server refused because it became so.
+  const [pauseNotice, setPauseNotice] = useState(automationPaused);
+  const [confirmPaused, setConfirmPaused] = useState(false);
+
+  // MOB-06: every request here sends, or spends, in the page's workspace.
+  const guardHeaders = useExpectedWorkspaceHeaders();
 
   const canTranslate = Boolean(targetLanguage) && targetLanguage !== nativeLanguage;
   const isRtl = targetLanguage === 'he' || targetLanguage === 'ar';
@@ -69,7 +81,7 @@ export function CommunicationReply({
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guardHeaders },
         body: JSON.stringify({ subject, body, targetLanguage }),
       });
       const j = (await res.json().catch(() => ({}))) as {
@@ -100,7 +112,7 @@ export function CommunicationReply({
     try {
       const res = await fetch('/api/communication/suggest-reply', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...guardHeaders },
         body: JSON.stringify({ threadId }),
       });
       const j = (await res.json().catch(() => ({}))) as {
@@ -136,7 +148,7 @@ export function CommunicationReply({
       try {
         const res = await fetch('/api/communication/reply', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...guardHeaders },
           body: JSON.stringify({
             threadId,
             mailboxId,
@@ -146,6 +158,7 @@ export function CommunicationReply({
             inReplyTo,
             references,
             signatureId: signaturePick,
+            ...(pauseNotice && confirmPaused ? { confirmPaused: true } : {}),
             // When a translation is shown, send it (with the native body kept
             // as the thread reference); otherwise send the body as written.
             ...(shown && canTranslate
@@ -162,8 +175,11 @@ export function CommunicationReply({
           messageId?: string;
           error?: string;
           detail?: string;
+          reason?: string;
+          overridable?: boolean;
         };
         if (!res.ok || !j.ok) {
+          if (j.reason === 'paused' && j.overridable) setPauseNotice(true);
           setError(j.detail || j.error || `request failed (${res.status})`);
           return;
         }
@@ -290,15 +306,7 @@ export function CommunicationReply({
           }}
           required
           placeholder="Write your reply here…"
-          style={{
-            width: '100%',
-            minHeight: '22ch',
-            resize: 'vertical',
-            fontFamily: 'inherit',
-            fontSize: '0.92rem',
-            lineHeight: 1.55,
-            padding: '0.75rem',
-          }}
+          style={{ width: '100%', minHeight: '22ch' }}
         />
       </label>
 
@@ -352,18 +360,24 @@ export function CommunicationReply({
               value={tBody}
               onChange={(e) => setTBody(e.target.value)}
               dir={isRtl ? 'rtl' : 'ltr'}
-              style={{
-                width: '100%',
-                minHeight: '22ch',
-                resize: 'vertical',
-                fontFamily: 'inherit',
-                fontSize: '0.92rem',
-                lineHeight: 1.55,
-                padding: '0.75rem',
-              }}
+              style={{ width: '100%', minHeight: '22ch' }}
             />
           </label>
         </section>
+      ) : null}
+
+      {pauseNotice ? (
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={confirmPaused}
+            onChange={(e) => setConfirmPaused(e.target.checked)}
+          />
+          <span>
+            Automation is paused in this workspace. Send this reply anyway (it is recorded in
+            the audit log).
+          </span>
+        </label>
       ) : null}
 
       <div
@@ -383,7 +397,8 @@ export function CommunicationReply({
             !to ||
             !subject ||
             !body ||
-            (canTranslate && shown && !tBody.trim())
+            (canTranslate && shown && !tBody.trim()) ||
+            (pauseNotice && !confirmPaused)
           }
           className="primary-btn"
         >

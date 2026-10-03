@@ -1,368 +1,186 @@
 'use client';
 
-// Persistent left sidebar. Sections:
-//   Discovery       — crawl engine, connectors, review queue, leads
-//   Knowledge base  — products, knowledge, documents, learning memory
-//   Pipeline        — pipeline, contacts
-//   Outreach        — drafts, mailbox, send queue, signatures, suppression
-//   Administration  — workspace settings (members, integrations, CRM, usage)
-//   Emergency       — autopilot (with emergency-pause toggle there)
-//   Platform        — super-admin only: god mode, workspaces, users
+// Persistent left sidebar, rendered from the navigation registry
+// (src/lib/nav/registry.ts): Today, then the Work, Build and Workspace
+// groups under static headings, then the Platform console for
+// super-admins — 8 items for a workspace member, 9 for a super-admin.
+// Each item lights up for every page of its area (resolveNavLocation), and
+// its badge follows the registry's count policy (resolveNavCount).
 //
-// Active route is auto-detected via usePathname(), so pages don't need
-// to pass an `active` prop.
+// Not here on purpose: the brand mark and wordmark (BrandHeader shows them
+// once per page), My account and Help & support (the header's account
+// menu), and the area's own tabs (AreaNav, above the page).
 //
-// Below 800px the sidebar stacks ABOVE the page content (globals.css), so
-// every open group pushes the page further down. There only the group
-// holding the current page (and Emergency) start open — see
-// sectionStartsOpen(). A real mobile drawer is a later phase.
+// Every write role gets the interim Emergency stop pinned at the foot (it
+// opens the workspace pause, PC-05) until the Pause pill ships (ia:F-18).
+//
+// At 800px and below Sidebar.module.css turns the sidebar into one
+// horizontally scrolling strip above the page; the item for the current
+// page is scrolled into view. The drawer comes with the visual Phase 2
+// shell. The plain class names (sidebar-nav, sidebar-heading, …) stay on
+// the elements as stable hooks for tests and the legacy link styles; the
+// new styles are the module's.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { NavCountBadge } from './NavCountBadge';
+import { NavIcon } from './NavIcon';
+import { useFrameAttention } from './ShellAttention';
+import styles from './Sidebar.module.css';
+import { cx } from '@/lib/ui/cx';
+import { navCountsFromAttention } from '@/lib/attention/project';
+import type { AttentionSummary } from '@/lib/attention/types';
 import {
-  AlertOctagon,
-  AtSign,
-  Bell,
-  BookOpen,
-  CreditCard,
-  Crown,
-  FileText,
-  Inbox,
-  KanbanSquare,
-  Key,
-  LayoutDashboard,
-  LifeBuoy,
-  ListChecks,
-  Lightbulb,
-  type LucideIcon,
-  Mail,
-  MailWarning,
-  MessagesSquare,
-  Network,
-  PencilLine,
-  Receipt,
-  Send,
-  ShieldCheck,
-  ShoppingBag,
-  SlidersHorizontal,
-  Sparkles,
-  UserCircle,
-  Users,
-  Users2,
-  Workflow,
-  Zap,
-} from 'lucide-react';
-
-interface NavItem {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  /** Match-prefix list. The first href is also the click target. */
-  match?: ReadonlyArray<string>;
-  /** Pull a count from the navCounts payload by key. Renders a small
-   *  badge next to the label when the count is > 0. */
-  countKey?: 'draftsPending' | 'reviewPending' | 'leadsOpen' | 'supportUnread';
-}
-
-interface NavSection {
-  title: string;
-  items: ReadonlyArray<NavItem>;
-  defaultOpen?: boolean;
-  /** True = only render when the viewer is super_admin. */
-  superAdminOnly?: boolean;
-  /** Visual emphasis for the Emergency block. */
-  emphasize?: boolean;
-}
-
-const SECTIONS: ReadonlyArray<NavSection> = [
-  {
-    title: 'Discovery',
-    defaultOpen: true,
-    items: [
-      {
-        href: '/connectors/engine',
-        label: 'Crawl Engine',
-        icon: Zap,
-        match: ['/connectors/engine'],
-      },
-      { href: '/connectors', label: 'Connectors', icon: Network },
-      { href: '/review', label: 'Review queue', icon: ListChecks, countKey: 'reviewPending' },
-      { href: '/leads', label: 'Leads', icon: Sparkles },
-    ],
-  },
-  {
-    title: 'Knowledge base',
-    defaultOpen: true,
-    items: [
-      { href: '/products', label: 'Products', icon: ShoppingBag },
-      { href: '/knowledge', label: 'Knowledge', icon: BookOpen },
-      { href: '/documents', label: 'Documents', icon: FileText },
-      { href: '/learning', label: 'Learning memory', icon: Lightbulb },
-    ],
-  },
-  {
-    title: 'Pipeline',
-    defaultOpen: true,
-    items: [
-      { href: '/pipeline', label: 'Pipeline', icon: KanbanSquare, countKey: 'leadsOpen' },
-      { href: '/contacts', label: 'Contacts', icon: Users2 },
-    ],
-  },
-  {
-    title: 'Outreach',
-    defaultOpen: true,
-    items: [
-      { href: '/drafts', label: 'Drafts', icon: PencilLine, countKey: 'draftsPending' },
-      { href: '/communication', label: 'Communication', icon: MessagesSquare },
-      { href: '/mailbox', label: 'Mailbox', icon: Inbox, match: ['/mailbox'] },
-      { href: '/mailbox/queue', label: 'Send queue', icon: Send },
-      { href: '/mailbox/signatures', label: 'Signatures', icon: AtSign },
-      { href: '/mailbox/suppression', label: 'Suppression', icon: MailWarning },
-      { href: '/mailbox/deliverability', label: 'Deliverability', icon: Mail },
-      { href: '/settings/outreach', label: 'Outreach config', icon: SlidersHorizontal },
-    ],
-  },
-  {
-    title: 'Workspace',
-    defaultOpen: false,
-    items: [
-      { href: '/settings/members', label: 'Members', icon: Users },
-      { href: '/settings/integrations', label: 'Integrations', icon: Key },
-      { href: '/settings/crm', label: 'CRM & Export', icon: Workflow },
-      { href: '/settings/usage', label: 'Usage', icon: Receipt },
-      { href: '/settings/billing', label: 'Billing', icon: CreditCard },
-      { href: '/settings/audit', label: 'Audit log', icon: ShieldCheck },
-    ],
-  },
-  {
-    title: 'Account',
-    defaultOpen: false,
-    items: [
-      { href: '/settings/account', label: 'My account', icon: UserCircle },
-      { href: '/support', label: 'Support', icon: LifeBuoy, countKey: 'supportUnread' },
-    ],
-  },
-  {
-    title: 'Emergency',
-    defaultOpen: true,
-    emphasize: true,
-    items: [{ href: '/autopilot', label: 'Autopilot control', icon: AlertOctagon }],
-  },
-  {
-    title: 'Platform',
-    defaultOpen: false,
-    superAdminOnly: true,
-    items: [{ href: '/admin', label: 'Platform console', icon: Crown }],
-  },
-];
-
-const PINNED: ReadonlyArray<NavItem> = [
-  { href: '/inbox', label: 'Inbox', icon: Bell, match: ['/inbox'] },
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-];
+  INTERIM_EMERGENCY_STOP,
+  NAV_GROUPS,
+  type NavArea,
+  type NavCountValues,
+} from '@/lib/nav/registry';
+import {
+  areaHref,
+  hasNavCapability,
+  resolveNavCount,
+  resolveNavLocation,
+  sidebarAreas,
+  type NavViewer,
+} from '@/lib/nav/resolve';
+import type { WorkspaceRole } from '@/lib/services/context';
 
 export interface SidebarProps {
-  /** Pass true to render the Platform (super-admin) section. */
+  /** Pass true to show the Platform console item. */
   isSuperAdmin?: boolean;
-  /** Counts injected by AppShell. Used to render small badges next to
-   *  nav items whose countKey matches. Zeros render no badge. */
-  navCounts?: {
-    draftsPending: number;
-    reviewPending: number;
-    leadsOpen: number;
-    supportUnread: number;
-  };
+  /** The viewer's role in the active workspace (null: none yet). */
+  role?: WorkspaceRole | null;
+  /**
+   * MOB-02: the attention summary AppShell rendered with. The badges are
+   * its projection, kept current in the browser by useAttention() (the
+   * poll, focus, reconnects, refreshAttention() after a mutation). Inside
+   * the workspace frame the frame's ShellAttention provider supplies it
+   * (DS-07: the sidebar lives in the (app) layout, not in each page).
+   */
+  attention?: AttentionSummary | null;
+  /** Badge numbers used while there is no summary (no workspace yet: a
+   *  super-admin's console count; tests). */
+  navCounts?: NavCountValues;
+  /** Keys of `navCounts` that failed to load ("—"). */
+  unknownCounts?: ReadonlyArray<string>;
 }
 
-/** Matches the breakpoint where globals.css stacks the sidebar on top. */
+/**
+ * Matches the breakpoint where Sidebar.module.css turns the sidebar into a
+ * strip (an interim width: the legacy app shell collapses there too).
+ */
 export const COMPACT_SIDEBAR_QUERY = '(max-width: 800px)';
-
-/**
- * Whether a nav group starts open.
- *
- * Desktop: its configured default, or because it holds the current page.
- * Compact (phone): only the group holding the current page — plus the
- * emphasized Emergency group, so the autopilot kill switch stays one tap
- * away. The user can still open any group by tapping its title.
- */
-export function sectionStartsOpen(
-  section: Pick<NavSection, 'defaultOpen' | 'emphasize'>,
-  hasActiveChild: boolean,
-  compact: boolean,
-): boolean {
-  if (hasActiveChild) return true;
-  if (compact) return Boolean(section.emphasize);
-  return Boolean(section.defaultOpen);
-}
-
-/**
- * Tracks the compact breakpoint. `ready` turns true after the first
- * client check; until then (SSR + first paint) globals.css keeps the
- * inactive groups visually collapsed on a phone, so nothing jumps when
- * the effect closes them for real.
- */
-function useCompactSidebar(): { compact: boolean; ready: boolean } {
-  const [state, setState] = useState({ compact: false, ready: false });
-  useEffect(() => {
-    const mq = window.matchMedia(COMPACT_SIDEBAR_QUERY);
-    const sync = () => setState({ compact: mq.matches, ready: true });
-    sync();
-    mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
-  }, []);
-  return state;
-}
 
 export function Sidebar({
   isSuperAdmin = false,
+  role = null,
+  attention,
   navCounts,
+  unknownCounts,
 }: Readonly<SidebarProps>) {
   const pathname = usePathname() ?? '';
-  const { compact, ready } = useCompactSidebar();
-  const visibleSections = SECTIONS.filter(
-    (s) => !s.superAdminOnly || isSuperAdmin,
-  );
-  // Pick the single best-matching href across the whole nav so that
-  // /mailbox/queue lights up "Send queue", not "Mailbox".
-  const allItems = [PINNED, ...visibleSections.map((s) => s.items)].flat();
-  const activeHref = bestMatch(allItems, pathname);
+  const viewer: NavViewer = { role, isSuperAdmin };
+  const areas = sidebarAreas(viewer);
+  // Inside the workspace frame: the frame's summary (DS-07). Outside it,
+  // its own seed kept live; no summary (fixed numbers, tests): no poll.
+  const live = useFrameAttention(attention);
+  const projected = live ? navCountsFromAttention(live) : null;
+  const counts: SidebarCounts = projected
+    ? { values: projected.values, unknown: projected.unknown }
+    : { values: navCounts, unknown: unknownCounts ? new Set(unknownCounts) : undefined };
+  const activeArea = resolveNavLocation(pathname)?.area.id ?? null;
+  const showStop = hasNavCapability(INTERIM_EMERGENCY_STOP.capability, viewer);
+  const activeRef = useRef<HTMLAnchorElement>(null);
+
+  // On the phone strip, bring the current area into view (horizontally
+  // only — block: 'nearest' never scrolls the page itself).
+  useEffect(() => {
+    if (!window.matchMedia(COMPACT_SIDEBAR_QUERY).matches) return;
+    activeRef.current?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }, [activeArea]);
 
   return (
-    <aside className="sidebar" data-compact-ready={ready ? '' : undefined}>
-      <SidebarBrand />
-
-      <SidebarList items={PINNED} activeHref={activeHref} navCounts={navCounts} />
-
-      {visibleSections.map((s) => (
-        <SidebarSection
-          key={s.title}
-          section={s}
-          activeHref={activeHref}
-          hasActiveChild={s.items.some((it) => it.href === activeHref)}
-          compact={compact}
-          navCounts={navCounts}
-        />
-      ))}
+    <aside className={cx('sidebar', styles.sidebar)}>
+      <nav className={cx('sidebar-nav', styles.nav)} aria-label="Main">
+        {NAV_GROUPS.map((group) => {
+          const items = areas.filter((a) => a.group === group.id);
+          if (items.length === 0) return null;
+          return (
+            <div key={group.id} className={cx('sidebar-group', styles.group)} data-group={group.id}>
+              {group.heading ? (
+                <p className={cx('sidebar-heading', styles.heading)}>{group.heading}</p>
+              ) : null}
+              <ul className={cx('sidebar-list', styles.list)}>
+                {items.map((area) => (
+                  <li key={area.id}>
+                    <SidebarLink
+                      area={area}
+                      active={area.id === activeArea}
+                      activeRef={area.id === activeArea ? activeRef : undefined}
+                      counts={counts}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </nav>
+      {showStop ? (
+        <div className={cx('sidebar-foot', styles.foot)}>
+          <Link
+            href={INTERIM_EMERGENCY_STOP.href}
+            className={cx('sidebar-stop', styles.stop)}
+            data-interim={INTERIM_EMERGENCY_STOP.removedBy}
+          >
+            <NavIcon
+              name={INTERIM_EMERGENCY_STOP.icon}
+              className={cx('sidebar-link-icon', styles.stopIcon)}
+            />
+            <span className={cx('sidebar-stop-text', styles.stopText)}>
+              <span className="sidebar-stop-label">{INTERIM_EMERGENCY_STOP.label}</span>
+              <span className={cx('sidebar-stop-note', styles.stopNote)}>
+                Pauses all automation
+              </span>
+            </span>
+          </Link>
+        </div>
+      ) : null}
     </aside>
   );
 }
 
-function SidebarBrand() {
-  return (
-    <div className="sidebar-brand">
-      <Link href="/dashboard">
-        <span className="sw-mark">lead</span>
-        <span className="sw-mark sw-mark-accent">/sonar</span>
-      </Link>
-    </div>
-  );
+interface SidebarCounts {
+  values?: NavCountValues;
+  /** Keys whose number failed to load: the badge prints "—". */
+  unknown?: ReadonlySet<string>;
 }
 
-function SidebarSection({
-  section,
-  activeHref,
-  hasActiveChild,
-  compact,
-  navCounts,
+function SidebarLink({
+  area,
+  active,
+  activeRef,
+  counts,
 }: Readonly<{
-  section: NavSection;
-  activeHref: string | null;
-  hasActiveChild: boolean;
-  compact: boolean;
-  navCounts?: SidebarProps['navCounts'];
+  area: NavArea;
+  active: boolean;
+  activeRef?: React.Ref<HTMLAnchorElement>;
+  counts: SidebarCounts;
 }>) {
-  const className = [
-    'sidebar-group',
-    section.emphasize ? 'sidebar-group-emphasize' : null,
-    hasActiveChild ? 'sidebar-group-active' : null,
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const count = resolveNavCount(area.count, counts.values, { unknown: counts.unknown });
   return (
-    <details
-      className={className}
-      open={sectionStartsOpen(section, hasActiveChild, compact)}
+    <Link
+      ref={activeRef}
+      href={areaHref(area)}
+      className={cx('sidebar-link', active && 'active', styles.link)}
+      aria-current={active ? 'page' : undefined}
+      data-area={area.id}
     >
-      <summary>{section.title}</summary>
-      <SidebarList items={section.items} activeHref={activeHref} navCounts={navCounts} />
-    </details>
+      <NavIcon name={area.icon} className="sidebar-link-icon" />
+      <span className="sidebar-link-label">{area.label}</span>
+      {count ? <NavCountBadge count={count} className={styles.count} /> : null}
+    </Link>
   );
-}
-
-function SidebarList({
-  items,
-  activeHref,
-  navCounts,
-}: Readonly<{
-  items: ReadonlyArray<NavItem>;
-  activeHref: string | null;
-  navCounts?: SidebarProps['navCounts'];
-}>) {
-  return (
-    <ul className="sidebar-list">
-      {items.map((it) => {
-        const Icon = it.icon;
-        const count =
-          it.countKey && navCounts ? navCounts[it.countKey] : 0;
-        return (
-          <li key={it.href}>
-            <Link
-              href={it.href}
-              className={
-                activeHref === it.href ? 'sidebar-link active' : 'sidebar-link'
-              }
-            >
-              <Icon className="sidebar-link-icon" aria-hidden="true" />
-              <span>{it.label}</span>
-              {count > 0 ? (
-                <span
-                  className="sidebar-count-badge"
-                  style={{
-                    marginLeft: 'auto',
-                    padding: '0.05rem 0.4rem',
-                    borderRadius: '0.6rem',
-                    fontSize: '0.8rem',
-                    background: 'oklch(0.85 0.16 75)',
-                    color: 'oklch(0.2 0 0)',
-                    fontWeight: 600,
-                    minWidth: '1.4rem',
-                    textAlign: 'center',
-                  }}
-                  aria-label={`${count} pending`}
-                >
-                  {count > 99 ? '99+' : count}
-                </span>
-              ) : null}
-            </Link>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-/**
- * Pick the single nav item whose href best matches the current pathname.
- * Longest matching href wins, so `/mailbox/queue` beats `/mailbox` when
- * the user is on `/mailbox/queue`.
- */
-function bestMatch(
-  items: ReadonlyArray<NavItem>,
-  pathname: string,
-): string | null {
-  let bestHref: string | null = null;
-  let bestLength = -1;
-  for (const it of items) {
-    const candidates = it.match ?? [it.href];
-    for (const c of candidates) {
-      if (c === '/') continue;
-      const isMatch = pathname === c || pathname.startsWith(`${c}/`);
-      if (isMatch && c.length > bestLength) {
-        bestLength = c.length;
-        bestHref = it.href;
-      }
-    }
-  }
-  return bestHref;
 }

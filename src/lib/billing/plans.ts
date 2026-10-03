@@ -18,7 +18,15 @@
 // usage is cost-based and unlimited promises on a metered product are
 // how you lose money one whale at a time.
 
-export type PlanId = 'starter' | 'pro';
+export const PLAN_IDS = ['starter', 'pro'] as const;
+export type PlanId = (typeof PLAN_IDS)[number];
+
+/**
+ * workspaces.plan (text): 'trial' until a subscription starts, then the
+ * paid plan's id. DS-09 labels each one (src/lib/ui/labels.ts).
+ */
+export const WORKSPACE_PLANS = ['trial', ...PLAN_IDS] as const;
+export type WorkspacePlan = (typeof WORKSPACE_PLANS)[number];
 
 /** Feature ceilings enforced in code (see services/plan-limits.ts).
  *  `null` means no ceiling on that axis for the tier. */
@@ -69,10 +77,14 @@ export interface PlanDefinition {
 const STARTER_PRICE_ENV = 'STRIPE_PRICE_STARTER';
 const PRO_PRICE_ENV = 'STRIPE_PRICE_PRO';
 
+/** Environment the catalogue reads (process.env by default; the
+ *  assistant handbook's docs export passes a fixed one). */
+export type BillingEnv = Readonly<Record<string, string | undefined>>;
+
 /** Trial length in days for both plans. Default 5; override via
  *  STRIPE_TRIAL_DAYS env var. Set to '0' to disable trials entirely. */
-function readTrialDays(): number {
-  const raw = process.env.STRIPE_TRIAL_DAYS;
+export function readTrialDays(env: BillingEnv = process.env): number {
+  const raw = env.STRIPE_TRIAL_DAYS;
   if (raw === undefined) return 5;
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return 5;
@@ -80,14 +92,14 @@ function readTrialDays(): number {
 }
 
 /** Resolve plans against the live env. Cheap — does no I/O. */
-export function getPlans(): PlanDefinition[] {
-  const trialDays = readTrialDays();
+export function getPlans(env: BillingEnv = process.env): PlanDefinition[] {
+  const trialDays = readTrialDays(env);
   return [
     {
       id: 'starter',
       name: 'Starter',
-      priceId: process.env[STARTER_PRICE_ENV] ?? null,
-      displayPrice: process.env.STRIPE_PRICE_STARTER_DISPLAY ?? '€29 / month',
+      priceId: env[STARTER_PRICE_ENV] ?? null,
+      displayPrice: env.STRIPE_PRICE_STARTER_DISPLAY ?? '€29 / month',
       pitch:
         'Solo operators or a small sales team running a focused pipeline.',
       features: [
@@ -109,8 +121,8 @@ export function getPlans(): PlanDefinition[] {
     {
       id: 'pro',
       name: 'Pro',
-      priceId: process.env[PRO_PRICE_ENV] ?? null,
-      displayPrice: process.env.STRIPE_PRICE_PRO_DISPLAY ?? '€99 / month',
+      priceId: env[PRO_PRICE_ENV] ?? null,
+      displayPrice: env.STRIPE_PRICE_PRO_DISPLAY ?? '€99 / month',
       pitch:
         'Growing teams running multiple products, mailboxes and autopilot.',
       features: [
@@ -134,8 +146,8 @@ export function getPlans(): PlanDefinition[] {
 }
 
 /** Return only plans that are actually purchasable today. */
-export function getAvailablePlans(): PlanDefinition[] {
-  return getPlans().filter((p) => p.priceId !== null);
+export function getAvailablePlans(env: BillingEnv = process.env): PlanDefinition[] {
+  return getPlans(env).filter((p) => p.priceId !== null);
 }
 
 /** Look up a plan by its id. */

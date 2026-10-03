@@ -1,0 +1,308 @@
+// Today › Overview (was /dashboard): who you are and which workspace you
+// are in, the workspace signals (review, drafts, replies, send queue,
+// pipeline funnel, recent replies), and the areas of the app. The area
+// tiles come from the navigation registry, so they can no longer drift
+// from the sidebar the way the old hand-written module list did (I082).
+// /dashboard redirects to /today?view=overview.
+//
+// MOB-02: the decision tiles (Pending review, Drafts awaiting approval)
+// read the attention summary — the object the sidebar badges project and
+// /api/attention returns — so a tile always equals its badge.
+
+import Link from 'next/link';
+import {
+  ArrowRight,
+  ListChecks,
+  type LucideIcon,
+  MessageSquare,
+  PencilLine,
+  Send,
+  TrendingUp,
+} from 'lucide-react';
+import { Alert } from '@/components/Alert';
+import { StatusBadge } from '@/components/Badge';
+import { FunnelBars } from '@/components/FunnelBars';
+import { NavIcon } from '@/components/NavIcon';
+import type { AttentionSummary } from '@/lib/attention/types';
+import { HOME_PATH } from '@/lib/nav/registry';
+import { areaHref, sidebarAreas, type NavViewer } from '@/lib/nav/resolve';
+import { getDashboardSignals } from '@/lib/services/dashboard-signals';
+import type { getActiveWorkspaceSummary } from '@/lib/services/workspace';
+import type { PipelineState } from '@/lib/db/schema/pipeline';
+import { labelFor, PIPELINE_STATE_LABEL } from '@/lib/ui/labels';
+import { PIPELINE_PROGRESS } from '@/lib/ui/tone';
+
+export interface TodayOverviewProps {
+  user: { name: string | null; email: string | null; role: string };
+  active: Awaited<ReturnType<typeof getActiveWorkspaceSummary>>;
+  signals: Awaited<ReturnType<typeof getDashboardSignals>>;
+  /** The request's attention summary (null: it could not be computed). */
+  attention: AttentionSummary | null;
+  showSetupLink: boolean;
+  viewer: NavViewer;
+}
+
+export function TodayOverview({
+  user,
+  active,
+  signals,
+  attention,
+  showSetupLink,
+  viewer,
+}: Readonly<TodayOverviewProps>) {
+  // Every sidebar area except Today itself, in sidebar order.
+  const areas = sidebarAreas(viewer).filter((a) => areaHref(a) !== HOME_PATH);
+  return (
+    <>
+      <section className="profile-cards">
+        <article className="profile-card">
+          <div className="profile-card-header">
+            <span className="profile-card-eyebrow">You</span>
+            <span className={`role-pill role-pill-${user.role}`}>
+              {labelFor('user_role', user.role)}
+            </span>
+          </div>
+          <h2 className="profile-card-title">{user.name ?? '—'}</h2>
+          <p className="profile-card-meta">{user.email}</p>
+        </article>
+
+        <article className="profile-card">
+          <div className="profile-card-header">
+            <span className="profile-card-eyebrow">Active workspace</span>
+            {active.isGodMode ? (
+              <span className="role-pill role-pill-super_admin">god mode</span>
+            ) : (
+              <span className={`role-pill role-pill-${active.memberRole}`}>
+                {active.memberRole ? labelFor('workspace_member_role', active.memberRole) : null}
+              </span>
+            )}
+          </div>
+          <h2 className="profile-card-title">{active.workspace.name}</h2>
+          <p className="profile-card-meta">
+            <code>{active.workspace.slug}</code>
+            {active.workspace.status === 'archived' ? ' · archived' : null}
+            {active.membershipCount > 1 ? (
+              <>
+                {' · '}
+                member of {active.membershipCount} workspaces
+              </>
+            ) : null}
+          </p>
+          {showSetupLink ? (
+            <p className="profile-card-meta">
+              <Link href="/onboarding">Continue workspace setup</Link>
+            </p>
+          ) : null}
+        </article>
+      </section>
+
+      <CockpitGrid signals={signals} attention={attention} />
+
+      <section className="dashboard-modules">
+        <div className="section-header">
+          <h2 className="section-title">Areas</h2>
+          <p className="section-sub">Everything else is one click away in the sidebar.</p>
+        </div>
+        <div className="module-tile-grid">
+          {areas.map((area) => (
+            <Link key={area.id} href={areaHref(area)} className="module-tile">
+              <div className="module-tile-icon">
+                <NavIcon name={area.icon} />
+              </div>
+              <div className="module-tile-body">
+                <h3>{area.label}</h3>
+                <p>{area.purpose}</p>
+              </div>
+              <ArrowRight className="module-tile-arrow" aria-hidden="true" />
+            </Link>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+// ─── Cockpit widgets ──────────────────────────────────────────────────
+
+function CockpitGrid({
+  signals,
+  attention,
+}: {
+  signals: Awaited<ReturnType<typeof getDashboardSignals>>;
+  attention: AttentionSummary | null;
+}) {
+  // I070: a failed load shows "—", never a zero that reads as a count.
+  const value = (n: number) => (signals.degraded ? null : n);
+  const reviewOpen = attention?.counts['review.open'] ?? null;
+  const draftsApprove = attention?.counts['drafts.approve'] ?? null;
+  const degraded = signals.degraded || !attention || attention.degraded;
+  const q = signals.sendQueue;
+  return (
+    <section className="cockpit-grid">
+      <h2 className="section-title">Today&apos;s signals</h2>
+      <p className="section-sub">
+        What needs your attention right now.
+      </p>
+      {degraded ? (
+        <Alert tone="warning" title="Some numbers could not be loaded">
+          The figures below show “—” until the page loads them again.
+        </Alert>
+      ) : null}
+      <div className="cockpit-grid-inner">
+        <SignalCard
+          icon={ListChecks}
+          label="Pending review"
+          value={reviewOpen}
+          href={`${HOME_PATH}?tab=review`}
+          tone={(reviewOpen ?? 0) > 0 ? 'amber' : 'neutral'}
+        />
+        <SignalCard
+          icon={PencilLine}
+          label="Drafts awaiting approval"
+          value={draftsApprove}
+          href={`${HOME_PATH}?tab=drafts`}
+          tone={(draftsApprove ?? 0) > 0 ? 'amber' : 'neutral'}
+          sub={
+            signals.degraded || draftsApprove === null
+              ? undefined
+              : `${signals.drafts.discovery} disc · ${signals.drafts.engagement} eng · ${signals.drafts.pitch} pitch · ${signals.drafts.closing} close`
+          }
+        />
+        <SignalCard
+          icon={MessageSquare}
+          label="Inbound mail (7d)"
+          value={value(signals.replies7d)}
+          href={`${HOME_PATH}?tab=replies`}
+          tone={signals.replies7d > 0 ? 'teal' : 'neutral'}
+        />
+        <SignalCard
+          icon={Send}
+          label="Send queue"
+          value={value(q.queued)}
+          href="/mailbox/queue"
+          tone={!signals.degraded && q.paused ? 'bad' : 'neutral'}
+          sub={
+            signals.degraded
+              ? '— sent in 24 h'
+              : `${q.sent24h}/${q.dailyCap} sent in 24 h${
+                  q.nextSendAt
+                    ? ` · next ${q.nextSendAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                    : ''
+                }${q.paused ? ' · PAUSED' : ''}`
+          }
+        />
+        {/* Unknown counts draw no funnel (empty bars would read as zero). */}
+        {signals.degraded ? null : <FunnelCard funnel={signals.funnel} />}
+        {signals.recentInbound.length > 0 ? (
+          <RecentRepliesCard items={signals.recentInbound} />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function SignalCard({
+  icon: Icon,
+  label,
+  value,
+  href,
+  tone,
+  sub,
+}: {
+  icon: LucideIcon;
+  label: string;
+  /** null = unknown (a failed load): shown as "—". */
+  value: number | null;
+  href: string;
+  tone: 'amber' | 'teal' | 'bad' | 'neutral';
+  sub?: string;
+}) {
+  const isActive = tone !== 'neutral' && value !== null && value > 0;
+  return (
+    <Link
+      href={href}
+      className={`cockpit-card cockpit-card-tone-${tone}${
+        isActive ? ' cockpit-card-active' : ''
+      }`}
+    >
+      <div className="cockpit-card-head">
+        <Icon className="cockpit-card-icon" aria-hidden="true" />
+        <span className="cockpit-card-label">{label}</span>
+      </div>
+      <div className="cockpit-card-value">{value ?? '—'}</div>
+      {sub ? <div className="cockpit-card-sub">{sub}</div> : null}
+    </Link>
+  );
+}
+
+/** The same funnel as /pipeline (FunnelBars, one hue, the same labels);
+ *  the card itself is the link, so the rows are not. */
+function FunnelCard({ funnel }: { funnel: Record<PipelineState, number> }) {
+  return (
+    <Link
+      href="/pipeline"
+      className="cockpit-card cockpit-card-tone-good cockpit-card-wide"
+    >
+      <div className="cockpit-card-head">
+        <TrendingUp className="cockpit-card-icon" aria-hidden="true" />
+        <span className="cockpit-card-label">Pipeline funnel</span>
+      </div>
+      <FunnelBars
+        label="Pipeline funnel"
+        rows={PIPELINE_PROGRESS.map((key) => ({
+          key,
+          label: PIPELINE_STATE_LABEL[key],
+          count: funnel[key],
+        }))}
+      />
+    </Link>
+  );
+}
+
+function RecentRepliesCard({
+  items,
+}: {
+  items: Array<{
+    id: string;
+    fromName: string | null;
+    fromAddress: string;
+    subject: string;
+    receivedAt: Date;
+    intent: string | null;
+  }>;
+}) {
+  return (
+    <Link
+      href="/communication"
+      className="cockpit-card cockpit-card-tone-teal cockpit-card-wide"
+    >
+      <div className="cockpit-card-head">
+        <MessageSquare className="cockpit-card-icon" aria-hidden="true" />
+        <span className="cockpit-card-label">Recent replies</span>
+      </div>
+      <ul className="cockpit-replies-list">
+        {items.map((m) => (
+          <li key={m.id}>
+            <div className="cockpit-reply-head">
+              <span className="cockpit-reply-from">
+                {m.fromName ?? m.fromAddress}
+              </span>
+              <span className="cockpit-reply-time">
+                {m.receivedAt.toLocaleString([], {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+            </div>
+            <div className="cockpit-reply-subject">
+              {m.intent ? <StatusBadge set="reply_class" value={m.intent} size="sm" /> : null}
+              {m.subject || '(no subject)'}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Link>
+  );
+}

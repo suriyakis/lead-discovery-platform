@@ -1,0 +1,14 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* ContactsListView (DS-09): the initials avatar is neutral. It used to
+ * take one of eight gradients hashed from the address, a colour that
+ * meant nothing; colour is reserved for meaning (src/lib/ui/tone.ts). */
+
+@layer components {
+  .avatar {
+    background: var(--surface-raised);
+    color: var(--fg-muted);
+    font-weight: var(--weight-medium);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+}

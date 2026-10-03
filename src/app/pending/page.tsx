@@ -7,7 +7,7 @@ export default async function PendingPage() {
   if (!session?.user?.id) redirect('/');
   // If they're already active, send them to the dashboard.
   if (session.user.accountStatus === 'active' || session.user.role === 'super_admin') {
-    redirect('/dashboard');
+    redirect('/today');
   }
 
   return (

@@ -6,6 +6,7 @@ import {
   getWorkspaceContext,
 } from '@/lib/services/auth-context';
 import type { WorkspaceContext } from '@/lib/services/context';
+import { HOME_PATH } from '@/lib/nav/registry';
 
 /**
  * Resolve the WorkspaceContext at the top of a server action.
@@ -18,7 +19,7 @@ import type { WorkspaceContext } from '@/lib/services/context';
  * Call it OUTSIDE the action's try/catch — redirect() throws.
  */
 export async function requireActionContext(
-  noWorkspacePath = '/dashboard',
+  noWorkspacePath = HOME_PATH,
 ): Promise<WorkspaceContext> {
   try {
     return await getWorkspaceContext();

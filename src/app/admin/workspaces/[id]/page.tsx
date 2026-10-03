@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { requirePlatformAdmin } from '@/lib/services/auth-context';
 import {
   AdminServiceError,
@@ -9,13 +9,34 @@ import {
   adminSetMemberRole,
   archiveWorkspace,
   deleteWorkspace,
-  listFeatureFlags,
   restoreWorkspace,
   setBillingExempt,
-  setFeatureFlag,
   setWorkspaceDefault,
   updateWorkspaceProfile,
 } from '@/lib/services/admin';
+import {
+  AUTOMATION_CAPABILITIES,
+  CAPABILITY_LABELS,
+  loadAutomationState,
+  ownerProblemMessage,
+  type AutomationCapability,
+} from '@/lib/services/automation-gate';
+import {
+  HOLD_REASON_MAX,
+  HoldServiceError,
+  confirmLegacyHold,
+  discardLegacyHold,
+  listHoldsForPlatform,
+  placePlatformHold,
+  releasePlatformHold,
+} from '@/lib/services/holds';
+import { formatUtc } from '@/lib/format-utc';
+import {
+  GO_LIVE_REASON_MAX,
+  GoLiveError,
+  releaseOutreachLive,
+  revokeOutreachLive,
+} from '@/lib/services/go-live';
 import {
   TokenError,
   adjustTokens,
@@ -29,22 +50,51 @@ import { users } from '@/lib/db/schema/auth';
 import { isNextRedirectError } from '@/lib/server-redirect';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { ConfirmTokenAdjustButton } from '@/components/ConfirmTokenAdjustButton';
+import { RoleIcon } from '@/components/RoleIcon';
 import { TableScroll } from '@/components/TableScroll';
 import {
   archiveWorkspaceConfirm,
   billingExemptOffConfirm,
   billingExemptOnConfirm,
+  confirmLegacyHoldConfirm,
+  discardLegacyHoldConfirm,
+  placeHoldConfirm,
+  releaseGoLiveConfirm,
+  releaseHoldConfirm,
   removeMemberConfirm,
   restoreWorkspaceConfirm,
+  revokeGoLiveConfirm,
 } from '@/lib/confirm-copy';
 
-const KNOWN_FEATURE_KEYS = [
-  'crm.hubspot',
-  'rag.openai',
-  'outreach.send',
-  'mailbox.imap_sync',
-  'connector.serpapi',
-] as const;
+/** PC-06: how long a new hold lasts (the place-hold form's select). */
+const HOLD_DURATIONS: ReadonlyArray<{ value: string; label: string; ms: number | null }> = [
+  { value: '', label: 'Until released', ms: null },
+  { value: '1h', label: '1 hour', ms: 60 * 60 * 1000 },
+  { value: '24h', label: '24 hours', ms: 24 * 60 * 60 * 1000 },
+  { value: '7d', label: '7 days', ms: 7 * 24 * 60 * 60 * 1000 },
+  { value: '30d', label: '30 days', ms: 30 * 24 * 60 * 60 * 1000 },
+];
+
+function holdExpiry(value: string): Date | null {
+  const ms = HOLD_DURATIONS.find((d) => d.value === value)?.ms ?? null;
+  return ms === null ? null : new Date(Date.now() + ms);
+}
+
+function isCapability(value: string): value is AutomationCapability {
+  return (AUTOMATION_CAPABILITIES as readonly string[]).includes(value);
+}
+
+function parseHoldId(raw: FormDataEntryValue | null): bigint | null {
+  return typeof raw === 'string' && /^\d{1,19}$/.test(raw) ? BigInt(raw) : null;
+}
+
+function holdErrorMessage(err: unknown): string {
+  return err instanceof HoldServiceError ? err.message : 'failed';
+}
+
+function goLiveErrorMessage(err: unknown): string {
+  return err instanceof GoLiveError ? err.message : 'failed';
+}
 
 export default async function AdminWorkspaceDetail({
   params,
@@ -73,8 +123,40 @@ export default async function AdminWorkspaceDetail({
     .innerJoin(users, eq(users.id, workspaceMembers.userId))
     .where(eq(workspaceMembers.workspaceId, targetWorkspaceId));
 
-  const flags = await listFeatureFlags(pctx, targetWorkspaceId);
-  const flagByKey = new Map(flags.map((f) => [f.key, f]));
+  // PC-06: holds (the repurposed "Feature flags" section) and what the
+  // automation gate sees for this tenant.
+  const holds = await listHoldsForPlatform(pctx, targetWorkspaceId);
+  const activeHolds = holds.filter((h) => h.kind === 'hold' && h.state === 'active');
+  const pendingReview = holds.filter((h) => h.state === 'pending_review');
+  const endedHolds = holds.filter((h) => h.state === 'released' || h.state === 'discarded');
+  const automation = await loadAutomationState(targetWorkspaceId);
+  const holdActorIds = [
+    ...new Set(
+      holds
+        .flatMap((h) => [h.placedByUserId, h.confirmedByUserId, h.endedByUserId])
+        .filter((x): x is string => Boolean(x)),
+    ),
+  ];
+  const holdActors =
+    holdActorIds.length > 0
+      ? await db
+          .select({ id: users.id, email: users.email })
+          .from(users)
+          .where(inArray(users.id, holdActorIds))
+      : [];
+  const actorEmail = new Map(holdActors.map((u) => [u.id, u.email]));
+  // PC-05 / flow:F-07: who released the workspace for outreach, and who
+  // paused it.
+  const stateActorIds = [automation.live?.byUserId, automation.pause?.byUserId].filter(
+    (x): x is string => Boolean(x) && !actorEmail.has(x as string),
+  );
+  if (stateActorIds.length > 0) {
+    const more = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(inArray(users.id, stateActorIds));
+    for (const u of more) actorEmail.set(u.id, u.email);
+  }
 
   // Billing + usage snapshot for THIS workspace. Both reads are
   // workspace-scoped services aimed at the target tenant — legitimate
@@ -126,19 +208,89 @@ export default async function AdminWorkspaceDetail({
     }
   }
 
-  async function toggleFlag(formData: FormData) {
+  async function releaseLive(formData: FormData) {
     'use server';
     const c = await requirePlatformAdmin();
-    const key = String(formData.get('key') ?? '');
-    const enabled = formData.get('enabled') === 'on';
-    await setFeatureFlag(c, {
-      workspaceId: targetWorkspaceId,
-      key,
-      enabled,
-    });
-    redirect(
-      `/admin/workspaces/${idStr}?message=Flag+${key}+${enabled ? 'enabled' : 'disabled'}#feature-flags`,
-    );
+    try {
+      await releaseOutreachLive(c, targetWorkspaceId, String(formData.get('reason') ?? ''));
+      redirect(`/admin/workspaces/${idStr}?message=Workspace+released+for+outreach#go-live`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(goLiveErrorMessage(err))}#go-live`);
+    }
+  }
+
+  async function revokeLive(formData: FormData) {
+    'use server';
+    const c = await requirePlatformAdmin();
+    try {
+      await revokeOutreachLive(c, targetWorkspaceId, String(formData.get('reason') ?? ''));
+      redirect(`/admin/workspaces/${idStr}?message=Workspace+back+on+the+go-live+hold#go-live`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(goLiveErrorMessage(err))}#go-live`);
+    }
+  }
+
+  async function placeHold(formData: FormData) {
+    'use server';
+    const c = await requirePlatformAdmin();
+    const scope = formData.get('scope') === 'all' ? 'all' : 'capabilities';
+    const capabilities = formData.getAll('capability').map(String).filter(isCapability);
+    try {
+      await placePlatformHold(c, targetWorkspaceId, {
+        scope,
+        capabilities,
+        reason: String(formData.get('reason') ?? ''),
+        expiresAt: holdExpiry(String(formData.get('expires') ?? '')),
+      });
+      redirect(`/admin/workspaces/${idStr}?message=Hold+placed#holds`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(holdErrorMessage(err))}#holds`);
+    }
+  }
+
+  async function releaseHold(formData: FormData) {
+    'use server';
+    const c = await requirePlatformAdmin();
+    const holdId = parseHoldId(formData.get('holdId'));
+    if (holdId === null) redirect(`/admin/workspaces/${idStr}?error=Invalid+hold#holds`);
+    try {
+      await releasePlatformHold(c, targetWorkspaceId, holdId, String(formData.get('reason') ?? ''));
+      redirect(`/admin/workspaces/${idStr}?message=Hold+released#holds`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(holdErrorMessage(err))}#holds`);
+    }
+  }
+
+  async function confirmHold(formData: FormData) {
+    'use server';
+    const c = await requirePlatformAdmin();
+    const holdId = parseHoldId(formData.get('holdId'));
+    if (holdId === null) redirect(`/admin/workspaces/${idStr}?error=Invalid+hold#holds`);
+    try {
+      await confirmLegacyHold(c, targetWorkspaceId, holdId);
+      redirect(`/admin/workspaces/${idStr}?message=Legacy+flag+confirmed+as+a+hold#holds`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(holdErrorMessage(err))}#holds`);
+    }
+  }
+
+  async function discardHold(formData: FormData) {
+    'use server';
+    const c = await requirePlatformAdmin();
+    const holdId = parseHoldId(formData.get('holdId'));
+    if (holdId === null) redirect(`/admin/workspaces/${idStr}?error=Invalid+hold#holds`);
+    try {
+      await discardLegacyHold(c, targetWorkspaceId, holdId, null);
+      redirect(`/admin/workspaces/${idStr}?message=Legacy+flag+discarded#holds`);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err;
+      redirect(`/admin/workspaces/${idStr}?error=${encodeURIComponent(holdErrorMessage(err))}#holds`);
+    }
   }
 
   async function saveProfile(formData: FormData) {
@@ -278,8 +430,7 @@ export default async function AdminWorkspaceDetail({
   return (
     <div className="dashboard-wrap">
         <p className="muted">
-          <Link href="/dashboard">Dashboard</Link> /{' '}
-          <Link href="/admin">Admin</Link> /{' '}
+          <Link href="/admin">Platform console</Link> /{' '}
           <Link href="/admin/workspaces">Workspaces</Link> / {ws.name}
         </p>
         <h1>
@@ -541,7 +692,7 @@ export default async function AdminWorkspaceDetail({
                     </Link>
                   </strong>
                   <span className="badge">
-                    {roleIcon(member.role)} {member.role}
+                    <RoleIcon role={member.role} /> {member.role}
                   </span>
                 </div>
                 <div className="meta">
@@ -556,11 +707,11 @@ export default async function AdminWorkspaceDetail({
                     <label>
                       <span>Role</span>
                       <select name="role" defaultValue={member.role}>
-                        <option value="owner">👑 owner</option>
-                        <option value="admin">🛡 admin</option>
-                        <option value="manager">⭐ manager</option>
-                        <option value="member">👤 member</option>
-                        <option value="viewer">👁 viewer</option>
+                        <option value="owner">owner</option>
+                        <option value="admin">admin</option>
+                        <option value="manager">manager</option>
+                        <option value="member">member</option>
+                        <option value="viewer">viewer</option>
                       </select>
                     </label>
                     <button type="submit">Apply</button>
@@ -613,61 +764,235 @@ export default async function AdminWorkspaceDetail({
           )}
         </section>
 
-        <section id="feature-flags">
-          <h2>Feature flags</h2>
+        <section id="go-live">
+          <h2>Outreach go-live</h2>
           <p className="muted">
-            Per-workspace toggles for premium modules. The application reads
-            these via <code>feature_flags</code>; non-set keys default to
-            disabled.
+            Every workspace starts not live: its cold emails, follow-ups and AI reply drafts
+            wait in the queue (never failed) while email its members write themselves sends
+            normally. Release it once it is ready to send on its own; the reason is audited
+            against the workspace and its owners and admins are notified.
           </p>
+          <p>
+            {automation.live ? (
+              <>
+                <span className="badge badge-good">live</span> since{' '}
+                {formatUtc(automation.live.since)}
+                {automation.live.byUserId
+                  ? ` (released by ${actorEmail.get(automation.live.byUserId) ?? automation.live.byUserId})`
+                  : ''}
+              </>
+            ) : (
+              <span className="badge badge-bad">not live</span>
+            )}
+          </p>
+          <p className="muted">
+            Workspace pause:{' '}
+            {automation.pause
+              ? `paused since ${formatUtc(automation.pause.since)}${
+                  automation.pause.byUserId
+                    ? ` by ${actorEmail.get(automation.pause.byUserId) ?? automation.pause.byUserId}`
+                    : ''
+                }${automation.pause.reason ? ` (${automation.pause.reason})` : ''} — its owners and admins resume it.`
+              : 'running.'}
+          </p>
+          <form action={automation.live ? revokeLive : releaseLive} className="inline-form">
+            <label>
+              <span>Reason (audited)</span>
+              <input type="text" name="reason" required minLength={3} maxLength={GO_LIVE_REASON_MAX} />
+            </label>
+            <ConfirmFormButton
+              className={automation.live ? 'ghost-btn' : 'primary-btn'}
+              message={
+                automation.live
+                  ? revokeGoLiveConfirm({ name: ws.name, slug: ws.slug })
+                  : releaseGoLiveConfirm({ name: ws.name, slug: ws.slug })
+              }
+            >
+              {automation.live ? 'Put back on hold' : 'Release for outreach'}
+            </ConfirmFormButton>
+          </form>
+        </section>
+
+        <section id="holds">
+          <h2>Holds</h2>
+          <p className="muted">
+            A hold stops the work it names in this workspace, automatic and
+            manual alike, until you release it or it expires. Every member
+            sees it on a banner, its owners and admins are notified, and they
+            cannot release a platform hold. Separately, automatic work stops
+            by itself while the owner is not active or no longer a member.
+          </p>
+          {automation.platformOutboundStop ? (
+            <p className="form-error">
+              Outbound email is stopped for every workspace by the platform
+              since {formatUtc(automation.platformOutboundStop.since)}:{' '}
+              {automation.platformOutboundStop.reason}
+            </p>
+          ) : null}
+          {automation.ownerProblem ? (
+            <p className="form-error">{ownerProblemMessage(automation)}</p>
+          ) : null}
           <ul className="profile-list">
-            {KNOWN_FEATURE_KEYS.map((k) => {
-              const existing = flagByKey.get(k);
-              const enabled = existing?.enabled ?? false;
-              return (
-                <li key={k}>
+            {activeHolds.length === 0 ? (
+              <li className="muted">No holds — nothing is held in this workspace.</li>
+            ) : (
+              activeHolds.map((h) => (
+                <li key={h.id.toString()}>
                   <div className="lead-row">
-                    <code>{k}</code>
-                    <span className={enabled ? 'badge badge-good' : 'badge'}>
-                      {enabled ? 'enabled' : 'disabled'}
+                    <code>{h.scopeLabel}</code>
+                    <span className={h.enforced ? 'badge badge-bad' : 'badge'}>
+                      {h.enforced ? 'on hold' : 'expired'}
                     </span>
-                    <form action={toggleFlag} style={{ marginLeft: 'auto' }}>
-                      <input type="hidden" name="key" value={k} />
-                      <input
-                        type="hidden"
-                        name="enabled"
-                        value={enabled ? 'off' : 'on'}
-                      />
-                      <button
-                        type="submit"
-                        className={enabled ? 'ghost-btn' : 'primary-btn'}
+                    <span className="badge">
+                      {h.source === 'platform' ? 'placed by the platform' : 'placed by the workspace'}
+                    </span>
+                    <form action={releaseHold} className="inline-form" style={{ marginLeft: 'auto' }}>
+                      <input type="hidden" name="holdId" value={h.id.toString()} />
+                      <label>
+                        <span>Reason</span>
+                        <input type="text" name="reason" required minLength={3} maxLength={HOLD_REASON_MAX} />
+                      </label>
+                      <ConfirmFormButton
+                        className="ghost-btn"
+                        message={releaseHoldConfirm({ name: ws.name, slug: ws.slug }, h.scopeLabel)}
                       >
-                        {enabled ? 'Disable' : 'Enable'}
-                      </button>
+                        Release
+                      </ConfirmFormButton>
                     </form>
                   </div>
+                  <div className="meta">
+                    <span>{h.reason}</span>
+                    <span>
+                      placed {formatUtc(h.placedAt)}
+                      {h.placedByUserId ? ` by ${actorEmail.get(h.placedByUserId) ?? h.placedByUserId}` : ''}
+                    </span>
+                    <span>
+                      {h.expiresAt
+                        ? `${h.expired ? 'expired' : 'until'} ${formatUtc(h.expiresAt)}`
+                        : 'until released'}
+                    </span>
+                  </div>
                 </li>
-              );
-            })}
+              ))
+            )}
           </ul>
+          <form action={placeHold} className="inline-form" style={{ marginTop: '1rem' }}>
+            <label className="checkbox-row">
+              <input type="radio" name="scope" value="all" />
+              <span>All automation and capability work</span>
+            </label>
+            <label className="checkbox-row">
+              <input type="radio" name="scope" value="capabilities" defaultChecked />
+              <span>Only:</span>
+            </label>
+            {AUTOMATION_CAPABILITIES.map((cap) => (
+              <label key={cap} className="checkbox-row">
+                <input type="checkbox" name="capability" value={cap} />
+                <span>{CAPABILITY_LABELS[cap]}</span>
+              </label>
+            ))}
+            <label>
+              <span>Reason (the tenant sees it)</span>
+              <input type="text" name="reason" required minLength={3} maxLength={HOLD_REASON_MAX} />
+            </label>
+            <label>
+              <span>Lasts</span>
+              <select name="expires" defaultValue="">
+                {HOLD_DURATIONS.map((d) => (
+                  <option key={d.value} value={d.value}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <ConfirmFormButton
+              className="primary-btn"
+              message={placeHoldConfirm({ name: ws.name, slug: ws.slug })}
+            >
+              Place hold
+            </ConfirmFormButton>
+          </form>
+
+          <h3>Legacy flags to review ({pendingReview.length})</h3>
+          <p className="muted">
+            Imported from the old feature flags, which nothing ever read.
+            None of these stops anything until you confirm it; a note stops
+            nothing at all and is only discarded once read.
+          </p>
+          <ul className="profile-list">
+            {pendingReview.length === 0 ? (
+              <li className="muted">Nothing to review.</li>
+            ) : (
+              pendingReview.map((h) => (
+                <li key={h.id.toString()}>
+                  <div className="lead-row">
+                    <code>{h.legacyFlagKey ?? 'legacy flag'}</code>
+                    <span className="badge">{h.kind === 'note' ? 'note' : h.scopeLabel}</span>
+                    <span className="badge">pending review</span>
+                    <span style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+                      {h.kind === 'hold' ? (
+                        <form action={confirmHold}>
+                          <input type="hidden" name="holdId" value={h.id.toString()} />
+                          <ConfirmFormButton
+                            className="primary-btn"
+                            message={confirmLegacyHoldConfirm(
+                              { name: ws.name, slug: ws.slug },
+                              h.legacyFlagKey ?? 'legacy flag',
+                              h.scopeLabel,
+                            )}
+                          >
+                            Confirm
+                          </ConfirmFormButton>
+                        </form>
+                      ) : null}
+                      <form action={discardHold}>
+                        <input type="hidden" name="holdId" value={h.id.toString()} />
+                        <ConfirmFormButton
+                          className="ghost-btn"
+                          message={discardLegacyHoldConfirm(
+                            { name: ws.name, slug: ws.slug },
+                            h.legacyFlagKey ?? 'legacy flag',
+                          )}
+                        >
+                          Discard
+                        </ConfirmFormButton>
+                      </form>
+                    </span>
+                  </div>
+                  <div className="meta">
+                    <span>{h.reason}</span>
+                  </div>
+                </li>
+              ))
+            )}
+          </ul>
+
+          {endedHolds.length > 0 ? (
+            <details>
+              <summary>Ended holds ({endedHolds.length})</summary>
+              <ul className="profile-list">
+                {endedHolds.map((h) => (
+                  <li key={h.id.toString()}>
+                    <div className="lead-row">
+                      <code>{h.legacyFlagKey ?? h.scopeLabel}</code>
+                      <span className="badge">{h.state}</span>
+                    </div>
+                    <div className="meta">
+                      <span>{h.reason}</span>
+                      {h.endedAt ? (
+                        <span>
+                          {h.state} {formatUtc(h.endedAt)}
+                          {h.endedByUserId ? ` by ${actorEmail.get(h.endedByUserId) ?? h.endedByUserId}` : ''}
+                          {h.endReason ? `: ${h.endReason}` : ''}
+                        </span>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
         </section>
       </div>
   );
-}
-
-function roleIcon(role: string): string {
-  switch (role) {
-    case 'owner':
-      return '👑';
-    case 'admin':
-      return '🛡';
-    case 'manager':
-      return '⭐';
-    case 'member':
-      return '👤';
-    case 'viewer':
-      return '👁';
-    default:
-      return '';
-  }
 }

@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   index,
   jsonb,
   pgTable,
@@ -11,9 +12,11 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { users } from './auth';
 import { workspaces } from './workspaces';
 import { sourceRecords } from './connectors';
 import { productProfiles } from './products';
+import { learningEvents, OPERATOR_VERDICTS } from './learning';
 
 /**
  * One row per (sourceRecord, productProfile) pair. The qualification engine
@@ -76,6 +79,32 @@ export const qualifications = pgTable(
     inferredCountry: text('inferred_country'),
     geoStatus: text('geo_status').notNull().default('no_gate'),
 
+    /** KL-02: the operator's verdict for this (record, product) — domain
+     *  state, not a learning hint. 'not_fit' binds downstream: Promote,
+     *  ensureQualifiedLead, generateOutreachDraft and autopilot's
+     *  auto-enqueue refuse the pair. Written only by an operator decision
+     *  (review.ts, inside the decision's transaction); re-classification
+     *  never touches these columns (upsertQualification's conflict set
+     *  leaves them out). */
+    operatorVerdict: text('operator_verdict', { enum: OPERATOR_VERDICTS }),
+    operatorDecidedBy: text('operator_decided_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    operatorDecidedAt: timestamp('operator_decided_at', { mode: 'date', withTimezone: true }),
+    /** The learning event that carries the verdict. */
+    operatorEventId: bigint('operator_event_id', { mode: 'bigint' }).references(
+      () => learningEvents.id,
+      { onDelete: 'set null' },
+    ),
+    /** A person approved this product while the location was unverified,
+     *  i.e. confirmed the company is inside the target country. The send-
+     *  time geo re-check accepts 'unverified' only with this set (or a
+     *  legacy human approval). */
+    geoConfirmedBy: text('geo_confirmed_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    geoConfirmedAt: timestamp('geo_confirmed_at', { mode: 'date', withTimezone: true }),
+
     createdAt: timestamp('created_at', { mode: 'date', withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -97,9 +126,24 @@ export const qualifications = pgTable(
       table.workspaceId,
       table.isRelevant,
     ),
+    operatorVerdictCheck: check(
+      'qualifications_operator_verdict_check',
+      sql`${table.operatorVerdict} IS NULL OR ${table.operatorVerdict} IN ('fit', 'not_fit')`,
+    ),
+    /** A verdict always says when it was given, and only a verdict does. */
+    operatorDecidedCheck: check(
+      'qualifications_operator_decided_check',
+      sql`(${table.operatorVerdict} IS NULL) = (${table.operatorDecidedAt} IS NULL)`,
+    ),
   }),
 );
 
 export type Qualification = typeof qualifications.$inferSelect;
 export type NewQualification = typeof qualifications.$inferInsert;
-export type QualificationMethod = 'rules' | 'ai' | 'hybrid';
+/**
+ * qualifications.method values (DS-09 registry; the column is text).
+ * 'rules_fallback' = AI was attempted but unavailable, so the rules
+ * decided (qualification.ts); 'hybrid' is kept for older rows.
+ */
+export const qualificationMethods = ['rules', 'ai', 'rules_fallback', 'hybrid'] as const;
+export type QualificationMethod = (typeof qualificationMethods)[number];

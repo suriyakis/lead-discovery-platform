@@ -1,7 +1,7 @@
 // Connector / Run service. Workspace-scoped CRUD on connectors + recipes,
 // plus run lifecycle (start, status, list).
 
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   connectorRecipes,
@@ -16,10 +16,11 @@ import {
   type NewConnectorRecipe,
   type NewConnectorRun,
 } from '@/lib/db/schema/connectors';
-import { type RunResult } from '@/lib/connectors/runner';
+import { isTerminalRunStatus, type RunResult } from '@/lib/connectors/runner';
 import { getJobQueue } from '@/lib/jobs';
 import { registerJobHandlers, type ConnectorRunJobPayload } from '@/lib/jobs/bootstrap';
 import { recordAuditEvent } from './audit';
+import { assertGate } from './automation-gate';
 import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
 import { normalizeCountry } from './geo';
 import { translateText } from './translation';
@@ -33,6 +34,31 @@ export class ConnectorServiceError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * PC-12 (I068): a recipe runs once at a time. startRun refuses a run of a
+ * recipe that already has one pending or running (code 'run_in_flight');
+ * the crawl tick records the recipe as skipped with this reason, Run now
+ * shows the run in progress.
+ */
+export class RecipeRunInFlightError extends ConnectorServiceError {
+  readonly recipeId: bigint;
+  readonly runId: bigint;
+  readonly runStatus: 'pending' | 'running';
+  constructor(recipeId: bigint, runId: bigint, runStatus: 'pending' | 'running') {
+    super(
+      `A run of this recipe is already ${runStatus === 'running' ? 'running' : 'waiting to start'} (run ${runId}). A recipe runs once at a time.`,
+      'run_in_flight',
+    );
+    this.name = 'RecipeRunInFlightError';
+    this.recipeId = recipeId;
+    this.runId = runId;
+    this.runStatus = runStatus;
+  }
+}
+
+/** PC-12: run statuses that make a recipe busy. */
+export const IN_FLIGHT_RUN_STATUSES = ['pending', 'running'] as const;
 
 const permissionDenied = (op: string) =>
   new ConnectorServiceError(`Permission denied: ${op}`, 'permission_denied');
@@ -268,7 +294,7 @@ export async function deleteConnectorRuns(
 // ---- consolidation (P62-21) ----------------------------------------
 
 /** Friendly label per template type. Mirrors TEMPLATE_META in
- *  src/app/connectors/page.tsx — when we collapse a workspace's
+ *  src/app/(app)/connectors/page.tsx — when we collapse a workspace's
  *  multiple instances into one, this is the name we use. */
 const TEMPLATE_FRIENDLY_NAME: Record<string, string> = {
   internet_search: 'Internet Search',
@@ -605,21 +631,35 @@ export interface StartRunInput {
  * and enqueues a `connector.run` job. The job handler (registered via
  * registerJobHandlers) drives the execution.
  *
+ * PC-12 (I068): a recipe that already has a run pending or running gets
+ * no second one — RecipeRunInFlightError (code 'run_in_flight').
+ *
  * - With JOB_QUEUE_PROVIDER=memory the handler runs on the next microtask.
  * - With JOB_QUEUE_PROVIDER=bullmq the handler runs in a Worker process.
  *
  * Returns the pending run row immediately. Pass `wait:true` (typically in
  * tests) to block until the job reaches a terminal state.
  */
+/**
+ * Would a discovery run be refused before it starts? Writers only. PC-06:
+ * every discovery run starts in startRun (recipe Run now, crawl plans, the
+ * tick), so a Discovery hold stops them all. Prepaid gate: discovery runs
+ * drive search + AI qualification spend, so an empty wallet (not
+ * billing-exempt) refuses new runs. PC-38: a recipe's Run now asks this
+ * before its rate limit counts the click.
+ */
+export async function assertCanStartRun(ctx: WorkspaceContext): Promise<void> {
+  if (!canWrite(ctx)) throw permissionDenied('start connector run');
+  await assertGate(ctx, 'discovery');
+  const { assertTokens } = await import('./token-ledger');
+  await assertTokens(ctx);
+}
+
 export async function startRun(
   ctx: WorkspaceContext,
   input: StartRunInput,
 ): Promise<{ run: ConnectorRun; jobId: string; result?: RunResult }> {
-  if (!canWrite(ctx)) throw permissionDenied('start connector run');
-  // Prepaid gate: discovery runs drive search + AI qualification spend.
-  // Empty wallet (and not billing-exempt) → refuse to start new runs.
-  const { assertTokens } = await import('./token-ledger');
-  await assertTokens(ctx);
+  await assertCanStartRun(ctx);
 
   const connector = await getConnectorRow(ctx, input.connectorId);
   if (!connector.active) {
@@ -651,9 +691,46 @@ export async function startRun(
     recipeSnapshot,
   };
 
-  const inserted = await db.insert(connectorRuns).values(newRow).returning();
-  const created = inserted[0];
-  if (!created) throw invariant('connector_runs insert returned no row');
+  // PC-12 (I068): one active run per recipe. The recipe row is locked
+  // (FOR NO KEY UPDATE: two starts of one recipe queue up here, while its
+  // runs' own foreign-key checks are not blocked) for the check and the
+  // insert, so two starts at once cannot both see "none in flight".
+  const created = await db.transaction(async (tx) => {
+    if (recipeId !== null) {
+      await tx
+        .select({ id: connectorRecipes.id })
+        .from(connectorRecipes)
+        .where(
+          and(
+            eq(connectorRecipes.workspaceId, ctx.workspaceId),
+            eq(connectorRecipes.id, recipeId),
+          ),
+        )
+        .for('no key update');
+      const [inFlight] = await tx
+        .select({ id: connectorRuns.id, status: connectorRuns.status })
+        .from(connectorRuns)
+        .where(
+          and(
+            eq(connectorRuns.workspaceId, ctx.workspaceId),
+            eq(connectorRuns.recipeId, recipeId),
+            inArray(connectorRuns.status, [...IN_FLIGHT_RUN_STATUSES]),
+          ),
+        )
+        .orderBy(asc(connectorRuns.id))
+        .limit(1);
+      if (inFlight) {
+        throw new RecipeRunInFlightError(
+          recipeId,
+          inFlight.id,
+          inFlight.status === 'running' ? 'running' : 'pending',
+        );
+      }
+    }
+    const [row] = await tx.insert(connectorRuns).values(newRow).returning();
+    if (!row) throw invariant('connector_runs insert returned no row');
+    return row;
+  });
 
   await recordAuditEvent(ctx, {
     kind: 'connector_run.start',
@@ -702,7 +779,7 @@ export interface AwaitRunOptions {
 
 /**
  * Block until a connector run reaches a terminal state (succeeded /
- * failed / cancelled). Polls connector_runs.status with backoff.
+ * partial / failed / cancelled). Polls connector_runs.status with backoff.
  */
 export async function awaitRun(
   ctx: WorkspaceContext,
@@ -715,7 +792,12 @@ export async function awaitRun(
 
   while (Date.now() - start < timeoutMs) {
     const run = await getRun(ctx, runId);
-    if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') {
+    if (
+      run.status === 'succeeded' ||
+      run.status === 'partial' ||
+      run.status === 'failed' ||
+      run.status === 'cancelled'
+    ) {
       const result: RunResult = {
         status: run.status,
         recordCount: run.recordCount,
@@ -736,6 +818,105 @@ export async function awaitRun(
     `awaitRun: timed out after ${timeoutMs}ms (run ${runId} did not reach terminal state)`,
     'timeout',
   );
+}
+
+export interface CancelRunResult {
+  run: ConnectorRun;
+  /** true: the run had not started and is cancelled now; false: a running
+   *  run was asked to stop and ends 'cancelled' at its next step. */
+  immediate: boolean;
+}
+
+/**
+ * PC-10 (I074): Cancel a discovery run, across processes. A pending run
+ * is cancelled at once (the runner only starts pending runs). For a
+ * running run this sets cancel_requested_at; the runner — in whichever
+ * process executes it — reads it at its next step (one search query at
+ * most) and ends the run 'cancelled'. If that runner has died, the
+ * stuck-work reaper cancels the run 2 minutes later. Records already
+ * found are kept. Any write role may cancel.
+ */
+export async function requestRunCancel(
+  ctx: WorkspaceContext,
+  runId: bigint,
+): Promise<CancelRunResult> {
+  if (!canWrite(ctx)) throw permissionDenied('cancel connector run');
+  // Two passes: a pending run may be claimed between our read and write.
+  for (let pass = 0; pass < 2; pass++) {
+    const run = await getRun(ctx, runId);
+    const now = new Date();
+    if (run.status === 'pending') {
+      const [cancelled] = await db
+        .update(connectorRuns)
+        .set({
+          status: 'cancelled',
+          cancelRequestedAt: now,
+          completedAt: now,
+          errorPayload: { message: 'Cancelled before it started.', reason: 'cancelled' },
+          updatedAt: now,
+        })
+        .where(and(eq(connectorRuns.id, runId), eq(connectorRuns.status, 'pending')))
+        .returning();
+      if (!cancelled) continue;
+      await db.insert(connectorRunLogs).values({
+        runId,
+        level: 'warn',
+        message: 'Cancelled before it started.',
+        payload: {},
+      });
+      await recordAuditEvent(ctx, {
+        kind: 'connector_run.cancel',
+        entityType: 'connector_run',
+        entityId: runId,
+        payload: { from: 'pending', immediate: true },
+      });
+      return { run: cancelled, immediate: true };
+    }
+    if (run.status === 'running') {
+      if (run.cancelRequestedAt) return { run, immediate: false };
+      const [requested] = await db
+        .update(connectorRuns)
+        .set({ cancelRequestedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(connectorRuns.id, runId),
+            eq(connectorRuns.status, 'running'),
+            isNull(connectorRuns.cancelRequestedAt),
+          ),
+        )
+        .returning();
+      if (!requested) continue;
+      await recordAuditEvent(ctx, {
+        kind: 'connector_run.cancel',
+        entityType: 'connector_run',
+        entityId: runId,
+        payload: { from: 'running', immediate: false },
+      });
+      return { run: requested, immediate: false };
+    }
+    throw new ConnectorServiceError(`the run has already ${describeEnd(run.status)}`, 'conflict');
+  }
+  // Raced twice; report what it is now.
+  const run = await getRun(ctx, runId);
+  if (isTerminalRunStatus(run.status)) {
+    throw new ConnectorServiceError(`the run has already ${describeEnd(run.status)}`, 'conflict');
+  }
+  return { run, immediate: false };
+}
+
+function describeEnd(status: ConnectorRun['status']): string {
+  switch (status) {
+    case 'succeeded':
+      return 'finished';
+    case 'partial':
+      return 'finished (some steps failed)';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'been cancelled';
+    default:
+      return status;
+  }
 }
 
 export async function getRun(

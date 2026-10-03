@@ -28,7 +28,7 @@ import {
 import { archiveWorkspace } from '@/lib/services/admin';
 import { resolveWorkspaceContextForUser } from '@/lib/services/workspace-resolution';
 import { listMyWorkspaces, setActiveWorkspace } from '@/lib/services/workspace';
-import Dashboard from '@/app/dashboard/page';
+import TodayPage from '@/app/(app)/today/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { platformCtx } from './helpers/platform';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
@@ -70,7 +70,8 @@ async function signInAs(userId: string): Promise<void> {
 }
 
 async function renderDashboard(): Promise<string> {
-  const tree = await Dashboard();
+  // The dashboard is Today's Overview view now (DS-05).
+  const tree = await TodayPage({ searchParams: Promise.resolve({ view: 'overview' }) });
   // Drop React's `<!-- -->` text-node separators so assertions match
   // what the user reads.
   return (await renderToHtml(tree)).replaceAll('<!-- -->', '');

@@ -8,6 +8,7 @@ import type { Readable } from 'node:stream';
 import { db } from '@/lib/db/client';
 import { productProfiles, type ProductProfile } from '@/lib/db/schema/products';
 import {
+  pipelineEvents,
   qualifiedLeads,
   type QualifiedLead,
   type PipelineState,
@@ -28,6 +29,7 @@ import {
 } from '@/lib/db/schema/mailing';
 import { contactAssociations } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
+import { assertGate } from './automation-gate';
 import {
   canAdminWorkspace,
   canWrite,
@@ -288,6 +290,9 @@ export async function testCrmConnection(
 
 // ---- push ----------------------------------------------------------
 
+/** Who pushed: a person (the lead's page) or autopilot's CRM steps. */
+export type CrmPushOrigin = 'operator' | 'autopilot';
+
 export interface PushLeadInput {
   connectionId: bigint;
   leadId: bigint;
@@ -295,6 +300,48 @@ export interface PushLeadInput {
   connectorOverride?: ICRMConnector;
   /** When true, transition the lead to synced_to_crm on success. */
   advanceState?: boolean;
+  /** Default 'operator'. */
+  origin?: CrmPushOrigin;
+}
+
+/**
+ * PC-11: a succeeded push is on the lead's timeline (pipeline_events) — a
+ * `transition` to synced_to_crm when the push advanced the lead, otherwise
+ * `crm_contact_sync` / `crm_deal_sync` with the state unchanged. An
+ * autopilot push has no person as its actor. Writing the event never
+ * touches the lead row, so it does not count as a change that would make
+ * autopilot push the lead again.
+ */
+async function logCrmPushEvent(
+  ctx: WorkspaceContext,
+  lead: QualifiedLead,
+  input: {
+    kind: 'contact' | 'deal';
+    advancedTo: PipelineState | null;
+    connection: CrmConnection;
+    externalId: string | null;
+    origin: CrmPushOrigin;
+  },
+): Promise<void> {
+  await db.insert(pipelineEvents).values({
+    workspaceId: ctx.workspaceId,
+    qualifiedLeadId: lead.id,
+    fromState: lead.state,
+    toState: input.advancedTo ?? lead.state,
+    eventKind: input.advancedTo
+      ? 'transition'
+      : input.kind === 'contact'
+        ? 'crm_contact_sync'
+        : 'crm_deal_sync',
+    payload: {
+      crm: input.kind,
+      connectionId: input.connection.id.toString(),
+      system: input.connection.system,
+      externalId: input.externalId,
+      origin: input.origin,
+    },
+    actorUserId: input.origin === 'autopilot' ? null : ctx.userId,
+  });
 }
 
 export async function pushLeadToCrm(
@@ -302,6 +349,8 @@ export async function pushLeadToCrm(
   input: PushLeadInput,
 ): Promise<{ entry: CrmSyncEntry; result: SyncResult }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.push');
+  // PC-06: manual pushes and autopilot's CRM steps alike.
+  await assertGate(ctx, 'crm_sync');
   const conn = await loadConnection(ctx, input.connectionId);
   if (conn.status === 'archived') throw invalid('connection is archived');
 
@@ -310,7 +359,9 @@ export async function pushLeadToCrm(
 
   const connector = input.connectorOverride ?? (await buildConnector(ctx, conn));
 
-  // Find the most-recent succeeded sync to reuse the externalId.
+  // Find the most-recent succeeded CONTACT sync to reuse the externalId (a
+  // deal push logs its deal id on the same lead and connection; reusing
+  // that would PATCH the contact with a deal id).
   const prior = await db
     .select()
     .from(crmSyncLog)
@@ -319,12 +370,14 @@ export async function pushLeadToCrm(
         eq(crmSyncLog.workspaceId, ctx.workspaceId),
         eq(crmSyncLog.qualifiedLeadId, input.leadId),
         eq(crmSyncLog.crmConnectionId, input.connectionId),
+        eq(crmSyncLog.kind, 'contact'),
         eq(crmSyncLog.outcome, 'succeeded'),
       ),
     )
     .orderBy(desc(crmSyncLog.createdAt))
     .limit(1);
   const prevExternalId = prior[0]?.externalId ?? null;
+  const origin = input.origin ?? 'operator';
 
   const payload: CrmLeadPayload = {
     lead: leadRow,
@@ -350,6 +403,7 @@ export async function pushLeadToCrm(
     workspaceId: ctx.workspaceId,
     crmConnectionId: input.connectionId,
     qualifiedLeadId: input.leadId,
+    kind: 'contact',
     outcome: result.outcome,
     externalId: result.externalId ?? prevExternalId,
     statusCode: result.statusCode ?? null,
@@ -382,22 +436,32 @@ export async function pushLeadToCrm(
     );
 
   // Optional state advance.
-  if (
-    result.outcome === 'succeeded' &&
-    input.advanceState &&
-    leadRow.state !== 'synced_to_crm' &&
-    leadRow.state !== 'closed'
-  ) {
-    await db
-      .update(qualifiedLeads)
-      .set({
-        state: 'synced_to_crm',
-        syncedAt: new Date(),
-        crmExternalId: entry.externalId ?? leadRow.crmExternalId,
-        crmSystem: conn.system,
-        updatedAt: new Date(),
-      })
-      .where(eq(qualifiedLeads.id, input.leadId));
+  if (result.outcome === 'succeeded') {
+    const advance =
+      input.advanceState === true &&
+      leadRow.state !== 'synced_to_crm' &&
+      leadRow.state !== 'closed';
+    if (advance) {
+      await db
+        .update(qualifiedLeads)
+        .set({
+          state: 'synced_to_crm',
+          syncedAt: new Date(),
+          crmExternalId: entry.externalId ?? leadRow.crmExternalId,
+          crmSystem: conn.system,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(qualifiedLeads.workspaceId, ctx.workspaceId), eq(qualifiedLeads.id, input.leadId)),
+        );
+    }
+    await logCrmPushEvent(ctx, leadRow, {
+      kind: 'contact',
+      advancedTo: advance ? 'synced_to_crm' : null,
+      connection: conn,
+      externalId: entry.externalId ?? null,
+      origin,
+    });
   }
 
   await recordAuditEvent(ctx, {
@@ -408,6 +472,7 @@ export async function pushLeadToCrm(
       connectionId: input.connectionId.toString(),
       outcome: result.outcome,
       externalId: entry.externalId ?? null,
+      origin,
     },
   });
 
@@ -428,6 +493,7 @@ export async function pushThreadAsNotes(
   input: PushThreadAsNotesInput,
 ): Promise<{ inserted: number; skipped: number; failed: number }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.push_notes');
+  await assertGate(ctx, 'crm_sync');
   const conn = await loadConnection(ctx, input.connectionId);
   if (conn.status === 'archived') throw invalid('connection is archived');
 
@@ -602,6 +668,8 @@ export interface PushDealInput {
   connectionId: bigint;
   leadId: bigint;
   connectorOverride?: ICRMConnector;
+  /** Default 'operator'. */
+  origin?: CrmPushOrigin;
 }
 
 export async function pushDeal(
@@ -609,6 +677,7 @@ export async function pushDeal(
   input: PushDealInput,
 ): Promise<{ entry: CrmSyncEntry; result: SyncResult }> {
   if (!canWrite(ctx)) throw permissionDenied('crm.push_deal');
+  await assertGate(ctx, 'crm_sync');
   const conn = await loadConnection(ctx, input.connectionId);
   if (conn.status === 'archived') throw invalid('connection is archived');
   const lead = await loadLead(ctx, input.leadId);
@@ -692,6 +761,17 @@ export async function pushDeal(
     .returning();
   if (!entry) throw invariant('crm_sync_log insert returned no row');
 
+  const origin = input.origin ?? 'operator';
+  if (result.outcome === 'succeeded') {
+    await logCrmPushEvent(ctx, lead, {
+      kind: 'deal',
+      advancedTo: null,
+      connection: conn,
+      externalId: entry.externalId ?? null,
+      origin,
+    });
+  }
+
   await recordAuditEvent(ctx, {
     kind: 'crm.push_deal',
     entityType: 'qualified_lead',
@@ -700,6 +780,7 @@ export async function pushDeal(
       connectionId: input.connectionId.toString(),
       outcome: result.outcome,
       externalId: entry.externalId,
+      origin,
     },
   });
 

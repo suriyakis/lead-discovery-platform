@@ -1,0 +1,44 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* /health (AP-06): the three sections, a heading row that carries a score
+ * chip, and the schedule controls (they wrap on a phone). Tokens only. */
+
+@layer components {
+  .section {
+    display: grid;
+    gap: var(--space-3);
+    margin-bottom: var(--gap-section);
+    min-width: 0;
+  }
+
+  .heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-3);
+  }
+
+  .heading h2,
+  .heading h3 {
+    margin: 0;
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3);
+  }
+
+  .settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .issues {
+    margin: var(--space-1) 0 0 var(--space-4);
+  }
+}

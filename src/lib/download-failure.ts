@@ -10,6 +10,7 @@
 
 import { AccountInactiveError, AuthRequiredError, NoWorkspaceError } from '@/lib/services/auth-context';
 import { errorResponse } from '@/lib/services/http';
+import { HOME_PATH } from '@/lib/nav/registry';
 
 /** The page a failed browser download goes back to, and what it says there. */
 export interface DownloadFailurePage {
@@ -40,7 +41,7 @@ export function isBrowserNavigation(req: Request): boolean {
  * The response for a download route whose body threw `err`. Non-browser
  * callers get errorResponse(err) unchanged. A browser navigation gets a
  * 303 instead: signed out to sign-in, an inactive account to /pending, no
- * workspace to /dashboard (as server actions do), and anything else to
+ * workspace to Today (as server actions do), and anything else to
  * the page `pageFor` picks, with its message as ?error=.
  */
 export async function downloadErrorResponse(
@@ -53,7 +54,7 @@ export async function downloadErrorResponse(
   // The same targets as requireActionContext (src/lib/action-context.ts).
   if (err instanceof AuthRequiredError) return seeOther('/');
   if (err instanceof AccountInactiveError) return seeOther('/pending');
-  if (err instanceof NoWorkspaceError) return seeOther('/dashboard');
+  if (err instanceof NoWorkspaceError) return seeOther(HOME_PATH);
   const page = pageFor({ status: failure.status, code: await errorCode(failure) });
   const sep = page.path.includes('?') ? '&' : '?';
   return seeOther(`${page.path}${sep}error=${encodeURIComponent(page.error)}`);

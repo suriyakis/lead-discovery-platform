@@ -9,30 +9,34 @@
 // base doesn't already cover.
 //
 // Synthesized lessons land with source='synthesis', modest confidence and
-// enabled=true — the reinforcement loop then promotes the ones reality
+// lifecycle 'active' — the reinforcement loop then promotes the ones reality
 // confirms and compaction retires the ones it doesn't. Operators see the
 // provenance badge on /learning and can disable anything on sight.
 //
 // Runs unattended on the weekly knowledge tick (after compaction, so it
 // mines a deduplicated base) and on demand from /learning (admin button).
 
-import { and, desc, eq, gte } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import { learningEvents, learningLessons } from '@/lib/db/schema/learning';
 import { productProfiles } from '@/lib/db/schema/products';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { recordPlatformAuditEvent } from './audit';
+import { assertGate, checkGate } from './automation-gate';
 import {
   canAdminWorkspace,
   type WorkspaceContext,
 } from './context';
+import { createLesson, lessonInScope, scopeForProduct } from './learning';
 import {
   LESSON_CATEGORIES,
-  createLesson,
-  type LessonCategory,
-} from './learning';
-import { hasTokens } from './token-ledger';
+  LESSON_CATEGORY_REGISTRY,
+  isLessonCategory,
+  parseLessonPolarity,
+  polarityForRule,
+} from './learning-categories';
+import { assertTokens, hasTokens } from './token-ledger';
 
 export class LearningSynthesisError extends Error {
   public readonly code: string;
@@ -60,7 +64,9 @@ const SYNTHESIS_CONFIDENCE_CAP = 55;
 export interface SynthesisSummary {
   workspaceId: bigint;
   ran: boolean;
-  skippedReason: 'insufficient_events' | 'no_tokens' | null;
+  /** 'held': PC-06 automation gate (a Background AI hold, or no
+   *  accountable owner for the unattended run). */
+  skippedReason: 'insufficient_events' | 'no_tokens' | 'held' | null;
   eventsExamined: number;
   proposalsReceived: number;
   lessonsCreated: number;
@@ -74,6 +80,8 @@ const ProposalSchema = z.object({
         rule: z.string(),
         /** Product profile id as a string, or null for workspace-wide. */
         productId: z.string().nullable(),
+        /** prefer | avoid | neutral — honoured when the category allows it. */
+        polarity: z.string().nullable().optional(),
         confidence: z.number().int().min(0).max(100),
       }),
     )
@@ -91,25 +99,38 @@ Rules must be:
 - ACTIONABLE one-sentence imperatives
 - NOT a duplicate or trivial rephrasing of an existing rule
 
-Allowed categories: ${LESSON_CATEGORIES.join(', ')}.
+Allowed categories:
+${LESSON_CATEGORIES.map((c) => `- ${c}: ${LESSON_CATEGORY_REGISTRY[c].description}`).join('\n')}
 
 Strict JSON output:
-{"proposals": [{"category": "<allowed category>", "rule": "<one sentence>", "productId": "<product id string from the events, or null for workspace-wide>", "confidence": <int 0-100>}]}
+{"proposals": [{"category": "<allowed category>", "rule": "<one sentence>", "polarity": "prefer" | "avoid" | "neutral", "productId": "<product id string from the events, or null for workspace-wide>", "confidence": <int 0-100>}]}
 
 Return at most ${MAX_PROPOSALS} proposals. Quality over quantity — an empty proposals array is the CORRECT answer when the events show no reliable new pattern. Output JSON only.`;
 
 /**
  * Attended entry point (the /learning "Synthesize now" button). Admin-gated.
  */
-export async function synthesizeWorkspaceLearning(
-  ctx: WorkspaceContext,
-): Promise<SynthesisSummary> {
+/**
+ * Would "Synthesize now" be refused? Workspace admins only. PC-38 (I184):
+ * an empty wallet refuses the button before any AI call (TokenError),
+ * instead of a silent 'no_tokens' skip. PC-06: so does a Background AI
+ * hold. The button asks this before its guard counts the click.
+ */
+export async function assertCanSynthesizeLearning(ctx: WorkspaceContext): Promise<void> {
   if (!canAdminWorkspace(ctx)) {
     throw new LearningSynthesisError(
       'Permission denied: learning.synthesize',
       'permission_denied',
     );
   }
+  await assertTokens(ctx);
+  await assertGate(ctx, 'background_ai');
+}
+
+export async function synthesizeWorkspaceLearning(
+  ctx: WorkspaceContext,
+): Promise<SynthesisSummary> {
+  await assertCanSynthesizeLearning(ctx);
   return runSynthesis(ctx);
 }
 
@@ -134,7 +155,20 @@ export async function synthesizeWorkspaceLearningUnattended(
     workspaceId,
     userId: rows[0].ownerUserId,
     role: 'owner',
-  } as WorkspaceContext;
+    trigger: 'automation',
+  };
+  // PC-06: automatic Background AI. Held → skipped, not an error.
+  const gate = await checkGate(ctx, 'background_ai', { manual: false });
+  if (!gate.allowed) {
+    return {
+      workspaceId,
+      ran: false,
+      skippedReason: 'held',
+      eventsExamined: 0,
+      proposalsReceived: 0,
+      lessonsCreated: 0,
+    };
+  }
   return runSynthesis(ctx);
 }
 
@@ -161,6 +195,10 @@ async function runSynthesis(ctx: WorkspaceContext): Promise<SynthesisSummary> {
       and(
         eq(learningEvents.workspaceId, ctx.workspaceId),
         gte(learningEvents.createdAt, since),
+        // KL-02: machines never teach (I034) and a decision that was
+        // superseded or undone is never mined.
+        eq(learningEvents.origin, 'operator'),
+        isNull(learningEvents.voidedAt),
       ),
     )
     .orderBy(desc(learningEvents.createdAt))
@@ -183,7 +221,8 @@ async function runSynthesis(ctx: WorkspaceContext): Promise<SynthesisSummary> {
     .where(
       and(
         eq(learningLessons.workspaceId, ctx.workspaceId),
-        eq(learningLessons.enabled, true),
+        eq(learningLessons.lifecycle, 'active'),
+        lessonInScope(),
       ),
     )
     .orderBy(desc(learningLessons.confidence))
@@ -247,21 +286,23 @@ Products in this workspace: ${products.map((p) => `${p.id}=${p.name}`).join(', '
   base.ran = true;
   base.proposalsReceived = result.proposals.length;
 
-  const categorySet = new Set<string>(LESSON_CATEGORIES);
   const existingRulesLower = new Set(existing.map((l) => l.rule.trim().toLowerCase()));
   let created = 0;
   for (const p of result.proposals.slice(0, MAX_PROPOSALS)) {
     const rule = p.rule.trim();
-    if (!rule || !categorySet.has(p.category)) continue;
+    // Registry categories only — a removed or invented one is dropped.
+    if (!rule || !isLessonCategory(p.category)) continue;
+    const category = p.category;
     // Belt-and-braces dedupe on top of the prompt instruction.
     if (existingRulesLower.has(rule.toLowerCase())) continue;
     const productId =
       p.productId && validProductIds.has(p.productId) ? BigInt(p.productId) : null;
     try {
       await createLesson(ctx, {
-        category: p.category as LessonCategory,
+        category,
         rule,
-        productProfileId: productId,
+        scope: scopeForProduct(productId),
+        polarity: polarityForRule(category, rule, parseLessonPolarity(p.polarity)),
         confidence: Math.min(p.confidence, SYNTHESIS_CONFIDENCE_CAP),
         source: 'synthesis',
       });

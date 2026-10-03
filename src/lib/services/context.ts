@@ -10,14 +10,17 @@ import type { WorkspaceMemberRole } from '@/lib/db/schema/workspaces';
  */
 export type WorkspaceRole = WorkspaceMemberRole | 'super_admin';
 
-const ALL_ROLES = new Set<WorkspaceRole>([
+/** Every role. The client-safe navigation tests loop over it. */
+export const WORKSPACE_ROLES = [
   'owner',
   'admin',
   'manager',
   'member',
   'viewer',
   'super_admin',
-]);
+] as const satisfies ReadonlyArray<WorkspaceRole>;
+
+const ALL_ROLES: ReadonlySet<WorkspaceRole> = new Set<WorkspaceRole>(WORKSPACE_ROLES);
 
 /**
  * The runtime context every service function receives as its first argument.
@@ -31,7 +34,18 @@ export interface WorkspaceContext {
   userId: string;
   /** Role of the user inside this workspace, or `super_admin` for platform admins. */
   role: WorkspaceRole;
+  /**
+   * PC-06: who started the work. Absent = a person, through a request.
+   * 'automation' = background work acting as the workspace's accountable
+   * owner (makeAutomationContext). The automation gate reads it: the
+   * accountable-owner rule applies to automatic work only; holds apply to
+   * both.
+   */
+  trigger?: WorkTrigger;
 }
+
+/** See WorkspaceContext.trigger. */
+export type WorkTrigger = 'user' | 'automation';
 
 export class WorkspaceContextError extends Error {
   constructor(message: string) {
@@ -70,11 +84,34 @@ export function makeWorkspaceContext(input: {
   };
 }
 
+/**
+ * PC-06: the context background work runs under. Automation acts as the
+ * workspace's accountable owner (workspaces.owner_user_id) — never as a
+ * fallback member — and is marked as automatic so the gate applies the
+ * accountable-owner rule (services/automation-gate.ts).
+ */
+export function makeAutomationContext(workspaceId: bigint, ownerUserId: string): WorkspaceContext {
+  return {
+    ...makeWorkspaceContext({ workspaceId, userId: ownerUserId, role: 'owner' }),
+    trigger: 'automation',
+  };
+}
+
+/** True when the work was started by automation rather than a person. */
+export function isAutomatic(ctx: Pick<WorkspaceContext, 'trigger'>): boolean {
+  return ctx.trigger === 'automation';
+}
+
 // ---- role-based authorization helpers ----------------------------------
 //
 // These are deliberately small. Service functions call them by intent
 // (`canWrite`, `canAdminWorkspace`) rather than checking role names inline.
 // When the role matrix grows, the change is local.
+//
+// The role* predicates take a bare role, so code without a context reads
+// the same matrix: the navigation (src/lib/nav/resolve.ts) shows or hides
+// admin-only entries with them. This module has type imports only, so
+// client components can import it.
 
 // Every workspace role, viewer included, may read the workspace's data.
 // Spelled out (not ALL_ROLES) so a future role has to be added here on
@@ -100,19 +137,31 @@ const ADMIN_ROLES: ReadonlySet<WorkspaceRole> = new Set(['owner', 'admin', 'supe
 
 const OWNER_ROLES: ReadonlySet<WorkspaceRole> = new Set(['owner', 'super_admin']);
 
+export function roleCanRead(role: WorkspaceRole): boolean {
+  return READ_ROLES.has(role);
+}
+
+export function roleCanWrite(role: WorkspaceRole): boolean {
+  return WRITE_ROLES.has(role);
+}
+
+export function roleCanAdminWorkspace(role: WorkspaceRole): boolean {
+  return ADMIN_ROLES.has(role);
+}
+
 /** True if the role can read tenant data (pages, document downloads). */
 export function canRead(ctx: WorkspaceContext): boolean {
-  return READ_ROLES.has(ctx.role);
+  return roleCanRead(ctx.role);
 }
 
 /** True if the role can write tenant data (drafts, comments, approvals). */
 export function canWrite(ctx: WorkspaceContext): boolean {
-  return WRITE_ROLES.has(ctx.role);
+  return roleCanWrite(ctx.role);
 }
 
 /** True if the role can manage workspace settings, members, and connectors. */
 export function canAdminWorkspace(ctx: WorkspaceContext): boolean {
-  return ADMIN_ROLES.has(ctx.role);
+  return roleCanAdminWorkspace(ctx.role);
 }
 
 /** True if the role can transfer ownership or delete the workspace. */

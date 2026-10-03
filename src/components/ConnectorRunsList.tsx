@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import { StatusBadge } from './Badge';
 import { ConfirmFormButton } from './ConfirmFormButton';
 
 export interface RunRow {
@@ -113,12 +114,7 @@ export function ConnectorRunsList({
                   >
                     Run #{r.id}
                   </Link>
-                  <span
-                    className={`runs-status runs-status-${r.status}`}
-                    title="Run status"
-                  >
-                    {r.status}
-                  </span>
+                  <StatusBadge set="connector_run_status" value={r.status} size="sm" />
                   <span className="muted small">
                     {r.recordCount} record{r.recordCount === 1 ? '' : 's'}
                   </span>

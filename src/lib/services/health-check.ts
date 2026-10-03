@@ -1,44 +1,50 @@
-// AI workspace health check. Runs on a schedule (default weekly) per
-// workspace and does two things a human account manager would:
+// Workspace health checks (AP-06 on top of the original weekly check).
 //
-//   1. RULE FINDINGS — deterministic audit of configuration + operations:
-//      empty wallet, no active product, no mailbox / each failing
-//      mailbox / no active mailbox, recipes without a target country,
-//      failed runs, review backlog, stale drafts, pending follow-up
-//      approvals. (There is no mock-search finding yet — see I073.)
-//   2. COMMUNICATION REVIEW — the AI reads a sample of recent outbound
-//      conversations and judges them the way a recipient would: is the
-//      flow natural? does it repeat itself? does it contradict earlier
-//      messages or break the thread's context?
+// The findings come from ONE place: the diagnostics engine
+// (src/lib/diagnostics, getWorkspaceDiagnostics). This module adds what is
+// specific to the saved, scheduled report:
 //
-// The result is persisted as a report (score 0–100 + advice) and, when
-// anything is wrong, a warning notification linking to /health.
+//   1. THE WEEKLY REPORT — a summary over the engine's findings plus the
+//      AI COMMUNICATION REVIEW: the AI reads a sample of recent outbound
+//      conversations and judges them the way a recipient would (flow,
+//      repetition, contradictions, tone). Saved as a report (score 0–100,
+//      findings, review, advice); a warning notification links to /health.
+//      Admins switch the scheduled check (and with it every AI token it
+//      spends) on or off and pick its interval (I069); "Run now" always
+//      works.
+//   2. THE TICK — health.check.tick (every 6 h) first runs the free notify
+//      sweep for every active workspace (diagnostics/notify.ts: rules only,
+//      no AI), then the weekly reports that are due. A report that throws
+//      gives its slot back: health_check_last_at returns to its prior value,
+//      so the next tick (≤ 6 h) retries instead of waiting a whole interval,
+//      and the tick turns the failure into an ops incident (PC-07), which
+//      the engine shows as a finding until a check succeeds.
 
-import { and, asc, count, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
-import { formatUtc } from '@/lib/format-utc';
-import { connectorRecipes, connectorRuns } from '@/lib/db/schema/connectors';
 import {
   workspaceHealthReports,
   type WorkspaceHealthReport,
 } from '@/lib/db/schema/health';
-import {
-  mailMessages,
-  mailThreads,
-  mailboxes,
-  type Mailbox,
-} from '@/lib/db/schema/mailing';
-import { outreachDrafts } from '@/lib/db/schema/outreach';
-import { productProfiles } from '@/lib/db/schema/products';
-import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
-import { reviewItems } from '@/lib/db/schema/review';
+import { mailMessages, mailThreads } from '@/lib/db/schema/mailing';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { getAIProviderForCtx } from '@/lib/ai';
+import { getWorkspaceDiagnostics, invalidateDiagnostics } from '@/lib/diagnostics/engine';
+import { blendConversationReview } from '@/lib/diagnostics/score';
+import {
+  FINDING_SEVERITIES,
+  findingMessage,
+  isProblem,
+  type Finding,
+  type FindingSeverity,
+  type LegacyHealthFinding,
+} from '@/lib/diagnostics/types';
+import { recordAuditEvent } from './audit';
+import { checkGate } from './automation-gate';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
-import { summarizeMailboxFailure } from './mailbox';
 import { notify } from './notifications';
-import { getTokenWallet, hasTokens } from './token-ledger';
+import { hasTokens } from './token-ledger';
 
 export class HealthCheckError extends Error {
   public readonly code: string;
@@ -49,11 +55,86 @@ export class HealthCheckError extends Error {
   }
 }
 
-export interface HealthFinding {
-  severity: 'warning' | 'info';
+/** Finding severities, mildest first (the engine's). */
+export const HEALTH_FINDING_SEVERITIES = FINDING_SEVERITIES;
+export type HealthFindingSeverity = FindingSeverity;
+
+/** @deprecated AP-06: the one-sentence shape of reports saved before the
+ *  engine and of collectRuleFindings. New code reads Finding. */
+export type HealthFinding = LegacyHealthFinding;
+
+/** A finding as a saved report keeps it: the engine's fields plus the
+ *  one-sentence `message` older readers know. */
+export interface StoredHealthFinding {
   code: string;
+  severity: FindingSeverity;
+  advisory?: boolean;
+  title?: string;
+  detail?: string;
   message: string;
   href?: string;
+}
+
+export function toStoredFinding(f: Finding): StoredHealthFinding {
+  return {
+    code: f.code,
+    severity: f.severity,
+    advisory: f.advisory,
+    title: f.title,
+    detail: f.detail,
+    message: findingMessage(f),
+    ...(f.href ? { href: f.href } : {}),
+  };
+}
+
+/** Read a saved report's findings, whatever release wrote them. */
+export function readStoredFindings(raw: unknown): StoredHealthFinding[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((r): StoredHealthFinding[] => {
+    if (!r || typeof r !== 'object') return [];
+    const o = r as Record<string, unknown>;
+    const severity = (FINDING_SEVERITIES as readonly string[]).includes(String(o.severity))
+      ? (o.severity as FindingSeverity)
+      : 'info';
+    const title = typeof o.title === 'string' ? o.title : undefined;
+    const detail = typeof o.detail === 'string' ? o.detail : undefined;
+    const message =
+      typeof o.message === 'string'
+        ? o.message
+        : title
+          ? findingMessage({ title, detail: detail ?? '' })
+          : '';
+    return [
+      {
+        code: typeof o.code === 'string' ? o.code : 'unknown',
+        severity,
+        advisory: o.advisory === true,
+        ...(title ? { title } : {}),
+        ...(detail ? { detail } : {}),
+        message,
+        ...(typeof o.href === 'string' ? { href: o.href } : {}),
+      },
+    ];
+  });
+}
+
+/**
+ * @deprecated AP-06: a thin wrapper kept one release for callers of the
+ * old rule check. It returns the engine's findings (advisory ones left
+ * out) in the old one-sentence shape. Use getWorkspaceDiagnostics.
+ */
+export async function collectRuleFindings(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+): Promise<HealthFinding[]> {
+  const report = await getWorkspaceDiagnostics(ctx, { fresh: true });
+  return report.findings
+    .filter((f) => !f.advisory)
+    .map((f) => ({
+      severity: f.severity,
+      code: f.code,
+      message: findingMessage(f),
+      ...(f.href ? { href: f.href } : {}),
+    }));
 }
 
 export interface ThreadReview {
@@ -75,245 +156,97 @@ const THREAD_SAMPLE = 3;
 /** Transcript budget per thread fed to the reviewer. */
 const TRANSCRIPT_CHAR_BUDGET = 9000;
 
-// ---- rule findings --------------------------------------------------
+// ---- settings ---------------------------------------------------------
 
-/**
- * flow:F-04: what "no active mailbox" means depends on why. Only a
- * FAILING mailbox holds its queue (outreach-queue isMailboxFailing, the
- * follow-up processOne check); sends through a PAUSED one are refused
- * and the queue entries / follow-ups that come due are marked failed.
- */
-export function noActiveMailboxMessage(anyFailing: boolean, anyPaused: boolean): string {
-  const why = anyFailing && anyPaused ? 'failing or paused' : anyFailing ? 'failing' : 'paused';
-  const parts = [`No mailbox is active (each one is ${why}) — no replies are read.`];
-  if (anyFailing) {
-    parts.push(
-      'Outreach and follow-ups queued on a failing mailbox are held until it works again.',
-    );
-  }
-  if (anyPaused) {
-    parts.push(
-      'Outreach and follow-ups that come due on a paused mailbox are marked failed, not held — ' +
-        're-enable it before they are due.',
-    );
-  }
-  return parts.join(' ');
+/** I069: the intervals an admin can pick for the scheduled check. */
+export const HEALTH_CHECK_INTERVAL_CHOICES = [1, 3, 7, 14, 30] as const;
+
+export const HealthCheckSettingsSchema = z.object({
+  enabled: z.boolean(),
+  intervalDays: z
+    .number()
+    .int()
+    .refine((n) => (HEALTH_CHECK_INTERVAL_CHOICES as readonly number[]).includes(n), {
+      message: `the interval is one of ${HEALTH_CHECK_INTERVAL_CHOICES.join(', ')} days`,
+    }),
+});
+export type HealthCheckSettingsInput = z.infer<typeof HealthCheckSettingsSchema>;
+
+export interface HealthCheckSettings {
+  enabled: boolean;
+  intervalDays: number;
+  /** The last scheduled (or manual) check's claim. */
+  lastAt: Date | null;
+  /** When the check is next due (null while off); the 6-hourly tick
+   *  starts it within 6 hours of this. */
+  nextDueAt: Date | null;
 }
 
-export async function collectRuleFindings(
+export async function getHealthCheckSettings(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
-): Promise<HealthFinding[]> {
-  const wsId = ctx.workspaceId;
-  const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const findings: HealthFinding[] = [];
-
-  const wallet = await getTokenWallet(ctx);
-  if (!wallet.billingExempt && wallet.balance <= 0n) {
-    findings.push({
-      severity: 'warning',
-      code: 'tokens.empty',
-      message:
-        'Token wallet is empty — discovery, drafting and translation are paused.',
-      href: '/settings/billing',
-    });
-  }
-
-  const [products] = await db
-    .select({ c: count() })
-    .from(productProfiles)
-    .where(and(eq(productProfiles.workspaceId, wsId), eq(productProfiles.active, true)));
-  if (Number(products?.c ?? 0) === 0) {
-    findings.push({
-      severity: 'warning',
-      code: 'products.none',
-      message: 'No active product profile — nothing can be qualified or pitched.',
-      href: '/products/new',
-    });
-  }
-
-  const mbs = await db
+): Promise<HealthCheckSettings> {
+  const [ws] = await db
     .select({
-      id: mailboxes.id,
-      name: mailboxes.name,
-      status: mailboxes.status,
-      lastError: mailboxes.lastError,
-      lastErrorAt: mailboxes.lastErrorAt,
-      failingSince: mailboxes.failingSince,
-      smtpHost: mailboxes.smtpHost,
-      smtpPort: mailboxes.smtpPort,
-      imapHost: mailboxes.imapHost,
-      imapPort: mailboxes.imapPort,
+      enabled: workspaces.healthCheckEnabled,
+      intervalDays: workspaces.healthCheckIntervalDays,
+      lastAt: workspaces.healthCheckLastAt,
     })
-    .from(mailboxes)
-    .where(and(eq(mailboxes.workspaceId, wsId), ne(mailboxes.status, 'archived')))
-    .orderBy(asc(mailboxes.id));
-  findings.push(...mailboxFindings(mbs));
-
-  const recipes = await db
-    .select({
-      total: count(),
-      withCountry: sql<number>`count(*) filter (where selectors->>'country' is not null)::int`,
-    })
-    .from(connectorRecipes)
-    .where(eq(connectorRecipes.workspaceId, wsId));
-  const recipeRow = recipes[0];
-  if (recipeRow && Number(recipeRow.total) > 0 && Number(recipeRow.withCountry) < Number(recipeRow.total)) {
-    findings.push({
-      severity: 'warning',
-      code: 'recipes.no_country',
-      // No target country = no geography gate (applyGeoGate → 'no_gate'):
-      // nothing is held for review, leads from anywhere pass straight on.
-      message: `${Number(recipeRow.total) - Number(recipeRow.withCountry)} of ${recipeRow.total} recipes have no target country — the geography gate is off for them, so leads from any country pass review and can be emailed.`,
-      href: '/connectors',
-    });
-  }
-
-  const [failedRuns] = await db
-    .select({ c: count() })
-    .from(connectorRuns)
-    .where(
-      and(
-        eq(connectorRuns.workspaceId, wsId),
-        eq(connectorRuns.status, 'failed'),
-        gte(connectorRuns.createdAt, since7d),
-      ),
-    );
-  if (Number(failedRuns?.c ?? 0) > 0) {
-    findings.push({
-      severity: 'warning',
-      code: 'runs.failed',
-      message: `${failedRuns!.c} discovery run(s) failed in the last 7 days.`,
-      href: '/connectors',
-    });
-  }
-
-  const [backlog] = await db
-    .select({ c: count() })
-    .from(reviewItems)
-    .where(
-      and(
-        eq(reviewItems.workspaceId, wsId),
-        sql`${reviewItems.state} in ('new', 'needs_review')`,
-        sql`${reviewItems.updatedAt} < ${since7d.toISOString()}::timestamptz`,
-      ),
-    );
-  if (Number(backlog?.c ?? 0) > 10) {
-    findings.push({
-      severity: 'info',
-      code: 'review.backlog',
-      message: `${backlog!.c} review items are older than a week — reviewing them also teaches the qualifier what you want.`,
-      href: '/review',
-    });
-  }
-
-  const [staleDrafts] = await db
-    .select({ c: count() })
-    .from(outreachDrafts)
-    .where(
-      and(
-        eq(outreachDrafts.workspaceId, wsId),
-        sql`${outreachDrafts.status} in ('draft', 'needs_edit')`,
-        sql`${outreachDrafts.updatedAt} < ${since7d.toISOString()}::timestamptz`,
-      ),
-    );
-  if (Number(staleDrafts?.c ?? 0) > 0) {
-    findings.push({
-      severity: 'info',
-      code: 'drafts.stale',
-      message: `${staleDrafts!.c} draft(s) have waited over a week for approval — cold leads go colder.`,
-      href: '/drafts',
-    });
-  }
-
-  const [pendingApprovals] = await db
-    .select({ c: count() })
-    .from(outreachFollowUps)
-    .where(
-      and(
-        eq(outreachFollowUps.workspaceId, wsId),
-        eq(outreachFollowUps.status, 'awaiting_approval'),
-      ),
-    );
-  if (Number(pendingApprovals?.c ?? 0) > 0) {
-    findings.push({
-      severity: 'info',
-      code: 'follow_ups.pending',
-      message: `${pendingApprovals!.c} follow-up(s) are awaiting approval.`,
-      href: '/communication/follow-ups',
-    });
-  }
-
-  return findings;
+    .from(workspaces)
+    .where(eq(workspaces.id, ctx.workspaceId))
+    .limit(1);
+  if (!ws) throw new HealthCheckError('workspace not found', 'not_found');
+  const nextDueAt = !ws.enabled
+    ? null
+    : ws.lastAt
+      ? new Date(ws.lastAt.getTime() + ws.intervalDays * 24 * 60 * 60 * 1000)
+      : new Date();
+  return { ...ws, nextDueAt };
 }
 
-/** A mailbox as the rule check reads it. */
-export type MailboxFindingRow = Pick<
-  Mailbox,
-  | 'id'
-  | 'name'
-  | 'status'
-  | 'lastError'
-  | 'lastErrorAt'
-  | 'failingSince'
-  | 'smtpHost'
-  | 'smtpPort'
-  | 'imapHost'
-  | 'imapPort'
->;
-
 /**
- * Mailbox findings (AP-01 wording, flow:F-04 behaviour). The statuses
- * behave differently, so the copy says what each one really does:
- *   - none connected (archived ones do not count): nothing is sent and
- *     no replies are read;
- *   - each FAILING mailbox, by name and linking to its page (I095): its
- *     queued outreach and follow-ups are HELD, not sent and not failed;
- *     replies to it are not read (and nothing is sent from it when SMTP
- *     is the broken side); the advice is the mailbox page's own
- *     (summarizeMailboxFailure — e.g. "use port 465 with TLS on connect"
- *     when a server refuses 587), plus the last error;
- *   - no ACTIVE mailbox left: noActiveMailboxMessage — failing ones hold
- *     their queue, paused ones mark due sends failed.
- * A paused mailbox next to an active one is the operator's choice, not
- * a finding.
+ * I069: switch the scheduled check (its AI review spends tokens) on or off
+ * and set its interval. Owners and admins; audited with before and after.
  */
-export function mailboxFindings(rows: ReadonlyArray<MailboxFindingRow>): HealthFinding[] {
-  const live = rows.filter((m) => m.status !== 'archived');
-  const out: HealthFinding[] = [];
-  for (const mb of live.filter((m) => m.status === 'failing')) {
-    const summary = summarizeMailboxFailure(mb);
-    const since = mb.failingSince ? ` since ${formatUtc(mb.failingSince)}` : '';
-    const when = mb.lastErrorAt ? ` (${formatUtc(mb.lastErrorAt)})` : '';
-    out.push({
-      severity: 'warning',
-      code: 'mailbox.failing',
-      message:
-        `Mailbox "${mb.name}" has been failing${since}. ${summary.impact} ${summary.advice}` +
-        ` Last error${when}: ${(mb.lastError ?? 'unknown').slice(0, 300)}`,
-      href: `/mailbox/${mb.id}`,
-    });
+export async function updateHealthCheckSettings(
+  ctx: WorkspaceContext,
+  input: HealthCheckSettingsInput,
+): Promise<HealthCheckSettings> {
+  if (!canAdminWorkspace(ctx)) {
+    throw new HealthCheckError('Permission denied: health.settings', 'permission_denied');
   }
-  if (!live.some((m) => m.status === 'active')) {
-    out.push(
-      live.length === 0
-        ? {
-            severity: 'warning',
-            code: 'mailbox.none',
-            message: 'No mailbox is connected — nothing can be sent and no replies are read.',
-            href: '/mailbox/new',
-          }
-        : {
-            severity: 'warning',
-            code: 'mailbox.none',
-            message: noActiveMailboxMessage(
-              live.some((m) => m.status === 'failing'),
-              live.some((m) => m.status === 'paused'),
-            ),
-            href: '/mailbox',
-          },
+  const parsed = HealthCheckSettingsSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new HealthCheckError(
+      parsed.error.issues.map((i) => i.message).join('; '),
+      'invalid_input',
     );
   }
-  return out;
+  const before = await getHealthCheckSettings(ctx);
+  await db.transaction(async (tx) => {
+    await tx
+      .update(workspaces)
+      .set({
+        healthCheckEnabled: parsed.data.enabled,
+        healthCheckIntervalDays: parsed.data.intervalDays,
+        updatedAt: new Date(),
+      })
+      .where(eq(workspaces.id, ctx.workspaceId));
+    await recordAuditEvent(
+      ctx,
+      {
+        kind: 'health_check.settings_update',
+        entityType: 'workspace',
+        entityId: ctx.workspaceId,
+        payload: {
+          before: { enabled: before.enabled, intervalDays: before.intervalDays },
+          after: parsed.data,
+        },
+      },
+      tx,
+    );
+  });
+  invalidateDiagnostics(ctx.workspaceId);
+  return getHealthCheckSettings(ctx);
 }
 
 // ---- AI communication review ----------------------------------------
@@ -332,7 +265,7 @@ async function sampleRecentThreads(
       and(
         eq(mailThreads.workspaceId, ctx.workspaceId),
         gte(mailThreads.lastMessageAt, since),
-        sql`${mailThreads.messageCount} >= 3`,
+        gte(mailThreads.messageCount, 3),
       ),
     )
     .orderBy(desc(mailThreads.lastMessageAt))
@@ -422,10 +355,19 @@ export async function reviewCommunicationQuality(
   return reviews;
 }
 
-// ---- the check --------------------------------------------------------
+// ---- the report --------------------------------------------------------
 
+/**
+ * Write a health report: the engine's findings (fresh), the AI review of
+ * recent conversations when the gate and the wallet allow it, the blended
+ * score and the advice; notify when something needs attention.
+ */
 export async function runWorkspaceHealthCheck(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  options: {
+    /** PC-06: a person pressed Run now (the tick passes false). */
+    manual?: boolean;
+  } = {},
 ): Promise<WorkspaceHealthReport> {
   const [ws] = await db
     .select({ intervalDays: workspaces.healthCheckIntervalDays })
@@ -434,28 +376,29 @@ export async function runWorkspaceHealthCheck(
     .limit(1);
   const intervalDays = ws?.intervalDays ?? 7;
 
-  const findings = await collectRuleFindings(ctx);
+  const diagnostics = await getWorkspaceDiagnostics(ctx, { fresh: true });
 
   // The AI part costs tokens — skip it (rules still run) on an empty
   // wallet; the empty wallet is itself the top finding at that point.
-  const commReview = (await hasTokens(ctx))
-    ? await reviewCommunicationQuality(ctx, intervalDays)
-    : [];
+  // PC-06: also under a Background AI hold, and for the scheduled run
+  // when the workspace has no accountable owner.
+  // PC-05: the scheduled run also skips it while the workspace is paused.
+  const aiGate = await checkGate(ctx, 'background_ai', {
+    manual: options.manual ?? false,
+    spendsTokens: true,
+  });
+  const commReview =
+    aiGate.allowed && (await hasTokens(ctx))
+      ? await reviewCommunicationQuality(ctx, intervalDays)
+      : [];
 
-  // Score: start at 100; -15 per warning, -5 per info; communication
-  // naturalness averages in when we have reviews (weighted 40%).
-  const warnings = findings.filter((f) => f.severity === 'warning').length;
-  const infos = findings.length - warnings;
-  let score = 100 - warnings * 15 - infos * 5;
-  if (commReview.length > 0) {
-    const avg =
-      commReview.reduce((a, r) => a + r.naturalness, 0) / commReview.length;
-    score = Math.round(score * 0.6 + avg * 0.4);
-  }
-  score = Math.max(0, Math.min(100, score));
-
+  const score = blendConversationReview(
+    diagnostics.score,
+    commReview.map((r) => r.naturalness),
+  );
+  const problems = diagnostics.findings.filter(isProblem);
   const advice = [
-    ...findings.map((f) => f.message),
+    ...problems.map(findingMessage),
     ...commReview.flatMap((r) => r.advice),
   ].slice(0, 20);
 
@@ -464,7 +407,7 @@ export async function runWorkspaceHealthCheck(
     .values({
       workspaceId: ctx.workspaceId,
       score,
-      findings,
+      findings: diagnostics.findings.map(toStoredFinding),
       commReview,
       advice,
     })
@@ -472,10 +415,10 @@ export async function runWorkspaceHealthCheck(
   if (!report) throw new HealthCheckError('report insert returned no row', 'invariant');
 
   const commIssueCount = commReview.reduce((a, r) => a + r.issues.length, 0);
-  if (warnings > 0 || commIssueCount > 0 || score < 80) {
+  if (problems.length > 0 || commIssueCount > 0 || score < 80) {
     await notify(ctx.workspaceId, {
       kind: 'health.warning',
-      title: `Workspace health check: score ${score}/100 — ${warnings} warning(s), ${commIssueCount} conversation issue(s)`,
+      title: `Workspace health check: score ${score}/100 — ${problems.length} problem(s), ${commIssueCount} conversation issue(s)`,
       body: advice.slice(0, 3).join(' · ') || null,
       href: '/health',
       dedupeKey: 'health.warning',
@@ -485,18 +428,26 @@ export async function runWorkspaceHealthCheck(
   return report;
 }
 
+/** Would "Run check now" be refused? Workspace admins only. (The AI part
+ *  is skipped, not refused, on an empty wallet or a hold.) PC-38: the
+ *  button asks this before its guard counts the click. */
+export function assertCanRunHealthCheckNow(ctx: WorkspaceContext): void {
+  if (!canAdminWorkspace(ctx)) {
+    throw new HealthCheckError('Permission denied: health.run', 'permission_denied');
+  }
+}
+
 /** Admin-triggered immediate check (the "Run now" button). */
 export async function runHealthCheckNow(
   ctx: WorkspaceContext,
 ): Promise<WorkspaceHealthReport> {
-  if (!canAdminWorkspace(ctx)) {
-    throw new HealthCheckError('Permission denied: health.run', 'permission_denied');
-  }
-  const report = await runWorkspaceHealthCheck(ctx);
+  assertCanRunHealthCheckNow(ctx);
+  const report = await runWorkspaceHealthCheck(ctx, { manual: true });
   await db
     .update(workspaces)
     .set({ healthCheckLastAt: new Date(), updatedAt: new Date() })
     .where(eq(workspaces.id, ctx.workspaceId));
+  invalidateDiagnostics(ctx.workspaceId);
   return report;
 }
 
@@ -516,11 +467,40 @@ export async function listHealthReports(
  * Tick entry point: atomically claim workspaces whose check is due
  * (enabled + lastAt older than their interval), then run each. The
  * conditional UPDATE prevents double-runs across concurrent ticks.
+ *
+ * PC-07: the observer hears each claimed workspace's outcome (the tick
+ * turns a failure into an ops incident and a later success resolves it).
+ * A claim that throws counts as that workspace's failure instead of
+ * aborting the whole tick.
+ *
+ * I069: a check that throws gives its slot back — health_check_last_at
+ * returns to the value it had before the claim (only while the claim is
+ * still ours), so the workspace is due again at the next tick, at most 6
+ * hours later, instead of a whole interval.
  */
-export async function processDueHealthChecks(): Promise<{
+export interface HealthCheckTickObserver {
+  /** Best-effort; must not throw. */
+  onWorkspaceFailed?: (workspaceId: bigint, err: unknown) => Promise<void> | void;
+  /** Best-effort; must not throw. */
+  onWorkspaceSucceeded?: (workspaceId: bigint) => Promise<void> | void;
+}
+
+export async function processDueHealthChecks(
+  options: HealthCheckTickObserver & {
+    /** PC-13: only these workspaces (the health-check tick passes the
+     *  ones whose automation policy runs the health check). Omitted = every
+     *  active workspace with the health check on. */
+    workspaceIds?: readonly bigint[];
+  } = {},
+): Promise<{
   checked: number;
   failed: number;
+  /** Failed checks whose slot went back for the next tick. */
+  retrying: number;
 }> {
+  if (options.workspaceIds && options.workspaceIds.length === 0) {
+    return { checked: 0, failed: 0, retrying: 0 };
+  }
   const due = await db
     .select({
       id: workspaces.id,
@@ -530,30 +510,38 @@ export async function processDueHealthChecks(): Promise<{
     })
     .from(workspaces)
     .where(
-      and(eq(workspaces.status, 'active'), eq(workspaces.healthCheckEnabled, true)),
+      and(
+        eq(workspaces.status, 'active'),
+        eq(workspaces.healthCheckEnabled, true),
+        options.workspaceIds ? inArray(workspaces.id, [...options.workspaceIds]) : undefined,
+      ),
     );
 
   let checked = 0;
   let failed = 0;
+  let retrying = 0;
   const now = Date.now();
   for (const ws of due) {
     const intervalMs = ws.intervalDays * 24 * 60 * 60 * 1000;
     if (ws.lastAt && now - ws.lastAt.getTime() < intervalMs) continue;
     // Atomic claim (same pattern as auto top-up): only one tick wins.
     const cutoff = new Date(now - intervalMs);
-    const claimed = await db
-      .update(workspaces)
-      .set({ healthCheckLastAt: new Date(), updatedAt: new Date() })
-      .where(
-        and(
-          eq(workspaces.id, ws.id),
-          sql`(${workspaces.healthCheckLastAt} IS NULL OR ${workspaces.healthCheckLastAt} < ${cutoff.toISOString()}::timestamptz)`,
-        ),
-      )
-      .returning({ id: workspaces.id });
-    if (!claimed[0]) continue;
+    const claimedAt = new Date();
+    let claimed = false;
     try {
-      await runWorkspaceHealthCheck({ workspaceId: ws.id });
+      const rows = await db
+        .update(workspaces)
+        .set({ healthCheckLastAt: claimedAt, updatedAt: claimedAt })
+        .where(
+          and(
+            eq(workspaces.id, ws.id),
+            sql`(${workspaces.healthCheckLastAt} IS NULL OR ${workspaces.healthCheckLastAt} < ${cutoff.toISOString()}::timestamptz)`,
+          ),
+        )
+        .returning({ id: workspaces.id });
+      if (!rows[0]) continue;
+      claimed = true;
+      await runWorkspaceHealthCheck({ workspaceId: ws.id }, { manual: false });
       checked++;
     } catch (err) {
       failed++;
@@ -561,7 +549,34 @@ export async function processDueHealthChecks(): Promise<{
         `[health.tick] workspace=${ws.id} failed:`,
         err instanceof Error ? err.message : err,
       );
+      if (claimed && (await releaseHealthCheckClaim(ws.id, claimedAt, ws.lastAt))) retrying++;
+      await options.onWorkspaceFailed?.(ws.id, err);
+      continue;
     }
+    await options.onWorkspaceSucceeded?.(ws.id);
   }
-  return { checked, failed };
+  return { checked, failed, retrying };
+}
+
+/** Give a failed check's slot back (I069): only while the claim is still
+ *  ours. Best-effort; true when it was restored. */
+async function releaseHealthCheckClaim(
+  workspaceId: bigint,
+  claimedAt: Date,
+  prior: Date | null,
+): Promise<boolean> {
+  try {
+    const rows = await db
+      .update(workspaces)
+      .set({ healthCheckLastAt: prior })
+      .where(and(eq(workspaces.id, workspaceId), eq(workspaces.healthCheckLastAt, claimedAt)))
+      .returning({ id: workspaces.id });
+    return rows.length > 0;
+  } catch (err) {
+    console.error(
+      `[health.tick] workspace=${workspaceId}: the failed check's slot was not restored:`,
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
 }

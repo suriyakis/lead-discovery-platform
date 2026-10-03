@@ -11,16 +11,19 @@
  * IMAP logins per hour, every hour, which trips fail2ban / Dovecot
  * rate-limits on most upstream mail providers within minutes.
  *
- * flow:F-04 adds the schedule for a mailbox that is already 'failing':
- * the IMAP tick re-checks it (a full SMTP + IMAP connection test) only
- * when its imap_next_sync_after gate has passed, and that gate grows with
- * how long the mailbox has been failing — see failingRecheckDelayMs.
+ * PC-09: a mailbox that is already 'failing' is no longer the IMAP
+ * tick's business (it syncs active mailboxes only); its recovery follows
+ * its failure class in services/mailbox-health.ts. What stays here is the
+ * backoff of an ACTIVE mailbox's sync and when a run of failed syncs
+ * turns it failing.
  */
 
 import {
+  classifyMailboxFailure,
   describeConnectionError,
   isAuthFailure,
   looksLikeAuthFailure,
+  type MailboxFailureClass,
 } from '@/lib/mail/connection-errors';
 
 export type ImapErrorClass = 'auth' | 'transient';
@@ -32,6 +35,32 @@ export type ImapErrorClass = 'auth' | 'transient';
  *  mailboxes whose error text never tripped an AUTH signature.
  *  Tracked as imap_consecutive_failures in the schema. */
 export const TRANSIENT_FAILURE_PAUSE_THRESHOLD = 10;
+
+/** PC-09: an UNCLEAR sync error (no auth signature, no network cause —
+ *  imapflow's bare "Command failed") may be a refused login in disguise,
+ *  so it turns the mailbox failing ('ambiguous') after this many in a row
+ *  instead of TRANSIENT_FAILURE_PAUSE_THRESHOLD: three logins 2 + 4
+ *  minutes apart stay under a typical fail2ban limit (5 in 10 min). A
+ *  network failure logs nothing in and keeps the longer threshold. */
+export const AMBIGUOUS_FAILURE_PAUSE_THRESHOLD = 3;
+
+/** PC-09: the recovery class of a failed sync (lib/mail/connection-errors.ts). */
+export function classifySyncFailure(err: unknown): MailboxFailureClass {
+  return classifyImapError(err) === 'auth' ? 'auth' : classifyMailboxFailure({ error: err });
+}
+
+/** How many failed syncs in a row of this class turn an active mailbox
+ *  failing (a refused login: the first). */
+export function syncFailureThreshold(cls: MailboxFailureClass): number {
+  switch (cls) {
+    case 'auth':
+      return 1;
+    case 'ambiguous':
+      return AMBIGUOUS_FAILURE_PAUSE_THRESHOLD;
+    case 'connection':
+      return TRANSIENT_FAILURE_PAUSE_THRESHOLD;
+  }
+}
 
 /** Is this a refused login? The structured flags imapflow / nodemailer
  *  set (authenticationFailed, serverResponseCode AUTHENTICATIONFAILED,
@@ -59,31 +88,6 @@ export function computeBackoffMs(consecutiveFailures: number): number {
   const CAP_MS = 60 * 60 * 1000;
   const candidate = BASE_MS * Math.pow(2, consecutiveFailures - 1);
   return Math.min(candidate, CAP_MS);
-}
-
-/** First re-check of a failing mailbox after a connection / server error. */
-export const FAILING_RECHECK_BASE_MS = 60 * 60 * 1000;
-/** First re-check after a refused login. Hours apart, because every check
- *  is another failed LOGIN on what is often a shared host running fail2ban
- *  (several workspaces' mailboxes live on one Plesk host; a ban of our IP
- *  there would take all of them down). */
-export const FAILING_RECHECK_AUTH_BASE_MS = 6 * 60 * 60 * 1000;
-/** Never wait longer than a day: a fixed server should not stay "failing". */
-export const FAILING_RECHECK_CAP_MS = 24 * 60 * 60 * 1000;
-
-/**
- * flow:F-04: how long a failing mailbox waits before the tick re-checks it.
- * The wait equals how long it has been failing, clamped to
- * [base, 24 h] — which doubles the interval between failed re-checks
- * without a counter: failing for 0 → wait 1 h; the re-check at 1 h fails →
- * wait 1 h (2 h in) → 2 h (4 h in) → 4 h → … → 24 h. A refused login
- * starts at 6 h. Same-age callers get the same answer, so a manual Test
- * again in between does not reset or shorten the schedule.
- */
-export function failingRecheckDelayMs(failingForMs: number, auth: boolean): number {
-  const base = auth ? FAILING_RECHECK_AUTH_BASE_MS : FAILING_RECHECK_BASE_MS;
-  const age = Number.isFinite(failingForMs) ? Math.max(0, failingForMs) : 0;
-  return Math.min(FAILING_RECHECK_CAP_MS, Math.max(base, age));
 }
 
 /**

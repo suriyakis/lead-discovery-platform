@@ -49,7 +49,7 @@ import { drainQueue, sendModeForDraft } from '@/lib/services/outreach-queue';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { createSignature } from '@/lib/services/signatures';
 import { addSuppression } from '@/lib/services/suppression';
-import { buildComposeSendInput } from '@/app/mailbox/[id]/compose/compose-input';
+import { buildComposeSendInput } from '@/app/(app)/mailbox/[id]/compose/compose-input';
 import { GET, HEAD, POST } from '@/app/api/unsubscribe/[token]/route';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -306,6 +306,7 @@ describe('one-to-one mode (I089) and the signature (I090)', () => {
     const provider = new MockMailProvider();
     await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'one_to_one',
+      origin: 'manual',
       mailboxId: s.mailboxId,
       to: [{ address: 'anna@target.com' }],
       subject: 'Re: Hello',
@@ -372,6 +373,7 @@ describe('one-to-one mode (I089) and the signature (I090)', () => {
     await expect(
       sendMessage(c, {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: s.mailboxId,
         to: [{ address: 'anna@target.com' }],
         subject: 'Re: Hello',
@@ -599,6 +601,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
       await expect(
         sendMessage(c, {
           mode: 'one_to_one',
+          origin: 'manual',
           mailboxId: s.mailboxId,
           to: [{ address: to }],
           subject: 'Hello',
@@ -613,14 +616,16 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
     const mb = await mailboxRow(s.mailboxId);
     expect(mb.status).toBe('failing');
     expect(mb.lastError).toMatch(/^SMTP: .*535/);
-    expect(mb.imapNextSyncAfter).not.toBeNull();
+    // PC-09: a refused login is class 'auth' — nothing retries it automatically.
+    expect(mb.failureClass).toBe('auth');
+    expect(mb.nextProbeAt).toBeNull();
 
     const notes = await db
       .select()
       .from(notifications)
       .where(and(eq(notifications.workspaceId, s.workspaceA), eq(notifications.kind, 'mailbox.failing')));
     expect(notes).toHaveLength(1);
-    expect(notes[0]!.href).toBe(`/mailbox/${s.mailboxId}`);
+    expect(notes[0]!.href).toBe(`/mailbox/${s.mailboxId}#fix`);
     expect(notes[0]!.body).toContain('No recipient was suppressed');
 
     // The failure rows are ordinary failures — retryable once fixed.
@@ -675,6 +680,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
     await expect(
       sendMessage(ctx(s.workspaceA, s.ownerA), {
         mode: 'one_to_one',
+        origin: 'manual',
         mailboxId: s.mailboxId,
         to: [{ address: 'gone@target.com' }, { address: 'busy@target.com' }],
         subject: 'Hello',
@@ -711,6 +717,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
       await expect(
         sendMessage(ctx(s.workspaceA, s.ownerA), {
           mode: 'sequence',
+          origin: 'manual',
           mailboxId: s.mailboxId,
           to: [{ address: 'anna@target.com' }],
           subject: 'Hello',
@@ -741,6 +748,7 @@ describe('send failures suppress only on a recipient hard rejection (I007)', () 
     }
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'one_to_one',
+      origin: 'manual',
       mailboxId: s.mailboxId,
       to: [{ address: 'ok@target.com' }, { address: 'gone@target.com' }],
       cc: [{ address: 'busy@target.com' }],
@@ -779,6 +787,7 @@ describe('follow-ups never compose for a suppressed address or a failing mailbox
     const provider = new MockMailProvider();
     const sent = await sendMessage(ctx(s.workspaceA, s.ownerA), {
       mode: 'sequence',
+      origin: 'manual',
       mailboxId: s.mailboxId,
       to: [{ address: to }],
       subject: 'Hi',

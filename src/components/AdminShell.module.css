@@ -1,0 +1,21 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* The console's scope label (DS-08): with the brand mark ahead of it, the
+ * phone topbar keeps one row by saying "Console"; the full "Platform
+ * console" joins from 640px up (the Direction A scope chip). */
+
+@layer components {
+  .scopeLong {
+    display: none;
+  }
+
+  @media (min-width: 640px) {
+    .scopeLong {
+      display: inline;
+    }
+
+    .scopeShort {
+      display: none;
+    }
+  }
+}

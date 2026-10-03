@@ -1246,6 +1246,8 @@ describe('mail remediation: apply and revert', { timeout: 90000 }, () => {
     expect(other!.replyClassification).toBeNull();
     const [mb] = await db.select().from(mailboxes).where(eq(mailboxes.id, fx.failingMailbox));
     expect(mb!.imapNextSyncAfter).not.toBeNull();
+    // PC-09: recheck_now is one check at the next mailbox-health tick.
+    expect(mb!.nextProbeAt).not.toBeNull();
 
     const [wallet] = await db.select().from(workspaces).where(eq(workspaces.id, fx.ws));
     expect(wallet!.tokenBalance).toBe(1000n);
@@ -1271,6 +1273,7 @@ describe('mail remediation: apply and revert', { timeout: 90000 }, () => {
     expect(ledger.map((l) => l.delta)).toEqual([3n, -3n]);
     const [mbAfter] = await db.select().from(mailboxes).where(eq(mailboxes.id, fx.failingMailbox));
     expect(mbAfter!.imapNextSyncAfter).toBeNull();
+    expect(mbAfter!.nextProbeAt).toBeNull();
   });
 
   it('refuses a drifted plan, a foreign or invalid decisions file, unmet preconditions and pending sends', async () => {

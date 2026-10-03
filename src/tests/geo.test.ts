@@ -581,10 +581,25 @@ describe('send-time geo guard', () => {
     expect(blocked.sent).toBe(0);
     expect(blocked.skipped).toBe(1);
 
+    // KL-02: an autopilot approval (no person's name) confirms nothing.
+    await db
+      .update(reviewItems)
+      .set({ state: 'approved', approvedByUserId: null, approvalReason: 'autopilot' })
+      .where(eq(reviewItems.id, review.id));
+    await db
+      .update(outreachQueue)
+      .set({ status: 'queued', lastError: null })
+      .where(eq(outreachQueue.workspaceId, s.workspaceA));
+    const stillBlocked = await drainQueue(ctx(s.workspaceA, s.ownerA), {
+      providerOverride: new MockMailProvider(),
+    });
+    expect(stillBlocked.sent).toBe(0);
+    expect(stillBlocked.skipped).toBe(1);
+
     // Human approves → re-queue the entry → dispatch goes through.
     await db
       .update(reviewItems)
-      .set({ state: 'approved' })
+      .set({ state: 'approved', approvedByUserId: s.ownerA, approvalReason: null })
       .where(eq(reviewItems.id, review.id));
     await db
       .update(outreachQueue)

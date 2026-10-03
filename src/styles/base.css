@@ -1,0 +1,352 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* ==========================================================================
+   Reset and base element defaults (DS-06, DS-10)
+
+   Everything here sits below legacy, so any legacy.css rule still wins:
+   these are the floor, not an override. Selectors are wrapped in :where()
+   so a component's single class always beats them inside its own layer.
+
+   Two scopes:
+   - Global: box sizing, page colours, the font stack, the keyboard focus
+     ring and the selection colour, and (DS-10) the form controls: input,
+     select, textarea, checkbox, radio, switch and the native date inputs
+     get the control-token heights (36px, 44px with 16px text on a coarse
+     pointer), the input fill, the control border, the focus ring and a
+     dark colour scheme. Legacy's scoped restyles still win where they
+     exist; every control nobody styled is fixed at once.
+   - [data-ds]: the Direction A typography defaults (headings, paragraphs,
+     lists, links, code) and the button font. They stay scoped because
+     legacy relies on browser defaults for hundreds of headings and
+     paragraphs; migrated pages (PageShell) opt in by carrying data-ds.
+   The control components (src/components/ui) restate these values in
+   @layer components, so a component control looks the same inside a
+   legacy context that restyles bare controls.
+   ========================================================================== */
+
+@layer reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  :where(html) {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  :where(fieldset) {
+    min-width: 0;
+  }
+}
+
+@layer base {
+  :where(html) {
+    color-scheme: dark;
+    background-color: var(--bg);
+  }
+
+  :where(body) {
+    background-color: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 30%, transparent);
+    color: var(--fg);
+  }
+
+  /* One keyboard focus ring for every focusable element. Controls inside
+     [data-ds] swap it for a border and glow below. */
+  :where(:focus-visible) {
+    outline: var(--focus-outline);
+    outline-offset: var(--space-0_5);
+  }
+
+  /* Native dialogs: strip the UA chrome; components position them. */
+  :where(dialog) {
+    max-width: none;
+    max-height: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+  }
+
+  /* ---- Direction A element defaults (opt-in scope, see above) ---- */
+
+  :where([data-ds]) {
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-regular);
+    line-height: var(--leading-sm);
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss01';
+  }
+
+  :where([data-ds]) :where(h1, h2, h3, h4, h5, h6) {
+    margin: 0;
+    font-weight: var(--weight-medium);
+  }
+
+  :where([data-ds]) :where(p, figure, blockquote, dl, dd, pre) {
+    margin: 0;
+  }
+
+  :where([data-ds]) :where(ul, ol) {
+    margin: 0;
+    padding: 0;
+  }
+
+  :where([data-ds]) :where(strong, b) {
+    color: var(--fg);
+    font-weight: var(--weight-medium);
+  }
+
+  :where([data-ds]) :where(a) {
+    color: var(--primary);
+    text-decoration: none;
+    text-underline-offset: var(--space-1);
+  }
+
+  :where([data-ds]) :where(a:hover) {
+    text-decoration: underline;
+  }
+
+  :where([data-ds]) :where(code, kbd, samp) {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+  }
+
+  :where([data-ds]) :where(code) {
+    padding: 0 var(--space-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    background: var(--well);
+    color: var(--fg-muted);
+  }
+
+  :where([data-ds]) :where(kbd) {
+    padding: 0 var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--fg-subtle);
+    font-size: var(--text-label);
+  }
+
+  :where([data-ds]) :where(hr) {
+    margin: 0;
+    border: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  :where([data-ds]) :where(button) {
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+  }
+
+  :where([data-ds]) :where(button):disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* ---- Form controls, everywhere (DS-10) ---- */
+
+  :where(input, select, textarea) {
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    color-scheme: dark;
+  }
+
+  /* Text-like inputs (text, email, search, number, password, url, tel and
+     the date and time types), selects and textareas. min-height, not
+     height: a legacy rule that adds padding grows the box instead of
+     clipping its text. */
+  :where(
+      input:not(
+          [type='checkbox'],
+          [type='radio'],
+          [type='range'],
+          [type='file'],
+          [type='color'],
+          [type='submit'],
+          [type='button'],
+          [type='reset'],
+          [type='image'],
+          [type='hidden']
+        ),
+      select,
+      textarea
+    ) {
+    max-width: 100%;
+    min-height: var(--control-md);
+    margin: 0;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface-input);
+    color: var(--fg);
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    vertical-align: middle;
+    transition:
+      border-color var(--dur-1) var(--ease-out),
+      box-shadow var(--dur-1) var(--ease-out);
+  }
+
+  /* A textarea keeps its rows: its floor is one control height. */
+  :where(textarea) {
+    padding: var(--space-2) var(--space-3);
+    line-height: var(--leading-prose);
+    resize: vertical;
+  }
+
+  /* A drawn chevron replaces the native arrow so the select matches the
+     input next to it. A list box (multiple or size) keeps its rows. */
+  :where(select:not([multiple], [size])) {
+    appearance: none;
+    padding-right: var(--space-8);
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+      linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 17px) 52%,
+      calc(100% - 12px) 52%;
+    background-size:
+      5px 5px,
+      5px 5px;
+    background-repeat: no-repeat;
+  }
+
+  :where(select[multiple], select[size]) {
+    padding: var(--space-1);
+  }
+
+  /* Native date and time inputs keep the browser's picker (there is no
+     custom date picker); the dark scheme draws its icon light. */
+  :where(
+      input[type='date'],
+      input[type='datetime-local'],
+      input[type='time'],
+      input[type='month'],
+      input[type='week']
+    )::-webkit-calendar-picker-indicator {
+    opacity: 0.75;
+    cursor: pointer;
+  }
+
+  :where(input, textarea)::placeholder {
+    color: var(--fg-subtle);
+    opacity: 1;
+  }
+
+  :where(input, select, textarea):focus-visible {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--focus-ring-control);
+  }
+
+  :where(input, select, textarea)[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+
+  :where(input, select, textarea):disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* Checkbox, radio and switch (input[type=checkbox][role=switch]).
+     appearance: none draws every box here, so accent-color does nothing:
+     the checked colour is --choice-on, the primary unless the control
+     carries a tone (data-tone="live" for teal selection lists,
+     data-tone="danger" for a destructive choice such as Remove step).
+     <Checkbox tone> sets the same attribute. */
+  :where(input[type='checkbox'], input[type='radio']) {
+    --choice-on: var(--primary);
+    display: inline-block;
+    flex: none;
+    width: var(--space-4);
+    height: var(--space-4);
+    margin: 0;
+    border: 1.5px solid var(--border-control);
+    border-radius: var(--radius-xs);
+    background: var(--surface-input) center / var(--space-3) no-repeat;
+    vertical-align: middle;
+    cursor: pointer;
+    appearance: none;
+    transition:
+      background-color var(--dur-1) var(--ease-out),
+      border-color var(--dur-1) var(--ease-out);
+  }
+
+  :where(input[type='checkbox'][data-tone='live'], input[type='radio'][data-tone='live']) {
+    --choice-on: var(--tone-live);
+  }
+
+  :where(input[type='checkbox'][data-tone='danger'], input[type='radio'][data-tone='danger']) {
+    --choice-on: var(--tone-danger);
+  }
+
+  :where(input[type='radio']) {
+    border-radius: var(--radius-full);
+  }
+
+  :where(input[type='checkbox']:checked) {
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
+    background-image: var(--glyph-check);
+  }
+
+  :where(input[type='checkbox']:indeterminate) {
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
+    background-image: var(--glyph-dash);
+  }
+
+  :where(input[type='radio']:checked) {
+    border-color: var(--choice-on);
+    background-image: radial-gradient(circle, var(--choice-on) 0 4px, transparent 4.5px);
+    background-size: 100% 100%;
+  }
+
+  :where(input[type='checkbox'][role='switch']) {
+    width: calc(var(--space-8) + var(--space-1));
+    height: var(--space-5);
+    border-radius: var(--radius-full);
+    background-color: var(--surface-input);
+    background-image: radial-gradient(circle, var(--fg-muted) 0 6px, transparent 6.5px);
+    background-position: 0 50%;
+    background-size: 18px 18px;
+  }
+
+  :where(input[type='checkbox'][role='switch']:checked) {
+    border-color: var(--choice-on);
+    background-color: var(--choice-on);
+    background-image: radial-gradient(circle, var(--on-primary) 0 6px, transparent 6.5px);
+    background-position: 100% 50%;
+  }
+
+  /* A box has no border to recolour: it keeps the outline ring. */
+  :where(input[type='checkbox'], input[type='radio']):focus-visible {
+    outline: var(--focus-outline);
+    outline-offset: var(--space-0_5);
+    box-shadow: none;
+  }
+
+  @media (pointer: coarse) {
+    :where(input:not([type='checkbox'], [type='radio']), select, textarea) {
+      font-size: var(--text-md);
+    }
+
+    :where(input[type='checkbox']:not([role='switch']), input[type='radio']) {
+      width: var(--space-5);
+      height: var(--space-5);
+      background-size: 14px;
+    }
+  }
+}

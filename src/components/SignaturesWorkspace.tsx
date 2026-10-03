@@ -27,6 +27,7 @@ import {
   renderSignatureText,
 } from '@/lib/signature-render';
 import { SignatureForm, type SignatureFormInitial } from './SignatureForm';
+import { EmailPreview } from './ui/EmailPreview';
 
 interface MailboxOption {
   id: string;
@@ -247,9 +248,7 @@ function SignatureList({
           <li
             key={s.id}
             style={{
-              outline: isSelected
-                ? '2px solid var(--brand-accent, #e87b1f)'
-                : 'none',
+              outline: isSelected ? '2px solid var(--primary)' : 'none',
               outlineOffset: '-2px',
             }}
           >
@@ -482,12 +481,9 @@ function PreviewPanel({
         </div>
       </div>
       {tab === 'html' ? (
-        <div
-          className="signature-preview-frame"
-          // The HTML comes from our own renderer (or operator-saved
-          // bodyHtml). Same trust boundary as mail.sendMessage.
-          dangerouslySetInnerHTML={{ __html: renderedHtml }}
-        />
+        // Our renderer's HTML or the operator-saved bodyHtml, in a
+        // sandboxed frame: the app's CSS stays out and nothing runs (DS-10).
+        <EmailPreview html={renderedHtml} title={`Signature preview: ${signature.name}`} />
       ) : (
         <pre className="signature-preview-text">{renderedText}</pre>
       )}

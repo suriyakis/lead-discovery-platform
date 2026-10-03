@@ -6,6 +6,7 @@
 //
 // Real adapters land in ./smtp-imap.ts (lazy-imported by the factory).
 
+import type { MailboxFailureClass } from './connection-errors';
 import type { InboundRelevanceSignals } from './relevance';
 
 export interface MailAddress {
@@ -88,6 +89,10 @@ export interface ConnectionCheck {
   ok: boolean;
   detail?: string;
   authFailed?: boolean;
+  /** PC-09: the failure's recovery class, read from the thrown error's
+   *  codes where the provider has them (more precise than the text the
+   *  service would otherwise classify). */
+  failureClass?: MailboxFailureClass;
 }
 
 export interface ConnectionTestResult {
@@ -119,7 +124,12 @@ export interface IMailProvider {
   readonly id: string;
   send(message: OutboundMessage): Promise<SendResult>;
   fetchInbound(options?: FetchInboundOptions): Promise<InboundMessage[]>;
+  /** SMTP + IMAP, both authenticated (Test again, a recovery check). */
   testConnection(): Promise<ConnectionTestResult>;
+  /** PC-09: the authenticated SMTP check alone (the daily verify): one
+   *  SMTP login, no IMAP. Providers without it fall back to
+   *  testConnection().smtp (services/mailbox-probes.ts). */
+  verifySmtp?(): Promise<ConnectionCheck>;
 }
 
 // ---- mock implementation -----------------------------------------------
@@ -160,6 +170,10 @@ export class MockMailProvider implements IMailProvider {
       smtp: { ok: true, detail: 'mock smtp always healthy' },
       imap: { ok: true, detail: 'mock imap always healthy' },
     };
+  }
+
+  async verifySmtp(): Promise<ConnectionCheck> {
+    return { ok: true, detail: 'mock smtp always healthy' };
   }
 }
 

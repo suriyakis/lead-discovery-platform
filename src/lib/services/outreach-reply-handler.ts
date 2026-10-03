@@ -29,6 +29,8 @@ import { getStageProvider } from './outreach-stage-models';
 import { buildProductKnowledgeBlock } from './outreach-knowledge';
 import { canWrite, type WorkspaceContext } from './context';
 import { recordAuditEvent } from './audit';
+import { checkGate } from './automation-gate';
+import { productPauseOf } from './automation-policy';
 import {
   composeClosingDraft,
   composeEngagementDraft,
@@ -197,6 +199,8 @@ export async function handleClassifiedReply(
     if (!enabled) {
       return { action, draftIds: [], forkedThreadStateId: null };
     }
+    // The guard first: a refused reply would trigger nothing, so it is
+    // never counted as held below.
     const refusal =
       action.reason === 'decline'
         ? msg.outreachRelevance === 'prospect_reply'
@@ -211,6 +215,19 @@ export async function handleClassifiedReply(
           path: 'outreach_reply_handler',
         });
       }
+      return { action, draftIds: [], forkedThreadStateId: null };
+    }
+    // PC-06 + PC-05: the workspace pause or a Reply auto-actions hold
+    // leaves the reply for the operator, exactly as with the switch off
+    // (audited, so the skip is explained and counted on Resume).
+    const gate = await checkGate(ctx, 'inbound_actions', { manual: false });
+    if (!gate.allowed) {
+      await recordAuditEvent(ctx, {
+        kind: 'reply.auto_actions_held',
+        entityType: 'mail_message',
+        entityId: msg.id,
+        payload: { trigger: action.reason, path: 'outreach_reply_handler', gate: gate.reason, reason: gate.message },
+      });
       return { action, draftIds: [], forkedThreadStateId: null };
     }
     if (action.reason === 'unsubscribe' || action.reason === 'bounce') {
@@ -255,6 +272,23 @@ export async function handleClassifiedReply(
   // Honor the workspace flag — auto-draft off means we record the
   // decision and stop here. Operator handles the reply by hand.
   if (!ws.autoDraftReplies) {
+    return { action, draftIds: [], forkedThreadStateId: null };
+  }
+
+  // PC-06 + PC-05: auto-drafting is Background AI — the workspace pause, a
+  // hold, no accountable owner or an empty wallet (I093: these Opus-tier
+  // drafts never checked the wallet) means no draft; the decision above is
+  // still recorded.
+  {
+    const gate = await checkGate(ctx, 'background_ai', { manual: false, spendsTokens: true });
+    if (!gate.allowed) {
+      return { action, draftIds: [], forkedThreadStateId: null };
+    }
+  }
+
+  // PC-13: the lead's product is paused — no AI reply draft for it (the
+  // decision above is still recorded; a person can still reply by hand).
+  if (await productPauseOf(ctx, lead.productProfileId)) {
     return { action, draftIds: [], forkedThreadStateId: null };
   }
 

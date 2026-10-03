@@ -1,22 +1,64 @@
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
-import { z } from 'zod';
+import {
+  and,
+  desc,
+  eq,
+  exists,
+  inArray,
+  ne,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
-  learningEvents,
   learningLessons,
-  type LearningEvent,
+  lessonScopes,
   type LearningLesson,
-  type NewLearningEvent,
+  type LessonLifecycle,
+  type LessonRetiredReason,
+  type LessonScopeKind,
   type NewLearningLesson,
 } from '@/lib/db/schema/learning';
-import { getAIProviderForCtx } from '@/lib/ai';
 import { recordAuditEvent } from './audit';
-import { canWrite, type WorkspaceContext } from './context';
-import { recordUsage } from './usage';
+import { canAdminWorkspace, canWrite, type WorkspaceContext } from './context';
+import {
+  LESSON_CATEGORIES,
+  categoriesForTaskType,
+  isLessonCategory,
+  isPolarityAllowed,
+  polarityForRule,
+  resolveLessonPolarity,
+  type LessonCategory,
+  type LessonPolarity,
+  type LessonTaskType,
+} from './learning-categories';
+
+export {
+  LESSON_CATEGORIES,
+  type LessonCategory,
+  type LessonPolarity,
+  type LessonTaskType,
+} from './learning-categories';
+
+// ---- errors --------------------------------------------------------------
+
+export type LearningErrorCode =
+  | 'permission_denied'
+  | 'not_found'
+  | 'invalid_input'
+  | 'invariant_violation'
+  | 'unknown_category'
+  | 'invalid_polarity'
+  | 'rule_required'
+  | 'rule_too_long'
+  | 'product_not_found'
+  | 'scope_required'
+  | 'lifecycle_conflict';
 
 export class LearningServiceError extends Error {
-  public readonly code: string;
-  constructor(message: string, code: string) {
+  public readonly code: LearningErrorCode;
+  constructor(message: string, code: LearningErrorCode) {
     super(message);
     this.name = 'LearningServiceError';
     this.code = code;
@@ -26,38 +68,264 @@ export class LearningServiceError extends Error {
 const permissionDenied = (op: string) =>
   new LearningServiceError(`Permission denied: ${op}`, 'permission_denied');
 const notFound = () => new LearningServiceError('learning_lesson not found', 'not_found');
-const invariant = (msg: string) =>
-  new LearningServiceError(msg, 'invariant_violation');
+const invariant = (msg: string) => new LearningServiceError(msg, 'invariant_violation');
 const invalid = (msg: string) => new LearningServiceError(msg, 'invalid_input');
+/** Same error for another tenant's product and for an id that does not
+ *  exist: the composite FK cannot tell them apart, and neither may we. */
+const productNotFound = () => new LearningServiceError('Product not found', 'product_not_found');
+const scopeRequired = () =>
+  new LearningServiceError(
+    'A rule scoped to products needs at least one product',
+    'scope_required',
+  );
 
-// ---- categories --------------------------------------------------------
+/** What an operator reads for each error code. Pages redirect with the
+ *  code and render this — never the raw code. */
+const LEARNING_ERROR_MESSAGES: Record<LearningErrorCode, string> = {
+  permission_denied: 'Your role cannot change learning rules. Ask a workspace admin.',
+  not_found: 'That rule no longer exists in this workspace.',
+  invalid_input: 'Some values were not valid. Check the form and try again.',
+  invariant_violation: 'The rule could not be saved. Try again in a moment.',
+  unknown_category: 'Choose what the rule is about from the list.',
+  invalid_polarity:
+    'That direction does not fit the chosen category. Fit signals are Prefer or Avoid; writing and reply guidance is Neutral.',
+  rule_required: 'Write the rule: one sentence the platform should follow.',
+  rule_too_long: 'Keep the rule under 1,000 characters.',
+  product_not_found: "Product not found. Pick one of this workspace's products.",
+  scope_required: 'Choose at least one product, or apply the rule to all products.',
+  lifecycle_conflict: 'That change does not apply to a rule in its current state.',
+};
 
-export const LESSON_CATEGORIES = [
-  'qualification_positive',
-  'qualification_negative',
-  'outreach_style',
-  'contact_role',
-  'sector_preference',
-  'connector_quality',
-  'false_positive',
-  'false_negative',
-  'dedupe_hint',
-  'general_instruction',
-  'reply_quality',
-  'product_positioning',
-] as const;
-export type LessonCategory = (typeof LESSON_CATEGORIES)[number];
-
-const CATEGORY_SET = new Set<string>(LESSON_CATEGORIES);
-
-function assertCategory(input: string): LessonCategory {
-  if (!CATEGORY_SET.has(input)) {
-    throw invalid(`unknown category: ${input}`);
-  }
-  return input as LessonCategory;
+/** Human message for an error code a page received (e.g. `?error=`).
+ *  Unknown codes get a generic sentence; a raw code is never shown. */
+export function learningErrorMessage(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return (
+    (LEARNING_ERROR_MESSAGES as Record<string, string>)[code] ??
+    'Something went wrong while saving the rule. Try again.'
+  );
 }
 
-export type LessonSource = 'operator' | 'draft_edit' | 'synthesis';
+/** Postgres FK violation on lesson_scopes → product (composite on
+ *  workspace_id): the product is another tenant's or does not exist. */
+function isScopeProductFkViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 4 && cur && typeof cur === 'object'; depth++) {
+    const e = cur as { code?: unknown; constraint_name?: unknown; constraint?: unknown; cause?: unknown };
+    if (
+      e.code === '23503' &&
+      (e.constraint_name === 'lesson_scopes_product_fk' || e.constraint === 'lesson_scopes_product_fk')
+    ) {
+      return true;
+    }
+    cur = e.cause;
+  }
+  return false;
+}
+
+function mapScopeError(err: unknown): unknown {
+  return isScopeProductFkViolation(err) ? productNotFound() : err;
+}
+
+function assertCategory(input: string): LessonCategory {
+  if (!isLessonCategory(input)) {
+    throw new LearningServiceError(`unknown category: ${input}`, 'unknown_category');
+  }
+  return input;
+}
+
+const RULE_MAX = 1000;
+
+function validateRule(input: string): string {
+  const rule = input.trim();
+  if (!rule) throw new LearningServiceError('rule is required', 'rule_required');
+  if (rule.length > RULE_MAX) {
+    throw new LearningServiceError(`rule too long (${RULE_MAX} char max)`, 'rule_too_long');
+  }
+  return rule;
+}
+
+/** Provenance of a rule. 'decision' = extracted by learning.process from
+ *  an operator's decision or review comment (KL-03). */
+export type LessonSource = 'operator' | 'decision' | 'draft_edit' | 'synthesis';
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** An open transaction on the shared client (KL-02 writes inside it). */
+export type LearningTx = Tx;
+
+// ---- scope -----------------------------------------------------------------
+//
+// KL-01. A rule applies either to the whole workspace (scope_kind
+// 'workspace') or to exactly the products in lesson_scopes (scope_kind
+// 'products'). NULL never means "everywhere". Both lesson_scopes FKs are
+// composite on workspace_id, so the database refuses a scope row joining a
+// rule to another tenant's product — createLesson / updateLesson rely on
+// that instead of a check that a future caller could skip.
+
+export type LessonScopeInput =
+  | { kind: 'workspace' }
+  | { kind: 'products'; productProfileIds: readonly bigint[] };
+
+export const WORKSPACE_SCOPE: LessonScopeInput = { kind: 'workspace' };
+
+/** Scope for callers that hold at most one product (an event, a draft). */
+export function scopeForProduct(productProfileId: bigint | null | undefined): LessonScopeInput {
+  return productProfileId !== null && productProfileId !== undefined
+    ? { kind: 'products', productProfileIds: [productProfileId] }
+    : WORKSPACE_SCOPE;
+}
+
+/** A validated scope: product ids deduplicated and sorted. */
+export interface NormalizedScope {
+  kind: LessonScopeKind;
+  productProfileIds: bigint[];
+}
+
+/** 'products' with no product: a rule that applies nowhere until an
+ *  operator chooses ("Needs a scope"). Only the learning processor writes
+ *  one directly — for a PROPOSED rule whose decision named no product and
+ *  whose record was qualified against none (KL-03); normalizeScope()
+ *  refuses it from forms. */
+export const NEEDS_SCOPE: NormalizedScope = Object.freeze({
+  kind: 'products',
+  productProfileIds: [],
+}) as NormalizedScope;
+
+function isNeedsScope(scope: LessonScopeInput | NormalizedScope): boolean {
+  return scope.kind === 'products' && scope.productProfileIds.length === 0;
+}
+
+const MAX_SCOPE_PRODUCTS = 100;
+
+export function normalizeScope(scope: LessonScopeInput | null | undefined): NormalizedScope {
+  if (!scope || scope.kind === 'workspace') return { kind: 'workspace', productProfileIds: [] };
+  if (scope.kind !== 'products') throw invalid('unknown scope kind');
+  const ids = Array.from(new Set(scope.productProfileIds.map((id) => id.toString())))
+    .map((s) => BigInt(s))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  if (ids.length === 0) throw scopeRequired();
+  if (ids.length > MAX_SCOPE_PRODUCTS) throw invalid('too many products in one scope');
+  return { kind: 'products', productProfileIds: ids };
+}
+
+function scopeRowExists(products?: bigint | readonly bigint[]): SQL {
+  const conds: SQL[] = [
+    eq(lessonScopes.workspaceId, learningLessons.workspaceId),
+    eq(lessonScopes.lessonId, learningLessons.id),
+  ];
+  if (typeof products === 'bigint') {
+    conds.push(eq(lessonScopes.productProfileId, products));
+  } else if (products !== undefined) {
+    conds.push(inArray(lessonScopes.productProfileId, [...products]));
+  }
+  return exists(db.select({ one: sql`1` }).from(lessonScopes).where(and(...conds)));
+}
+
+/**
+ * THE scope predicate. Every reader that decides whether a rule applies
+ * goes through it (retrieval, rerank, embedding, dedup, compaction, the
+ * semantic lesson search):
+ *
+ *   scope_kind = 'workspace' OR EXISTS (lesson_scopes row [for this product])
+ *
+ * With a product id: workspace-wide rules plus the rules scoped to that
+ * product. With a list (Suggest reply on a thread whose leads are for
+ * several products): workspace-wide rules plus those products' rules; an
+ * EMPTY list is workspace-wide rules only (a thread with no lead product).
+ * Without either ("any product" — compaction, embedding): workspace-wide
+ * rules plus product rules that still have a product. A 'products' rule
+ * whose products were all deleted matches none of these — it applies
+ * nowhere until an operator re-scopes or retires it (I109).
+ */
+export function lessonInScope(products?: bigint | readonly bigint[]): SQL {
+  if (products !== undefined && typeof products !== 'bigint' && products.length === 0) {
+    return eq(learningLessons.scopeKind, 'workspace');
+  }
+  return or(eq(learningLessons.scopeKind, 'workspace'), scopeRowExists(products))!;
+}
+
+/** 'products' rules with no product left ("Needs a scope"). */
+export function lessonNeedsScope(): SQL {
+  return and(
+    eq(learningLessons.scopeKind, 'products'),
+    notExists(
+      db
+        .select({ one: sql`1` })
+        .from(lessonScopes)
+        .where(
+          and(
+            eq(lessonScopes.workspaceId, learningLessons.workspaceId),
+            eq(lessonScopes.lessonId, learningLessons.id),
+          ),
+        ),
+    ),
+  )!;
+}
+
+async function insertScopeRows(
+  tx: Tx,
+  workspaceId: bigint,
+  lessonId: bigint,
+  scope: NormalizedScope,
+): Promise<void> {
+  if (scope.kind !== 'products' || scope.productProfileIds.length === 0) return;
+  await tx.insert(lessonScopes).values(
+    scope.productProfileIds.map((productProfileId) => ({
+      lessonId,
+      workspaceId,
+      productProfileId,
+    })),
+  );
+}
+
+/** Insert a rule and its scope rows in the caller's transaction. The
+ *  composite FKs refuse another tenant's product (the caller maps the
+ *  violation with mapScopeError, or lets its transaction fail). */
+export async function insertLessonWithScope(
+  tx: Tx,
+  row: NewLearningLesson,
+  scope: NormalizedScope,
+): Promise<LearningLesson> {
+  const inserted = (
+    await tx
+      .insert(learningLessons)
+      .values({ ...row, scopeKind: scope.kind })
+      .returning()
+  )[0];
+  if (!inserted) throw invariant('learning_lessons insert returned no row');
+  await insertScopeRows(tx, row.workspaceId, inserted.id, scope);
+  return inserted;
+}
+
+/** Product ids each lesson is scoped to (workspace-scoped read). Lessons
+ *  with scope_kind 'workspace' have no entry. */
+export async function getLessonScopeProducts(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  lessonIds: readonly bigint[],
+): Promise<Map<string, bigint[]>> {
+  const out = new Map<string, bigint[]>();
+  if (lessonIds.length === 0) return out;
+  const rows = await db
+    .select({
+      lessonId: lessonScopes.lessonId,
+      productProfileId: lessonScopes.productProfileId,
+    })
+    .from(lessonScopes)
+    .where(
+      and(
+        eq(lessonScopes.workspaceId, ctx.workspaceId),
+        inArray(lessonScopes.lessonId, [...lessonIds]),
+      ),
+    )
+    .orderBy(lessonScopes.lessonId, lessonScopes.productProfileId);
+  for (const r of rows) {
+    const key = r.lessonId.toString();
+    const list = out.get(key) ?? [];
+    list.push(r.productProfileId);
+    out.set(key, list);
+  }
+  return out;
+}
 
 // ---- auto-embedding ------------------------------------------------------
 
@@ -81,303 +349,32 @@ export function scheduleLessonEmbedding(
     );
 }
 
-// ---- feedback recording ------------------------------------------------
-
-export interface FeedbackInput {
-  entityType?: string | null;
-  entityId?: string | null;
-  productProfileId?: bigint | null;
-  /** Loose enum — common values are the lesson categories above. */
-  actionType: string;
-  originalComment?: string | null;
-  confidence?: number;
-}
-
-/**
- * Append a feedback event and, when an extractor finds a clean signal,
- * also materialize a `learning_lessons` row linked back to the event.
- *
- * Extraction order: AI provider first (when configured + workspace context),
- * heuristic fallback on any AI failure or null. AI runs OUTSIDE the
- * transaction so the network call doesn't tie up a DB connection.
- */
-export async function recordFeedback(
-  ctx: WorkspaceContext,
-  input: FeedbackInput,
-): Promise<{ event: LearningEvent; lesson: LearningLesson | null }> {
-  // Extraction first (outside tx) so a slow / failing AI call doesn't hold
-  // a transaction open. extractLesson never throws — it falls back to the
-  // deterministic heuristic on any error.
-  const draft = await extractLesson(ctx, input.originalComment ?? null);
-  // Dedup check also outside the tx (may make an embedding call). A
-  // repeat of an already-known rule reinforces the existing lesson
-  // instead of planting a near-identical sibling.
-  const duplicate = draft
-    ? await findNearDuplicateLesson(ctx, {
-        category: draft.category,
-        rule: draft.rule,
-        productProfileId: input.productProfileId ?? null,
-      })
-    : null;
-
-  return db.transaction(async (tx) => {
-    const eventRow: NewLearningEvent = {
-      workspaceId: ctx.workspaceId,
-      userId: ctx.userId,
-      entityType: input.entityType ?? null,
-      entityId: input.entityId ?? null,
-      productProfileId: input.productProfileId ?? null,
-      actionType: input.actionType,
-      originalComment: input.originalComment ?? null,
-      confidence: clampConfidence(input.confidence ?? 50),
-    };
-
-    const insertedEvent = (await tx.insert(learningEvents).values(eventRow).returning())[0];
-    if (!insertedEvent) throw invariant('learning_events insert returned no row');
-
-    let lesson: LearningLesson | null = null;
-    let dedupReinforced = false;
-    if (draft && duplicate) {
-      // Reinforce inside the tx so event-link + confidence bump are atomic.
-      const evidence = Array.from(
-        new Set<bigint>([...duplicate.evidenceEventIds, insertedEvent.id]),
-      );
-      const [updated] = await tx
-        .update(learningLessons)
-        .set({
-          confidence: sql`LEAST(${learningLessons.confidence} + 5, 95)`,
-          evidenceEventIds: evidence,
-          updatedAt: new Date(),
-          updatedBy: ctx.userId,
-        })
-        .where(
-          and(
-            eq(learningLessons.workspaceId, ctx.workspaceId),
-            eq(learningLessons.id, duplicate.id),
-          ),
-        )
-        .returning();
-      if (updated) {
-        lesson = updated;
-        dedupReinforced = true;
-        await tx
-          .update(learningEvents)
-          .set({ extractedLessonId: updated.id })
-          .where(eq(learningEvents.id, insertedEvent.id));
-        insertedEvent.extractedLessonId = updated.id;
-      }
-    } else if (draft) {
-      const lessonRow: NewLearningLesson = {
-        workspaceId: ctx.workspaceId,
-        productProfileId: input.productProfileId ?? null,
-        category: draft.category,
-        rule: draft.rule,
-        evidenceEventIds: [insertedEvent.id],
-        enabled: true,
-        confidence: draft.confidence,
-        createdBy: ctx.userId,
-        updatedBy: ctx.userId,
-      };
-      const insertedLesson = (await tx.insert(learningLessons).values(lessonRow).returning())[0];
-      if (insertedLesson) {
-        lesson = insertedLesson;
-        await tx
-          .update(learningEvents)
-          .set({ extractedLessonId: insertedLesson.id })
-          .where(eq(learningEvents.id, insertedEvent.id));
-        // Reflect the FK on the returned object — the post-INSERT snapshot
-        // doesn't see the subsequent UPDATE.
-        insertedEvent.extractedLessonId = insertedLesson.id;
-      }
-    }
-
-    await recordAuditEvent(ctx, {
-      kind: 'learning.feedback',
-      entityType: 'learning_event',
-      entityId: insertedEvent.id,
-      payload: {
-        actionType: input.actionType,
-        extractedLessonId: lesson?.id.toString() ?? null,
-        dedupReinforced,
-        productProfileId: input.productProfileId?.toString() ?? null,
-      },
-    });
-
-    return { event: insertedEvent, lesson, dedupReinforced };
-  }).then((result) => {
-    // Outside the tx: embed only NEW lessons — a reinforced duplicate's
-    // rule text didn't change, so its stored embedding is still right.
-    if (result.lesson && !result.dedupReinforced) {
-      scheduleLessonEmbedding(ctx, result.lesson.id);
-    }
-    return { event: result.event, lesson: result.lesson };
-  });
-}
-
-// ---- extractor (AI first, heuristic fallback) -------------------------
-
-export interface LessonDraft {
-  category: LessonCategory;
-  rule: string;
-  confidence: number;
-}
-
-/**
- * Try the workspace's AI provider first; fall back to the heuristic on any
- * error. Never throws — extraction failures must never break the event
- * write that called us.
- */
-export async function extractLesson(
-  ctx: WorkspaceContext,
-  comment: string | null,
-): Promise<LessonDraft | null> {
-  if (!comment) return null;
-  const trimmed = comment.trim();
-  if (trimmed.length < 8) return null;
-  try {
-    const ai = await extractLessonAI(ctx, trimmed);
-    if (ai) return ai;
-  } catch (err) {
-    // Provider not configured, network error, schema-validation failure on
-    // mock provider, etc. Fall back to the deterministic heuristic.
-    console.error('[learning.extractLesson] AI extraction failed:', err);
-  }
-  return extractLessonHeuristic(trimmed);
-}
-
-const EXTRACTOR_SYSTEM_PROMPT = `You categorize a single operator note into ONE lesson the lead-discovery platform will reuse for future qualification.
-
-Allowed categories (pick the most specific):
-- qualification_positive: positive fit signal — this kind of record should be approved
-- qualification_negative: negative fit signal — this kind of record should be rejected
-- outreach_style: how the email should sound (tone, length, formality)
-- contact_role: which contact roles to target or avoid
-- sector_preference: which sectors/industries to favour or avoid
-- connector_quality: a source is noisy / outdated / unreliable
-- false_positive: the engine wrongly classified as relevant
-- false_negative: the engine wrongly classified as irrelevant
-- dedupe_hint: this looks like a duplicate of something we already have
-- general_instruction: a workspace-wide rule that doesn't fit above
-- reply_quality: how to handle inbound replies
-- product_positioning: how the product itself should be described
-
-Return a strict JSON object: {"category": "<one of the above or null>", "rule": "<a generalized one-sentence rule>", "confidence": <integer 0-100>}.
-- "rule" must generalize from the specific example so the platform can match similar cases later.
-- If the note carries no reusable signal, return {"category": null, "rule": "", "confidence": 0}.
-- Output JSON only, no prose.`;
-
-const ExtractorResultSchema = z.object({
-  category: z.string().nullable(),
-  rule: z.string(),
-  confidence: z.number().int().min(0).max(100),
-});
-
-export async function extractLessonAI(
-  ctx: WorkspaceContext,
-  comment: string,
-): Promise<LessonDraft | null> {
-  const provider = await getAIProviderForCtx(ctx);
-  const result = await provider.generateJson(
-    {
-      system: EXTRACTOR_SYSTEM_PROMPT,
-      prompt: `Operator note:\n"""${comment}"""`,
-    },
-    ExtractorResultSchema,
-    {
-      maxTokens: 256,
-      temperature: 0,
-      // Mock provider seeds on the prompt; including a stable marker lets
-      // tests deterministically inject a JSON response via mockSeed.
-      mockSeed: `learning.extract:${comment}`,
-    },
-  );
-
-  // Audit + cost: a lesson extraction is a billable AI call. Best-effort —
-  // a usage-log write failure must not lose a successful extraction.
-  try {
-    await recordUsage(ctx, {
-      kind: 'ai.learning_extract',
-      provider: provider.id,
-      units: 1n,
-      costEstimateCents: 0,
-      payload: { model: provider.model },
-    });
-  } catch (err) {
-    console.error('[learning.extractLessonAI] recordUsage failed:', err);
-  }
-
-  if (!result.category || !CATEGORY_SET.has(result.category)) return null;
-  const rule = result.rule.trim();
-  if (!rule) return null;
-  return {
-    category: result.category as LessonCategory,
-    rule: rule.slice(0, 1000),
-    confidence: clampConfidence(result.confidence),
-  };
-}
-
-/**
- * Cheap pattern-matching extractor. Looks for clear directional signals in
- * the comment and produces a draft lesson when found. Returns null when the
- * comment is too low-signal — those are kept only as raw events.
- *
- * The patterns are deliberately conservative; false positives would teach
- * the future AI/rule engine the wrong things. Operators can disable any
- * lesson the heuristic produces from the /learning page.
- */
-export function extractLessonHeuristic(comment: string | null): LessonDraft | null {
-  if (!comment) return null;
-  const trimmed = comment.trim();
-  if (trimmed.length < 8) return null;
-  const lower = trimmed.toLowerCase();
-
-  // Order matters: more-specific signals win.
-  if (/\b(false positive|wrong fit|wrongly classified|misqualified)\b/.test(lower)) {
-    return { category: 'false_positive', rule: trimmed, confidence: 70 };
-  }
-  if (/\b(false negative|missed lead|should have been approved)\b/.test(lower)) {
-    return { category: 'false_negative', rule: trimmed, confidence: 70 };
-  }
-  if (/\b(don't|do not|avoid|skip|never|exclude|not relevant|not interested)\b/.test(lower)) {
-    return { category: 'qualification_negative', rule: trimmed, confidence: 65 };
-  }
-  if (/\b(perfect|ideal|excellent fit|good fit|exactly the kind|target|focus)\b/.test(lower)) {
-    return { category: 'qualification_positive', rule: trimmed, confidence: 65 };
-  }
-  if (/\b(tone|formal|casual|too long|too short|robotic|wording|style)\b/.test(lower)) {
-    return { category: 'outreach_style', rule: trimmed, confidence: 60 };
-  }
-  if (/\b(procurement|engineer|architect|cmo|cto|ceo|head of|director of)\b/.test(lower)) {
-    return { category: 'contact_role', rule: trimmed, confidence: 60 };
-  }
-  if (/\b(sector|industry|construction|finance|retail|tender|government)\b/.test(lower)) {
-    return { category: 'sector_preference', rule: trimmed, confidence: 55 };
-  }
-  if (/\b(duplicate|same company|merge|already have)\b/.test(lower)) {
-    return { category: 'dedupe_hint', rule: trimmed, confidence: 70 };
-  }
-  if (/\b(connector|directory|source) (is )?(noisy|low quality|outdated|stale)\b/.test(lower)) {
-    return { category: 'connector_quality', rule: trimmed, confidence: 65 };
-  }
-  return null;
-}
-
 // ---- listing -----------------------------------------------------------
 
 export interface ListLessonsFilter {
   category?: LessonCategory | readonly LessonCategory[];
+  /** Scope filter:
+   *   undefined — any scope (the /learning console lists everything);
+   *   null      — workspace-wide rules only;
+   *   bigint    — rules scoped to that product (plus the workspace-wide
+   *               ones with includeWorkspaceWide: lessonInScope(pid)). */
   productProfileId?: bigint | null;
   /** With a bigint productProfileId: widen the scope to (that product OR
    *  workspace-wide). Lets qualification/outreach fetch both scopes in
    *  ONE query + ONE embedding rerank instead of two of each. */
   includeWorkspaceWide?: boolean;
-  enabled?: boolean;
+  /** Without a productProfileId: only rules that apply somewhere
+   *  (lessonInScope()). Every retrieval path sets it. */
+  inScopeOnly?: boolean;
+  /** Only 'products' rules with no product left ("Needs a scope"). */
+  needsScope?: boolean;
+  lifecycle?: LessonLifecycle | readonly LessonLifecycle[];
   limit?: number;
   offset?: number;
 }
 
 function buildLessonConditions(
-  ctx: WorkspaceContext,
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
   filter: Omit<ListLessonsFilter, 'limit' | 'offset'>,
 ): SQL[] | null {
   const conds: SQL[] = [eq(learningLessons.workspaceId, ctx.workspaceId)];
@@ -390,30 +387,28 @@ function buildLessonConditions(
     }
   }
   if (filter.productProfileId === null) {
-    // Workspace-wide only. NOTE: this MUST be isNull — an eq(col, null)
-    // compiles to SQL `= NULL`, which is never true; that exact bug made
-    // workspace-wide lessons silently unretrievable until 2026-07.
-    conds.push(isNull(learningLessons.productProfileId));
+    conds.push(eq(learningLessons.scopeKind, 'workspace'));
   } else if (filter.productProfileId !== undefined) {
-    if (filter.includeWorkspaceWide) {
-      conds.push(
-        or(
-          eq(learningLessons.productProfileId, filter.productProfileId),
-          isNull(learningLessons.productProfileId),
-        )!,
-      );
-    } else {
-      conds.push(eq(learningLessons.productProfileId, filter.productProfileId));
-    }
+    conds.push(lessonInScope(filter.productProfileId));
+    // Without includeWorkspaceWide: that product's own rules only.
+    if (!filter.includeWorkspaceWide) conds.push(eq(learningLessons.scopeKind, 'products'));
+  } else if (filter.inScopeOnly) {
+    conds.push(lessonInScope());
   }
-  if (filter.enabled !== undefined) {
-    conds.push(eq(learningLessons.enabled, filter.enabled));
+  if (filter.needsScope) conds.push(lessonNeedsScope());
+  if (filter.lifecycle !== undefined) {
+    if (Array.isArray(filter.lifecycle)) {
+      if (filter.lifecycle.length === 0) return null;
+      conds.push(inArray(learningLessons.lifecycle, filter.lifecycle as LessonLifecycle[]));
+    } else {
+      conds.push(eq(learningLessons.lifecycle, filter.lifecycle as LessonLifecycle));
+    }
   }
   return conds;
 }
 
 export async function listLessons(
-  ctx: WorkspaceContext,
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
   filter: ListLessonsFilter = {},
 ): Promise<LearningLesson[]> {
   const conds = buildLessonConditions(ctx, filter);
@@ -436,7 +431,7 @@ export async function listLessons(
  * offset). Powers the pagination UI on /learning.
  */
 export async function countLessons(
-  ctx: WorkspaceContext,
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
   filter: Omit<ListLessonsFilter, 'limit' | 'offset'> = {},
 ): Promise<number> {
   const conds = buildLessonConditions(ctx, filter);
@@ -451,18 +446,21 @@ export async function countLessons(
 export type LessonCategoryCounts = Record<LessonCategory, number> & { total: number };
 
 /**
- * Per-category lesson counts for the workspace, plus a `total`. Used to render
- * count badges on the /learning category tabs. `enabled` filters the same way
- * as listLessons — pass `true` to mirror the default "hide disabled" view.
+ * Per-category lesson counts for the workspace, plus a `total` (which also
+ * counts legacy rows whose category left the registry). Used to render
+ * count badges on the /learning category tabs. `lifecycle` filters the
+ * same way as listLessons.
  */
 export async function getLessonCategoryCounts(
-  ctx: WorkspaceContext,
-  filter: { enabled?: boolean } = {},
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  filter: { lifecycle?: LessonLifecycle | readonly LessonLifecycle[] } = {},
 ): Promise<LessonCategoryCounts> {
-  const conds: SQL[] = [eq(learningLessons.workspaceId, ctx.workspaceId)];
-  if (filter.enabled !== undefined) {
-    conds.push(eq(learningLessons.enabled, filter.enabled));
-  }
+  const init = Object.fromEntries(
+    LESSON_CATEGORIES.map((c) => [c, 0]),
+  ) as Record<LessonCategory, number>;
+  const counts: LessonCategoryCounts = { ...init, total: 0 };
+  const conds = buildLessonConditions(ctx, { lifecycle: filter.lifecycle });
+  if (conds === null) return counts;
   const rows = await db
     .select({
       category: learningLessons.category,
@@ -472,13 +470,9 @@ export async function getLessonCategoryCounts(
     .where(and(...conds))
     .groupBy(learningLessons.category);
 
-  const init = Object.fromEntries(
-    LESSON_CATEGORIES.map((c) => [c, 0]),
-  ) as Record<LessonCategory, number>;
-  const counts: LessonCategoryCounts = { ...init, total: 0 };
   for (const row of rows) {
-    if (CATEGORY_SET.has(row.category)) {
-      counts[row.category as LessonCategory] = row.count;
+    if (isLessonCategory(row.category)) {
+      counts[row.category] = row.count;
     }
     counts.total += row.count;
   }
@@ -486,7 +480,7 @@ export async function getLessonCategoryCounts(
 }
 
 export async function getLesson(
-  ctx: WorkspaceContext,
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
   id: bigint,
 ): Promise<LearningLesson> {
   const rows = await db
@@ -520,62 +514,166 @@ const DEDUP_SIMILARITY_THRESHOLD = 0.92;
 const DEDUP_REINFORCE_STEP = 5;
 const DEDUP_CONFIDENCE_CEILING = 95;
 
+function sameIds(a: readonly bigint[], b: readonly bigint[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /**
- * Find an enabled lesson in the same (workspace, category, product scope)
- * that says the same thing as `rule`. Exact (case-insensitive) text match
- * is checked first — free; then embedding similarity when an embedding
- * provider is available. Returns null on any failure — dedup is an
- * optimization, never a gate.
+ * Find a lesson in service (`lifecycles`, default active) with the same
+ * category, polarity and EXACT scope (workspace-wide, the identical product
+ * set, or — for NEEDS_SCOPE — no product at all) that says the same thing
+ * as `rule`. Exact (case-insensitive) text match is checked first — free;
+ * then embedding similarity when an embedding provider is available.
+ * Returns null on any failure — dedup is an optimization, never a gate.
  */
 export async function findNearDuplicateLesson(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   input: {
     category: LessonCategory;
     rule: string;
-    productProfileId: bigint | null;
+    polarity?: LessonPolarity;
+    scope: LessonScopeInput | NormalizedScope;
+    lifecycles?: readonly LessonLifecycle[];
   },
 ): Promise<LearningLesson | null> {
   try {
+    const needsScope = isNeedsScope(input.scope);
+    const scope = needsScope ? NEEDS_SCOPE : normalizeScope(input.scope as LessonScopeInput);
+    const lifecycles: readonly LessonLifecycle[] =
+      input.lifecycles && input.lifecycles.length > 0 ? input.lifecycles : ['active'];
     const conds: SQL[] = [
       eq(learningLessons.workspaceId, ctx.workspaceId),
       eq(learningLessons.category, input.category),
-      eq(learningLessons.enabled, true),
-      input.productProfileId === null
-        ? isNull(learningLessons.productProfileId)
-        : eq(learningLessons.productProfileId, input.productProfileId),
+      inArray(learningLessons.lifecycle, [...lifecycles]),
+      eq(learningLessons.scopeKind, scope.kind),
     ];
-    const candidates = await db
+    if (input.polarity !== undefined) conds.push(eq(learningLessons.polarity, input.polarity));
+    // In scope for the first product (or anywhere, for a workspace rule);
+    // the exact product set is compared below. A NEEDS_SCOPE rule only
+    // repeats another rule with no product.
+    conds.push(needsScope ? lessonNeedsScope() : lessonInScope(scope.productProfileIds[0]));
+    let candidates = await db
       .select()
       .from(learningLessons)
       .where(and(...conds))
       .orderBy(desc(learningLessons.confidence))
       .limit(200);
-    if (candidates.length === 0) return null;
-
-    const norm = input.rule.trim().toLowerCase();
-    const exact = candidates.find((c) => c.rule.trim().toLowerCase() === norm);
-    if (exact) return exact;
-
-    const embeddable = candidates.filter(
-      (c) => c.embedding && c.embedding.length > 0,
-    );
-    if (embeddable.length === 0) return null;
-    const { getEmbeddingProviderForCtx } = await import('@/lib/embeddings');
-    const embedder = await getEmbeddingProviderForCtx(ctx as WorkspaceContext);
-    const result = await embedder.embed({ texts: [input.rule.slice(0, 2000)] });
-    const vec = result.embeddings[0];
-    if (!vec) return null;
-
-    let best: { lesson: LearningLesson; sim: number } | null = null;
-    for (const c of embeddable) {
-      if (c.embedding!.length !== vec.length) continue;
-      const sim = cosineSimilarity(c.embedding!, vec);
-      if (!best || sim > best.sim) best = { lesson: c, sim };
+    if (scope.kind === 'products' && !needsScope && candidates.length > 0) {
+      const scopes = await getLessonScopeProducts(
+        ctx,
+        candidates.map((c) => c.id),
+      );
+      candidates = candidates.filter((c) =>
+        sameIds(scopes.get(c.id.toString()) ?? [], scope.productProfileIds),
+      );
     }
-    return best && best.sim >= DEDUP_SIMILARITY_THRESHOLD ? best.lesson : null;
+    return await bestRuleMatch(ctx, candidates, input.rule);
   } catch (err) {
     console.error(
       '[learning.findNearDuplicateLesson] dedup check failed (creating anyway):',
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+/** The candidate saying the same thing as `rule`: an exact
+ *  (case-insensitive) text match first — free — then the most similar
+ *  embedding at or above DEDUP_SIMILARITY_THRESHOLD. */
+async function bestRuleMatch(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  candidates: readonly LearningLesson[],
+  rule: string,
+): Promise<LearningLesson | null> {
+  if (candidates.length === 0) return null;
+  const norm = rule.trim().toLowerCase();
+  const exact = candidates.find((c) => c.rule.trim().toLowerCase() === norm);
+  if (exact) return exact;
+
+  const embeddable = candidates.filter((c) => c.embedding && c.embedding.length > 0);
+  if (embeddable.length === 0) return null;
+  const { getEmbeddingProviderForCtx } = await import('@/lib/embeddings');
+  const embedder = await getEmbeddingProviderForCtx(ctx as WorkspaceContext);
+  const result = await embedder.embed({ texts: [rule.slice(0, 2000)] });
+  const vec = result.embeddings[0];
+  if (!vec) return null;
+
+  let best: { lesson: LearningLesson; sim: number } | null = null;
+  for (const c of embeddable) {
+    if (c.embedding!.length !== vec.length) continue;
+    const sim = cosineSimilarity(c.embedding!, vec);
+    if (!best || sim > best.sim) best = { lesson: c, sim };
+  }
+  return best && best.sim >= DEDUP_SIMILARITY_THRESHOLD ? best.lesson : null;
+}
+
+/**
+ * KL-03: a rule the operator REJECTED (retired 'operator_rejected') or
+ * SWITCHED OFF (lifecycle 'disabled' — until KL-12's "Not what I meant",
+ * Disable is the operator's only way to say no) that says the same thing
+ * as `rule`, in the same category and direction, and whose scope overlaps
+ * this one (either is workspace-wide, or they share a product; a
+ * NEEDS_SCOPE candidate overlaps any scope). Extraction never recreates
+ * such a rule (§6: rejected rules are kept as negative examples); the
+ * caller tells the two apart by the match's lifecycle. Returns null on any
+ * failure.
+ */
+export async function findRejectedRuleMatch(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  input: {
+    category: LessonCategory;
+    rule: string;
+    polarity: LessonPolarity;
+    scope: LessonScopeInput | NormalizedScope;
+  },
+): Promise<LearningLesson | null> {
+  try {
+    const scope = isNeedsScope(input.scope)
+      ? { kind: 'workspace' as const, productProfileIds: [] }
+      : normalizeScope(input.scope as LessonScopeInput);
+    const conds: SQL[] = [
+      eq(learningLessons.workspaceId, ctx.workspaceId),
+      eq(learningLessons.category, input.category),
+      eq(learningLessons.polarity, input.polarity),
+      or(
+        and(
+          eq(learningLessons.lifecycle, 'retired'),
+          eq(learningLessons.retiredReason, 'operator_rejected'),
+        ),
+        eq(learningLessons.lifecycle, 'disabled'),
+      )!,
+    ];
+    if (scope.kind === 'products') {
+      conds.push(
+        or(
+          eq(learningLessons.scopeKind, 'workspace'),
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(lessonScopes)
+              .where(
+                and(
+                  eq(lessonScopes.workspaceId, learningLessons.workspaceId),
+                  eq(lessonScopes.lessonId, learningLessons.id),
+                  inArray(lessonScopes.productProfileId, scope.productProfileIds),
+                ),
+              ),
+          ),
+        )!,
+      );
+    }
+    const candidates = await db
+      .select()
+      .from(learningLessons)
+      .where(and(...conds))
+      .orderBy(desc(learningLessons.updatedAt))
+      .limit(200);
+    return await bestRuleMatch(ctx, candidates, input.rule);
+  } catch (err) {
+    console.error(
+      '[learning.findRejectedRuleMatch] check failed:',
       err instanceof Error ? err.message : err,
     );
     return null;
@@ -600,6 +698,7 @@ async function reinforceDuplicateLesson(
     .set({
       confidence: sql`LEAST(${learningLessons.confidence} + ${DEDUP_REINFORCE_STEP}, ${DEDUP_CONFIDENCE_CEILING})`,
       evidenceEventIds: evidence,
+      reinforcedAt: new Date(),
       updatedAt: new Date(),
       updatedBy: ctx.userId,
     })
@@ -626,11 +725,18 @@ async function reinforceDuplicateLesson(
 export interface CreateLessonInput {
   category: LessonCategory;
   rule: string;
-  productProfileId?: bigint | null;
+  /** Where the rule applies. Defaults to workspace-wide. */
+  scope?: LessonScopeInput;
+  /** +1 PREFER / -1 AVOID / 0 neutral. Must be allowed for the category;
+   *  omitted = read from the wording where the category allows either
+   *  direction (polarityForRule), else the category's polarity. */
+  polarity?: LessonPolarity;
   confidence?: number;
   /** Provenance shown on /learning. Defaults to 'operator'. */
   source?: LessonSource;
   evidenceEventIds?: readonly bigint[];
+  /** 'proposed' parks a platform suggestion until an operator accepts it. */
+  lifecycle?: 'active' | 'proposed';
 }
 
 export async function createLesson(
@@ -638,46 +744,67 @@ export async function createLesson(
   input: CreateLessonInput,
 ): Promise<LearningLesson> {
   if (!canWrite(ctx)) throw permissionDenied('create lesson');
-  assertCategory(input.category);
-  const rule = input.rule.trim();
-  if (!rule) throw invalid('rule is required');
-  if (rule.length > 1000) throw invalid('rule too long (1000 char max)');
+  const category = assertCategory(input.category);
+  const rule = validateRule(input.rule);
+  if (input.polarity !== undefined && !isPolarityAllowed(category, input.polarity)) {
+    throw new LearningServiceError(
+      `polarity ${input.polarity} is not allowed for ${category}`,
+      'invalid_polarity',
+    );
+  }
+  // No explicit direction: read it from the wording where the category
+  // lets the rule choose ("Avoid councils" filed as a sector preference is
+  // an AVOID rule), else the category's fixed / default polarity.
+  const polarity = polarityForRule(category, rule, input.polarity);
+  const scope = normalizeScope(input.scope);
+  const lifecycle = input.lifecycle ?? 'active';
 
   // Same rule already known in this scope → reinforce it instead of
   // planting a duplicate (see the dedup section above).
-  const duplicate = await findNearDuplicateLesson(ctx, {
-    category: input.category,
-    rule,
-    productProfileId: input.productProfileId ?? null,
-  });
-  if (duplicate) {
-    return reinforceDuplicateLesson(ctx, duplicate, input.evidenceEventIds ?? []);
+  if (lifecycle === 'active') {
+    const duplicate = await findNearDuplicateLesson(ctx, { category, rule, polarity, scope });
+    if (duplicate) {
+      return reinforceDuplicateLesson(ctx, duplicate, input.evidenceEventIds ?? []);
+    }
   }
 
-  const row: NewLearningLesson = {
-    workspaceId: ctx.workspaceId,
-    productProfileId: input.productProfileId ?? null,
-    category: input.category,
-    rule,
-    source: input.source ?? 'operator',
-    evidenceEventIds: input.evidenceEventIds ? [...input.evidenceEventIds] : [],
-    confidence: clampConfidence(input.confidence ?? 65),
-    createdBy: ctx.userId,
-    updatedBy: ctx.userId,
-  };
-  const inserted = (await db.insert(learningLessons).values(row).returning())[0];
-  if (!inserted) throw invariant('learning_lessons insert returned no row');
-
-  await recordAuditEvent(ctx, {
-    kind: 'learning.lesson.create',
-    entityType: 'learning_lesson',
-    entityId: inserted.id,
-    payload: {
-      category: inserted.category,
-      source: inserted.source,
-      productProfileId: input.productProfileId?.toString() ?? null,
-    },
-  });
+  let inserted: LearningLesson;
+  try {
+    inserted = await db.transaction(async (tx) => {
+      const row = await insertLessonWithScope(
+        tx,
+        {
+          workspaceId: ctx.workspaceId,
+          category,
+          rule,
+          polarity,
+          source: input.source ?? 'operator',
+          evidenceEventIds: input.evidenceEventIds ? [...input.evidenceEventIds] : [],
+          lifecycle,
+          confidence: clampConfidence(input.confidence ?? 65),
+          createdBy: ctx.userId,
+          updatedBy: ctx.userId,
+        },
+        scope,
+      );
+      await recordAuditEvent(ctx, {
+        kind: 'learning.lesson.create',
+        entityType: 'learning_lesson',
+        entityId: row.id,
+        payload: {
+          category: row.category,
+          source: row.source,
+          polarity: row.polarity,
+          lifecycle: row.lifecycle,
+          scopeKind: scope.kind,
+          productProfileIds: scope.productProfileIds.map((id) => id.toString()),
+        },
+      });
+      return row;
+    });
+  } catch (err) {
+    throw mapScopeError(err);
+  }
 
   scheduleLessonEmbedding(ctx, inserted.id);
   return inserted;
@@ -686,9 +813,14 @@ export async function createLesson(
 export interface UpdateLessonInput {
   rule?: string;
   category?: LessonCategory;
+  polarity?: LessonPolarity;
   confidence?: number;
-  enabled?: boolean;
-  productProfileId?: bigint | null;
+  /** Operator lifecycle moves: 'active' (enable, accept a proposal, or —
+   *  admins only — restore a retired rule) or 'disabled'. Retiring goes
+   *  through retireLessons. */
+  lifecycle?: 'active' | 'disabled';
+  /** Replace the rule's scope. */
+  scope?: LessonScopeInput;
 }
 
 export async function updateLesson(
@@ -698,74 +830,218 @@ export async function updateLesson(
 ): Promise<LearningLesson> {
   if (!canWrite(ctx)) throw permissionDenied('update lesson');
 
-  return db.transaction(async (tx) => {
-    const existing = await tx
-      .select()
-      .from(learningLessons)
-      .where(
-        and(eq(learningLessons.workspaceId, ctx.workspaceId), eq(learningLessons.id, id)),
-      );
-    if (!existing[0]) throw notFound();
+  let updated: LearningLesson;
+  try {
+    updated = await db.transaction(async (tx) => {
+      const existing = (
+        await tx
+          .select()
+          .from(learningLessons)
+          .where(
+            and(eq(learningLessons.workspaceId, ctx.workspaceId), eq(learningLessons.id, id)),
+          )
+          .for('update')
+      )[0];
+      if (!existing) throw notFound();
 
-    const updates: Partial<NewLearningLesson> & { updatedAt: Date } = {
-      updatedBy: ctx.userId,
-      updatedAt: new Date(),
-    };
-    if (patch.rule !== undefined) {
-      const trimmed = patch.rule.trim();
-      if (!trimmed) throw invalid('rule cannot be empty');
-      if (trimmed.length > 1000) throw invalid('rule too long');
-      updates.rule = trimmed;
-    }
-    if (patch.category !== undefined) {
-      updates.category = assertCategory(patch.category);
-    }
-    if (patch.confidence !== undefined) {
-      updates.confidence = clampConfidence(patch.confidence);
-    }
-    if (patch.enabled !== undefined) {
-      updates.enabled = patch.enabled;
-    }
-    if (patch.productProfileId !== undefined) {
-      updates.productProfileId = patch.productProfileId;
-    }
+      const updates: Partial<NewLearningLesson> & { updatedAt: Date } = {
+        updatedBy: ctx.userId,
+        updatedAt: new Date(),
+      };
+      if (patch.rule !== undefined) {
+        updates.rule = validateRule(patch.rule);
+      }
+      // Only a CHANGED category is validated, so a legacy rule whose
+      // category left the registry can still have its text edited.
+      const categoryChanged =
+        patch.category !== undefined && patch.category !== existing.category;
+      if (categoryChanged) {
+        updates.category = assertCategory(patch.category!);
+      }
+      const finalCategory = updates.category ?? existing.category;
+      const polarityChanged =
+        patch.polarity !== undefined && patch.polarity !== existing.polarity;
+      if (polarityChanged || (patch.polarity !== undefined && categoryChanged)) {
+        const category = assertCategory(finalCategory);
+        if (!isPolarityAllowed(category, patch.polarity!)) {
+          throw new LearningServiceError(
+            `polarity ${patch.polarity} is not allowed for ${category}`,
+            'invalid_polarity',
+          );
+        }
+        updates.polarity = patch.polarity!;
+      } else if (categoryChanged) {
+        // Keep the rule's direction when the new category allows it.
+        updates.polarity = resolveLessonPolarity(
+          assertCategory(finalCategory),
+          existing.polarity,
+        );
+      }
+      if (patch.confidence !== undefined) {
+        updates.confidence = clampConfidence(patch.confidence);
+      }
 
-    const updated = (await tx
-      .update(learningLessons)
-      .set(updates)
-      .where(
-        and(eq(learningLessons.workspaceId, ctx.workspaceId), eq(learningLessons.id, id)),
-      )
-      .returning())[0];
-    if (!updated) throw invariant('learning_lessons update returned no row');
+      let scopeChange: NormalizedScope | null = null;
+      if (patch.scope !== undefined) {
+        const next = normalizeScope(patch.scope);
+        const current = (
+          await tx
+            .select({ productProfileId: lessonScopes.productProfileId })
+            .from(lessonScopes)
+            .where(
+              and(
+                eq(lessonScopes.workspaceId, ctx.workspaceId),
+                eq(lessonScopes.lessonId, existing.id),
+              ),
+            )
+            .orderBy(lessonScopes.productProfileId)
+        ).map((r) => r.productProfileId);
+        const unchanged =
+          next.kind === existing.scopeKind && sameIds(current, next.productProfileIds);
+        if (!unchanged) {
+          scopeChange = next;
+          updates.scopeKind = next.kind;
+          await tx
+            .delete(lessonScopes)
+            .where(
+              and(
+                eq(lessonScopes.workspaceId, ctx.workspaceId),
+                eq(lessonScopes.lessonId, existing.id),
+              ),
+            );
+          await insertScopeRows(tx, ctx.workspaceId, existing.id, next);
+        }
+      }
 
-    await recordAuditEvent(ctx, {
-      kind: 'learning.lesson.update',
-      entityType: 'learning_lesson',
-      entityId: updated.id,
-      payload: { changedKeys: Object.keys(updates).filter((k) => k !== 'updatedAt' && k !== 'updatedBy') },
+      let lifecycleChange: { from: LessonLifecycle; to: LessonLifecycle } | null = null;
+      if (patch.lifecycle !== undefined && patch.lifecycle !== existing.lifecycle) {
+        if (patch.lifecycle === 'disabled') {
+          if (existing.lifecycle === 'retired') {
+            throw new LearningServiceError(
+              'a retired rule is already out of service',
+              'lifecycle_conflict',
+            );
+          }
+        } else {
+          if (existing.lifecycle === 'retired') {
+            if (!canAdminWorkspace(ctx)) throw permissionDenied('restore retired lesson');
+            updates.retiredReason = null;
+            updates.retiredNote = null;
+            updates.mergedIntoId = null;
+          }
+          // Only a rule the platform can actually apply may go live: a
+          // known category, and a product scope that still has a product.
+          assertCategory(finalCategory);
+          const finalKind = scopeChange?.kind ?? existing.scopeKind;
+          if (finalKind === 'products' && !scopeChange) {
+            const rows = await tx
+              .select({ one: sql`1` })
+              .from(lessonScopes)
+              .where(
+                and(
+                  eq(lessonScopes.workspaceId, ctx.workspaceId),
+                  eq(lessonScopes.lessonId, existing.id),
+                ),
+              )
+              .limit(1);
+            if (rows.length === 0) throw scopeRequired();
+          }
+        }
+        updates.lifecycle = patch.lifecycle;
+        lifecycleChange = { from: existing.lifecycle, to: patch.lifecycle };
+      }
+
+      const row = (
+        await tx
+          .update(learningLessons)
+          .set(updates)
+          .where(
+            and(eq(learningLessons.workspaceId, ctx.workspaceId), eq(learningLessons.id, id)),
+          )
+          .returning()
+      )[0];
+      if (!row) throw invariant('learning_lessons update returned no row');
+
+      await recordAuditEvent(ctx, {
+        kind: 'learning.lesson.update',
+        entityType: 'learning_lesson',
+        entityId: row.id,
+        payload: {
+          changedKeys: Object.keys(updates).filter(
+            (k) => k !== 'updatedAt' && k !== 'updatedBy',
+          ),
+          ...(lifecycleChange ? { lifecycle: lifecycleChange } : {}),
+          ...(scopeChange
+            ? {
+                scope: {
+                  kind: scopeChange.kind,
+                  productProfileIds: scopeChange.productProfileIds.map((p) => p.toString()),
+                },
+              }
+            : {}),
+        },
+      });
+
+      return row;
     });
-
-    return updated;
-  }).then((updated) => {
-    // Rule text changed → the stored embedding is stale; refresh it.
-    if (patch.rule !== undefined) scheduleLessonEmbedding(ctx, updated.id);
-    return updated;
-  });
+  } catch (err) {
+    throw mapScopeError(err);
+  }
+  // Rule text changed → the stored embedding is stale; refresh it.
+  if (patch.rule !== undefined) scheduleLessonEmbedding(ctx, updated.id);
+  return updated;
 }
 
 export const enableLesson = (ctx: WorkspaceContext, id: bigint) =>
-  updateLesson(ctx, id, { enabled: true });
+  updateLesson(ctx, id, { lifecycle: 'active' });
 export const disableLesson = (ctx: WorkspaceContext, id: bigint) =>
-  updateLesson(ctx, id, { enabled: false });
+  updateLesson(ctx, id, { lifecycle: 'disabled' });
+
+/**
+ * Take rules out of service for a recorded reason. Workspace-scoped; rules
+ * already retired are left alone (their first reason stands). Returns the
+ * ids that actually changed. Runs on the caller's transaction so a merge
+ * and its retirements commit together.
+ */
+export async function retireLessons(
+  tx: Tx,
+  workspaceId: bigint,
+  ids: readonly bigint[],
+  opts: { reason: LessonRetiredReason; note?: string | null; mergedIntoId?: bigint | null },
+): Promise<bigint[]> {
+  if (ids.length === 0) return [];
+  const conds: SQL[] = [
+    eq(learningLessons.workspaceId, workspaceId),
+    inArray(learningLessons.id, [...ids]),
+    ne(learningLessons.lifecycle, 'retired'),
+  ];
+  if (opts.mergedIntoId !== undefined && opts.mergedIntoId !== null) {
+    conds.push(ne(learningLessons.id, opts.mergedIntoId));
+  }
+  const rows = await tx
+    .update(learningLessons)
+    .set({
+      lifecycle: 'retired',
+      retiredReason: opts.reason,
+      retiredNote: opts.note ?? null,
+      mergedIntoId: opts.mergedIntoId ?? null,
+      updatedAt: new Date(),
+    })
+    .where(and(...conds))
+    .returning({ id: learningLessons.id });
+  return rows.map((r) => r.id);
+}
 
 const BULK_LESSON_LIMIT = 500;
 
 /**
- * Flip `enabled` on a batch of lessons in one statement. Workspace-scoped via
- * WHERE so foreign ids silently no-op. member+ gating mirrors the single-row
- * enable/disable. Returns the rows that actually changed (already-enabled
- * rows in an enable batch don't count) so the UI can flash an accurate
+ * Enable or disable a batch of lessons in one statement. Workspace-scoped
+ * via WHERE so foreign ids silently no-op. member+ gating mirrors the
+ * single-row enable/disable. Enabling moves disabled/proposed rules to
+ * active — but never a retired rule (restore is an admin action on its
+ * page), a rule whose category left the registry, or a product rule with
+ * no product left. Disabling moves active/proposed rules to disabled.
+ * Returns the rows that actually changed so the UI can flash an accurate
  * "Disabled N of M" message.
  */
 export async function bulkSetLessonsEnabled(
@@ -776,15 +1052,23 @@ export async function bulkSetLessonsEnabled(
   if (!canWrite(ctx)) throw permissionDenied('update lessons');
   const cappedIds = ids.slice(0, BULK_LESSON_LIMIT);
   if (cappedIds.length === 0) return { updated: 0, requested: ids.length };
+  const target: LessonLifecycle = enabled ? 'active' : 'disabled';
+  const eligible: SQL = enabled
+    ? and(
+        inArray(learningLessons.lifecycle, ['disabled', 'proposed']),
+        inArray(learningLessons.category, [...LESSON_CATEGORIES]),
+        lessonInScope(),
+      )!
+    : inArray(learningLessons.lifecycle, ['active', 'proposed']);
   return db.transaction(async (tx) => {
     const updated = await tx
       .update(learningLessons)
-      .set({ enabled, updatedAt: new Date(), updatedBy: ctx.userId })
+      .set({ lifecycle: target, updatedAt: new Date(), updatedBy: ctx.userId })
       .where(
         and(
           eq(learningLessons.workspaceId, ctx.workspaceId),
           inArray(learningLessons.id, cappedIds as bigint[]),
-          eq(learningLessons.enabled, !enabled),
+          eligible,
         ),
       )
       .returning({ id: learningLessons.id });
@@ -803,25 +1087,30 @@ export async function bulkSetLessonsEnabled(
 // ---- retrieval (for prompts/rules) ------------------------------------
 
 export interface LessonQuery {
+  /** bigint: that product's rules (plus workspace-wide ones with
+   *  includeWorkspaceLessons). null: workspace-wide rules only.
+   *  undefined: every rule that applies somewhere. */
   productProfileId?: bigint | null;
   /** With a bigint productProfileId: also include workspace-wide lessons
    *  in the same query. Preferred over calling twice (once per scope) —
    *  one DB fetch, one embedding call, one rerank over the union. */
   includeWorkspaceLessons?: boolean;
   category?: LessonCategory | readonly LessonCategory[];
-  taskType?: 'classification' | 'outreach' | 'reply';
+  /** The consuming task; its categories come from the category registry. */
+  taskType?: LessonTaskType;
   /** Free-text the caller is about to act on (subject, snippet, etc.). Phase 5 ignores; Phase 12 ranks by similarity. */
   contextText?: string;
   limit?: number;
 }
 
 /**
- * Retrieval: filter by workspace/category/(product) + enabled, rank by
- * confidence then recency. When the caller provides `contextText` AND the
- * candidate pool exceeds the limit (prompt budget), rerank by embedding
- * similarity so the lessons most relevant to the record at hand win a
- * slot instead of just the most confident ones. Falls back to confidence
- * order on any embedding failure — retrieval must never break a caller.
+ * Retrieval: active rules in scope (lessonInScope), filtered by the task's
+ * registry categories, ranked by confidence then recency. When the caller
+ * provides `contextText` AND the candidate pool exceeds the limit (prompt
+ * budget), rerank by embedding similarity so the lessons most relevant to
+ * the record at hand win a slot instead of just the most confident ones.
+ * Falls back to confidence order on any embedding failure — retrieval must
+ * never break a caller.
  */
 export async function getRelevantLessons(
   ctx: WorkspaceContext,
@@ -829,7 +1118,7 @@ export async function getRelevantLessons(
 ): Promise<LearningLesson[]> {
   const categories = resolveCategoriesForTask(query);
   const limit = query.limit ?? 20;
-  const filter: ListLessonsFilter = { enabled: true, limit };
+  const filter: ListLessonsFilter = { lifecycle: 'active', inScopeOnly: true, limit };
   if (categories) filter.category = categories;
   if (query.productProfileId !== undefined) filter.productProfileId = query.productProfileId;
   if (query.includeWorkspaceLessons) filter.includeWorkspaceWide = true;
@@ -837,12 +1126,7 @@ export async function getRelevantLessons(
   const contextText = query.contextText?.trim();
   if (contextText) {
     try {
-      const total = await countLessons(ctx, {
-        category: filter.category,
-        productProfileId: filter.productProfileId,
-        includeWorkspaceWide: filter.includeWorkspaceWide,
-        enabled: true,
-      });
+      const total = await countLessons(ctx, filter);
       if (total > limit) {
         return await rerankLessonsBySimilarity(ctx, filter, contextText, limit);
       }
@@ -903,30 +1187,21 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-function resolveCategoriesForTask(query: LessonQuery): LessonCategory[] | undefined {
+/**
+ * The categories a retrieval reads: an explicit category list wins;
+ * otherwise the task's categories from the registry (so a category is
+ * fetched exactly where the registry says it is consumed); no task and no
+ * category means every category.
+ */
+export function resolveCategoriesForTask(
+  query: Pick<LessonQuery, 'category' | 'taskType'>,
+): LessonCategory[] | undefined {
   if (query.category !== undefined) {
     return Array.isArray(query.category)
       ? (query.category as LessonCategory[])
       : [query.category as LessonCategory];
   }
-  switch (query.taskType) {
-    case 'classification':
-      return [
-        'qualification_positive',
-        'qualification_negative',
-        'sector_preference',
-        'contact_role',
-        'product_positioning',
-        'false_positive',
-        'false_negative',
-      ];
-    case 'outreach':
-      return ['outreach_style', 'product_positioning', 'contact_role'];
-    case 'reply':
-      return ['reply_quality', 'outreach_style'];
-    default:
-      return undefined;
-  }
+  return query.taskType ? categoriesForTaskType(query.taskType) : undefined;
 }
 
 /**
@@ -984,11 +1259,14 @@ const REINFORCE_CEILING = 95;
 
 /**
  * Outcome feedback: nudge the confidence of lessons that were APPLIED to a
- * decision the real world just judged. Approvals / positive replies push
- * the applied lessons up; rejections / negative replies push them down
- * (down is steeper — wrong advice is worse than the absence of advice).
- * Compaction's stale-retirement then naturally garbage-collects lessons
- * the outcomes keep punishing. Workspace-scoped; never throws.
+ * decision the real world just judged. Positive replies push the applied
+ * lessons up; negative replies push them down (down is steeper — wrong
+ * advice is worse than the absence of advice). Compaction's
+ * stale-retirement then naturally garbage-collects lessons the outcomes
+ * keep punishing. Workspace-scoped; never throws. Only the reply-outcome
+ * path (off unless learn_from_replies, KL-15 owns its gates) uses it;
+ * review verdicts move rules through the reinforcement ledger
+ * (learning-ledger.ts), which honours polarity and can be compensated.
  */
 export async function reinforceLessons(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -1005,6 +1283,7 @@ export async function reinforceLessons(
           direction === 'up'
             ? sql`LEAST(${learningLessons.confidence} + ${REINFORCE_UP_STEP}, ${REINFORCE_CEILING})`
             : sql`GREATEST(${learningLessons.confidence} - ${REINFORCE_DOWN_STEP}, ${REINFORCE_FLOOR})`,
+        reinforcedAt: new Date(),
         updatedAt: new Date(),
       })
       .where(

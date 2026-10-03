@@ -21,6 +21,7 @@ import { mailMessages, type MailMessage } from '@/lib/db/schema/mailing';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { contactAssociations } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
+import { checkGate } from './automation-gate';
 import { canWrite, type WorkspaceContext } from './context';
 import { upsertContact, attachContact } from './contacts';
 import { addSuppression } from './suppression';
@@ -33,18 +34,11 @@ import {
 import { isOutreachLinked, type OutreachLinkedRelevance } from '@/lib/mail/relevance';
 import { extractReplyText } from '@/lib/mail/reply-text';
 import type { IAIProvider } from '@/lib/ai';
+import { REPLY_CLASSES, type ReplyClass } from '@/lib/mail/reply-classes';
 
-export type ReplyClass =
-  | 'positive'
-  | 'redirect'
-  | 'question'
-  | 'interest'
-  | 'doc_request'
-  | 'negative'
-  | 'out_of_office'
-  | 'bounce'
-  | 'unsubscribe'
-  | 'irrelevant';
+// The class list lives in one const array (AP-03): the type, the AI
+// prompt, the validity check and the assistant handbook all read it.
+export { REPLY_CLASSES, type ReplyClass };
 
 export interface ReplyClassification {
   type: ReplyClass;
@@ -293,17 +287,13 @@ export async function analyseReply(
       const aiResult = await options.ai.generateText(
         {
           system:
-            'Classify the inbound email into one of: positive, redirect, question, interest, doc_request, negative, out_of_office, bounce, unsubscribe, irrelevant. Reply with the single word.',
+            `Classify the inbound email into one of: ${REPLY_CLASSES.join(', ')}. Reply with the single word.`,
           prompt: replyText || '(no body)',
         },
         { temperature: 0 },
       );
       const candidate = aiResult.text.trim().toLowerCase().replace(/[^a-z_]/g, '') as ReplyClass;
-      const valid = PATTERNS.some((p) => p.type === candidate) ||
-        candidate === 'irrelevant' ||
-        candidate === 'positive' ||
-        candidate === 'question' ||
-        candidate === 'interest';
+      const valid = (REPLY_CLASSES as ReadonlyArray<string>).includes(candidate);
       if (valid) {
         const matchedPattern = PATTERNS.find((p) => p.type === candidate);
         final = {
@@ -391,6 +381,65 @@ export async function analyseReply(
 // Bounce auto-actions stay off until F-32 (bounces handled from the parsed
 // delivery report): with the switch on they are only audited as refused.
 // Redirect extraction also accepts auto-replies ("in my absence contact …").
+//
+// PC-05 / PC-06: the workspace pause or a Reply auto-actions hold holds
+// only a reply whose classification would trigger an action (planAutoAction
+// first): a positive or out-of-office reply, or one the guard refuses,
+// writes no 'reply.auto_actions_held' row, so Resume counts only replies
+// that really waited. Redirect extraction (creating contacts) is an
+// inbound auto-action like the others and is held the same way.
+
+type ReplyAutoActionSwitches = Awaited<ReturnType<typeof getReplyAutoActions>>;
+type ThreadLead = NonNullable<Awaited<ReturnType<typeof leadForThread>>>;
+
+/** What the switches make of this classified reply. */
+type PlannedAutoAction =
+  | { kind: 'none' }
+  /** The switch is on but the guard says no: audited, nothing done. */
+  | { kind: 'refused'; trigger: 'bounce' | 'unsubscribe'; reason: string }
+  | { kind: 'suppress_unsubscribe' }
+  | { kind: 'close_negative'; lead: ThreadLead }
+  | { kind: 'extract_redirects'; emails: string[] };
+
+/** The auto-action this reply would trigger (read-only: no side effects). */
+async function planAutoAction(
+  ctx: Pick<WorkspaceContext, 'workspaceId'>,
+  msg: Pick<MailMessage, 'outreachRelevance' | 'threadId'>,
+  classification: Pick<ReplyClassification, 'type' | 'extractedEmails'>,
+  settings: ReplyAutoActionSwitches,
+): Promise<PlannedAutoAction> {
+  switch (classification.type) {
+    case 'bounce':
+      if (!settings.autoSuppressBounce) return { kind: 'none' };
+      return {
+        kind: 'refused',
+        trigger: 'bounce',
+        reason: autoSuppressionRefusal(msg, 'bounce') ?? 'refused',
+      };
+    case 'unsubscribe': {
+      if (!settings.autoSuppressUnsubscribe) return { kind: 'none' };
+      const refusal = autoSuppressionRefusal(msg, 'unsubscribe');
+      return refusal
+        ? { kind: 'refused', trigger: 'unsubscribe', reason: refusal }
+        : { kind: 'suppress_unsubscribe' };
+    }
+    case 'negative': {
+      if (!settings.autoCloseNegative || msg.outreachRelevance !== 'prospect_reply') {
+        return { kind: 'none' };
+      }
+      const lead = msg.threadId ? await leadForThread(ctx, msg.threadId) : null;
+      return lead && lead.state !== 'closed' ? { kind: 'close_negative', lead } : { kind: 'none' };
+    }
+    case 'redirect':
+      return settings.autoExtractRedirects &&
+        classification.extractedEmails.length > 0 &&
+        (msg.outreachRelevance === 'prospect_reply' || msg.outreachRelevance === 'auto_reply')
+        ? { kind: 'extract_redirects', emails: classification.extractedEmails }
+        : { kind: 'none' };
+    default:
+      return { kind: 'none' };
+  }
+}
 
 async function applyAutoActions(
   ctx: WorkspaceContext,
@@ -398,69 +447,69 @@ async function applyAutoActions(
   classification: ReplyClassification,
 ): Promise<void> {
   const settings = await getReplyAutoActions(ctx);
-
-  // Resolve qualified_lead via thread → contact_associations.
-  let lead = null as Awaited<ReturnType<typeof leadForThread>>;
-  if (msg.threadId) {
-    lead = await leadForThread(ctx, msg.threadId);
-  }
-
-  if (classification.type === 'bounce') {
-    if (settings.autoSuppressBounce) {
-      await recordAutoSuppressionRefused(ctx, msg, {
-        trigger: 'bounce',
-        reason: autoSuppressionRefusal(msg, 'bounce') ?? 'refused',
-        path: 'reply_classifier',
-      });
-    }
+  const planned = await planAutoAction(ctx, msg, classification, settings);
+  if (planned.kind === 'none') return;
+  if (planned.kind === 'refused') {
+    await recordAutoSuppressionRefused(ctx, msg, {
+      trigger: planned.trigger,
+      reason: planned.reason,
+      path: 'reply_classifier',
+    });
     return;
   }
 
-  if (
-    classification.type === 'unsubscribe' &&
-    settings.autoSuppressUnsubscribe
-  ) {
-    const refusal = autoSuppressionRefusal(msg, 'unsubscribe');
-    if (refusal) {
-      await recordAutoSuppressionRefused(ctx, msg, {
-        trigger: 'unsubscribe',
-        reason: refusal,
+  // An action would run: the pause or a Reply auto-actions hold leaves the
+  // reply for the operator (audited, and counted when automation resumes).
+  const gate = await checkGate(ctx, 'inbound_actions', { manual: false });
+  if (!gate.allowed) {
+    await recordAuditEvent(ctx, {
+      kind: 'reply.auto_actions_held',
+      entityType: 'mail_message',
+      entityId: msg.id,
+      payload: {
+        classification: classification.type,
+        action: planned.kind,
         path: 'reply_classifier',
-      });
-      return;
-    }
-    try {
-      await addSuppression(ctx, {
-        kind: 'email',
-        value: msg.fromAddress,
-        reason: 'unsubscribe',
-        source: 'reply',
-        sourceRef: `mail_message:${msg.id}`,
-        note: `auto-suppressed from message ${msg.id}`,
-      });
-    } catch (err) {
-      console.error('[reply-classifier] unsubscribe suppress failed:', err);
-    }
-    if (lead && lead.state !== 'closed') {
+        gate: gate.reason,
+        reason: gate.message,
+      },
+    });
+    return;
+  }
+
+  switch (planned.kind) {
+    case 'suppress_unsubscribe': {
       try {
-        await pipelineTransition(ctx, lead.id, {
-          to: 'closed',
-          closeReason: 'no_response',
-          closeNote: 'unsubscribe',
-          force: true,
-          payload: autoClosePayload('unsubscribe', msg.id),
+        await addSuppression(ctx, {
+          kind: 'email',
+          value: msg.fromAddress,
+          reason: 'unsubscribe',
+          source: 'reply',
+          sourceRef: `mail_message:${msg.id}`,
+          note: `auto-suppressed from message ${msg.id}`,
         });
       } catch (err) {
-        console.error('[reply-classifier] close on unsubscribe failed:', err);
+        console.error('[reply-classifier] unsubscribe suppress failed:', err);
       }
+      const lead = msg.threadId ? await leadForThread(ctx, msg.threadId) : null;
+      if (lead && lead.state !== 'closed') {
+        try {
+          await pipelineTransition(ctx, lead.id, {
+            to: 'closed',
+            closeReason: 'no_response',
+            closeNote: 'unsubscribe',
+            force: true,
+            payload: autoClosePayload('unsubscribe', msg.id),
+          });
+        } catch (err) {
+          console.error('[reply-classifier] close on unsubscribe failed:', err);
+        }
+      }
+      return;
     }
-    return;
-  }
-
-  if (classification.type === 'negative' && settings.autoCloseNegative) {
-    if (lead && lead.state !== 'closed' && msg.outreachRelevance === 'prospect_reply') {
+    case 'close_negative':
       try {
-        await pipelineTransition(ctx, lead.id, {
+        await pipelineTransition(ctx, planned.lead.id, {
           to: 'closed',
           closeReason: 'lost',
           closeNote: 'negative reply',
@@ -470,30 +519,23 @@ async function applyAutoActions(
       } catch (err) {
         console.error('[reply-classifier] close on negative failed:', err);
       }
-    }
-    return;
-  }
-
-  if (
-    classification.type === 'redirect' &&
-    settings.autoExtractRedirects &&
-    classification.extractedEmails.length > 0 &&
-    (msg.outreachRelevance === 'prospect_reply' || msg.outreachRelevance === 'auto_reply')
-  ) {
-    for (const email of classification.extractedEmails) {
-      try {
-        const contact = await upsertContact(ctx, { email });
-        if (msg.threadId) {
-          await attachContact(ctx, contact.id, {
-            type: 'mail_thread',
-            id: msg.threadId.toString(),
-            relation: 'redirect_target',
-          });
+      return;
+    case 'extract_redirects':
+      for (const email of planned.emails) {
+        try {
+          const contact = await upsertContact(ctx, { email });
+          if (msg.threadId) {
+            await attachContact(ctx, contact.id, {
+              type: 'mail_thread',
+              id: msg.threadId.toString(),
+              relation: 'redirect_target',
+            });
+          }
+        } catch (err) {
+          console.error('[reply-classifier] extract-redirect failed:', err);
         }
-      } catch (err) {
-        console.error('[reply-classifier] extract-redirect failed:', err);
       }
-    }
+      return;
   }
 }
 

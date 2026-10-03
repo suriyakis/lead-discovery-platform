@@ -111,6 +111,8 @@ describe('platform services cannot fall back to an ambient workspace', () => {
     'src/lib/services/token-ledger.ts',
     'src/lib/services/secrets.ts',
     'src/lib/services/platform-settings.ts',
+    // PC-06: holds and the platform outbound stop.
+    'src/lib/services/holds.ts',
   ];
 
   it('none of them resolves a session workspace', () => {

@@ -16,6 +16,7 @@
 import { and, desc, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
+import type { AuditKind } from '@/lib/kinds/audit';
 import { users } from '@/lib/db/schema/auth';
 import {
   remediationLog,
@@ -319,7 +320,8 @@ export async function auditInTx(
   event: {
     workspaceId: bigint | null;
     userId: string;
-    kind: string;
+    /** A registered audit kind (src/lib/kinds/audit.ts, DS-09). */
+    kind: AuditKind;
     entityType: string;
     entityId: string;
     payload: Record<string, unknown>;

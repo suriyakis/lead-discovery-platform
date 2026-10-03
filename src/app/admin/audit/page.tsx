@@ -18,6 +18,7 @@ import {
 import { db } from '@/lib/db/client';
 import { workspaces } from '@/lib/db/schema/workspaces';
 import { users } from '@/lib/db/schema/auth';
+import { auditKindLabel, auditKindOptions } from '@/lib/ui/labels';
 import {
   formatDateTimeInZone,
   parseDateTimeLocal,
@@ -112,8 +113,7 @@ export default async function PlatformAuditPage({
   return (
     <div className="dashboard-wrap">
       <p className="muted">
-        <Link href="/dashboard">Dashboard</Link> /{' '}
-        <Link href="/admin">Admin</Link> / Audit log
+        <Link href="/admin">Platform console</Link> / Audit log
       </p>
       <h1>Platform audit log</h1>
       <p className="muted">
@@ -151,9 +151,9 @@ export default async function PlatformAuditPage({
           Kind
           <select name="kind" defaultValue={kindFilter ?? ''}>
             <option value="">All</option>
-            {kinds.map((k) => (
-              <option key={k} value={k}>
-                {k}
+            {auditKindOptions(kinds).map((o) => (
+              <option key={o.kind} value={o.kind}>
+                {o.label}
               </option>
             ))}
           </select>
@@ -209,7 +209,7 @@ export default async function PlatformAuditPage({
                     <code title={scopeHint ?? undefined}>
                       {auditRowScopeLabel(e, w?.name)}
                     </code>{' '}
-                    <strong>{e.kind}</strong>
+                    <strong title={e.kind}>{auditKindLabel(e.kind)}</strong>
                     {e.entityType ? (
                       <span className="muted">
                         {' '}

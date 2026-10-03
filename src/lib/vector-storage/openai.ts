@@ -22,7 +22,7 @@
  * only emit per-call cost estimates here.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { knowledgeSources } from '@/lib/db/schema/documents';
 import { workspaces } from '@/lib/db/schema/workspaces';
@@ -188,22 +188,32 @@ export class OpenAIVectorStorageProvider implements IVectorStorageProvider {
     const [src] = await db
       .select()
       .from(knowledgeSources)
-      .where(eq(knowledgeSources.id, knowledgeSourceId))
+      .where(
+        and(
+          eq(knowledgeSources.workspaceId, ctx.workspaceId),
+          eq(knowledgeSources.id, knowledgeSourceId),
+        ),
+      )
       .limit(1);
     if (!src) return;
     if (src.externalProviderId !== this.id || !src.externalFileId) return;
 
-    // Find the binding to know which vector store to detach from.
+    // Detach from every product store of this provider in the workspace,
+    // not only the products the source is scoped to NOW: re-scoping or a
+    // deleted product (its knowledge_source_products row cascades, KL-05)
+    // must not leave the file attached to a store nobody detaches. A
+    // store that never held the file answers 404, which is ignored.
     const bindings = await db
       .select()
       .from(productVectorStores)
-      .where(eq(productVectorStores.workspaceId, ctx.workspaceId))
+      .where(
+        and(
+          eq(productVectorStores.workspaceId, ctx.workspaceId),
+          eq(productVectorStores.providerId, this.id),
+        ),
+      )
       .limit(200);
-    for (const ks of src.productProfileIds) {
-      const binding = bindings.find(
-        (b) => b.productProfileId === ks && b.providerId === this.id,
-      );
-      if (!binding) continue;
+    for (const binding of bindings) {
       try {
         await this.openaiRequest({
           method: 'DELETE',

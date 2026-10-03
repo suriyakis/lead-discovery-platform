@@ -13,8 +13,9 @@
 //   - first sign-in (provisionOnSignIn, the auth.ts signIn event body);
 //   - preauthorizeEmail when the account already exists;
 //   - createFirstWorkspace and its server action (allowed once);
-//   - the no-workspace screen on /dashboard, and /onboarding and the
-//     settings pages routing such users to it;
+//   - the no-workspace state on Today, and on /onboarding and the
+//     settings pages in place (DS-07: the (app) layout's bare frame
+//     around it, the page shows the state);
 //   - no OWNER_EMAIL left under src/app.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -38,16 +39,16 @@ import {
   workspaceSlugFor,
 } from '@/lib/services/workspace-provisioning';
 import { createFirstWorkspaceAction } from '@/lib/workspace-actions';
-import Dashboard from '@/app/dashboard/page';
-import OnboardingPage from '@/app/onboarding/page';
-import AccountSettingsPage from '@/app/settings/account/page';
-import WorkspaceAuditPage from '@/app/settings/audit/page';
-import BillingPage from '@/app/settings/billing/page';
-import CrmSettingsPage from '@/app/settings/crm/page';
-import IntegrationsPage from '@/app/settings/integrations/page';
-import MembersPage from '@/app/settings/members/page';
-import OutreachSettingsPage from '@/app/settings/outreach/page';
-import UsagePage from '@/app/settings/usage/page';
+import TodayPage from '@/app/(app)/today/page';
+import OnboardingPage from '@/app/(app)/onboarding/page';
+import AccountSettingsPage from '@/app/(app)/settings/account/page';
+import WorkspaceAuditPage from '@/app/(app)/settings/audit/page';
+import BillingPage from '@/app/(app)/settings/billing/page';
+import CrmSettingsPage from '@/app/(app)/settings/crm/page';
+import IntegrationsPage from '@/app/(app)/settings/integrations/page';
+import MembersPage from '@/app/(app)/settings/members/page';
+import OutreachSettingsPage from '@/app/(app)/settings/outreach/page';
+import UsagePage from '@/app/(app)/settings/usage/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { platformCtx } from './helpers/platform';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
@@ -84,7 +85,8 @@ async function signInAs(userId: string): Promise<void> {
 }
 
 async function renderDashboard(sp: { error?: string } = {}): Promise<string> {
-  const tree = await Dashboard({ searchParams: Promise.resolve(sp) });
+  // The no-workspace screen moved with the dashboard to Today (DS-05).
+  const tree = await TodayPage({ searchParams: Promise.resolve({ view: 'overview', ...sp }) });
   return (await renderToHtml(tree)).replaceAll('<!-- -->', '');
 }
 
@@ -544,8 +546,8 @@ describe('createFirstWorkspaceAction', () => {
     expect((await ownedBy(user)).map((w) => w.name)).toEqual(['Acme']);
 
     const again = await expectRedirect(() => createFirstWorkspaceAction(form({ name: 'Again' })));
-    expect(again.startsWith('/dashboard?error=')).toBe(true);
-    expect(decodeURIComponent(again.slice('/dashboard?error='.length))).toContain(
+    expect(again.startsWith('/today?error=')).toBe(true);
+    expect(decodeURIComponent(again.slice('/today?error='.length))).toContain(
       'You already belong to a workspace',
     );
     expect(await ownedBy(user)).toHaveLength(1);
@@ -555,7 +557,7 @@ describe('createFirstWorkspaceAction', () => {
     const user = await seedUser({ email: 'blank@test.local' });
     await signInAs(user);
     const blank = await expectRedirect(() => createFirstWorkspaceAction(form({ name: ' ' })));
-    expect(decodeURIComponent(blank)).toBe('/dashboard?error=Give your workspace a name.');
+    expect(decodeURIComponent(blank)).toBe('/today?error=Give your workspace a name.');
 
     session.current = null;
     expect(await expectRedirect(() => createFirstWorkspaceAction(form({ name: 'X' })))).toBe('/');
@@ -572,7 +574,7 @@ describe('createFirstWorkspaceAction', () => {
 
 // ============ the no-workspace screen ==================================
 
-describe('the no-workspace screen on /dashboard', () => {
+describe('the no-workspace screen on /today', () => {
   it('offers to create a workspace and explains how to be added, with no server-config hint', async () => {
     const user = await seedUser({ email: 'loner@test.local' });
     await signInAs(user);
@@ -631,7 +633,7 @@ describe('the no-workspace screen on /dashboard', () => {
   });
 });
 
-describe('/onboarding and the settings pages send a user without a workspace to the screen', () => {
+describe('/onboarding and the settings pages show a user without a workspace the state in place (DS-07)', () => {
   const sp = () => Promise.resolve({});
   const PAGES: Array<[string, () => Promise<unknown>]> = [
     ['/onboarding', () => OnboardingPage({ searchParams: sp() })],
@@ -645,10 +647,13 @@ describe('/onboarding and the settings pages send a user without a workspace to 
     ['/settings/usage', () => UsagePage({ searchParams: sp() })],
   ];
 
-  it.each(PAGES)('%s redirects to /dashboard', async (_route, render) => {
+  it.each(PAGES)('%s renders the no-workspace state', async (_route, render) => {
     const user = await seedUser({ email: 'loner@test.local' });
     await signInAs(user);
-    expect(await expectRedirect(render)).toBe('/dashboard');
+    const html = (await renderToHtml((await render()) as ReactNode)).replaceAll('<!-- -->', '');
+    expect(html).toContain('data-no-workspace-state');
+    expect(html).toContain('Create your workspace');
+    expect(html).toContain(`<code>${user}</code>`);
   });
 });
 

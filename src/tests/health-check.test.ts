@@ -1,6 +1,8 @@
 // AI workspace health check tests: rule findings from seeded problem
-// states, report persistence + scoring, warning notification, the AI
+// states (through the AP-06 engine and the one-release collectRuleFindings
+// wrapper), report persistence + scoring, warning notification, the AI
 // communication review with a stub provider, and the due-claim logic.
+// The engine's own suite is src/tests/diagnostics.test.ts.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import '@/lib/connectors/mock';
@@ -27,12 +29,13 @@ import {
 import {
   collectRuleFindings,
   listHealthReports,
-  mailboxFindings,
   processDueHealthChecks,
+  readStoredFindings,
   runWorkspaceHealthCheck,
-  type HealthFinding,
   type ThreadReview,
 } from '@/lib/services/health-check';
+import { mailboxFailingFindings, mailboxNoneFindings } from '@/lib/diagnostics/rules/mail';
+import { findingMessage } from '@/lib/diagnostics/types';
 import { createConnector, createRecipe } from '@/lib/services/connector-run';
 import { listNotifications } from '@/lib/services/notifications';
 import { createProductProfile } from '@/lib/services/product-profile';
@@ -147,11 +150,11 @@ describe('collectRuleFindings', () => {
     // copy only mentioned approved drafts.
     const mailbox = findings.find((f) => f.code === 'mailbox.none')!;
     expect(mailbox.message).toBe(
-      'No mailbox is connected — nothing can be sent and no replies are read.',
+      'No mailbox connected. Nothing can be sent or received until you connect one.',
     );
   });
 
-  describe('mailboxes by status (failing holds its queue; paused fails it)', () => {
+  describe('mailboxes by status (failing holds its queue; paused holds it, fails due follow-ups)', () => {
     async function addMailbox(s: Setup, address: string, status: MailboxStatus): Promise<bigint> {
       const [row] = await db
         .insert(mailboxes)
@@ -178,8 +181,13 @@ describe('collectRuleFindings', () => {
       const id = await addMailbox(s, 'sales@test.local', 'failing');
       const found = await mailboxCodes(s);
       expect(found.map((f) => f.code)).toEqual(['mailbox.failing', 'mailbox.none']);
-      expect(found[0]!.message).toContain('Mailbox "sales@test.local" has been failing.');
+      expect(found[0]!.severity).toBe('critical');
+      expect(found[0]!.message).toContain('Mailbox "sales@test.local" is failing.');
       expect(found[0]!.message).toContain('queued outreach and follow-ups are held');
+      // I095: what operators miss — the inbox side stops too.
+      expect(found[0]!.message).toContain(
+        'replies, unsubscribe requests and bounces sent to it are no longer received',
+      );
       expect(found[0]!.message).not.toContain('still sends');
       expect(found[0]!.href).toBe(`/mailbox/${id}`);
       expect(found[1]!.message).toContain('(each one is failing)');
@@ -193,21 +201,24 @@ describe('collectRuleFindings', () => {
       expect((await mailboxCodes(s)).map((f) => f.code)).toEqual(['mailbox.failing']);
     });
 
-    it('only paused mailboxes: due sends are marked failed, not held', async () => {
+    it('only paused mailboxes: due sends are held, not failed (PC-05, P0-F08)', async () => {
       const s = await setup();
       await addMailbox(s, 'sales@test.local', 'paused');
       const found = await mailboxCodes(s);
-      expect(found.map((f) => f.code)).toEqual(['mailbox.none']);
+      // mailbox.paused is context (info), listed after the problem.
+      expect(found.map((f) => f.code)).toEqual(['mailbox.none', 'mailbox.paused']);
       expect(found[0]!.message).toContain('(each one is paused)');
-      expect(found[0]!.message).toContain('marked failed, not held');
+      expect(found[0]!.message).toContain('are held (not sent, not failed) until you re-enable it');
+      expect(found[0]!.message).not.toContain('marked failed');
       expect(found[0]!.href).toBe('/mailbox');
     });
 
-    it('a paused mailbox next to an active one is not a problem', async () => {
+    it('a paused mailbox next to an active one is context (info), not a problem', async () => {
       const s = await setup();
       await addMailbox(s, 'sales@test.local', 'active');
       await addMailbox(s, 'info@test.local', 'paused');
-      expect(await mailboxCodes(s)).toEqual([]);
+      const found = await mailboxCodes(s);
+      expect(found.map((f) => [f.code, f.severity])).toEqual([['mailbox.paused', 'info']]);
     });
 
     it('only archived mailboxes count as none', async () => {
@@ -226,25 +237,32 @@ describe('collectRuleFindings', () => {
         lastError,
         lastErrorAt: null,
         failingSince: new Date('2026-10-01T08:00:00Z'),
+        failureClass: null,
+        nextProbeAt: null,
+        probeAttempts: 0,
+        imapConsecutiveFailures: 0,
         smtpHost: 'mail.example.test',
         smtpPort: 587,
         imapHost: 'mail.example.test',
         imapPort: 993,
       });
-      const found = mailboxFindings([
+      const rows = [
         row(1n, 'alpha', 'failing', 'SMTP: connect ECONNREFUSED 192.0.2.1:587'),
         row(2n, 'beta', 'failing', 'IMAP: Command failed: [AUTHENTICATIONFAILED] Authentication failed.'),
         row(3n, 'gamma', 'active', null),
         row(4n, 'delta', 'archived', null),
-      ]);
+      ];
+      const found = [...mailboxFailingFindings(rows, 1n), ...mailboxNoneFindings(rows)];
       expect(found.map((f) => [f.code, f.href])).toEqual([
         ['mailbox.failing', '/mailbox/1'],
         ['mailbox.failing', '/mailbox/2'],
       ]);
-      expect(found[0]!.message).toContain('Mailbox "alpha" has been failing since 2026-10-01 08:00 UTC.');
-      expect(found[0]!.message).toContain('port 465');
-      expect(found[1]!.message).toContain('refused the login');
-      expect(mailboxFindings([row(4n, 'delta', 'archived', null)])).toEqual([
+      const message = (i: number) => findingMessage(found[i]!);
+      expect(message(0)).toContain('It has been failing since 2026-10-01 08:00 UTC.');
+      expect(message(0)).toContain('Nothing can be sent from it.');
+      expect(message(0)).toContain('port 465');
+      expect(message(1)).toContain('refused the login');
+      expect(mailboxNoneFindings([row(4n, 'delta', 'archived', null)])).toEqual([
         expect.objectContaining({ code: 'mailbox.none', href: '/mailbox/new' }),
       ]);
     });
@@ -271,7 +289,7 @@ describe('collectRuleFindings', () => {
     const f = findings.find((x) => x.code === 'recipes.no_country');
     expect(f).toBeDefined();
     expect(f!.message).toBe(
-      '1 of 2 recipes have no target country — the geography gate is off for them, so leads from any country pass review and can be emailed.',
+      '1 of 2 active recipes have no target country. The geography gate is OFF for these recipes: leads from any country pass review and can be emailed. Set a country on each recipe to turn the gate on.',
     );
     expect(f!.message).not.toContain('manual review');
     expect(f!.href).toBe('/connectors');
@@ -295,7 +313,7 @@ describe('runWorkspaceHealthCheck', () => {
     const commReview = report.commReview as ThreadReview[];
     expect(commReview).toHaveLength(1);
     expect(commReview[0]!.issues[0]).toContain('repeats');
-    const findings = report.findings as HealthFinding[];
+    const findings = readStoredFindings(report.findings);
     expect(findings.some((f) => f.code === 'products.none')).toBe(true);
 
     const notifs = await listNotifications(ctx(s.workspaceA, s.ownerA));

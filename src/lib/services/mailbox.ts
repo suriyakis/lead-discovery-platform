@@ -11,27 +11,44 @@ import {
   type MailboxStatus,
   type NewMailbox,
 } from '@/lib/db/schema/mailing';
-import { recordAuditEvent } from './audit';
-import { failingRecheckDelayMs } from './imap-backoff';
+import { recordAuditEvent, recordSystemAuditEvent } from './audit';
+import {
+  clearBackOnlineNotice,
+  describeRecoveryPlan,
+  endMailboxFailingIncident,
+  healthySchedule,
+  initialFailingSchedule,
+  legacyMailboxFailingKey,
+  mailboxFailingFingerprint,
+  notifyMailboxBackOnline,
+  raiseMailboxFailingIncident,
+  scheduleAfterFailedRecovery,
+  scheduleAfterSettingsEdit,
+  type ProbeSchedule,
+} from './mailbox-health';
 import { notifyWorkspaceAdmins, resolveNotifications, type NotifyInput } from './notifications';
 import {
   canAdminWorkspace,
   canWrite,
+  isAutomatic,
   type WorkspaceContext,
 } from './context';
 import { deleteSecret, getSecret, setSecret } from './secrets';
+import { describeLeaseHolder, withWorkLease } from './work-leases';
 import {
   createMailProvider,
+  type ConnectionCheck,
   type ConnectionTestResult,
   type IMailProvider,
   type MailboxConfig,
 } from '@/lib/mail';
 import {
   adviseConnectionFailure,
-  classifyConnectionFailure,
+  classifyMailboxFailure,
   describeConnectionError,
   isAuthFailure,
   parseStoredMailboxError,
+  type MailboxFailureClass,
   type MailProtocol,
 } from '@/lib/mail/connection-errors';
 
@@ -228,7 +245,20 @@ export async function updateMailbox(
       if (key) await setSecret(ctx, key, input.imap.password);
     }
   }
-  if (input.status !== undefined) updates.status = input.status;
+  const now = updates.updatedAt;
+  if (input.status !== undefined) {
+    updates.status = input.status;
+    if (input.status !== 'failing') Object.assign(updates, NOT_FAILING);
+    // Back in service (from paused): its health probe runs next tick.
+    if (input.status === 'active' && existing.status !== 'active') updates.nextProbeAt = now;
+  }
+  // PC-09: new connection settings get checked — a failing mailbox gets ONE
+  // recovery check (an 'auth' one is otherwise never retried), an active
+  // one its authenticated verify, both at the next probe tick.
+  const recoveryCheck = connectionSettingsChanged(existing, input);
+  if (recoveryCheck) {
+    Object.assign(updates, scheduleAfterSettingsEdit(updates.status ?? existing.status, now));
+  }
   if (input.isDefault === true) {
     await db
       .update(mailboxes)
@@ -260,9 +290,35 @@ export async function updateMailbox(
     kind: 'mailbox.update',
     entityType: 'mailbox',
     entityId: id,
+    ...(recoveryCheck ? { payload: { connectionSettingsChanged: true, checkScheduledFor: now.toISOString() } } : {}),
   });
+  if (existing.status === 'failing' && updated.status !== 'failing') {
+    await endMailboxFailingIncident(ctx.workspaceId, id, { resolvedBy: ctx.userId });
+  }
 
   return updated;
+}
+
+/** PC-09: did this edit change how we connect or log in? (The edit form
+ *  re-submits every field, so compare with the row; a password is a
+ *  change whenever one is given.) */
+function connectionSettingsChanged(existing: Mailbox, input: UpdateMailboxInput): boolean {
+  if (input.smtpHost !== undefined && input.smtpHost.trim() !== existing.smtpHost) return true;
+  if (input.smtpPort !== undefined && input.smtpPort !== existing.smtpPort) return true;
+  if (input.smtpSecure !== undefined && input.smtpSecure !== existing.smtpSecure) return true;
+  if (input.smtpUser !== undefined && input.smtpUser.trim() !== existing.smtpUser) return true;
+  if (input.smtpPassword) return true;
+  if (input.imap === null) return existing.imapHost !== null;
+  if (input.imap !== undefined) {
+    if (existing.imapHost === null) return true;
+    if (input.imap.host.trim() !== existing.imapHost) return true;
+    if ((input.imap.port ?? 993) !== existing.imapPort) return true;
+    if ((input.imap.secure ?? true) !== existing.imapSecure) return true;
+    if (input.imap.user.trim() !== existing.imapUser) return true;
+    if ((input.imap.folder?.trim() || 'INBOX') !== existing.imapFolder) return true;
+    if (input.imap.password) return true;
+  }
+  return false;
 }
 
 export async function archiveMailbox(
@@ -274,7 +330,7 @@ export async function archiveMailbox(
   if (existing.status === 'archived') return existing;
   const [updated] = await db
     .update(mailboxes)
-    .set({ status: 'archived', isDefault: false, updatedAt: new Date() })
+    .set({ status: 'archived', isDefault: false, ...NOT_FAILING, updatedAt: new Date() })
     .where(
       and(
         eq(mailboxes.workspaceId, ctx.workspaceId),
@@ -289,7 +345,7 @@ export async function archiveMailbox(
     entityId: id,
   });
   if (existing.status === 'failing') {
-    await resolveNotifications(ctx.workspaceId, mailboxFailingDedupeKey(id));
+    await endMailboxFailingIncident(ctx.workspaceId, id, { resolvedBy: ctx.userId });
   }
   return updated;
 }
@@ -340,13 +396,13 @@ export async function deleteMailbox(
 }
 
 /**
- * Phase 51: bring a `failing` mailbox back to `active`. Resets the
- * consecutive-failure counter, clears the cooldown gate, and wipes the
- * stored lastError so the next IMAP tick re-attempts the connection.
- * Use after fixing the underlying credential / config issue. flow:F-04:
- * also ends the failing episode and resolves its notification, so a new
- * failure notifies again. (Test again does the same after a passing
- * check; Reactivate skips the check.)
+ * Phase 51: bring a `failing` mailbox back to `active` without a check.
+ * Resets the consecutive-failure counter and the sync gate and wipes the
+ * stored lastError. flow:F-04 / PC-09: ends the failing episode (the
+ * incident is resolved by this person, the notifications are marked
+ * read, so a new failure notifies again) and asks the probe tick for the
+ * authenticated SMTP verify now: a mailbox reactivated with the same bad
+ * password is caught by that one login, not by a stream of syncs.
  */
 export async function reactivateMailbox(
   ctx: WorkspaceContext,
@@ -360,6 +416,7 @@ export async function reactivateMailbox(
       'invalid_state',
     );
   }
+  const now = new Date();
   const [updated] = await db
     .update(mailboxes)
     .set({
@@ -370,7 +427,11 @@ export async function reactivateMailbox(
       lastError: null,
       lastErrorAt: null,
       failingSince: null,
-      updatedAt: new Date(),
+      failureClass: null,
+      nextProbeAt: now,
+      probeAttempts: 0,
+      smtpVerifiedAt: null,
+      updatedAt: now,
     })
     .where(
       and(
@@ -385,15 +446,14 @@ export async function reactivateMailbox(
     entityType: 'mailbox',
     entityId: id,
   });
-  await resolveNotifications(ctx.workspaceId, mailboxFailingDedupeKey(id));
+  await endMailboxFailingIncident(ctx.workspaceId, id, { resolvedBy: ctx.userId });
   return updated;
 }
 
 /**
  * Operator-driven pause: flips an `active` or `failing` mailbox to
- * `paused`. While paused, the IMAP tick skips this row (it only syncs
- * 'active' and re-checks 'failing' ones) and `mail.sendMessage` refuses
- * to send through it.
+ * `paused`. While paused, neither the IMAP tick nor the health probes
+ * touch it and `mail.sendMessage` refuses to send through it.
  * The pause is sticky until the operator re-enables. Counters and
  * lastError are preserved so a later Reactivate still has the
  * forensic trail.
@@ -413,7 +473,11 @@ export async function pauseMailbox(
   if (existing.status === 'paused') return existing;
   const [updated] = await db
     .update(mailboxes)
-    .set({ status: 'paused', updatedAt: new Date() })
+    .set({
+      status: 'paused',
+      ...NOT_FAILING,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(mailboxes.workspaceId, ctx.workspaceId),
@@ -427,33 +491,49 @@ export async function pauseMailbox(
     entityType: 'mailbox',
     entityId: id,
   });
-  // A paused mailbox is not re-checked or alarmed about; the operator has
-  // taken it out of service, so the failing alarm is over.
+  // A paused mailbox is not probed or alarmed about; the operator has
+  // taken it out of service, so the failing episode is over.
   if (existing.status === 'failing') {
-    await resolveNotifications(ctx.workspaceId, mailboxFailingDedupeKey(id));
+    await endMailboxFailingIncident(ctx.workspaceId, id, { resolvedBy: ctx.userId });
   }
   return updated;
 }
 
-// ---- failure lifecycle (flow:F-05 send-time EAUTH, flow:F-04) -------
-//
-//   active ──markMailboxFailing──▶ failing ──passing check──▶ active
-//                                     │  ▲
-//                                     └──┘ failed re-check: error, backoff
-//                                          and notification refreshed
-//
-// While 'failing', nothing reads its inbox (the IMAP tick only re-checks
-// the connection, on the imap_next_sync_after gate), the outreach queue
-// and follow-ups hold its mail (flow:F-05), and one 'mailbox.failing'
-// notification stays in the bell (deduped while unread). It leaves
-// 'failing' through a passing re-check (the tick, Test again, or a manual
-// Sync — all recordMailboxConnectionCheck), Reactivate, pause or archive;
-// each resolves the notification so the next failure notifies again.
+/** The PC-09 columns of a mailbox that is not failing (the CHECK on
+ *  failure_class). failing_since and lastError stay as the forensic trail. */
+const NOT_FAILING = {
+  failureClass: null,
+  nextProbeAt: null,
+  probeAttempts: 0,
+} as const;
 
-/** Dedupe key of a mailbox's 'mailbox.failing' notification (each
- *  admin's copy appends adminDedupeKey's ':user:<id>'). */
-export function mailboxFailingDedupeKey(mailboxId: bigint): string {
-  return `mailbox.failing:${mailboxId}`;
+// ---- failure lifecycle (flow:F-04, flow:F-05, PC-09) ----------------
+//
+//   active ──markMailboxFailing(class)──▶ failing ──passing check──▶ active
+//                                          │   ▲
+//                                          └───┘ a failed check: the class
+//                                                and the probe schedule
+//
+// One way in: markMailboxFailing, from an IMAP sync (a refused login, or
+// too many failures in a row), a failed Test again, a refused login at
+// send time (flow:F-05) and the health probes (services/mailbox-probes.ts).
+// It classifies the failure (auth / connection / ambiguous —
+// lib/mail/connection-errors.ts) and sets the probe schedule for that
+// class (services/mailbox-health.ts). While 'failing', nothing reads its
+// inbox (the IMAP tick only syncs active mailboxes), the outreach queue
+// and follow-ups hold its mail, one ops_event is open for it (PC-08
+// alerts the platform owner) and its owners / admins have one
+// notification. It leaves 'failing' through a passing check (a probe,
+// Test again, a manual Sync — all recordMailboxConnectionCheck),
+// Reactivate, pause or archive; each ends the episode
+// (endMailboxFailingIncident), and a passing check also says it is back
+// online.
+
+/** Dedupe key of a mailbox's 'mailbox.failing' notification: PC-09 uses
+ *  the incident's fingerprint (each admin's copy appends adminDedupeKey's
+ *  ':user:<id>'). */
+export function mailboxFailingDedupeKey(workspaceId: bigint, mailboxId: bigint): string {
+  return mailboxFailingFingerprint(workspaceId, mailboxId);
 }
 
 export interface MailboxFailure {
@@ -462,14 +542,24 @@ export interface MailboxFailure {
   protocol: MailProtocol;
   /** The server's / library's message (describeConnectionError output). */
   message: string;
-  /** The server refused our credentials: re-checks start 6 h apart, not
-   *  1 h. Defaults to reading `message`. */
+  /** PC-09: the recovery class. Default: 'auth' when `auth` is set, else
+   *  classifyMailboxFailure(message). */
+  failureClass?: MailboxFailureClass;
+  /** The server refused our credentials (shorthand for failureClass 'auth'). */
   auth?: boolean;
   /** When the error happened (lastErrorAt); defaults to now. */
   occurredAt?: Date;
   /** Consecutive failed checks to store (IMAP syncs / re-checks). Left
    *  unchanged when omitted (a send-time failure is not an IMAP check). */
   consecutiveFailures?: number;
+  /** PC-09: the probe columns to write — an automatic recovery attempt
+   *  computes them (scheduleAfterFailedRecovery). Default: a mailbox
+   *  entering 'failing' or changing class starts that class's schedule
+   *  (initialFailingSchedule); a repeat in the same class keeps it, so a
+   *  manual Test again neither resets nor spends the automatic budget. */
+  schedule?: ProbeSchedule;
+  /** The clock (tests; the probe tick passes its own). */
+  now?: Date;
 }
 
 export interface MarkMailboxFailingResult {
@@ -477,8 +567,11 @@ export interface MarkMailboxFailingResult {
   marked: boolean;
   /** True when this call created the (deduped) notification. */
   notified: boolean;
-  /** When the IMAP tick may re-check it; null when not marked. */
-  nextSyncAfter: Date | null;
+  /** The class it is failing with (null when not marked). */
+  failureClass: MailboxFailureClass | null;
+  /** When the probe tick looks at it next; null = nothing retries it
+   *  automatically (or not marked). */
+  nextProbeAt: Date | null;
 }
 
 /** What a failing mailbox stops doing — the same words on the
@@ -496,17 +589,32 @@ export interface MailboxFailureSummary {
   impact: string;
   /** The operator's next step (adviseConnectionFailure). */
   advice: string;
+  /** PC-09: what the probes do next (describeRecoveryPlan). */
+  recovery: string;
 }
 
-/** Explain a mailbox's stored lastError: which side, what it stops, what to do. */
+/** Explain a mailbox's stored lastError: which side, what it stops, what
+ *  to do, and what happens on its own. */
 export function summarizeMailboxFailure(
-  mailbox: Pick<Mailbox, 'lastError' | 'smtpHost' | 'smtpPort' | 'imapHost' | 'imapPort'>,
+  mailbox: Pick<
+    Mailbox,
+    | 'lastError'
+    | 'smtpHost'
+    | 'smtpPort'
+    | 'imapHost'
+    | 'imapPort'
+    | 'status'
+    | 'failureClass'
+    | 'nextProbeAt'
+    | 'probeAttempts'
+  >,
 ): MailboxFailureSummary {
   const { protocol, message } = parseStoredMailboxError(mailbox.lastError);
   return {
     protocol,
     impact: failingMailboxImpact(protocol),
     advice: adviseConnectionFailure(protocol, message, mailbox),
+    recovery: describeRecoveryPlan(mailbox),
   };
 }
 
@@ -522,37 +630,42 @@ function failingNotice(mailbox: Mailbox): Omit<NotifyInput, 'userId'> {
   return {
     kind: 'mailbox.failing',
     title: `Mailbox "${mailbox.name}" is failing`,
-    body: `${summary.impact} ${summary.advice} Last error — ${excerpt}`,
-    href: `/mailbox/${mailbox.id}`,
-    dedupeKey: mailboxFailingDedupeKey(mailbox.id),
+    body: `${summary.impact} ${summary.advice} ${summary.recovery} Last error — ${excerpt}`,
+    // The mailbox page's fix panel: the advice, Edit settings, Test again.
+    href: `/mailbox/${mailbox.id}#fix`,
+    dedupeKey: mailboxFailingDedupeKey(mailbox.workspaceId, mailbox.id),
   };
+}
+
+function storedError(protocol: MailProtocol, message: string): string {
+  return `${protocol === 'smtp' ? 'SMTP' : 'IMAP'}: ${message}`.slice(0, 2000);
 }
 
 /**
  * Mark a mailbox as failing after a connection / credential failure that
- * is ours, not a recipient's: send-time EAUTH (F-05), the IMAP auto-pause
- * and a failed re-check or Test again (F-04). Sets status 'failing',
- * lastError + lastErrorAt and a non-null imap_next_sync_after — also when
- * the mailbox is already failing, so a repeat failure refreshes the error
- * and pushes the re-check out (failingRecheckDelayMs: the wait grows with
- * how long it has been failing, 1 h or 6 h after a refused login, capped
- * at 24 h) — and raises one 'mailbox.failing' notification per mailbox,
- * deduped while unread (a read one is re-raised by the next failure).
+ * is ours, not a recipient's (see the lifecycle above). Sets status
+ * 'failing', lastError + lastErrorAt, failing_since (kept while it stays
+ * failing), the failure class and its probe schedule.
  *
- * A paused or archived mailbox keeps its status: those are operator
- * decisions and nothing is sent through them anyway. The notification
- * goes to the workspace owners / admins — the people who can fix the
- * credentials or reactivate it — one row each (notifyWorkspaceAdmins).
+ * PC-09: raises the mailbox's incident on every call (repeats count as
+ * occurrences of the open one) and notifies the workspace owners / admins
+ * when the episode starts or its class changes — a repeat in the same
+ * class only counts. A paused or archived mailbox keeps its status: those
+ * are operator decisions and nothing is sent through them anyway.
  */
 export async function markMailboxFailing(
   ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
   mailboxId: bigint,
   failure: MailboxFailure,
 ): Promise<MarkMailboxFailingResult> {
-  const now = new Date();
-  const label = failure.protocol === 'smtp' ? 'SMTP' : 'IMAP';
-  const lastError = `${label}: ${failure.message}`.slice(0, 2000);
-  const notMarked: MarkMailboxFailingResult = { marked: false, notified: false, nextSyncAfter: null };
+  const now = failure.now ?? new Date();
+  const lastError = storedError(failure.protocol, failure.message);
+  const notMarked: MarkMailboxFailingResult = {
+    marked: false,
+    notified: false,
+    failureClass: null,
+    nextProbeAt: null,
+  };
 
   const prior = (
     await db
@@ -565,10 +678,15 @@ export async function markMailboxFailing(
 
   const wasFailing = prior.status === 'failing';
   const failingSince = wasFailing && prior.failingSince ? prior.failingSince : now;
-  const auth = failure.auth ?? classifyConnectionFailure(failure.message) === 'auth';
-  const nextSyncAfter = new Date(
-    now.getTime() + failingRecheckDelayMs(now.getTime() - failingSince.getTime(), auth),
-  );
+  const failureClass: MailboxFailureClass =
+    failure.failureClass ??
+    (failure.auth ? 'auth' : classifyMailboxFailure({ message: failure.message }));
+  const classChanged = !wasFailing || prior.failureClass !== failureClass;
+  const schedule: ProbeSchedule =
+    failure.schedule ??
+    (classChanged
+      ? initialFailingSchedule(failureClass, now)
+      : { nextProbeAt: prior.nextProbeAt, probeAttempts: prior.probeAttempts });
 
   const [updated] = await db
     .update(mailboxes)
@@ -577,7 +695,9 @@ export async function markMailboxFailing(
       lastError,
       lastErrorAt: failure.occurredAt ?? now,
       failingSince,
-      imapNextSyncAfter: nextSyncAfter,
+      failureClass,
+      nextProbeAt: schedule.nextProbeAt,
+      probeAttempts: schedule.probeAttempts,
       ...(failure.consecutiveFailures !== undefined
         ? { imapConsecutiveFailures: failure.consecutiveFailures }
         : {}),
@@ -593,7 +713,7 @@ export async function markMailboxFailing(
     .returning();
   if (!updated) return notMarked;
 
-  if (!wasFailing) {
+  if (classChanged) {
     await recordAuditEvent(ctx, {
       kind: 'mailbox.marked_failing',
       entityType: 'mailbox',
@@ -601,26 +721,55 @@ export async function markMailboxFailing(
       payload: {
         protocol: failure.protocol,
         lastError,
-        auth,
+        failureClass,
         priorStatus: prior.status,
-        nextSyncAfter: nextSyncAfter.toISOString(),
+        priorFailureClass: prior.failureClass,
+        nextProbeAt: schedule.nextProbeAt?.toISOString() ?? null,
       },
     });
   }
 
-  const rows = await notifyWorkspaceAdmins(ctx.workspaceId, failingNotice(updated));
-  return { marked: true, notified: rows.length > 0, nextSyncAfter };
+  await raiseMailboxFailingIncident(
+    {
+      workspaceId: ctx.workspaceId,
+      mailboxId,
+      failureClass,
+      protocol: failure.protocol,
+      lastError,
+      nextProbeAt: schedule.nextProbeAt,
+    },
+    now,
+  );
+
+  let notified = false;
+  if (classChanged) {
+    await clearBackOnlineNotice(ctx.workspaceId, mailboxId);
+    // A class change replaces the unread notice with one that says what
+    // is wrong now (the dedupe index would drop the new one otherwise).
+    if (wasFailing) {
+      await resolveNotifications(ctx.workspaceId, mailboxFailingDedupeKey(ctx.workspaceId, mailboxId));
+      await resolveNotifications(ctx.workspaceId, legacyMailboxFailingKey(mailboxId));
+    }
+    const rows = await notifyWorkspaceAdmins(ctx.workspaceId, failingNotice(updated));
+    notified = rows.length > 0;
+  }
+  return { marked: true, notified, failureClass, nextProbeAt: schedule.nextProbeAt };
 }
 
 /**
- * A passing check on a failing mailbox: back to active, counters and the
- * gate cleared, the episode ended and its notification resolved. Returns
- * the row, or null when it was not failing (nothing changed).
+ * A passing check on a failing mailbox: back to active, counters, the
+ * sync gate and the class cleared, the next probe on the normal cadence
+ * and smtp_verified_at stamped (every check that recovers logged in to
+ * SMTP), the episode ended (incident resolved, notifications read) and
+ * the owners / admins told it is back online. Returns the row, or null
+ * when it was not failing (nothing changed).
  */
 async function markMailboxRecovered(
-  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId' | 'trigger'>,
   mailbox: Mailbox,
+  now: Date,
 ): Promise<Mailbox | null> {
+  const schedule = healthySchedule(now);
   const [row] = await db
     .update(mailboxes)
     .set({
@@ -631,7 +780,11 @@ async function markMailboxRecovered(
       lastError: null,
       lastErrorAt: null,
       failingSince: null,
-      updatedAt: new Date(),
+      failureClass: null,
+      nextProbeAt: schedule.nextProbeAt,
+      probeAttempts: schedule.probeAttempts,
+      smtpVerifiedAt: now,
+      updatedAt: now,
     })
     .where(
       and(
@@ -649,9 +802,13 @@ async function markMailboxRecovered(
     payload: {
       failingSince: mailbox.failingSince?.toISOString() ?? null,
       lastError: mailbox.lastError,
+      failureClass: mailbox.failureClass,
+      by: isAutomatic(ctx) ? 'probe' : 'check',
     },
   });
-  await resolveNotifications(ctx.workspaceId, mailboxFailingDedupeKey(mailbox.id));
+  // The check passing resolved it, whoever started the check.
+  await endMailboxFailingIncident(ctx.workspaceId, mailbox.id);
+  await notifyMailboxBackOnline(ctx.workspaceId, row);
   return row;
 }
 
@@ -662,10 +819,21 @@ export async function runConnectionTest(provider: IMailProvider): Promise<Connec
     return await provider.testConnection();
   } catch (err) {
     return {
-      smtp: { ok: false, detail: describeConnectionError(err), authFailed: isAuthFailure(err) },
+      smtp: {
+        ok: false,
+        detail: describeConnectionError(err),
+        authFailed: isAuthFailure(err),
+        failureClass: classifyMailboxFailure({ error: err }),
+      },
       imap: null,
     };
   }
+}
+
+/** The recovery class of one failed side of a check. */
+export function checkFailureClass(check: ConnectionCheck): MailboxFailureClass {
+  if (check.authFailed) return 'auth';
+  return check.failureClass ?? classifyMailboxFailure({ message: check.detail ?? '' });
 }
 
 export interface MailboxCheckOutcome {
@@ -677,30 +845,47 @@ export interface MailboxCheckOutcome {
   lastError: string | null;
   /** A new mailbox.failing notification was raised. */
   notified: boolean;
-  /** The re-check gate after a failure (null when ok or not marked). */
-  nextSyncAfter: Date | null;
+  /** The class of the failure when !ok. */
+  failureClass: MailboxFailureClass | null;
+  /** When the probe tick looks at it next after a failure (null when ok,
+   *  not marked, or nothing retries it automatically). */
+  nextProbeAt: Date | null;
 }
 
 /**
- * Record the result of a full connection check (Test again, the IMAP
- * tick's re-check of a failing mailbox, a manual Sync of one). A pass
- * recovers a failing mailbox and clears a healthy one's stale error; a
- * paused / archived one keeps its status either way. A failure goes
- * through markMailboxFailing (SMTP is reported first when both fail).
+ * Record the result of a full (authenticated SMTP + IMAP) connection check
+ * — Test again, a manual Sync of a failing mailbox, a recovery check of
+ * the probe tick. A pass recovers a failing mailbox and clears a healthy
+ * one's stale error (and stamps smtp_verified_at); a paused / archived one
+ * keeps its status either way. A failure goes through markMailboxFailing
+ * (SMTP is reported first when both fail).
+ *
+ * PC-09: `automatic` (the probe tick) moves the probe schedule on
+ * (scheduleAfterFailedRecovery, from the row as the caller read it under
+ * the mailbox lease); a person's check leaves the automatic schedule and
+ * budget as they were unless the class changed.
  */
 export async function recordMailboxConnectionCheck(
-  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
+  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId' | 'trigger'>,
   mailbox: Mailbox,
   result: ConnectionTestResult,
-  options: { consecutiveFailures?: number } = {},
+  options: { consecutiveFailures?: number; automatic?: boolean; now?: Date } = {},
 ): Promise<MailboxCheckOutcome> {
+  const now = options.now ?? new Date();
   const ok = result.smtp.ok && (result.imap === null || result.imap.ok);
   const scope = and(eq(mailboxes.workspaceId, ctx.workspaceId), eq(mailboxes.id, mailbox.id));
 
   if (ok) {
     if (mailbox.status === 'failing') {
-      const row = await markMailboxRecovered(ctx, mailbox);
-      return { ok, recovered: row !== null, lastError: null, notified: false, nextSyncAfter: null };
+      const row = await markMailboxRecovered(ctx, mailbox, now);
+      return {
+        ok,
+        recovered: row !== null,
+        lastError: null,
+        notified: false,
+        failureClass: null,
+        nextProbeAt: null,
+      };
     }
     await db
       .update(mailboxes)
@@ -711,30 +896,42 @@ export async function recordMailboxConnectionCheck(
               lastErrorAt: null,
               imapConsecutiveFailures: 0,
               imapNextSyncAfter: null,
-              updatedAt: new Date(),
+              smtpVerifiedAt: now,
+              updatedAt: now,
             }
-          : { lastError: null, lastErrorAt: null, updatedAt: new Date() },
+          : { lastError: null, lastErrorAt: null, smtpVerifiedAt: now, updatedAt: now },
       )
       .where(scope);
-    return { ok, recovered: false, lastError: null, notified: false, nextSyncAfter: null };
+    return { ok, recovered: false, lastError: null, notified: false, failureClass: null, nextProbeAt: null };
   }
 
-  const failedSide: { protocol: MailProtocol; detail?: string; authFailed?: boolean } = !result.smtp.ok
-    ? { protocol: 'smtp', ...result.smtp }
-    : { protocol: 'imap', ...result.imap! };
-  const message = failedSide.detail?.trim() || 'failed';
+  const failedSide: { protocol: MailProtocol; check: ConnectionCheck } = !result.smtp.ok
+    ? { protocol: 'smtp', check: result.smtp }
+    : { protocol: 'imap', check: result.imap! };
+  const message = failedSide.check.detail?.trim() || 'failed';
+  const failureClass = checkFailureClass(failedSide.check);
   const marked = await markMailboxFailing(ctx, mailbox.id, {
     protocol: failedSide.protocol,
     message,
-    auth: failedSide.authFailed || undefined,
+    failureClass,
     consecutiveFailures: options.consecutiveFailures,
+    schedule: options.automatic
+      ? scheduleAfterFailedRecovery(
+          mailbox.status === 'failing'
+            ? { failureClass: mailbox.failureClass, probeAttempts: mailbox.probeAttempts }
+            : { failureClass: null, probeAttempts: 0 },
+          failureClass,
+          now,
+        )
+      : undefined,
+    now,
   });
-  const lastError = `${failedSide.protocol === 'smtp' ? 'SMTP' : 'IMAP'}: ${message}`.slice(0, 2000);
+  const lastError = storedError(failedSide.protocol, message);
   if (!marked.marked) {
     // Paused / archived: keep the operator's status, still show the result.
     await db
       .update(mailboxes)
-      .set({ lastError, lastErrorAt: new Date(), updatedAt: new Date() })
+      .set({ lastError, lastErrorAt: now, updatedAt: now })
       .where(scope);
   }
   return {
@@ -742,43 +939,90 @@ export async function recordMailboxConnectionCheck(
     recovered: false,
     lastError,
     notified: marked.notified,
-    nextSyncAfter: marked.nextSyncAfter,
+    failureClass: marked.failureClass ?? failureClass,
+    nextProbeAt: marked.nextProbeAt,
   };
 }
 
 /**
- * flow:F-04 (X7): failing mailboxes with no re-check gate — rows that
- * failed before F-04 (prod: workspace 1's since 2026-05-08, workspace 2's
- * after 13 failures), or that some path set to 'failing' without
- * markMailboxFailing. No network: the stored error is re-recorded through
- * markMailboxFailing (keeping its time), which writes the gate and raises
- * the deduped notification. Run by every IMAP tick for every active
- * workspace — also where IMAP auto-sync is off — so each such mailbox is
- * announced within one tick. Returns how many were adopted.
+ * PC-09 backfill (src/lib/remediation/mailbox-health-backfill.ts): a
+ * mailbox that was failing before PC-09 (failure_class NULL) gets its
+ * class, its incident and its owners' / admins' notification — after the
+ * owner reviewed the dry run. It is NOT scheduled for probing
+ * (next_probe_at stays NULL): it waits for a person (Edit settings, Test
+ * again, Reactivate). No network. Returns tracked: false when the row is
+ * no longer an untracked failing mailbox.
+ *
+ * A system writer (a reviewed remediation script, nobody acting in the
+ * workspace): its audit row is a system event (user_id NULL, payload
+ * actor 'system', backfill 'PC-09'), like the reaper's — never filed
+ * under the workspace owner.
  */
-export async function adoptUntrackedFailingMailboxes(
-  ctx: Pick<WorkspaceContext, 'workspaceId' | 'userId'>,
-): Promise<number> {
-  const rows = await db
+export async function trackPreexistingFailingMailbox(
+  workspaceId: bigint,
+  mailboxId: bigint,
+  now: Date = new Date(),
+): Promise<{ tracked: boolean; failureClass: MailboxFailureClass | null; notified: boolean }> {
+  const [row] = await db
     .select()
     .from(mailboxes)
+    .where(and(eq(mailboxes.workspaceId, workspaceId), eq(mailboxes.id, mailboxId)))
+    .limit(1);
+  if (!row || row.status !== 'failing' || row.failureClass !== null) {
+    return { tracked: false, failureClass: null, notified: false };
+  }
+  const stored = parseStoredMailboxError(row.lastError);
+  const failureClass = classifyMailboxFailure({ message: stored.message });
+  const [updated] = await db
+    .update(mailboxes)
+    .set({
+      failureClass,
+      failingSince: row.failingSince ?? row.lastErrorAt ?? row.updatedAt,
+      nextProbeAt: null,
+      probeAttempts: 0,
+      updatedAt: now,
+    })
     .where(
       and(
-        eq(mailboxes.workspaceId, ctx.workspaceId),
+        eq(mailboxes.workspaceId, workspaceId),
+        eq(mailboxes.id, mailboxId),
         eq(mailboxes.status, 'failing'),
-        isNull(mailboxes.imapNextSyncAfter),
+        isNull(mailboxes.failureClass),
       ),
-    );
-  let adopted = 0;
-  for (const mb of rows) {
-    const stored = parseStoredMailboxError(mb.lastError);
-    const r = await markMailboxFailing(ctx, mb.id, {
-      ...stored,
-      occurredAt: mb.lastErrorAt ?? mb.updatedAt,
-    });
-    if (r.marked) adopted++;
-  }
-  return adopted;
+    )
+    .returning();
+  if (!updated) return { tracked: false, failureClass: null, notified: false };
+  const lastError = row.lastError ?? storedError(stored.protocol, stored.message);
+  await recordSystemAuditEvent(workspaceId, {
+    kind: 'mailbox.marked_failing',
+    entityType: 'mailbox',
+    entityId: mailboxId,
+    payload: {
+      protocol: stored.protocol,
+      lastError,
+      failureClass,
+      priorStatus: 'failing',
+      priorFailureClass: null,
+      nextProbeAt: null,
+      backfill: 'PC-09',
+    },
+  });
+  await raiseMailboxFailingIncident(
+    {
+      workspaceId: workspaceId,
+      mailboxId,
+      failureClass,
+      protocol: stored.protocol,
+      lastError,
+      nextProbeAt: null,
+      backfill: true,
+    },
+    now,
+  );
+  // flow:F-04 may have notified already under its own key: replace it.
+  await resolveNotifications(workspaceId, legacyMailboxFailingKey(mailboxId));
+  const rows = await notifyWorkspaceAdmins(workspaceId, failingNotice(updated));
+  return { tracked: true, failureClass, notified: rows.length > 0 };
 }
 
 // ---- read ----------------------------------------------------------
@@ -851,6 +1095,12 @@ export async function buildProviderFor(
  * (recordMailboxConnectionCheck): a pass brings a failing mailbox back to
  * active (an operator's pause is left alone); a failure marks it failing
  * with backoff and the deduped notification.
+ *
+ * PC-12: under the mailbox's 'mailbox.sync' lease, like every sync: while
+ * a sync or another check of it runs this throws MAILBOX_BUSY ('busy'
+ * code) without logging in — one more login beside a running one is what
+ * a provider's rate limit (fail2ban) counts, and the two would record
+ * their results over each other.
  */
 export async function testMailboxConnection(
   ctx: WorkspaceContext,
@@ -858,6 +1108,23 @@ export async function testMailboxConnection(
   providerOverride?: IMailProvider,
 ): Promise<ConnectionTestResult> {
   if (!canWrite(ctx)) throw permissionDenied('mailbox.test_connection');
+  const leased = await withWorkLease(
+    ctx,
+    { kind: 'mailbox.sync', resource: mailboxId, purpose: 'connection test' },
+    () => testConnectionHeld(ctx, mailboxId, providerOverride),
+  );
+  if (leased.status === 'ran') return leased.value;
+  throw new MailboxServiceError(
+    `A sync or connection check of this mailbox is already running ${describeLeaseHolder(leased.held)}. Try again when it has finished.`,
+    'busy',
+  );
+}
+
+async function testConnectionHeld(
+  ctx: WorkspaceContext,
+  mailboxId: bigint,
+  providerOverride?: IMailProvider,
+): Promise<ConnectionTestResult> {
   const { provider, mailbox } = await buildProviderFor(ctx, mailboxId, providerOverride);
   const result = await runConnectionTest(provider);
   const outcome = await recordMailboxConnectionCheck(ctx, mailbox, result);

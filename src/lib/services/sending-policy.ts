@@ -16,7 +16,7 @@
 // configured IANA timezone. We extract local components via
 // Intl.DateTimeFormat so DST is automatic.
 
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import {
   mailMessages,
@@ -348,7 +348,9 @@ export async function canSendNow(args: {
     const domain = args.recipientDomain.toLowerCase();
     // How many sends to this domain (any address in to_addresses) in the
     // trailing 24h have already gone out from this mailbox? Cap is
-    // maxPerDomain.
+    // maxPerDomain. PC-10: only delivered sends count — a failed attempt
+    // reached nobody, and with automatic retries the failed attempts of
+    // one email would otherwise use up the domain's cap.
     const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const [row] = await db
       .select({ c: sql<number>`count(*)::int` })
@@ -358,6 +360,7 @@ export async function canSendNow(args: {
           eq(mailMessages.workspaceId, args.workspaceId),
           eq(mailMessages.mailboxId, args.mailboxId),
           eq(mailMessages.direction, 'outbound'),
+          inArray(mailMessages.status, ['sent', 'delivered']),
           gte(mailMessages.createdAt, since),
           sql`EXISTS (
             SELECT 1 FROM unnest(${mailMessages.toAddresses}) AS addr

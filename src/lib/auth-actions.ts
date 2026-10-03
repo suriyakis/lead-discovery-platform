@@ -1,7 +1,8 @@
 'use server';
 
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { HOME_PATH } from './nav/registry';
 import { signOut } from './auth';
 import { createSessionForUser } from './session-helpers';
 import { verifyUserPassword } from './services/users';
@@ -13,7 +14,7 @@ export async function signOutAction(): Promise<void> {
 /**
  * Server action behind the email + password login form on the home
  * page. On success: mints a session row, sets the Auth.js-shaped cookie,
- * redirects to /dashboard. On failure: redirects back to / with an
+ * redirects to Today. On failure: redirects back to / with an
  * error querystring.
  */
 export async function teamLoginAction(formData: FormData): Promise<void> {
@@ -26,7 +27,9 @@ export async function teamLoginAction(formData: FormData): Promise<void> {
   if (!user) {
     redirect('/?error=invalid_credentials');
   }
-  const minted = await createSessionForUser(user.id);
+  const minted = await createSessionForUser(user.id, {
+    userAgent: (await headers()).get('user-agent'),
+  });
   const jar = await cookies();
   jar.set({
     name: minted.cookieName,
@@ -37,5 +40,5 @@ export async function teamLoginAction(formData: FormData): Promise<void> {
     secure: minted.cookieSecure,
     path: '/',
   });
-  redirect('/dashboard');
+  redirect(HOME_PATH);
 }

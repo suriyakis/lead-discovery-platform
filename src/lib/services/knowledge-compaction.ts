@@ -5,22 +5,25 @@
 // budget and surfacing stale advice. This service runs periodically (and on
 // demand) to:
 //   1. Retire dead-weight lessons (low confidence + not applied recently).
-//   2. Merge near-duplicates within a (productProfileId, category) cluster
+//   2. Merge near-duplicates within a (scope, category, polarity) cluster
 //      using the workspace AI provider, keeping the strongest survivor and
-//      disabling the rest. Evidence_event_ids are unioned into the survivor
-//      so we never silently drop the origin chain.
+//      retiring the rest (lifecycle 'retired', reason 'merged',
+//      merged_into_id = survivor). Evidence_event_ids are unioned into the
+//      survivor so we never silently drop the origin chain.
 //
 // Everything is workspace-scoped — both the lesson queries and the AI
 // prompt content. A misbehaving caller cannot make this service touch
 // another tenant's lessons.
 
-import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import { learningLessons, type LearningLesson } from '@/lib/db/schema/learning';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { recordAuditEvent, recordPlatformAuditEvent } from './audit';
+import { assertGate } from './automation-gate';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
+import { getLessonScopeProducts, lessonInScope, retireLessons } from './learning';
 
 export class KnowledgeCompactionError extends Error {
   public readonly code: string;
@@ -77,6 +80,12 @@ export interface CompactionSummary {
   /** Chunks skipped without an AI call: stored embeddings show no pair
    *  anywhere near merge similarity. */
   skippedDistinctClusters: number;
+  /** Unattended runs only: cluster merges that threw and were skipped so
+   *  the rest of the pass could run (the attended run throws instead).
+   *  The weekly tick turns a non-zero count into an ops incident (PC-07). */
+  failedClusters: number;
+  /** Message of the last failed merge, for that incident; never audited. */
+  lastClusterError: string | null;
 }
 
 // ---- entry point -------------------------------------------------------
@@ -86,10 +95,21 @@ export interface CompactionSummary {
  * `knowledge.compaction.run` audit event per call, plus per-merge /
  * per-retire detail events.
  */
+/**
+ * Would "Compact now" be refused? Workspace admins only; a Background AI
+ * hold (or scope 'all') refuses it. PC-05 (I110): merging clusters calls
+ * the AI, so an empty wallet refuses it up front instead of spending past
+ * zero. PC-38: the button asks this before its guard counts the click.
+ */
+export async function assertCanCompactKnowledge(ctx: WorkspaceContext): Promise<void> {
+  if (!canAdminWorkspace(ctx)) throw permissionDenied('knowledge.compact');
+  await assertGate(ctx, 'background_ai', { spendsTokens: true });
+}
+
 export async function compactWorkspaceKnowledge(
   ctx: WorkspaceContext,
 ): Promise<CompactionSummary> {
-  if (!canAdminWorkspace(ctx)) throw permissionDenied('knowledge.compact');
+  await assertCanCompactKnowledge(ctx);
   const startedAt = new Date();
 
   const retiredStaleCount = await retireStaleLessons(ctx);
@@ -104,12 +124,13 @@ export async function compactWorkspaceKnowledge(
     ...pass,
   };
 
+  const { lastClusterError: _attendedError, ...audited } = summary;
   await recordAuditEvent(ctx, {
     kind: 'knowledge.compaction.run',
     entityType: 'workspace',
     entityId: ctx.workspaceId,
     payload: {
-      ...summary,
+      ...audited,
       workspaceId: summary.workspaceId.toString(),
       startedAt: summary.startedAt.toISOString(),
       finishedAt: summary.finishedAt.toISOString(),
@@ -129,7 +150,12 @@ export async function compactWorkspaceKnowledgeUnattended(
 ): Promise<CompactionSummary> {
   // Synthesize a bare write-context. The downstream queries only read
   // ctx.workspaceId; nothing in this service needs userId/role.
-  const ctx = { workspaceId, userId: 'system', role: 'admin' as const };
+  const ctx = { workspaceId, userId: 'system', role: 'admin' as const, trigger: 'automation' as const };
+  // PC-06 + PC-05: automatic Background AI — the workspace pause, a hold,
+  // a missing accountable owner or an empty wallet (I110: the cluster
+  // pass calls the AI) stops it. The tick checks first; this guards
+  // direct callers.
+  await assertGate(ctx, 'background_ai', { spendsTokens: true });
   const startedAt = new Date();
 
   const retiredStaleCount = await retireStaleLessons(ctx);
@@ -144,12 +170,15 @@ export async function compactWorkspaceKnowledgeUnattended(
     ...pass,
   };
 
+  // The failure text stays out of the audit trail (it can quote provider
+  // responses); the count is enough there.
+  const { lastClusterError: _unattendedError, ...audited } = summary;
   await recordPlatformAuditEvent(null, {
     kind: 'knowledge.compaction.run',
     entityType: 'workspace',
     entityId: workspaceId,
     payload: {
-      ...summary,
+      ...audited,
       workspaceId: summary.workspaceId.toString(),
       startedAt: summary.startedAt.toISOString(),
       finishedAt: summary.finishedAt.toISOString(),
@@ -191,6 +220,8 @@ async function runClusterPass(
     skippedSingletons: 0,
     skippedUnchangedClusters: 0,
     skippedDistinctClusters: 0,
+    failedClusters: 0,
+    lastClusterError: null,
   };
 
   for (const cluster of clusters) {
@@ -223,6 +254,8 @@ async function runClusterPass(
         }
       } catch (err) {
         if (!options.swallowErrors) throw err;
+        result.failedClusters += 1;
+        result.lastClusterError = err instanceof Error ? err.message : String(err);
         console.error(
           `[knowledge-compaction] cluster merge failed for workspace ${ctx.workspaceId}:`,
           err,
@@ -273,7 +306,7 @@ async function retireStaleLessons(
     .where(
       and(
         eq(learningLessons.workspaceId, ctx.workspaceId),
-        eq(learningLessons.enabled, true),
+        eq(learningLessons.lifecycle, 'active'),
         lt(learningLessons.confidence, STALE_CONFIDENCE_THRESHOLD),
         or(
           isNull(learningLessons.lastAppliedAt),
@@ -283,16 +316,18 @@ async function retireStaleLessons(
       ),
     );
   if (stale.length === 0) return 0;
-  const ids = stale.map((s) => s.id);
-  await db
-    .update(learningLessons)
-    .set({ enabled: false, updatedAt: new Date() })
-    .where(
-      and(
-        eq(learningLessons.workspaceId, ctx.workspaceId),
-        inArray(learningLessons.id, ids),
-      ),
-    );
+  const ids = await db.transaction((tx) =>
+    retireLessons(
+      tx,
+      ctx.workspaceId,
+      stale.map((s) => s.id),
+      {
+        reason: 'stale',
+        note: `Confidence below ${STALE_CONFIDENCE_THRESHOLD} and not used in ${STALE_AGE_DAYS} days.`,
+      },
+    ),
+  );
+  if (ids.length === 0) return 0;
   // One audit row for the whole batch — the ids array keeps the trail
   // queryable per-lesson without N sequential inserts.
   await recordPlatformAuditEvent(null, {
@@ -311,9 +346,11 @@ async function retireStaleLessons(
 // ---- cluster loading ---------------------------------------------------
 
 /**
- * Group enabled lessons by (productProfileId, category). null productProfileId
- * forms its own group. Returned ordered for deterministic compaction (newer
- * survives merges by default — the AI overrides this with explicit choice).
+ * Group active, in-scope lessons by (scope, category, polarity). The scope
+ * key is 'workspace' or the sorted product-id set, so only rules that apply
+ * to exactly the same products are merge candidates. Polarity is part of
+ * the key so a PREFER and an AVOID rule are never folded into one rule
+ * with a single direction (contradiction reconciliation is KL-16).
  */
 async function loadClusters(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
@@ -324,13 +361,22 @@ async function loadClusters(
     .where(
       and(
         eq(learningLessons.workspaceId, ctx.workspaceId),
-        eq(learningLessons.enabled, true),
+        eq(learningLessons.lifecycle, 'active'),
+        lessonInScope(),
       ),
     );
+  const scopes = await getLessonScopeProducts(
+    ctx,
+    rows.filter((r) => r.scopeKind === 'products').map((r) => r.id),
+  );
 
   const groups = new Map<string, LearningLesson[]>();
   for (const row of rows) {
-    const key = `${row.productProfileId?.toString() ?? 'null'}::${row.category}`;
+    const scopeKey =
+      row.scopeKind === 'workspace'
+        ? 'workspace'
+        : `products:${(scopes.get(row.id.toString()) ?? []).join(',')}`;
+    const key = `${scopeKey}::${row.category}::${row.polarity}`;
     const bucket = groups.get(key) ?? [];
     bucket.push(row);
     groups.set(key, bucket);
@@ -441,15 +487,11 @@ async function mergeClusterWithAI(
           eq(learningLessons.id, survivor.id),
         ),
       );
-    await tx
-      .update(learningLessons)
-      .set({ enabled: false, updatedAt: new Date() })
-      .where(
-        and(
-          eq(learningLessons.workspaceId, ctx.workspaceId),
-          inArray(learningLessons.id, retiredIds),
-        ),
-      );
+    await retireLessons(tx, ctx.workspaceId, retiredIds, {
+      reason: 'merged',
+      mergedIntoId: survivor.id,
+      note: 'Merged by knowledge compaction.',
+    });
   });
 
   await recordPlatformAuditEvent(null, {

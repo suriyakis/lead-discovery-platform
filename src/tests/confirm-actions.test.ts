@@ -346,7 +346,6 @@ describe('confirm copy names what it acts on', () => {
   describe('autopilot overrides', () => {
     const base: AutopilotBaseLike = {
       autopilotEnabled: true,
-      emergencyPause: false,
       enableAutoApproveProjects: true,
       autoApproveThreshold: 60,
       enableAutoEnqueueOutreach: true,
@@ -355,7 +354,6 @@ describe('confirm copy names what it acts on', () => {
     };
     const inherit: AutopilotOverlayLike = {
       autopilotEnabled: null,
-      emergencyPause: null,
       enableAutoApproveProjects: null,
       autoApproveThreshold: null,
       enableAutoEnqueueOutreach: null,
@@ -364,43 +362,43 @@ describe('confirm copy names what it acts on', () => {
       defaultMailboxId: null,
     };
 
-    it('spells out automation that turns ON and a pause that is lifted', () => {
+    it('spells out automation that turns ON, and says a pause stays', () => {
       const msg = clearAutopilotOverridesConfirm(
         'Widget',
         {
           ...inherit,
-          emergencyPause: true,
           enableAutoEnqueueOutreach: false,
-          enableAutoCrmContactSync: true,
+          enableAutoApproveProjects: false,
           autoApproveThreshold: 90,
           defaultMailboxId: 7n,
         },
         base,
       );
       expect(msg).toContain('Clear all autopilot overrides for "Widget"?');
-      expect(msg).toContain('- Lifts the emergency pause on Widget.');
-      expect(msg).toContain('- Turns ON: Auto-generate + enqueue outreach drafts.');
-      expect(msg).toContain("- Turns off: Auto-sync qualified leads' contacts to CRM.");
+      // PC-13: overrides only narrow, so clearing them only turns things ON.
+      expect(msg).toContain(
+        '- Turns ON: Auto-approve relevant review items; Generate + queue outreach drafts.',
+      );
+      expect(msg).not.toContain('Turns off');
       expect(msg).toContain('- Approval threshold: 90 → 60.');
       expect(msg).toContain('- Sends from the workspace default mailbox again.');
+      expect(msg).toContain('A pause stays until someone resumes the product.');
     });
 
     it('says when nothing changes in practice', () => {
       const msg = clearAutopilotOverridesConfirm(
         'Widget',
-        { ...inherit, enableAutoApproveProjects: true, autoApproveThreshold: 60 },
+        // "off" for a step the workspace has off, the workspace's own threshold.
+        { ...inherit, enableAutoCrmContactSync: false, autoApproveThreshold: 60 },
         base,
       );
       expect(msg).toContain('Nothing changes in practice');
     });
 
-    it('warns when clearing puts the product under the workspace emergency pause', () => {
-      const msg = clearAutopilotOverridesConfirm(
-        'Widget',
-        { ...inherit, emergencyPause: false },
-        { ...base, emergencyPause: true },
-      );
-      expect(msg).toContain('- Pauses Widget');
+    it('PC-05 / PC-13: never mentions an emergency pause', () => {
+      const msg = clearAutopilotOverridesConfirm('Widget', inherit, base);
+      expect(msg.toLowerCase()).not.toContain('emergency pause');
+      expect(msg).not.toContain('old per-product pause');
     });
   });
 });
@@ -573,9 +571,9 @@ const CONFIRMED_ACTIONS: ReadonlyArray<{ file: string; actions: readonly string[
   { file: 'src/app/admin/support/[id]/page.tsx', actions: ['setStatus'] },
   { file: 'src/app/admin/providers/page.tsx', actions: ['removeKey', 'saveDefaults'] },
   // The action moved to ./actions.ts (ia:F-04); the form still confirms.
-  { file: 'src/app/settings/members/page.tsx', actions: ['removeMemberAction'] },
+  { file: 'src/app/(app)/settings/members/page.tsx', actions: ['removeMemberAction'] },
   {
-    file: 'src/app/settings/integrations/page.tsx',
+    file: 'src/app/(app)/settings/integrations/page.tsx',
     actions: [
       'switchSetupMode',
       'clearKey',
@@ -585,8 +583,10 @@ const CONFIRMED_ACTIONS: ReadonlyArray<{ file: string; actions: readonly string[
       'clearPerplexity',
     ],
   },
-  { file: 'src/app/autopilot/page.tsx', actions: ['clearOverlay'] },
-  { file: 'src/app/settings/crm/[id]/page.tsx', actions: ['archive'] },
+  { file: 'src/app/(app)/autopilot/page.tsx', actions: ['clearOverlay'] },
+  // PC-38 (I028): states records × products and a token estimate.
+  { file: 'src/app/(app)/connectors/engine/page.tsx', actions: ['reclassifyAll'] },
+  { file: 'src/app/(app)/settings/crm/[id]/page.tsx', actions: ['archive'] },
 ];
 
 interface FormBlock {

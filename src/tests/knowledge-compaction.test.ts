@@ -5,11 +5,14 @@ import { _setEmbeddingProviderForTests, type IEmbeddingProvider } from '@/lib/em
 import { db } from '@/lib/db/client';
 import { auditLog } from '@/lib/db/schema/audit';
 import { learningLessons } from '@/lib/db/schema/learning';
+import { productProfiles } from '@/lib/db/schema/products';
 import { type WorkspaceContext, makeWorkspaceContext } from '@/lib/services/context';
 import { createLesson } from '@/lib/services/learning';
+import { createProductProfile } from '@/lib/services/product-profile';
 import {
   KnowledgeCompactionError,
   compactWorkspaceKnowledge,
+  compactWorkspaceKnowledgeUnattended,
 } from '@/lib/services/knowledge-compaction';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 
@@ -152,8 +155,11 @@ describe('compactWorkspaceKnowledge', () => {
     const surv = refreshed.find((r) => r.id === l1.id);
     const ret = refreshed.find((r) => r.id === l2.id);
     expect(surv?.rule).toContain('covers all variants');
-    expect(surv?.enabled).toBe(true);
-    expect(ret?.enabled).toBe(false); // retired (disabled, not deleted)
+    expect(surv?.lifecycle).toBe('active');
+    // Retired with the reason and the survivor on record — not deleted.
+    expect(ret?.lifecycle).toBe('retired');
+    expect(ret?.retiredReason).toBe('merged');
+    expect(ret?.mergedIntoId).toBe(l1.id);
     expect(surv?.evidenceEventIds.map((b) => b.toString()).sort()).toEqual(
       ['101', '102', '201'].sort(),
     );
@@ -163,7 +169,7 @@ describe('compactWorkspaceKnowledge', () => {
     const s = await setup();
     const l1 = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'sector_preference',
-      rule: 'Avoid construction in winter.',
+      rule: 'Prefer construction firms in winter.',
       confidence: 70,
     });
     const l2 = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
@@ -183,7 +189,7 @@ describe('compactWorkspaceKnowledge', () => {
       .select()
       .from(learningLessons)
       .where(eq(learningLessons.workspaceId, s.workspaceA));
-    expect(rows.every((r) => r.enabled)).toBe(true);
+    expect(rows.every((r) => r.lifecycle === 'active')).toBe(true);
     expect(rows.map((r) => r.id).sort()).toEqual([l1.id, l2.id].sort());
   });
 
@@ -222,7 +228,7 @@ describe('compactWorkspaceKnowledge', () => {
       .where(eq(learningLessons.workspaceId, s.workspaceB));
     expect(bRows).toHaveLength(1);
     expect(bRows[0]?.id).toBe(bLesson.id);
-    expect(bRows[0]?.enabled).toBe(true);
+    expect(bRows[0]?.lifecycle).toBe('active');
     expect(bRows[0]?.rule).toBe('Avoid X.'); // untouched
   });
 
@@ -266,6 +272,71 @@ describe('compactWorkspaceKnowledge', () => {
     expect(called).toBe(false);
     expect(summary.skippedSingletons).toBe(1);
   });
+
+  it('clusters by scope set and polarity; a rule with no product left is not compacted', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA, 'owner');
+    const p1 = await createProductProfile(c, { name: 'P1' });
+    const p2 = await createProductProfile(c, { name: 'P2' });
+    // Same category, same direction, different scopes → three singletons.
+    await createLesson(c, { category: 'sector_preference', rule: 'Prefer data centres.' });
+    await createLesson(c, {
+      category: 'sector_preference',
+      rule: 'Prefer data-centre builders.',
+      scope: { kind: 'products', productProfileIds: [p1.id] },
+    });
+    await createLesson(c, {
+      category: 'sector_preference',
+      rule: 'Prefer data-centre contractors.',
+      scope: { kind: 'products', productProfileIds: [p1.id, p2.id] },
+    });
+    // Same scope, opposite direction → its own singleton, never merged
+    // into a PREFER rule.
+    await createLesson(c, { category: 'sector_preference', rule: 'Avoid data-centre resellers.' });
+    // Its product is deleted → needs a scope → not loaded at all.
+    const p3 = await createProductProfile(c, { name: 'P3' });
+    await createLesson(c, {
+      category: 'sector_preference',
+      rule: 'Prefer data-centre operators.',
+      scope: { kind: 'products', productProfileIds: [p3.id] },
+    });
+    await db.delete(productProfiles).where(eq(productProfiles.id, p3.id));
+
+    let called = false;
+    _setAIProviderForTests(
+      stubAi(() => {
+        called = true;
+        return { action: 'keep_all' };
+      }),
+    );
+    const summary = await compactWorkspaceKnowledge(c);
+    expect(called).toBe(false);
+    expect(summary.skippedSingletons).toBe(4);
+  });
+
+  it('retires stale lessons with reason "stale", keeping them on record', async () => {
+    const s = await setup();
+    const c = ctx(s.workspaceA, s.ownerA, 'owner');
+    const old = await createLesson(c, { category: 'outreach_style', rule: 'Old weak rule', confidence: 20 });
+    const fresh = await createLesson(c, { category: 'outreach_style', rule: 'Strong rule', confidence: 90 });
+    const longAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    await db
+      .update(learningLessons)
+      .set({ createdAt: longAgo })
+      .where(eq(learningLessons.workspaceId, s.workspaceA));
+    _setAIProviderForTests(stubAi(() => ({ action: 'keep_all' })));
+
+    const summary = await compactWorkspaceKnowledge(c);
+    expect(summary.retiredStaleCount).toBe(1);
+    const rows = await db
+      .select()
+      .from(learningLessons)
+      .where(eq(learningLessons.workspaceId, s.workspaceA));
+    const oldRow = rows.find((r) => r.id === old.id);
+    expect(oldRow?.lifecycle).toBe('retired');
+    expect(oldRow?.retiredReason).toBe('stale');
+    expect(rows.find((r) => r.id === fresh.id)?.lifecycle).toBe('active');
+  });
 });
 
 // ---- AI-cost guards ----------------------------------------------------
@@ -284,9 +355,10 @@ describe('compaction cost guards', () => {
       rule: 'Focus on manufacturing firms.',
       confidence: 70,
     });
+    // Same direction as `a` (PREFER): polarity is part of the cluster key.
     const b = await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
       category: 'sector_preference',
-      rule: 'Skip pure consultancies.',
+      rule: 'Prefer industrial manufacturers.',
       confidence: 60,
     });
     return { a, b };
@@ -411,5 +483,69 @@ describe('compaction cost guards', () => {
     expect(called).toBe(true);
     expect(second.keptClusters).toBe(1);
     expect(second.skippedUnchangedClusters).toBe(0);
+  });
+});
+
+// PC-07 (I021): the unattended (weekly tick) pass swallows a failed merge so
+// the other clusters still run, but it no longer disappears into the
+// console: the summary counts it and the tick raises an ops incident.
+describe('compactWorkspaceKnowledgeUnattended: failed merges', () => {
+  function failingAi(message: string): IAIProvider {
+    const ai = stubAi(() => ({ action: 'keep_all' }));
+    return {
+      ...ai,
+      async generateJson() {
+        throw new Error(message);
+      },
+    };
+  }
+
+  async function seedCluster(s: Setup) {
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'Focus on manufacturing firms.',
+      confidence: 70,
+    });
+    await createLesson(ctx(s.workspaceA, s.ownerA, 'owner'), {
+      category: 'sector_preference',
+      rule: 'Prefer manufacturing companies.',
+      confidence: 60,
+    });
+  }
+
+  it('counts the failed merge and keeps its text out of the audit row', async () => {
+    const s = await setup();
+    await seedCluster(s);
+    _setAIProviderForTests(failingAi('provider 429: api_key=sk-test-123456 exhausted'));
+
+    const summary = await compactWorkspaceKnowledgeUnattended(s.workspaceA);
+    expect(summary.failedClusters).toBe(1);
+    expect(summary.lastClusterError).toContain('provider 429');
+    expect(summary.keptClusters + summary.mergedClusters).toBe(0);
+
+    const [row] = await db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.kind, 'knowledge.compaction.run'));
+    expect(row?.payload).toMatchObject({ failedClusters: 1, mode: 'unattended' });
+    expect(row?.payload).not.toHaveProperty('lastClusterError');
+  });
+
+  it('the attended run still throws instead of counting', async () => {
+    const s = await setup();
+    await seedCluster(s);
+    _setAIProviderForTests(failingAi('provider down'));
+    await expect(
+      compactWorkspaceKnowledge(ctx(s.workspaceA, s.ownerA, 'owner')),
+    ).rejects.toThrow('provider down');
+  });
+
+  it('a clean pass reports no failures', async () => {
+    const s = await setup();
+    await seedCluster(s);
+    _setAIProviderForTests(stubAi(() => ({ action: 'keep_all' })));
+    const summary = await compactWorkspaceKnowledgeUnattended(s.workspaceA);
+    expect(summary.failedClusters).toBe(0);
+    expect(summary.lastClusterError).toBeNull();
   });
 });

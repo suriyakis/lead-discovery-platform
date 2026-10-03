@@ -1,9 +1,10 @@
 // DS-02: the legacy CSS defect pack (I143, I149, I150, I151, I152, I177).
 //
-// These run the REAL globals.css through a small cascade (helpers/
-// css-cascade.ts): fixture markup shaped like the affected pages, the
-// stylesheet's own selectors matched by cheerio, winners picked by
-// !important → specificity → order. So "the CTA in a page header keeps
+// These run the REAL app stylesheets (globals.css → tokens, base, legacy,
+// utilities) through a small cascade (helpers/css-cascade.ts): fixture
+// markup shaped like the affected pages, the stylesheets' own selectors
+// matched by cheerio, winners picked by !important → layer → specificity
+// → order. So "the CTA in a page header keeps
 // its label colour" is checked the way the browser decides it, not by
 // grepping for a selector string.
 
@@ -22,8 +23,7 @@ import {
   type CascadeOptions,
   contrastRatio,
   type CssRule,
-  loadGlobalsCss,
-  parseCss,
+  loadAppRules,
   parseOklch,
   resolveVars,
   rootTokens,
@@ -33,7 +33,7 @@ import {
   type Winner,
 } from './helpers/css-cascade';
 
-const rules = parseCss(loadGlobalsCss());
+const rules = loadAppRules();
 const tokens = rootTokens(rules);
 const resolve = (v: string | undefined) => {
   if (v === undefined) throw new Error('property not set');
@@ -245,8 +245,8 @@ describe('badge tones (DS-02 item 3, I151)', () => {
 
   it('the four support pages render the thread status through SupportStatusBadge', () => {
     const pages: Record<string, SupportBadgeAudience> = {
-      'src/app/support/page.tsx': 'customer',
-      'src/app/support/[id]/page.tsx': 'customer',
+      'src/app/(app)/support/page.tsx': 'customer',
+      'src/app/(app)/support/[id]/page.tsx': 'customer',
       'src/app/admin/support/page.tsx': 'admin',
       'src/app/admin/support/[id]/page.tsx': 'admin',
     };
@@ -267,19 +267,22 @@ describe('badge tones (DS-02 item 3, I151)', () => {
     expect(offenders).toEqual([]);
   });
 
+  // DS-09 moved HintBadge onto the Badge primitive: the tone is a
+  // data-tone from the meaning map (src/lib/ui/tone.ts), not a class.
   const sample: Record<HintSeverity, string> = {
-    info: 'badge badge-info',
-    action: 'badge badge-warn',
-    warning: 'badge badge-warn',
-    critical: 'badge badge-bad',
-    success: 'badge badge-good',
+    info: 'info',
+    action: 'attention',
+    warning: 'attention',
+    critical: 'danger',
+    success: 'success',
+    note: 'neutral',
   };
-  for (const [severity, cls] of Object.entries(sample) as Array<[HintSeverity, string]>) {
-    it(`HintBadge maps ${severity} to "${cls}"`, () => {
+  for (const [severity, tone] of Object.entries(sample) as Array<[HintSeverity, string]>) {
+    it(`HintBadge renders ${severity} in the ${tone} tone`, () => {
       const html = renderToStaticMarkup(
         createElement(HintBadge, { hint: { type: 't', severity, text: 'x' } }),
       );
-      expect(load(html)('span').first().attr('class')).toBe(cls);
+      expect(load(html)('[data-tone]').first().attr('data-tone')).toBe(tone);
     });
   }
 });
@@ -420,7 +423,7 @@ describe('sticky offsets below the header (DS-02 item 6, I143)', () => {
       .filter((r) => r.decls.some((d) => d.prop === 'position' && d.value === 'sticky'))
       .filter((r) => !ALLOWED.has(r.selectorText))
       .filter((r) => !(r.decls.find((d) => d.prop === 'top')?.value ?? '').includes('--header-h'))
-      .map((r) => `${r.selectorText} (globals.css:${r.line})`);
+      .map((r) => `${r.selectorText} (${r.file}:${r.line})`);
     expect(offenders).toEqual([]);
   });
 });
@@ -454,7 +457,10 @@ describe('focus rings and reduced motion (DS-02 item 7, I177)', () => {
     conditionMatches: (p) => /prefers-reduced-motion:\s*reduce/.test(p),
   };
 
-  it('reduced motion stops the hero pulse and every transition', () => {
+  // DS-06 moved the switch from legacy (!important) to the top layer
+  // (utilities.css): it still beats every legacy and component rule, and
+  // Direction A keeps only a short opacity fade.
+  it('reduced motion stops the hero pulse and every movement but a short fade', () => {
     const $ = load(`
       <span id="dot" class="hero-badge-dot"></span>
       <a id="cta" class="primary-btn" href="#">Go</a>
@@ -464,7 +470,12 @@ describe('focus rings and reduced motion (DS-02 item 7, I177)', () => {
     expect(styleOf($, '#dot', rules, 'animation', reduced)).toBe('none');
     for (const id of ['#cta', '#ghost', '#row']) {
       expect(styleOf($, id, rules, 'transition'), id).not.toBe('none');
-      expect(styleOf($, id, rules, 'transition', reduced), id).toBe('none');
+      expect(styleOf($, id, rules, 'transition-property'), id).toBeUndefined();
+      expect(styleOf($, id, rules, 'transition-property', reduced), id).toBe('opacity');
+      expect(styleOf($, id, rules, 'transition-duration', reduced), id).toBe('var(--dur-1)');
     }
+    const motion = rules.filter((r) => r.conditions.some((c) => /prefers-reduced-motion/.test(c)));
+    expect(motion.map((r) => r.layer)).toEqual(['utilities']);
+    expect(motion.flatMap((r) => r.decls).filter((d) => d.important)).toEqual([]);
   });
 });

@@ -23,9 +23,9 @@ import {
   parseFollowUpForm,
   stepDaysField,
   stepInstrField,
-} from '@/app/settings/outreach/follow-up-form';
-import { saveFollowUp } from '@/app/settings/outreach/follow-up-actions';
-import OutreachSettingsPage from '@/app/settings/outreach/page';
+} from '@/app/(app)/settings/outreach/follow-up-form';
+import { saveFollowUp } from '@/app/(app)/settings/outreach/follow-up-actions';
+import OutreachSettingsPage from '@/app/(app)/settings/outreach/page';
 import { seedUser, seedWorkspace, truncateAll } from './helpers/db';
 import { expectRedirect, renderToHtml } from './helpers/next-render';
 

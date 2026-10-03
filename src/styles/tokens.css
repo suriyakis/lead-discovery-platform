@@ -1,0 +1,283 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* ==========================================================================
+   Leadsonar design tokens: Direction A, "Sonar Instrument" (DS-06)
+
+   Custom properties only. The one place in the app where colour literals
+   and raw sizes live: every other stylesheet and CSS module reads these
+   names (tests/design-foundation-css.test.ts enforces it).
+
+   Layer order (the statement above opens every stylesheet and module, so
+   whichever chunk the browser loads first fixes the same order):
+     reset < tokens < base < legacy < components < patterns < utilities
+   A rule in a later layer beats any rule in an earlier one, whatever the
+   specificity. Unlayered CSS would beat them all, so there is none.
+
+   Breakpoints: min-width only, at 640px (sm), 900px (md: sidebar and
+   drawer) and 1200px (lg: right rails). Custom properties cannot be used in
+   @media, so the numbers live in src/lib/ui/breakpoints.ts and the budget
+   test rejects any other width in new CSS.
+
+   Meaning map: each hue carries one meaning, and components pick a tone,
+   never a hue.
+     neutral   --fg-muted   the default: counts, 'new', roles, tags
+     muted     --fg-subtle  ignored, archived, superseded
+     info      --primary    act, you, links, scores, progress
+     live      --teal       live, indexed, evidence
+     ai        --violet     AI-written, AI verdicts, learned rules
+     attention --amber      a decision waiting for this user
+     success   --success    approved, sent, won
+     danger    --danger     rejected, failed, destructive
+   tests/tokens.ui.test.ts checks every text/background pair in this map
+   for contrast on the real surfaces (card top, input, raised, surface,
+   well, page).
+   ========================================================================== */
+
+@layer tokens {
+  :root {
+    /* ---- Neutrals: brand values plus the app's legibility lifts ---- */
+    --bg: oklch(0.18 0.025 250);
+    --bg-deep: oklch(0.155 0.025 250);
+    --surface: oklch(0.215 0.025 250);
+    --surface-card: linear-gradient(180deg, oklch(0.24 0.025 250), oklch(0.21 0.025 250));
+    --surface-raised: oklch(0.235 0.025 250);
+    --surface-input: oklch(0.26 0.025 250);
+    --surface-overlay: oklch(0.215 0.025 250 / 0.85);
+    --well: color-mix(in oklab, var(--bg-deep) 60%, transparent);
+    --scrim: oklch(0.1 0.02 250 / 0.62);
+
+    --border-subtle: oklch(0.34 0.025 250 / 0.6);
+    --border: oklch(0.34 0.025 250);
+    --border-strong: oklch(0.42 0.03 250);
+    --border-control: oklch(0.54 0.03 250);
+
+    --fg: oklch(0.96 0.005 250);
+    --fg-muted: oklch(0.75 0.02 250);
+    --fg-subtle: oklch(0.64 0.02 250);
+
+    /* ---- Signals: each hue carries one fixed meaning ---- */
+    --primary: oklch(0.74 0.17 225);
+    --primary-hover: oklch(0.8 0.15 225);
+    --on-primary: oklch(0.15 0.025 250);
+    --teal: oklch(0.74 0.15 185);
+    --violet: oklch(0.72 0.14 290);
+    --amber: oklch(0.8 0.16 75);
+    --success: oklch(0.78 0.17 150);
+    --danger: oklch(0.73 0.19 25);
+
+    /* ---- Tones: components read a tone, [data-tone] picks one ---- */
+    --tone-neutral: var(--fg-muted);
+    --tone-muted: var(--fg-subtle);
+    --tone-info: var(--primary);
+    --tone-live: var(--teal);
+    --tone-ai: var(--violet);
+    --tone-attention: var(--amber);
+    --tone-success: var(--success);
+    --tone-danger: var(--danger);
+
+    /* Chip fill (12%) and border (35%) per tone. A tone's own colour reads
+       at >= 4.5:1 on its -soft fill on every surface, so there are no
+       separate text tokens. */
+    --neutral-soft: color-mix(in oklab, var(--tone-neutral) 12%, transparent);
+    --neutral-line: color-mix(in oklab, var(--tone-neutral) 35%, transparent);
+    --info-soft: color-mix(in oklab, var(--tone-info) 12%, transparent);
+    --info-line: color-mix(in oklab, var(--tone-info) 35%, transparent);
+    --live-soft: color-mix(in oklab, var(--tone-live) 12%, transparent);
+    --live-line: color-mix(in oklab, var(--tone-live) 35%, transparent);
+    --ai-soft: color-mix(in oklab, var(--tone-ai) 12%, transparent);
+    --ai-line: color-mix(in oklab, var(--tone-ai) 35%, transparent);
+    --attention-soft: color-mix(in oklab, var(--tone-attention) 12%, transparent);
+    --attention-line: color-mix(in oklab, var(--tone-attention) 35%, transparent);
+    --success-soft: color-mix(in oklab, var(--tone-success) 12%, transparent);
+    --success-line: color-mix(in oklab, var(--tone-success) 35%, transparent);
+    --danger-soft: color-mix(in oklab, var(--tone-danger) 12%, transparent);
+    --danger-line: color-mix(in oklab, var(--tone-danger) 35%, transparent);
+
+    /* Ordered progressions (the pipeline funnel): one hue, stepped
+       opacity from 100% to 40% in seven even steps, one per pipeline
+       progress state (src/lib/ui/tone.ts sequenceStep spreads shorter
+       progressions over the same range). */
+    --seq-1: var(--primary);
+    --seq-2: color-mix(in oklab, var(--primary) 90%, transparent);
+    --seq-3: color-mix(in oklab, var(--primary) 80%, transparent);
+    --seq-4: color-mix(in oklab, var(--primary) 70%, transparent);
+    --seq-5: color-mix(in oklab, var(--primary) 60%, transparent);
+    --seq-6: color-mix(in oklab, var(--primary) 50%, transparent);
+    --seq-7: color-mix(in oklab, var(--primary) 40%, transparent);
+
+    /* User tags: six fixed low-chroma hues. Never hashed, never a signal. */
+    --tag-1: oklch(0.8 0.07 250);
+    --tag-2: oklch(0.8 0.07 200);
+    --tag-3: oklch(0.8 0.07 300);
+    --tag-4: oklch(0.8 0.07 345);
+    --tag-5: oklch(0.82 0.07 110);
+    --tag-6: oklch(0.8 0.07 45);
+
+    /* Brand gradients and motif lines (the only gradients allowed). The
+       mark runs primary to teal, so it carries the app's primary hue. */
+    --gradient-card: var(--surface-card);
+    --gradient-mark: linear-gradient(135deg, var(--primary), var(--teal));
+    --grid-line: oklch(0.3 0.025 250 / 0.35);
+    --rings-line: oklch(0.42 0.03 250 / 0.45);
+
+    /* Checkbox glyphs, drawn in --on-primary. */
+    --glyph-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%230b131c' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E");
+    --glyph-dash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%230b131c' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M4 8h8'/%3E%3C/svg%3E");
+
+    /* ---- Type: 8 steps. Weights 400 and 500; 600 for numerals only ---- */
+    --font-sans:
+      var(--font-inter, 'Inter'), system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+      sans-serif;
+    --font-mono:
+      var(--font-jetbrains, 'JetBrains Mono'), ui-monospace, 'SF Mono', Menlo, Monaco, Consolas,
+      monospace;
+    --text-label: 11px; /* mono, 500, uppercase, .12em: the only uppercase style */
+    --leading-label: 16px;
+    --text-xs: 12px; /* meta, hints, chips */
+    --leading-xs: 16px;
+    --text-sm: 14px; /* default UI and body */
+    --leading-sm: 20px;
+    --text-md: 16px; /* list titles, prose, every input on a coarse pointer */
+    --leading-md: 24px;
+    --text-lg: 18px; /* section and card titles */
+    --leading-lg: 26px;
+    --text-xl: 24px; /* KPI values, drawer titles, the mobile page title */
+    --leading-xl: 30px;
+    --text-2xl: 30px; /* page title */
+    --leading-2xl: 36px;
+    --text-display: clamp(36px, 4vw, 48px); /* greeting, landing, page empty states */
+    --leading-display: 1.1;
+    --leading-prose: 1.55;
+    --text-mono: 0.92em; /* mono optically matched to the sans around it */
+    --weight-regular: 400;
+    --weight-medium: 500;
+    --weight-numeral: 600;
+    --tracking-tight: -0.02em;
+    --tracking-label: 0.12em;
+
+    /* ---- Space: a 4px grid, 12 steps ---- */
+    --space-0_5: 2px;
+    --space-1: 4px;
+    --space-1_5: 6px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
+    --space-12: 48px;
+    --space-16: 64px;
+    /* Rhythm */
+    --gap-control: var(--space-2);
+    --pad-card: var(--space-4);
+    --gap-card: var(--space-4);
+    --gap-section: var(--space-6);
+
+    /* ---- Radius ---- */
+    --radius-xs: 4px; /* chips, checkbox, code */
+    --radius-sm: 6px; /* buttons, inputs, rows, wells */
+    --radius-md: 8px; /* popovers, menus, toasts, alerts */
+    --radius-lg: 12px; /* cards */
+    --radius-xl: 16px; /* sheets, dialogs */
+    --radius-full: 999px; /* avatars, dots, switch, pills */
+
+    /* ---- Elevation: cards never lift on hover ---- */
+    --shadow-card: inset 0 1px 0 oklch(1 0 0 / 0.05), 0 20px 40px -20px oklch(0 0 0 / 0.5);
+    --shadow-pop: 0 24px 48px -16px oklch(0 0 0 / 0.55), 0 0 0 1px var(--border-strong);
+    --shadow-modal: 0 32px 72px -16px oklch(0 0 0 / 0.7), 0 0 0 1px var(--border-strong);
+    --ring: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in oklab, var(--primary) 60%, transparent);
+    --glow:
+      0 0 0 1px color-mix(in oklab, var(--primary) 25%, transparent),
+      0 8px 32px -8px color-mix(in oklab, var(--primary) 35%, transparent); /* one element per screen */
+    --focus-outline: 2px solid color-mix(in oklab, var(--primary) 70%, transparent);
+    --focus-ring-control: 0 0 0 3px color-mix(in oklab, var(--primary) 28%, transparent);
+
+    /* ---- Controls and rows: one height token per row of controls ---- */
+    --control-sm: 28px;
+    --control-md: 36px;
+    --control-lg: 44px;
+    --row-sm: 40px;
+    --row-md: 48px;
+    --row-lg: 64px;
+
+    /* ---- Motion: honour prefers-reduced-motion (utilities.css) ---- */
+    --dur-1: 120ms;
+    --dur-2: 200ms;
+    --dur-3: 320ms;
+    --ease-out: cubic-bezier(0.2, 0, 0, 1);
+    --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur-pulse: 2.4s;
+    --dur-flow: 1.6s;
+
+    /* ---- Stacking. Real overlays use the top layer and need none ---- */
+    --z-sticky: 20;
+    --z-header: 40;
+    --z-tabbar: 45;
+    --z-fab: 50;
+    --z-overlay: 60;
+
+    /* ---- Layout ---- */
+    /* The legacy .brand-header is 4rem tall and the sticky sidebar and
+       toolbars offset by it (I143). Direction A's frame is 56px; the app
+       frame deliverable (DS-12) sets that when it replaces the header. */
+    --header-h: 4rem;
+    --tabbar-h: 56px;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --sidebar-w: 248px;
+    --rail-w: 320px;
+    --content-max: 80rem;
+    --content-narrow: 48rem;
+    --content-prose: 68ch;
+    --gutter: 16px;
+
+    /* ---- Legacy names ----
+       legacy.css, a few inline styles and Alert still read these. They
+       alias the tokens above, so a token change reaches every legacy page.
+       The four decorative values below the line have no Direction A
+       equivalent; they keep their exact legacy values and go with
+       legacy.css. Do not use --brand-* in new code. */
+    --brand-bg: var(--bg);
+    --brand-fg: var(--fg);
+    --brand-muted: var(--fg-muted);
+    --brand-border: var(--border);
+    --brand-card: var(--surface);
+    --brand-card-elevated: var(--surface-raised);
+    --brand-input: var(--surface-input);
+    --brand-primary: var(--primary);
+    --brand-primary-foreground: var(--on-primary);
+    --brand-accent-teal: var(--teal);
+    --brand-accent-amber: var(--amber);
+    --brand-status-approved: var(--success);
+    --brand-status-rejected: var(--danger);
+    --brand-mark-gradient: var(--gradient-mark);
+    --brand-radius: var(--radius-md);
+    --brand-mono: var(--font-mono);
+    --brand-sans: var(--font-sans);
+    /* --- legacy-only values --- */
+    --brand-glow: radial-gradient(ellipse 80% 60% at 50% 0%, oklch(0.32 0.08 230 / 0.35), transparent 70%);
+    --brand-grid-line: oklch(0.3 0.025 250 / 0.4);
+    --brand-shadow: 0 1px 0 0 oklch(1 0 0 / 0.04) inset, 0 8px 24px -12px oklch(0 0 0 / 0.5);
+    --brand-shadow-hover: 0 1px 0 0 oklch(1 0 0 / 0.06) inset, 0 12px 32px -10px oklch(0 0 0 / 0.6);
+  }
+
+  @media (min-width: 640px) {
+    :root {
+      --gutter: 24px;
+      --pad-card: var(--space-5);
+      --gap-section: var(--space-8);
+    }
+  }
+
+  @media (min-width: 1200px) {
+    :root {
+      --gutter: 32px;
+    }
+  }
+
+  @media (pointer: coarse) {
+    :root {
+      --control-md: 44px;
+    }
+  }
+}

@@ -1,10 +1,13 @@
 import { and, desc, eq, gte, inArray, lt, lte, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { auditLog, type AuditLogEntry, type NewAuditLogEntry } from '@/lib/db/schema/audit';
+import type { AuditKind } from '@/lib/kinds/audit';
 import type { WorkspaceContext } from './context';
 
 export interface AuditEventInput {
-  kind: string;
+  /** A registered kind (src/lib/kinds/audit.ts): the audit logs show its
+   *  label, so an unregistered kind fails typecheck (DS-09). */
+  kind: AuditKind;
   entityType?: string | null;
   entityId?: string | bigint | number | null;
   payload?: Record<string, unknown>;
@@ -59,6 +62,31 @@ export async function recordPlatformAuditEvent(
     entityType: event.entityType ?? null,
     entityId: serializeEntityId(event.entityId),
     payload: (event.payload ?? {}) as NewAuditLogEntry['payload'],
+  };
+  const inserted = await db.insert(auditLog).values(row).returning();
+  if (!inserted[0]) {
+    throw new Error('audit_log insert returned no row');
+  }
+  return inserted[0];
+}
+
+/**
+ * Record an audit event a background job takes in a workspace with
+ * nobody acting (user_id NULL), e.g. the stuck-work reaper settling a
+ * send or failing a run (PC-10). Not attributed to the workspace owner:
+ * the owner did not do it.
+ */
+export async function recordSystemAuditEvent(
+  workspaceId: bigint,
+  event: AuditEventInput,
+): Promise<AuditLogEntry> {
+  const row: NewAuditLogEntry = {
+    workspaceId,
+    userId: null,
+    kind: event.kind,
+    entityType: event.entityType ?? null,
+    entityId: serializeEntityId(event.entityId),
+    payload: { ...(event.payload ?? {}), actor: 'system' } as NewAuditLogEntry['payload'],
   };
   const inserted = await db.insert(auditLog).values(row).returning();
   if (!inserted[0]) {
