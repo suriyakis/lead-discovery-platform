@@ -733,7 +733,13 @@ const stubAi: IAIProvider = {
 let threadSeq = 0;
 
 /** A mail thread with one inbound message; per product, a qualified lead
- *  for it whose outreach conversation is this thread. */
+ *  for it whose outreach conversation is this thread.
+ *
+ *  The message is marked a prospect reply (outreach_relevance): it is the
+ *  lead answering that outreach conversation. The reply assistant reads
+ *  only mail the platform started and the answers to it
+ *  (services/mail-scope.ts); an unassessed inbound on a thread with no
+ *  outbound of ours is mailbox mail, which it rightly will not answer. */
 async function seedThread(
   workspaceId: bigint,
   productOrProducts: bigint | readonly bigint[] | null,
@@ -780,6 +786,7 @@ async function seedThread(
     toAddresses: [`sales${threadSeq}@nulife.test`],
     subject: 'Question about the datasheet',
     bodyText: QUERY,
+    outreachRelevance: 'prospect_reply',
   });
   for (const [i, productProfileId] of productIds.entries()) {
     const [source] = await db

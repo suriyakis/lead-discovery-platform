@@ -62,6 +62,7 @@ import type {
 import type { WorkspacePlan } from '@/lib/billing/plans';
 import type { NotificationKind } from '@/lib/kinds/notification';
 import type { UsageKeySource } from '@/lib/kinds/usage';
+import type { ProviderJobState, ProviderKeyGap } from '@/lib/kinds/provider';
 import type { ReplyClass } from '@/lib/mail/reply-classes';
 import type { GeoStatus } from '@/lib/services/geo';
 import type { FindingSeverity as HealthFindingSeverity } from '@/lib/diagnostics/types';
@@ -484,6 +485,25 @@ export const USAGE_KEY_SOURCE_TONE = {
   mock: 'neutral',
 } as const satisfies Record<UsageKeySource, Tone>;
 
+/** Settings → AI & search: will a job run? A job that cannot start is
+ *  danger; one that runs degraded, or waits for tokens, is attention. */
+export const PROVIDER_JOB_STATE_TONE = {
+  ready: 'success',
+  rules_only: 'attention',
+  no_tokens: 'attention',
+  no_key: 'danger',
+  not_set_up: 'danger',
+} as const satisfies Record<ProviderJobState, Tone>;
+
+/** Settings → AI & search: a vendor with no key. Red only when a job
+ *  will not run; amber when a job is degraded (keyword rules) or a
+ *  feature loses the vendor — the same tones as the job rows. */
+export const PROVIDER_KEY_GAP_TONE = {
+  stops_jobs: 'danger',
+  limits_jobs: 'attention',
+  unused: 'muted',
+} as const satisfies Record<ProviderKeyGap, Tone>;
+
 // ---- The index ---------------------------------------------------------
 
 // ---- Phase 1 sets (automation control, knowledge foundation) ----------
@@ -611,6 +631,8 @@ export const TONE_MAPS = {
   hint_severity: HINT_SEVERITY_TONE,
   workspace_plan: WORKSPACE_PLAN_TONE,
   usage_key_source: USAGE_KEY_SOURCE_TONE,
+  provider_job_state: PROVIDER_JOB_STATE_TONE,
+  provider_key_gap: PROVIDER_KEY_GAP_TONE,
   automation_capability: AUTOMATION_CAPABILITY_TONE,
   workspace_hold_scope: WORKSPACE_HOLD_SCOPE_TONE,
   workspace_hold_kind: WORKSPACE_HOLD_KIND_TONE,

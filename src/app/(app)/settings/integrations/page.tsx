@@ -15,9 +15,23 @@ import { canAdminWorkspace } from '@/lib/services/context';
 import {
   SecretsServiceError,
   deleteSecret,
-  hasSecret,
   setSecret,
 } from '@/lib/services/secrets';
+import {
+  getProviderReadiness,
+  vendorKeyGap,
+  type ProviderReadiness,
+  type VendorKeyStatus,
+} from '@/lib/services/provider-readiness';
+import {
+  KeyChoiceIntro,
+  KeySourceLine,
+  ProviderReadinessPanel,
+  vendorUseSentence,
+} from '@/components/ProviderReadinessPanel';
+import { Badge, StatusBadge } from '@/components/Badge';
+import { PlanLimitError, getEffectivePlan } from '@/lib/services/plan-limits';
+import { BRAND_NAME } from '@/lib/brand';
 import { getSearchProviderForCtx } from '@/lib/search';
 import { getAIProviderForCtx } from '@/lib/ai';
 import { getEmbeddingProviderForCtx } from '@/lib/embeddings';
@@ -32,7 +46,7 @@ import {
   ProviderSettingsError,
   getProviderSettings,
   resolveActiveProvider,
-  systemDefaultProvider,
+  resolvePlatformProvider,
   updateProviderSettings,
   type AiProviderId,
   type EmbeddingProviderId,
@@ -54,15 +68,10 @@ const nonMock = (arr: ReadonlyArray<string>): ReadonlyArray<string> =>
   arr.filter((p) => p !== 'mock');
 
 const SERPAPI_SECRET_KEY = 'serpapi.apiKey';
-const SERPAPI_ENV = 'SERPAPI_KEY';
 const OPENAI_SECRET_KEY = 'openai.apiKey';
-const OPENAI_ENV = 'OPENAI_API_KEY';
 const ANTHROPIC_SECRET_KEY = 'anthropic.apiKey';
-const ANTHROPIC_ENV = 'ANTHROPIC_API_KEY';
 const GEMINI_SECRET_KEY = 'gemini.apiKey';
-const GEMINI_ENV = 'GEMINI_API_KEY';
 const PERPLEXITY_SECRET_KEY = 'perplexity.apiKey';
-const PERPLEXITY_ENV = 'PERPLEXITY_API_KEY';
 
 // P62-25: unified Web Search options + per-vendor models. SerpAPI has
 // no model dropdown (the only knob is the engine, which we don't
@@ -91,32 +100,14 @@ export default async function IntegrationsPage({
   const sp = await searchParams;
 
   let ctx;
-  let workspaceHasKey = false;
-  let platformHasKey = false;
-  let workspaceHasOpenai = false;
-  let platformHasOpenai = false;
-  let workspaceHasAnthropic = false;
-  let platformHasAnthropic = false;
-  let workspaceHasGemini = false;
-  let platformHasGemini = false;
-  let workspaceHasPerplexity = false;
-  let platformHasPerplexity = false;
+  let readiness: ProviderReadiness;
   try {
     ctx = await getWorkspaceContext();
-    workspaceHasKey = await hasSecret(ctx, SERPAPI_SECRET_KEY);
-    platformHasKey = !!process.env[SERPAPI_ENV] && process.env[SERPAPI_ENV]!.trim() !== '';
-    workspaceHasOpenai = await hasSecret(ctx, OPENAI_SECRET_KEY);
-    platformHasOpenai =
-      !!process.env[OPENAI_ENV] && process.env[OPENAI_ENV]!.trim() !== '';
-    workspaceHasAnthropic = await hasSecret(ctx, ANTHROPIC_SECRET_KEY);
-    platformHasAnthropic =
-      !!process.env[ANTHROPIC_ENV] && process.env[ANTHROPIC_ENV]!.trim() !== '';
-    workspaceHasGemini = await hasSecret(ctx, GEMINI_SECRET_KEY);
-    platformHasGemini =
-      !!process.env[GEMINI_ENV] && process.env[GEMINI_ENV]!.trim() !== '';
-    workspaceHasPerplexity = await hasSecret(ctx, PERPLEXITY_SECRET_KEY);
-    platformHasPerplexity =
-      !!process.env[PERPLEXITY_ENV] && process.env[PERPLEXITY_ENV]!.trim() !== '';
+    // The key picture comes from the runtime's own cascade (workspace
+    // BYOK → the platform key saved in the admin console → the server env
+    // var). Asking only the env here made every vendor read "not
+    // configured" while the console keys were in use (26 Nov).
+    readiness = await getProviderReadiness(ctx);
   } catch (err) {
     if (err instanceof AuthRequiredError) redirect('/');
     if (err instanceof AccountInactiveError) redirect('/pending');
@@ -125,87 +116,82 @@ export default async function IntegrationsPage({
   }
 
   const isAdmin = canAdminWorkspace(ctx);
-  const effectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasKey
-    ? 'workspace'
-    : platformHasKey
-      ? 'platform'
-      : 'none';
-  const openaiEffectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasOpenai
-    ? 'workspace'
-    : platformHasOpenai
-      ? 'platform'
-      : 'none';
-  const anthropicEffectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasAnthropic
-    ? 'workspace'
-    : platformHasAnthropic
-      ? 'platform'
-      : 'none';
-  const geminiEffectiveSource: 'workspace' | 'platform' | 'none' = workspaceHasGemini
-    ? 'workspace'
-    : platformHasGemini
-      ? 'platform'
-      : 'none';
-  const perplexityEffectiveSource: 'workspace' | 'platform' | 'none' =
-    workspaceHasPerplexity
-      ? 'workspace'
-      : platformHasPerplexity
-        ? 'platform'
-        : 'none';
-  const aiProviderEnv =
-    process.env.AI_PROVIDER ?? systemDefaultProvider('ai').id;
-  const researchProviderEnv =
-    process.env.RESEARCH_PROVIDER ?? systemDefaultProvider('research').id;
-  const searchProviderEnvLabel =
-    process.env.SEARCH_PROVIDER ?? systemDefaultProvider('search').id;
+  const vendorStatus = (vendor: string): VendorKeyStatus => {
+    const found = readiness.vendors.find((v) => v.vendor === vendor);
+    if (!found) throw new Error(`provider key catalogue has no ${vendor}`);
+    return found;
+  };
+  const serpapi = vendorStatus('serpapi');
+  const openai = vendorStatus('openai');
+  const anthropic = vendorStatus('anthropic');
+  const gemini = vendorStatus('gemini');
+  const perplexity = vendorStatus('perplexity');
+  const workspaceHasKey = serpapi.workspaceKey;
+  const platformHasKey = serpapi.platformKey;
+  const workspaceHasOpenai = openai.workspaceKey;
+  const platformHasOpenai = openai.platformKey;
+  const workspaceHasAnthropic = anthropic.workspaceKey;
+  const platformHasAnthropic = anthropic.platformKey;
+  const workspaceHasGemini = gemini.workspaceKey;
+  const platformHasGemini = gemini.platformKey;
+  const workspaceHasPerplexity = perplexity.workspaceKey;
+  const platformHasPerplexity = perplexity.platformKey;
+  /** Saved BYOK keys still win in Simple setup (setSetupMode keeps them). */
+  const ownKeyVendors = readiness.vendors.filter((v) => v.workspaceKey);
+  // BYOK is a plan feature (setSecret → assertByokAllowed): never send a
+  // workspace whose plan forbids it to add its own key. The set-key forms,
+  // the section intros and the setup-mode copy all follow this; the
+  // PlanLimitError catches in the save actions stay as the backstop.
+  const { limits: planLimits } = await getEffectivePlan(ctx);
+  const byokAllowed = planLimits.byok;
+  const keyLineProps = { readiness, isAdmin, byokAllowed };
+  const introProps = { readiness, byokAllowed };
 
   // Phase 45: per-workspace provider selection. Read the row + resolve
   // each capability so the UI shows both "what you've configured" and
   // "what's actually active" (which may differ when workspace is null
-  // and env is set, or vice versa).
+  // and env is set, or vice versa). Each cascade gets the raw env var, as
+  // its factory does, so auto-detect also sees the console's keys; the
+  // "platform default" labels are the platform tier of the same cascade.
   const providerSettings = await getProviderSettings(ctx);
-  const aiActive = await resolveActiveProvider(ctx, 'ai', aiProviderEnv);
-  // P62-11: qualification provider — falls back to the workspace's AI
-  // provider when not explicitly set. The pseudo-capability isn't in
-  // resolveActiveProvider's union, so compute it directly.
-  const qualificationActive = providerSettings.qualificationProvider?.trim()
-    ? { id: providerSettings.qualificationProvider.trim(), source: 'workspace' as const }
-    : { id: aiActive.id, source: aiActive.source };
+  const aiActive = await resolveActiveProvider(ctx, 'ai', process.env.AI_PROVIDER);
+  const aiPlatform = await resolvePlatformProvider('ai', process.env.AI_PROVIDER);
+  // P62-11: qualification is its own capability — the same cascade
+  // getQualificationProviderForCtx runs (workspace → the console's
+  // qualification default → auto-detect, cheapest first). It does NOT
+  // inherit the AI provider; showing that it did hid the real vendor.
+  const qualificationActive = await resolveActiveProvider(ctx, 'qualification', undefined);
+  const qualificationPlatform = await resolvePlatformProvider('qualification', undefined);
 
   const embeddingActive = await resolveActiveProvider(
     ctx,
     'embedding',
     process.env.EMBEDDING_PROVIDER,
   );
+  const embeddingPlatform = await resolvePlatformProvider(
+    'embedding',
+    process.env.EMBEDDING_PROVIDER,
+  );
   const researchActive = await resolveActiveProvider(
     ctx,
     'research',
-    researchProviderEnv,
-  );
-  const searchActive = await resolveActiveProvider(
-    ctx,
-    'search',
-    process.env.SEARCH_PROVIDER,
+    process.env.RESEARCH_PROVIDER,
   );
   const vectorStorageActive = await resolveActiveProvider(
     ctx,
     'vector_storage',
     process.env.VECTOR_STORAGE_PROVIDER,
   );
+  const vectorStoragePlatform = await resolvePlatformProvider(
+    'vector_storage',
+    process.env.VECTOR_STORAGE_PROVIDER,
+  );
 
-  // P62-25: unified Web Search choice. researchProvider wins (the
-  // grounded-search adapter overrides the plain SERP provider when
-  // both are set), else the search provider is the active backend.
-  const webSearchActive: {
-    id: string;
-    source: 'workspace' | 'platform' | 'env' | 'default';
-  } = providerSettings.researchProvider?.trim() &&
-  providerSettings.researchProvider !== 'mock'
-    ? { id: providerSettings.researchProvider.trim(), source: 'workspace' }
-    : providerSettings.searchProvider?.trim()
-      ? { id: providerSettings.searchProvider.trim(), source: 'workspace' }
-      : researchActive.id !== 'mock'
-        ? { id: researchActive.id, source: researchActive.source }
-        : { id: searchActive.id, source: searchActive.source };
+  // P62-25: unified Web Search choice — what discovery really runs on
+  // (getWebSearchProviderForCtx, as the readiness panel reports it): the
+  // workspace's grounding choice when its key exists, else its search
+  // choice, else the platform tier with the Gemini safety net.
+  const webSearchActive = readiness.discoveryChoice;
   const webSearchInitialProvider =
     (providerSettings.researchProvider?.trim() &&
       providerSettings.researchProvider !== 'mock' &&
@@ -255,6 +241,10 @@ export default async function IntegrationsPage({
       redirect('/settings/integrations?ok=saved');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
+      // BYOK is a plan feature: say so instead of failing the action.
+      if (err instanceof PlanLimitError) {
+        redirect(`/settings/integrations?err=${encodeURIComponent(err.message)}`);
+      }
       if (err instanceof SecretsServiceError) {
         redirect(`/settings/integrations?err=${encodeURIComponent(err.code)}`);
       }
@@ -286,6 +276,9 @@ export default async function IntegrationsPage({
       redirect('/settings/integrations?ok=saved&provider=openai');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
+      if (err instanceof PlanLimitError) {
+        redirect(`/settings/integrations?err=${encodeURIComponent(err.message)}&provider=openai`);
+      }
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=openai`,
@@ -321,6 +314,9 @@ export default async function IntegrationsPage({
       redirect('/settings/integrations?ok=saved&provider=anthropic');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
+      if (err instanceof PlanLimitError) {
+        redirect(`/settings/integrations?err=${encodeURIComponent(err.message)}&provider=anthropic`);
+      }
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=anthropic`,
@@ -356,6 +352,9 @@ export default async function IntegrationsPage({
       redirect('/settings/integrations?ok=saved&provider=gemini');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
+      if (err instanceof PlanLimitError) {
+        redirect(`/settings/integrations?err=${encodeURIComponent(err.message)}&provider=gemini`);
+      }
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=gemini`,
@@ -391,6 +390,11 @@ export default async function IntegrationsPage({
       redirect('/settings/integrations?ok=saved&provider=perplexity');
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
+      if (err instanceof PlanLimitError) {
+        redirect(
+          `/settings/integrations?err=${encodeURIComponent(err.message)}&provider=perplexity`,
+        );
+      }
       if (err instanceof SecretsServiceError) {
         redirect(
           `/settings/integrations?err=${encodeURIComponent(err.code)}&provider=perplexity`,
@@ -640,7 +644,9 @@ export default async function IntegrationsPage({
                   : sp.ok === 'mode-simple'
                     ? 'Switched to Simple setup — the workspace now runs on the platform system defaults.'
                     : sp.ok === 'mode-advanced'
-                      ? 'Switched to Advanced setup — provider selection and workspace keys are now editable.'
+                      ? byokAllowed
+                        ? 'Switched to Advanced setup — provider selection and workspace keys are now editable.'
+                        : 'Switched to Advanced setup — provider selection is now editable. Your own keys need the Pro plan.'
                       : 'Done.'}
           </p>
         ) : null}
@@ -662,13 +668,24 @@ export default async function IntegrationsPage({
           </p>
         ) : null}
 
+        <ProviderReadinessPanel
+          readiness={readiness}
+          simple={isSimple}
+          isAdmin={isAdmin}
+          byokAllowed={byokAllowed}
+        />
+
         <section>
           <h2>Setup mode</h2>
           <p className="muted">
-            <span className="badge">{isSimple ? 'Simple' : 'Advanced'}</span>{' '}
+            <Badge>{isSimple ? 'Simple' : 'Advanced'}</Badge>{' '}
             {isSimple
-              ? '— this workspace runs on the platform’s system API keys and default providers. Everything below is preconfigured; usage is billed from your token balance.'
-              : '— system defaults apply until you override them; provider selection and workspace (BYOK) keys are editable below.'}
+              ? ownKeyVendors.length > 0
+                ? `— this workspace runs on the platform’s default providers and ${BRAND_NAME}’s keys, except where it saved its own key (${ownKeyVendors.map((v) => v.name).join(', ')}), which still takes precedence. The jobs above show whose key each one uses and how it is paid.`
+                : `— this workspace runs on the platform’s default providers and ${BRAND_NAME}’s keys; there is nothing to configure. The jobs above show how each one is paid.`
+              : byokAllowed
+                ? '— system defaults apply until you override them; provider selection and workspace (BYOK) keys are editable below.'
+                : '— system defaults apply until you override them; provider selection is editable below. Your own keys need the Pro plan.'}
           </p>
           {isAdmin ? (
             <form action={switchSetupMode}>
@@ -703,69 +720,45 @@ export default async function IntegrationsPage({
 
         {isSimple ? (
           <section>
-            <h2>Active providers (system defaults)</h2>
+            <h2>API keys by provider</h2>
             <p className="muted">
-              What actually drives each capability right now. Nothing to
-              configure — switch to Advanced setup to change providers or
-              bring your own API keys (BYOK usage is token-free).
+              {ownKeyVendors.length > 0 ? (
+                <>
+                  Simple setup uses {BRAND_NAME}&apos;s platform keys, except
+                  where this workspace saved its own key (marked “Your key”
+                  below): that key still takes precedence, and its provider
+                  bills your account, not your tokens. Switch to Advanced
+                  setup to remove it{byokAllowed ? ', choose providers or add keys' : ' or choose providers'}.
+                </>
+              ) : (
+                <>
+                  Simple setup runs on {BRAND_NAME}&apos;s platform keys — there
+                  is nothing to configure. Switch to Advanced setup to choose
+                  providers{byokAllowed ? ' or bring your own keys (calls on your own key are billed by that provider, not from your tokens)' : ''}.
+                </>
+              )}
             </p>
+            {/* Each line comes from the job rows above (never the admin
+                console's catalogue text): what the key is used for now,
+                or what its absence stops or limits. */}
             <dl>
-              <dt>AI provider (drafts, learning, research, etc.)</dt>
-              <dd>
-                <code>{aiActive.id}</code>
-                <span className="muted small"> — via {aiActive.source}</span>
-              </dd>
-              <dt>Internet Data Extraction</dt>
-              <dd>
-                <code>{qualificationActive.id}</code>
-                <span className="muted small">
-                  {' '}
-                  — via {qualificationActive.source}
-                </span>
-              </dd>
-              <dt>Web Search</dt>
-              <dd>
-                <code>{webSearchActive.id}</code>
-                <span className="muted small"> — via {webSearchActive.source}</span>
-              </dd>
-              <dt>Embedding provider</dt>
-              <dd>
-                <code>{embeddingActive.id}</code>
-                <span className="muted small"> — via {embeddingActive.source}</span>
-              </dd>
-              <dt>Vector storage</dt>
-              <dd>
-                <code>{vectorStorageActive.id}</code>
-                <span className="muted small">
-                  {' '}
-                  — via {vectorStorageActive.source}
-                </span>
-              </dd>
-            </dl>
-            <h3>API keys in use</h3>
-            <dl>
-              {(
-                [
-                  ['OpenAI', openaiEffectiveSource],
-                  ['Anthropic', anthropicEffectiveSource],
-                  ['Gemini', geminiEffectiveSource],
-                  ['Perplexity', perplexityEffectiveSource],
-                  ['SerpAPI', effectiveSource],
-                ] as const
-              ).map(([vendor, source]) => (
-                <div key={vendor} style={{ display: 'contents' }}>
-                  <dt>{vendor}</dt>
-                  <dd>
-                    {source === 'workspace' ? (
-                      <span className="badge badge-good">Workspace key</span>
-                    ) : source === 'platform' ? (
-                      <span className="badge">System key</span>
-                    ) : (
-                      <span className="muted small">not configured</span>
-                    )}
-                  </dd>
-                </div>
-              ))}
+              {readiness.vendors.map((v) => {
+                const gap = vendorKeyGap(readiness, v.vendor);
+                const line = vendorUseSentence(readiness, v.vendor);
+                return (
+                  <div key={v.vendor} style={{ display: 'contents' }} data-vendor={v.vendor}>
+                    <dt>{v.name}</dt>
+                    <dd>
+                      {gap ? (
+                        <StatusBadge set="provider_key_gap" value={gap.gap} />
+                      ) : (
+                        <StatusBadge set="usage_key_source" value={v.effective} />
+                      )}
+                      {line ? <span className="muted small"> {line}</span> : null}
+                    </dd>
+                  </div>
+                );
+              })}
             </dl>
           </section>
         ) : (
@@ -774,9 +767,11 @@ export default async function IntegrationsPage({
           <h2>Active providers</h2>
           <p className="muted">
             Pick which provider drives each capability for this workspace.
-            Choose <em>inherit env default</em> to fall back to the
-            platform-level setting. The actual API key for the chosen
-            provider is set in the per-provider sections below.
+            Choose <em>platform default (…)</em> to fall back to the
+            platform-level setting.{' '}
+            {byokAllowed
+              ? 'A workspace key for the chosen provider is set in its section below; without one it runs on the platform key.'
+              : 'Each provider section below says whose key it runs on; adding your own keys needs the Pro plan.'}
           </p>
           <p className="muted">
             <strong>Web Search</strong> = how the Internet Search
@@ -789,7 +784,7 @@ export default async function IntegrationsPage({
           {isAdmin ? (
             <form action={saveActiveProviders} className="active-providers-grid">
               <div className="provider-select provider-select-group">
-                <span>AI provider (drafts, learning, research, etc.)</span>
+                <span>AI provider (follow-ups, suggested replies, translation, learning, etc.)</span>
                 <ProviderModelPair
                   providers={nonMock(ALLOWED_AI_PROVIDERS)}
                   catalog={AI_MODELS}
@@ -797,7 +792,7 @@ export default async function IntegrationsPage({
                   modelName="aiModel"
                   initialProvider={providerSettings.aiProvider}
                   initialModel={providerSettings.aiModel}
-                  envFallbackLabel={aiProviderEnv}
+                  envFallbackLabel={aiPlatform.id}
                   resolved={aiActive}
                 />
               </div>
@@ -810,7 +805,7 @@ export default async function IntegrationsPage({
                   modelName="qualificationModel"
                   initialProvider={providerSettings.qualificationProvider}
                   initialModel={providerSettings.qualificationModel}
-                  envFallbackLabel={`inherits AI: ${aiActive.id}`}
+                  envFallbackLabel={qualificationPlatform.id}
                   resolved={qualificationActive}
                 />
               </div>
@@ -818,7 +813,7 @@ export default async function IntegrationsPage({
                 label="Embedding provider"
                 name="embeddingProvider"
                 workspaceValue={providerSettings.embeddingProvider}
-                envFallback={process.env.EMBEDDING_PROVIDER ?? 'mock'}
+                envFallback={embeddingPlatform.id}
                 resolved={embeddingActive}
                 options={nonMock(ALLOWED_EMBEDDING_PROVIDERS)}
               />
@@ -831,7 +826,7 @@ export default async function IntegrationsPage({
                   modelName="webSearchModel"
                   initialProvider={webSearchInitialProvider}
                   initialModel={webSearchInitialModel}
-                  envFallbackLabel={`${searchProviderEnvLabel} / ${researchProviderEnv}`}
+                  envFallbackLabel={readiness.discoveryPlatformDefault}
                   resolved={webSearchActive}
                 />
               </div>
@@ -839,7 +834,7 @@ export default async function IntegrationsPage({
                 label="Vector storage provider"
                 name="vectorStorageProvider"
                 workspaceValue={providerSettings.vectorStorageProvider}
-                envFallback={process.env.VECTOR_STORAGE_PROVIDER ?? 'mock'}
+                envFallback={vectorStoragePlatform.id}
                 resolved={vectorStorageActive}
                 options={nonMock(ALLOWED_VECTOR_STORAGE_PROVIDERS)}
               />
@@ -867,8 +862,8 @@ export default async function IntegrationsPage({
             <strong> openai</strong> = per-product OpenAI Vector Store via
             the Files API + <code>file_search</code> tool (OpenAI does the
             chunking, embeds, and parses PDF / DOCX / PPTX / XLSX / CSV /
-            HTML / MD / TXT natively — uses your OpenAI key configured
-            below).
+            HTML / MD / TXT natively — it runs on the OpenAI key; see the
+            OpenAI section below). Both need an OpenAI key.
           </p>
           <dl>
             <dt>Active vector storage</dt>
@@ -928,64 +923,54 @@ export default async function IntegrationsPage({
         <section>
           <h2>SerpAPI</h2>
           <p className="muted">
-            Powers the <code>internet_search</code> connector. Per workspace, you can either bring
-            your own SerpAPI key (charges go to your account) or use the platform default
-            (charges go to the platform owner).
+            Plain Google-style web search for discovery (the{' '}
+            <code>internet_search</code> connector), when it is chosen under Web Search or is
+            the platform default.{' '}
+            <KeyChoiceIntro vendor="serpapi" noun="SerpAPI" biller="SerpAPI" {...introProps} />
           </p>
 
           <dl>
             <dt>Effective key source</dt>
             <dd>
-              {effectiveSource === 'workspace' ? (
-                <>
-                  <span className="badge badge-good">Workspace key</span>
-                  <span className="muted"> — your SerpAPI account is charged.</span>
-                </>
-              ) : effectiveSource === 'platform' ? (
-                <>
-                  <span className="badge">Platform default</span>
-                  <span className="muted"> — platform-provided key in use.</span>
-                </>
-              ) : (
-                <>
-                  <span className="badge badge-bad">Not configured</span>
-                  <span className="muted"> — internet_search runs will fail with no_key.</span>
-                </>
-              )}
+              <KeySourceLine vendor="serpapi" {...keyLineProps} />
             </dd>
             <dt>Workspace key</dt>
             <dd>
               {workspaceHasKey ? <code>••• stored</code> : <code>not set</code>}
             </dd>
-            <dt>Platform default</dt>
+            <dt>Platform key</dt>
             <dd>
               {platformHasKey ? (
-                <code>configured (server env)</code>
+                <code>provided by {BRAND_NAME}</code>
               ) : (
-                <code>not configured</code>
+                <code>none — the platform has no key for this provider</code>
               )}
             </dd>
           </dl>
 
           {isAdmin ? (
             <>
-              <form action={saveKey} className="inline-form">
-                <label>
-                  <span>Set workspace SerpAPI key</span>
-                  <input
-                    name="apiKey"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder="paste your serpapi.com api key"
-                    minLength={1}
-                    maxLength={4096}
-                    required
-                  />
-                </label>
-                <button type="submit" className="primary-btn">
-                  Save
-                </button>
-              </form>
+              {byokAllowed ? (
+                <form action={saveKey} className="inline-form">
+                  <label>
+                    <span>Set workspace SerpAPI key</span>
+                    <input
+                      name="apiKey"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="paste your serpapi.com api key"
+                      minLength={1}
+                      maxLength={4096}
+                      required
+                    />
+                  </label>
+                  <button type="submit" className="primary-btn">
+                    Save
+                  </button>
+                </form>
+              ) : (
+                <OwnKeysNeedPro />
+              )}
 
               <div className="action-row">
                 {workspaceHasKey ? (
@@ -1017,63 +1002,53 @@ export default async function IntegrationsPage({
         <section>
           <h2>OpenAI</h2>
           <p className="muted">
-            Powers the embedding provider (RAG retrieval) when{' '}
-            <code>EMBEDDING_PROVIDER=openai</code>. Per workspace you can
-            either bring your own OpenAI key (charges go to your account)
-            or use the platform default (charges go to the platform owner).
+            Writes first emails, closing notes and referral introductions
+            (<code>gpt-5-nano</code>) whenever an OpenAI key is available, and
+            powers the embeddings for knowledge retrieval. Suggest with AI on
+            products uses it when GPT-5 is picked.{' '}
+            <KeyChoiceIntro vendor="openai" noun="OpenAI" biller="OpenAI" {...introProps} />
           </p>
 
           <dl>
             <dt>Effective key source</dt>
             <dd>
-              {openaiEffectiveSource === 'workspace' ? (
-                <>
-                  <span className="badge badge-good">Workspace key</span>
-                  <span className="muted"> — your OpenAI account is charged.</span>
-                </>
-              ) : openaiEffectiveSource === 'platform' ? (
-                <>
-                  <span className="badge">Platform default</span>
-                  <span className="muted"> — platform-provided key in use.</span>
-                </>
-              ) : (
-                <>
-                  <span className="badge badge-bad">Not configured</span>
-                  <span className="muted"> — embedding calls will fail with no_key.</span>
-                </>
-              )}
+              <KeySourceLine vendor="openai" {...keyLineProps} />
             </dd>
             <dt>Workspace key</dt>
             <dd>{workspaceHasOpenai ? <code>••• stored</code> : <code>not set</code>}</dd>
-            <dt>Platform default</dt>
+            <dt>Platform key</dt>
             <dd>
               {platformHasOpenai ? (
-                <code>configured (server env)</code>
+                <code>provided by {BRAND_NAME}</code>
               ) : (
-                <code>not configured</code>
+                <code>none — the platform has no key for this provider</code>
               )}
             </dd>
           </dl>
 
           {isAdmin ? (
             <>
-              <form action={saveOpenai} className="inline-form">
-                <label>
-                  <span>Set workspace OpenAI key</span>
-                  <input
-                    name="apiKey"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder="sk-..."
-                    minLength={1}
-                    maxLength={4096}
-                    required
-                  />
-                </label>
-                <button type="submit" className="primary-btn">
-                  Save
-                </button>
-              </form>
+              {byokAllowed ? (
+                <form action={saveOpenai} className="inline-form">
+                  <label>
+                    <span>Set workspace OpenAI key</span>
+                    <input
+                      name="apiKey"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="sk-..."
+                      minLength={1}
+                      maxLength={4096}
+                      required
+                    />
+                  </label>
+                  <button type="submit" className="primary-btn">
+                    Save
+                  </button>
+                </form>
+              ) : (
+                <OwnKeysNeedPro />
+              )}
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasOpenai ? (
                   <form action={clearOpenai}>
@@ -1107,12 +1082,13 @@ export default async function IntegrationsPage({
         <section>
           <h2>Anthropic</h2>
           <p className="muted">
-            Powers the AI provider when{' '}
-            <code>AI_PROVIDER=anthropic</code> (default model{' '}
-            <code>claude-haiku-4-5</code>). Used for outreach drafts,
-            qualification reasoning, reply classification, and the
-            RAG-grounded reply assistant. Per workspace you can either
-            bring your own Anthropic key or use the platform default.
+            Writes the pitch and the replies to leads{' '}
+            (<code>claude-opus-4-7</code>) whenever an Anthropic key is
+            available. It also does the other AI writing (follow-ups, the
+            reply assistant) when it is the active AI provider, and scores
+            companies when it is the qualification provider. Suggest with AI
+            on products uses it when Opus 4.7 is picked.{' '}
+            <KeyChoiceIntro vendor="anthropic" noun="Anthropic" biller="Anthropic" {...introProps} />
           </p>
           <p className="muted">
             <strong>Active AI provider:</strong>{' '}
@@ -1122,8 +1098,7 @@ export default async function IntegrationsPage({
               <>
                 {' '}
                 — mock returns deterministic placeholder text. Pick a
-                real provider in <em>Active providers</em> at the top, or
-                set <code>AI_PROVIDER</code> in the server env.
+                real provider in <em>Active providers</em> at the top.
               </>
             ) : null}
           </p>
@@ -1131,57 +1106,43 @@ export default async function IntegrationsPage({
           <dl>
             <dt>Effective key source</dt>
             <dd>
-              {anthropicEffectiveSource === 'workspace' ? (
-                <>
-                  <span className="badge badge-good">Workspace key</span>
-                  <span className="muted"> — your Anthropic account is charged.</span>
-                </>
-              ) : anthropicEffectiveSource === 'platform' ? (
-                <>
-                  <span className="badge">Platform default</span>
-                  <span className="muted"> — platform-provided key in use.</span>
-                </>
-              ) : (
-                <>
-                  <span className="badge badge-bad">Not configured</span>
-                  <span className="muted">
-                    {' '}
-                    — AI calls will fail with no_key when AI_PROVIDER=anthropic.
-                  </span>
-                </>
-              )}
+              <KeySourceLine vendor="anthropic" {...keyLineProps} />
             </dd>
             <dt>Workspace key</dt>
             <dd>{workspaceHasAnthropic ? <code>••• stored</code> : <code>not set</code>}</dd>
-            <dt>Platform default</dt>
+            <dt>Platform key</dt>
             <dd>
               {platformHasAnthropic ? (
-                <code>configured (server env)</code>
+                <code>provided by {BRAND_NAME}</code>
               ) : (
-                <code>not configured</code>
+                <code>none — the platform has no key for this provider</code>
               )}
             </dd>
           </dl>
 
           {isAdmin ? (
             <>
-              <form action={saveAnthropic} className="inline-form">
-                <label>
-                  <span>Set workspace Anthropic key</span>
-                  <input
-                    name="apiKey"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder="sk-ant-..."
-                    minLength={1}
-                    maxLength={4096}
-                    required
-                  />
-                </label>
-                <button type="submit" className="primary-btn">
-                  Save
-                </button>
-              </form>
+              {byokAllowed ? (
+                <form action={saveAnthropic} className="inline-form">
+                  <label>
+                    <span>Set workspace Anthropic key</span>
+                    <input
+                      name="apiKey"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="sk-ant-..."
+                      minLength={1}
+                      maxLength={4096}
+                      required
+                    />
+                  </label>
+                  <button type="submit" className="primary-btn">
+                    Save
+                  </button>
+                </form>
+              ) : (
+                <OwnKeysNeedPro />
+              )}
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasAnthropic ? (
                   <form action={clearAnthropic}>
@@ -1210,15 +1171,14 @@ export default async function IntegrationsPage({
         </section>
 
         <section>
-          <h2>Gemini (Research)</h2>
+          <h2>Google Gemini</h2>
           <p className="muted">
-            Powers grounded research when{' '}
-            <code>RESEARCH_PROVIDER=gemini</code>. Gemini calls Google
-            Search internally and returns an LLM-grounded answer with
-            citations — used by the Research panel on{' '}
-            <Link href="/pipeline">/pipeline/[id]</Link>. Per workspace
-            you can either bring your own Gemini API key (charges go to
-            your Google AI account) or use the platform default.
+            Runs discovery as grounded web search — Gemini searches Google
+            and answers with citations — and lead research (the Research
+            panel on a lead in the <Link href="/pipeline">pipeline</Link>),
+            when it is chosen under Web Search in Active providers or is the
+            platform default.{' '}
+            <KeyChoiceIntro vendor="gemini" noun="Gemini" biller="Google" {...introProps} />
           </p>
           <p className="muted">
             <strong>Active research provider:</strong>{' '}
@@ -1236,58 +1196,43 @@ export default async function IntegrationsPage({
           <dl>
             <dt>Effective key source</dt>
             <dd>
-              {geminiEffectiveSource === 'workspace' ? (
-                <>
-                  <span className="badge badge-good">Workspace key</span>
-                  <span className="muted"> — your Google AI account is charged.</span>
-                </>
-              ) : geminiEffectiveSource === 'platform' ? (
-                <>
-                  <span className="badge">Platform default</span>
-                  <span className="muted"> — platform-provided key in use.</span>
-                </>
-              ) : (
-                <>
-                  <span className="badge badge-bad">Not configured</span>
-                  <span className="muted">
-                    {' '}
-                    — research calls will fail with no_key when
-                    RESEARCH_PROVIDER=gemini.
-                  </span>
-                </>
-              )}
+              <KeySourceLine vendor="gemini" {...keyLineProps} />
             </dd>
             <dt>Workspace key</dt>
             <dd>{workspaceHasGemini ? <code>••• stored</code> : <code>not set</code>}</dd>
-            <dt>Platform default</dt>
+            <dt>Platform key</dt>
             <dd>
               {platformHasGemini ? (
-                <code>configured (server env)</code>
+                <code>provided by {BRAND_NAME}</code>
               ) : (
-                <code>not configured</code>
+                <code>none — the platform has no key for this provider</code>
               )}
             </dd>
           </dl>
 
           {isAdmin ? (
             <>
-              <form action={saveGemini} className="inline-form">
-                <label>
-                  <span>Set workspace Gemini key</span>
-                  <input
-                    name="apiKey"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder="AIza..."
-                    minLength={1}
-                    maxLength={4096}
-                    required
-                  />
-                </label>
-                <button type="submit" className="primary-btn">
-                  Save
-                </button>
-              </form>
+              {byokAllowed ? (
+                <form action={saveGemini} className="inline-form">
+                  <label>
+                    <span>Set workspace Gemini key</span>
+                    <input
+                      name="apiKey"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="AIza..."
+                      minLength={1}
+                      maxLength={4096}
+                      required
+                    />
+                  </label>
+                  <button type="submit" className="primary-btn">
+                    Save
+                  </button>
+                </form>
+              ) : (
+                <OwnKeysNeedPro />
+              )}
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasGemini ? (
                   <form action={clearGemini}>
@@ -1316,71 +1261,56 @@ export default async function IntegrationsPage({
         </section>
 
         <section>
-          <h2>Perplexity (Research)</h2>
+          <h2>Perplexity</h2>
           <p className="muted">
-            Powers grounded research when{' '}
-            <code>RESEARCH_PROVIDER=perplexity</code>. Perplexity Sonar
-            returns a cited answer drawn from live web search; the Pro
-            tier exposes richer citations (title + snippet). Per
-            workspace you can either bring your own Perplexity API key
-            or use the platform default.
+            Runs discovery as grounded web search — Perplexity Sonar answers
+            from live web search with citations (the <code>sonar-pro</code>{' '}
+            model gives richer ones) — when it is chosen under Web Search in
+            Active providers, and lead research when it is chosen there or is
+            the platform&apos;s research default.{' '}
+            <KeyChoiceIntro vendor="perplexity" noun="Perplexity" biller="Perplexity" {...introProps} />
           </p>
 
           <dl>
             <dt>Effective key source</dt>
             <dd>
-              {perplexityEffectiveSource === 'workspace' ? (
-                <>
-                  <span className="badge badge-good">Workspace key</span>
-                  <span className="muted"> — your Perplexity account is charged.</span>
-                </>
-              ) : perplexityEffectiveSource === 'platform' ? (
-                <>
-                  <span className="badge">Platform default</span>
-                  <span className="muted"> — platform-provided key in use.</span>
-                </>
-              ) : (
-                <>
-                  <span className="badge badge-bad">Not configured</span>
-                  <span className="muted">
-                    {' '}
-                    — research calls will fail with no_key when
-                    RESEARCH_PROVIDER=perplexity.
-                  </span>
-                </>
-              )}
+              <KeySourceLine vendor="perplexity" {...keyLineProps} />
             </dd>
             <dt>Workspace key</dt>
             <dd>{workspaceHasPerplexity ? <code>••• stored</code> : <code>not set</code>}</dd>
-            <dt>Platform default</dt>
+            <dt>Platform key</dt>
             <dd>
               {platformHasPerplexity ? (
-                <code>configured (server env)</code>
+                <code>provided by {BRAND_NAME}</code>
               ) : (
-                <code>not configured</code>
+                <code>none — the platform has no key for this provider</code>
               )}
             </dd>
           </dl>
 
           {isAdmin ? (
             <>
-              <form action={savePerplexity} className="inline-form">
-                <label>
-                  <span>Set workspace Perplexity key</span>
-                  <input
-                    name="apiKey"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder="pplx-..."
-                    minLength={1}
-                    maxLength={4096}
-                    required
-                  />
-                </label>
-                <button type="submit" className="primary-btn">
-                  Save
-                </button>
-              </form>
+              {byokAllowed ? (
+                <form action={savePerplexity} className="inline-form">
+                  <label>
+                    <span>Set workspace Perplexity key</span>
+                    <input
+                      name="apiKey"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="pplx-..."
+                      minLength={1}
+                      maxLength={4096}
+                      required
+                    />
+                  </label>
+                  <button type="submit" className="primary-btn">
+                    Save
+                  </button>
+                </form>
+              ) : (
+                <OwnKeysNeedPro />
+              )}
               <div className="action-row" style={{ marginTop: '0.5rem' }}>
                 {workspaceHasPerplexity ? (
                   <form action={clearPerplexity}>
@@ -1420,6 +1350,16 @@ export default async function IntegrationsPage({
           </>
         )}
       </>
+  );
+}
+
+/** In place of a provider section's "Set workspace … key" form when the
+ *  plan has no BYOK (setSecret would refuse the save). */
+function OwnKeysNeedPro() {
+  return (
+    <p className="muted small" data-testid="own-keys-need-pro">
+      Your own keys need the Pro plan — <Link href="/settings/billing">see plans in Billing</Link>.
+    </p>
   );
 }
 

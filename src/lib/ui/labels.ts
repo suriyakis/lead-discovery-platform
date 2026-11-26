@@ -70,6 +70,7 @@ import type {
 } from '@/lib/db/schema/learning';
 import type { NotificationKind } from '@/lib/kinds/notification';
 import type { LabelledUsageKind, UsageKeySource } from '@/lib/kinds/usage';
+import type { ProviderJobState, ProviderKeyGap } from '@/lib/kinds/provider';
 import type { ReplyClass } from '@/lib/mail/reply-classes';
 import type { GeoStatus } from '@/lib/services/geo';
 import type { FindingSeverity as HealthFindingSeverity } from '@/lib/diagnostics/types';
@@ -433,6 +434,20 @@ export const USAGE_KEY_SOURCE_LABEL = {
   mock: 'Test provider',
 } as const satisfies Record<UsageKeySource, string>;
 
+export const PROVIDER_JOB_STATE_LABEL = {
+  ready: 'Will run',
+  rules_only: 'Keyword rules only',
+  no_tokens: 'Out of tokens',
+  no_key: 'Will not run',
+  not_set_up: 'Not set up',
+} as const satisfies Record<ProviderJobState, string>;
+
+export const PROVIDER_KEY_GAP_LABEL = {
+  stops_jobs: 'No key — a job needs it',
+  limits_jobs: 'No key — limits a job',
+  unused: 'No key — not needed now',
+} as const satisfies Record<ProviderKeyGap, string>;
+
 // ---- Phase 1 sets (automation control, knowledge foundation) ----------
 
 export const AUTOMATION_CAPABILITY_LABEL = {
@@ -552,6 +567,8 @@ export const LABEL_MAPS = {
   hint_severity: HINT_SEVERITY_LABEL,
   workspace_plan: WORKSPACE_PLAN_LABEL,
   usage_key_source: USAGE_KEY_SOURCE_LABEL,
+  provider_job_state: PROVIDER_JOB_STATE_LABEL,
+  provider_key_gap: PROVIDER_KEY_GAP_LABEL,
   automation_capability: AUTOMATION_CAPABILITY_LABEL,
   workspace_hold_scope: WORKSPACE_HOLD_SCOPE_LABEL,
   workspace_hold_kind: WORKSPACE_HOLD_KIND_LABEL,

@@ -31,6 +31,7 @@ import {
   listHealthReports,
   processDueHealthChecks,
   readStoredFindings,
+  reviewCommunicationQuality,
   runWorkspaceHealthCheck,
   type ThreadReview,
 } from '@/lib/services/health-check';
@@ -45,12 +46,15 @@ class StubReviewer implements IAIProvider {
   public readonly id = 'stub';
   public readonly model = 'stub-1';
   public calls = 0;
+  /** Every review prompt (subject + transcript) the check sent. */
+  public prompts: string[] = [];
   constructor(private readonly verdict: Record<string, unknown>) {}
   async generateText(_i: AIGenInput): Promise<AIGenResult> {
     throw new Error('not used');
   }
-  async generateJson<T>(_i: AIGenInput, schema: ZodSchema<T>): Promise<T> {
+  async generateJson<T>(i: AIGenInput, schema: ZodSchema<T>): Promise<T> {
     this.calls += 1;
+    this.prompts.push(i.prompt);
     return schema.parse(this.verdict);
   }
   estimateCost(): number {
@@ -337,6 +341,150 @@ describe('runWorkspaceHealthCheck', () => {
     expect(report.score).toBeGreaterThanOrEqual(80);
     const notifs = await listNotifications(ctx(s.workspaceA, s.ownerA));
     expect(notifs.some((n) => n.kind === 'health.warning')).toBe(false);
+  });
+});
+
+describe('the AI review reads only the conversations the platform started', () => {
+  let seq = 0;
+
+  async function mailboxOf(threadId: bigint): Promise<bigint> {
+    const [row] = await db.select().from(mailThreads).where(eq(mailThreads.id, threadId));
+    return row!.mailboxId;
+  }
+
+  /** One message; `at` is its stored time (what the platform helpers read). */
+  async function addMessage(
+    s: Setup,
+    mailboxId: bigint,
+    threadId: bigint,
+    m: {
+      direction: 'inbound' | 'outbound';
+      relevance?: 'bulk' | 'prospect_reply';
+      from: string;
+      body: string;
+      at?: Date;
+      trashed?: boolean;
+    },
+  ): Promise<void> {
+    seq += 1;
+    await db.insert(mailMessages).values({
+      workspaceId: s.workspaceA,
+      mailboxId,
+      threadId,
+      direction: m.direction,
+      status: m.direction === 'inbound' ? 'received' : 'sent',
+      messageId: `<scope-h${seq}@x>`,
+      fromAddress: m.from,
+      toAddresses: ['sales@test.local'],
+      subject: 'Waterproofing inquiry',
+      bodyText: m.body,
+      outreachRelevance: m.relevance ?? null,
+      ...(m.at ? { createdAt: m.at } : {}),
+      trashedAt: m.trashed ? new Date() : null,
+    });
+  }
+
+  /** A thread row with the denormalised counts sync's touchThread leaves. */
+  async function addThread(
+    s: Setup,
+    mailboxId: bigint,
+    subject: string,
+    messageCount: number,
+  ): Promise<bigint> {
+    seq += 1;
+    const [row] = await db
+      .insert(mailThreads)
+      .values({
+        workspaceId: s.workspaceA,
+        mailboxId,
+        subject,
+        externalThreadKey: `subj:scope-h${seq}`,
+        participants: [],
+        messageCount,
+        lastMessageAt: new Date(),
+      })
+      .returning();
+    return row!.id;
+  }
+
+  it('newsletters threading under their own subject do not fill the sample window', async () => {
+    const s = await setup();
+    const ai = new StubReviewer({ naturalness: 90, issues: [], advice: [] });
+    _setAIProviderForTests(ai);
+    const ours = await seedThread(s);
+    const mailboxId = await mailboxOf(ours);
+    // Our conversation went quiet an hour ago…
+    const hourAgo = new Date(Date.now() - 60 * 60_000);
+    await db.update(mailMessages).set({ createdAt: hourAgo }).where(eq(mailMessages.threadId, ours));
+    await db.update(mailThreads).set({ lastMessageAt: hourAgo }).where(eq(mailThreads.id, ours));
+    // …while nine weekly digests, three issues each, arrived since.
+    for (let i = 0; i < 9; i++) {
+      const digest = await addThread(s, mailboxId, `Weekly digest ${i}`, 3);
+      for (let k = 0; k < 3; k++) {
+        await addMessage(s, mailboxId, digest, {
+          direction: 'inbound',
+          relevance: 'bulk',
+          from: 'news@digest.test',
+          body: `NEWSLETTER-ISSUE-${i}-${k}`,
+        });
+      }
+    }
+
+    const reviews = await reviewCommunicationQuality({ workspaceId: s.workspaceA }, 7);
+    expect(reviews.map((r) => r.threadId)).toEqual([ours.toString()]);
+    expect(ai.prompts.join('\n')).not.toContain('NEWSLETTER-ISSUE');
+  });
+
+  it('digests filed on a conversation neither qualify it for review nor reach a transcript', async () => {
+    const s = await setup();
+    const ai = new StubReviewer({ naturalness: 90, issues: [], advice: [] });
+    _setAIProviderForTests(ai);
+    // A real three-message conversation, with two digests and a reply the
+    // user trashed filed on it.
+    const ours = await seedThread(s);
+    const mailboxId = await mailboxOf(ours);
+    for (const body of ['DIGEST-BODY-FILED-1', 'DIGEST-BODY-FILED-2']) {
+      await addMessage(s, mailboxId, ours, {
+        direction: 'inbound',
+        relevance: 'bulk',
+        from: 'news@digest.test',
+        body,
+      });
+    }
+    await addMessage(s, mailboxId, ours, {
+      direction: 'inbound',
+      relevance: 'prospect_reply',
+      from: 'anna@x.com',
+      body: 'TRASHED-REPLY-BODY',
+      trashed: true,
+    });
+    await db.update(mailThreads).set({ messageCount: 6 }).where(eq(mailThreads.id, ours));
+    // One pitch plus two digests: three messages on the thread row, but
+    // only one of them is ours — not a conversation to review.
+    const short = await addThread(s, mailboxId, 'Short pitch', 3);
+    await addMessage(s, mailboxId, short, {
+      direction: 'outbound',
+      from: 'sales@test.local',
+      body: 'SHORT-PITCH-BODY',
+    });
+    for (const body of ['DIGEST-ON-SHORT-1', 'DIGEST-ON-SHORT-2']) {
+      await addMessage(s, mailboxId, short, {
+        direction: 'inbound',
+        relevance: 'bulk',
+        from: 'news@digest.test',
+        body,
+      });
+    }
+
+    const reviews = await reviewCommunicationQuality({ workspaceId: s.workspaceA }, 7);
+    expect(reviews.map((r) => r.threadId)).toEqual([ours.toString()]);
+    expect(ai.calls).toBe(1);
+    const prompt = ai.prompts[0]!;
+    expect(prompt).toContain('That would be me. What do you offer?');
+    expect(prompt.match(/\[us\]/g)).toHaveLength(2);
+    for (const absent of ['DIGEST-BODY-FILED', 'TRASHED-REPLY-BODY', 'SHORT-PITCH-BODY', 'DIGEST-ON-SHORT']) {
+      expect(prompt).not.toContain(absent);
+    }
   });
 });
 

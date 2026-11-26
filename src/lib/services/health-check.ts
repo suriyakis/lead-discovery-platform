@@ -20,7 +20,7 @@
 //      and the tick turns the failure into an ops incident (PC-07), which
 //      the engine shows as a finding until a check succeeds.
 
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/lib/db/client';
 import {
@@ -45,6 +45,12 @@ import { checkGate } from './automation-gate';
 import { canAdminWorkspace, type WorkspaceContext } from './context';
 import { notify } from './notifications';
 import { hasTokens } from './token-ledger';
+import {
+  platformMailCondition,
+  threadHasPlatformMail,
+  threadPlatformLastMessageAt,
+  threadPlatformMessageCount,
+} from './mail-scope';
 
 export class HealthCheckError extends Error {
   public readonly code: string;
@@ -256,22 +262,40 @@ async function sampleRecentThreads(
   sinceDays: number,
 ): Promise<Array<{ threadId: bigint; subject: string; transcript: string }>> {
   const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
-  // Threads with recent activity AND at least one outbound message —
-  // we're reviewing OUR side of the conversation.
+  // Conversations the platform started, with recent activity AND at least
+  // one outbound message — we're reviewing OUR side of the conversation.
+  // Activity and length count platform mail only (mail-scope.ts):
+  // mail_threads.last_message_at / message_count are denormalised over
+  // every synced message, so a newsletter threading under its own subject
+  // (or filed on our thread by subject) would otherwise fill the sample.
+  // A thread of bounce reports threaded together by subject is platform
+  // mail too, but holds nothing of ours to review.
+  const lastAt = threadPlatformLastMessageAt();
   const threads = await db
     .select({ id: mailThreads.id, subject: mailThreads.subject })
     .from(mailThreads)
     .where(
       and(
         eq(mailThreads.workspaceId, ctx.workspaceId),
-        gte(mailThreads.lastMessageAt, since),
-        gte(mailThreads.messageCount, 3),
+        threadHasPlatformMail(),
+        sql`EXISTS (
+          SELECT 1 FROM ${mailMessages}
+          WHERE ${mailMessages.threadId} = ${mailThreads.id}
+            AND ${mailMessages.workspaceId} = ${mailThreads.workspaceId}
+            AND ${mailMessages.direction} = 'outbound'
+        )`,
+        // ISO + cast: a Date bound against a raw SQL expression (no column
+        // to encode it) breaks postgres.js.
+        sql`${lastAt} >= ${since.toISOString()}::timestamptz`,
+        sql`${threadPlatformMessageCount()} >= 3`,
       ),
     )
-    .orderBy(desc(mailThreads.lastMessageAt))
+    .orderBy(desc(lastAt), desc(mailThreads.id))
     .limit(THREAD_SAMPLE * 3);
   if (threads.length === 0) return [];
 
+  // The transcript is what the thread page shows open: platform mail,
+  // trashed and spammed messages left out.
   const out: Array<{ threadId: bigint; subject: string; transcript: string }> = [];
   const msgs = await db
     .select({
@@ -286,9 +310,12 @@ async function sampleRecentThreads(
       and(
         eq(mailMessages.workspaceId, ctx.workspaceId),
         inArray(mailMessages.threadId, threads.map((t) => t.id)),
+        platformMailCondition(),
+        isNull(mailMessages.trashedAt),
+        isNull(mailMessages.spamAt),
       ),
     )
-    .orderBy(mailMessages.createdAt);
+    .orderBy(asc(mailMessages.createdAt), asc(mailMessages.id));
 
   for (const t of threads) {
     const rows = msgs.filter((m) => m.threadId === t.id);

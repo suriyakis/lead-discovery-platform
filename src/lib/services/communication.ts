@@ -11,7 +11,7 @@
 // source_records → connector_recipes, which we can add when there's an
 // explicit operator need.
 
-import { and, desc, eq, gte, ilike, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { mailThreads, mailMessages } from '@/lib/db/schema/mailing';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
@@ -19,6 +19,12 @@ import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { productProfiles } from '@/lib/db/schema/products';
 import { outreachQueue } from '@/lib/db/schema/outreach';
 import type { WorkspaceContext } from './context';
+import {
+  platformMailCondition,
+  threadHasPlatformMail,
+  threadPlatformLastMessageAt,
+  threadPlatformMessageCount,
+} from './mail-scope';
 
 export type CommunicationStatus =
   | 'all'
@@ -33,9 +39,9 @@ export interface ListCommunicationFilters {
   /** Free-text — matches subject, contact name, contact email, product
    *  name (case-insensitive). */
   search?: string;
-  /** Filter by mail_threads.last_message_at >= dateFrom. */
+  /** Newest platform message on the thread >= dateFrom. */
   dateFrom?: Date;
-  /** Filter by mail_threads.last_message_at <= dateTo. */
+  /** Newest platform message on the thread <= dateTo. */
   dateTo?: Date;
   /** Page size. Defaults to 100, capped at 500. */
   limit?: number;
@@ -94,12 +100,18 @@ export async function listCommunication(
   // Build a single query that joins everything we need + computes the
   // derived flags via correlated subqueries. Worth a single round-trip
   // even if the SQL is heavier — keeps the page snappy.
+  // Inbound counts only when it answers our mail (platformMailCondition):
+  // a newsletter that subject threading filed on the thread is not a reply.
   const hasInboundExpr = sql<boolean>`EXISTS (
     SELECT 1 FROM ${mailMessages}
     WHERE ${mailMessages.threadId} = ${mailThreads.id}
       AND ${mailMessages.workspaceId} = ${mailThreads.workspaceId}
       AND ${mailMessages.direction} = 'inbound'
+      AND ${platformMailCondition()}
   )`;
+  // Only threads the platform started (or that hold a proven answer to
+  // our mail) are listed — the rest of the mailbox is not our business.
+  const hasPlatformMailExpr = threadHasPlatformMail();
   const hasOutboundExpr = sql<boolean>`EXISTS (
     SELECT 1 FROM ${mailMessages}
     WHERE ${mailMessages.threadId} = ${mailThreads.id}
@@ -135,15 +147,26 @@ export async function listCommunication(
       )
   )`;
 
-  const conditions: SQL[] = [eq(mailThreads.workspaceId, ctx.workspaceId)];
+  // Count, date filters and order follow the platform messages only, as
+  // the thread page shows them (mail_threads.message_count/last_message_at
+  // also count mailbox mail filed on the thread).
+  const messageCountExpr = threadPlatformMessageCount();
+  const lastMessageAtExpr = threadPlatformLastMessageAt();
+
+  const conditions: SQL[] = [
+    eq(mailThreads.workspaceId, ctx.workspaceId),
+    hasPlatformMailExpr as SQL,
+  ];
   if (filters.productId !== undefined) {
     conditions.push(eq(qualifiedLeads.productProfileId, filters.productId));
   }
+  // ISO + cast: a Date bound against a raw SQL expression (no column to
+  // encode it) breaks postgres.js.
   if (filters.dateFrom) {
-    conditions.push(gte(mailThreads.lastMessageAt, filters.dateFrom));
+    conditions.push(sql`${lastMessageAtExpr} >= ${filters.dateFrom.toISOString()}::timestamptz`);
   }
   if (filters.dateTo) {
-    conditions.push(lte(mailThreads.lastMessageAt, filters.dateTo));
+    conditions.push(sql`${lastMessageAtExpr} <= ${filters.dateTo.toISOString()}::timestamptz`);
   }
   if (filters.search && filters.search.trim()) {
     const needle = `%${filters.search.trim()}%`;
@@ -162,8 +185,8 @@ export async function listCommunication(
       mailboxId: mailThreads.mailboxId,
       subject: mailThreads.subject,
       participants: mailThreads.participants,
-      messageCount: mailThreads.messageCount,
-      lastMessageAt: mailThreads.lastMessageAt,
+      messageCount: messageCountExpr,
+      lastMessageAt: lastMessageAtExpr,
       leadId: qualifiedLeads.id,
       leadState: qualifiedLeads.state,
       currentStage: qualifiedLeads.currentStage,
@@ -193,9 +216,7 @@ export async function listCommunication(
       eq(productProfiles.id, qualifiedLeads.productProfileId),
     )
     .where(and(...conditions))
-    .orderBy(
-      sql`COALESCE(${mailThreads.lastMessageAt}, ${mailThreads.createdAt}) DESC`,
-    )
+    .orderBy(sql`COALESCE(${lastMessageAtExpr}, ${mailThreads.createdAt}) DESC`)
     .limit(limit);
 
   const enriched: CommunicationRow[] = rows.map((r) => {

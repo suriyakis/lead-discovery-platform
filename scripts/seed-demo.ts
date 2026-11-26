@@ -1941,6 +1941,10 @@ async function seedRest(ctx: RestCtx): Promise<void> {
           replyClassification: ev.cls ?? null,
           replyClassificationConfidence: ev.conf ?? null,
           replyClassifiedAt: ev.cls ? plus(ev.at, MIN) : null,
+          // What the relevance gate (flow:F-01) stores for an answer to our
+          // mail — the only inbound mail Conversations lists.
+          outreachRelevance:
+            ev.cls === 'bounce' ? 'bounce' : ev.cls === 'out_of_office' ? 'auto_reply' : 'prospect_reply',
           extractedEmails: ev.extracted ?? [],
           bodyTextNative: foreign ? (ev.body?.en ?? null) : null,
           nativeLanguage: foreign ? 'en' : null,
@@ -2217,6 +2221,8 @@ async function seedRest(ctx: RestCtx): Promise<void> {
       attachments: [{ filename: 'Exhibitor-pack-2026.pdf', contentType: 'application/pdf', sizeBytes: 1_284_533 }],
       receivedAt: ago(6, 3),
       contactId: expoContact.id,
+      // Mailbox mail the platform did not start: stored, never listed.
+      outreachRelevance: 'unrelated',
       replyClassification: 'irrelevant',
       replyClassificationConfidence: 40,
       replyClassifiedAt: ago(6, 3),
@@ -2237,6 +2243,7 @@ async function seedRest(ctx: RestCtx): Promise<void> {
       subject: '10,000 verified B2B leads for €99 — today only',
       bodyText: 'Boost your pipeline with 10,000 verified decision-maker emails. Reply YES to receive the list.',
       receivedAt: ago(3, 9),
+      outreachRelevance: 'bulk',
       replyClassification: 'irrelevant',
       replyClassificationConfidence: 30,
       replyClassifiedAt: ago(3, 9),
@@ -2262,6 +2269,8 @@ async function seedRest(ctx: RestCtx): Promise<void> {
       nativeLanguage: 'en',
       translatedFromLanguage: 'de',
       receivedAt: ago(15, 1),
+      // An out-of-office answering our German outreach.
+      outreachRelevance: 'auto_reply',
       replyClassification: 'out_of_office',
       replyClassificationConfidence: 70,
       replyClassifiedAt: ago(15, 1),

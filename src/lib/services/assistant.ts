@@ -350,7 +350,7 @@ async function deterministicAnswer(
   const lines: string[] = [];
   if (reason === 'wallet_empty') {
     lines.push(
-      'Your token wallet is empty, so the AI guide is paused — and so are discovery, drafting and translation. This answer comes from the built-in checklist and used no tokens.',
+      'Your token wallet is empty, so the AI guide is paused — and so are discovery, qualification, drafting and some translation ([/settings/integrations] shows what pauses and what still runs). This answer comes from the built-in checklist and used no tokens.',
       '',
       'To get going again:',
       '1. Open [/settings/billing].',

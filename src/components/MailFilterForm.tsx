@@ -10,7 +10,6 @@ import { Search } from 'lucide-react';
 import Link from 'next/link';
 import { useRef, type FormEvent } from 'react';
 import type { MailFolder } from '@/lib/services/mail-folders';
-import type { MailSourceFilter } from '@/lib/services/mail';
 
 interface ProductOpt {
   id: string;
@@ -19,7 +18,6 @@ interface ProductOpt {
 
 interface Props {
   activeFolder: MailFolder;
-  source: MailSourceFilter;
   productId: string;
   dateFrom: string;
   dateTo: string;
@@ -29,12 +27,10 @@ interface Props {
   folderLabel: string;
   hasActiveFilters: boolean;
   resetHref: string;
-  segmentLinks: { all: string; outreach: string; external: string };
 }
 
 export function MailFilterForm({
   activeFolder,
-  source,
   productId,
   dateFrom,
   dateTo,
@@ -44,7 +40,6 @@ export function MailFilterForm({
   folderLabel,
   hasActiveFilters,
   resetHref,
-  segmentLinks,
 }: Props) {
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -70,38 +65,6 @@ export function MailFilterForm({
     >
       <input type="hidden" name="folder" value={activeFolder} />
       {mailboxId ? <input type="hidden" name="mailboxId" value={mailboxId} /> : null}
-
-      {/* Segment toggle: All / App / External (already Link-based, instant) */}
-      <div
-        className="mail-segment"
-        role="tablist"
-        aria-label="Conversation source"
-      >
-        <Link
-          href={segmentLinks.all}
-          className={source === 'all' ? 'is-active' : ''}
-        >
-          All
-        </Link>
-        <Link
-          href={segmentLinks.outreach}
-          className={source === 'outreach' ? 'is-active' : ''}
-        >
-          App conversations
-        </Link>
-        <Link
-          href={segmentLinks.external}
-          className={source === 'external' ? 'is-active' : ''}
-        >
-          External email
-        </Link>
-      </div>
-
-      <input
-        type="hidden"
-        name="source"
-        value={source !== 'all' ? source : ''}
-      />
 
       <label>
         <span>Product</span>

@@ -29,6 +29,7 @@ import {
 import { db } from '@/lib/db/client';
 import { mailThreads } from '@/lib/db/schema/mailing';
 import { contactAssociations } from '@/lib/db/schema/contacts';
+import { threadHasPlatformMail } from '@/lib/services/mail-scope';
 import {
   LeadResearchError,
   deleteLeadResearch,
@@ -120,6 +121,9 @@ export default async function PipelineLeadDetail({
   const threadIdsForLead = threadAssocs
     .filter((a) => leadContactIds.has(a.contactId.toString()))
     .map((a) => BigInt(a.entityId));
+  // Only threads holding our conversation (platform mail, not trashed or
+  // spam): pushThreadAsNotes sends exactly that, so a mailbox-only thread
+  // would push nothing (src/lib/services/mail-scope.ts).
   const linkedThreads = threadIdsForLead.length > 0
     ? await db
         .select()
@@ -128,6 +132,7 @@ export default async function PipelineLeadDetail({
           and(
             eq(mailThreads.workspaceId, ctx.workspaceId),
             inArray(mailThreads.id, threadIdsForLead),
+            threadHasPlatformMail({ excludeHidden: true }),
           ),
         )
     : [];
@@ -815,10 +820,10 @@ async function ConversationSection({
   qualifiedLeadId: bigint;
 }) {
   const { db } = await import('@/lib/db/client');
-  const { mailMessages } = await import('@/lib/db/schema/mailing');
   const { outreachThreadState } = await import('@/lib/db/schema/outreach');
   const { contactAssociations } = await import('@/lib/db/schema/contacts');
-  const { and, asc, eq } = await import('drizzle-orm');
+  const { listPlatformThreadMessages } = await import('@/lib/services/mail-scope');
+  const { and, eq } = await import('drizzle-orm');
 
   // 1. Find every contact linked to this lead, then every mail_thread
   //    those contacts are associated with. The same lead may have
@@ -915,17 +920,12 @@ async function ConversationSection({
       )
       .limit(1);
     if (sRows[0]) states.push(sRows[0]);
-    const mRows = await db
-      .select()
-      .from(mailMessages)
-      .where(
-        and(
-          eq(mailMessages.workspaceId, workspaceId),
-          eq(mailMessages.threadId, tid),
-        ),
-      )
-      .orderBy(asc(mailMessages.id));
-    messages.push({ threadId: tid, msgs: mRows });
+    // The conversation as the thread page shows it: platform mail only, no
+    // trashed or spam messages (src/lib/services/mail-scope.ts).
+    const mRows = await listPlatformThreadMessages({ workspaceId }, tid, {
+      excludeHidden: true,
+    });
+    if (mRows.length > 0) messages.push({ threadId: tid, msgs: mRows });
   }
 
   return (

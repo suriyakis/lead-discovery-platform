@@ -95,7 +95,7 @@ describe('Today › Overview signals', () => {
     const { signals, html } = await renderOverview(ctx);
     expect(signals.degraded).toBe(true);
     expect(html).toContain('Some numbers could not be loaded');
-    for (const label of ['Inbound mail (7d)', 'Send queue']) {
+    for (const label of ['Replies (7d)', 'Send queue']) {
       expect(cardValue(html, label), label).toBe('—');
     }
     // The decision tiles are the attention summary's, which still loaded.

@@ -89,6 +89,9 @@ async function seedInbound(workspaceId: bigint, mailboxId: bigint, subject: stri
       toAddresses: [`sales-${workspaceId}@nulife.test`],
       subject,
       bodyText: `Body of ${subject}`,
+      // A reply to our outreach — the only inbound mail a mailbox page lists
+      // (platformMailCondition, src/lib/services/mail-scope.ts).
+      outreachRelevance: 'prospect_reply',
       receivedAt: new Date(),
     })
     .returning();

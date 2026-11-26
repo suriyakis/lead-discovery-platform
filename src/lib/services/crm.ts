@@ -23,13 +23,13 @@ import {
   type NewCrmSyncEntry,
 } from '@/lib/db/schema/crm';
 import {
-  mailMessages,
   mailThreads,
   type MailThread,
 } from '@/lib/db/schema/mailing';
 import { contactAssociations } from '@/lib/db/schema/contacts';
 import { recordAuditEvent } from './audit';
 import { assertGate } from './automation-gate';
+import { listPlatformThreadMessages } from './mail-scope';
 import {
   canAdminWorkspace,
   canWrite,
@@ -510,16 +510,10 @@ export async function pushThreadAsNotes(
   if (!threadRows[0]) throw notFound('mail_thread');
   const thread: MailThread = threadRows[0];
 
-  const messages = await db
-    .select()
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, thread.id),
-      ),
-    )
-    .orderBy(asc(mailMessages.createdAt));
+  // Only the conversation the thread page shows goes to the CRM: platform
+  // mail, no trashed or spam messages — never a newsletter that subject
+  // threading filed on the thread (src/lib/services/mail-scope.ts).
+  const messages = await listPlatformThreadMessages(ctx, thread.id, { excludeHidden: true });
 
   if (messages.length === 0) {
     return { inserted: 0, skipped: 0, failed: 0 };
