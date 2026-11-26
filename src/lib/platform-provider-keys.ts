@@ -31,7 +31,12 @@ export interface PlatformProviderKeySpec {
   /** Server env var used when no console key is saved. */
   envVar: string;
   name: string;
-  /** One-line description of what the platform uses this vendor for. */
+  /** One line on what this vendor CAN do here (the /admin/providers key
+   *  cards). It names no default: which vendor runs a job depends on the
+   *  console's and the env's settings, and what each job runs on now is
+   *  Settings → AI & search's job rows (provider-readiness.ts). Facts only:
+   *  the outreach tiers are STAGE_TIERS in outreach-stage-models.ts, the
+   *  choices are the ALLOWED_* lists in provider-settings.ts. */
   role: string;
 }
 
@@ -42,49 +47,49 @@ export const PLATFORM_PROVIDER_KEYS: ReadonlyArray<PlatformProviderKeySpec> = [
     secretKey: 'anthropic.apiKey',
     envVar: 'ANTHROPIC_API_KEY',
     name: 'Anthropic (Claude)',
-    role: 'AI drafting, conversation review — the default AI provider.',
+    role: 'Writes the pitch and the replies to leads (claude-opus-4-7) whenever it has a key, and Suggest with AI on products (Opus 4.7). Can also be chosen for the other AI writing and for qualification.',
   },
   {
     vendor: 'openai',
     secretKey: 'openai.apiKey',
     envVar: 'OPENAI_API_KEY',
     name: 'OpenAI',
-    role: 'Embeddings (semantic search over knowledge + lessons); optional AI provider.',
+    role: 'Writes first emails, closing notes and referral introductions (gpt-5-nano) whenever it has a key. The only embedding provider (knowledge retrieval, lessons). Can also be chosen for vector storage, AI writing, qualification and Suggest with AI on products (GPT-5).',
   },
   {
     vendor: 'gemini',
     secretKey: 'gemini.apiKey',
     envVar: 'GEMINI_API_KEY',
     name: 'Google Gemini',
-    role: 'Grounded web search — the engine behind lead discovery — and research.',
+    role: 'Grounded web search (Google results with citations) for discovery and lead research. Can also be chosen for AI writing and qualification.',
   },
   {
     vendor: 'deepseek',
     secretKey: 'deepseek.apiKey',
     envVar: 'DEEPSEEK_API_KEY',
     name: 'DeepSeek',
-    role: 'Cost-efficient AI — the default for high-volume qualification.',
+    role: 'Low-cost AI. Can be chosen for qualification and for AI writing.',
   },
   {
     vendor: 'mistral',
     secretKey: 'mistral.apiKey',
     envVar: 'MISTRAL_API_KEY',
     name: 'Mistral (OCR)',
-    role: 'OCR for scanned PDFs — auto-selected when a PDF has no text layer.',
+    role: 'Reads PDFs without a text layer that are added as knowledge (OCR). The only OCR provider.',
   },
   {
     vendor: 'serpapi',
     secretKey: 'serpapi.apiKey',
     envVar: 'SERPAPI_KEY',
     name: 'SerpAPI',
-    role: 'Alternative web-search backend (optional).',
+    role: 'Plain Google-style web search for discovery, when it is the search provider.',
   },
   {
     vendor: 'perplexity',
     secretKey: 'perplexity.apiKey',
     envVar: 'PERPLEXITY_API_KEY',
     name: 'Perplexity',
-    role: 'Alternative research backend (optional).',
+    role: 'Grounded web search (Sonar, with citations) for discovery and lead research, when it is chosen.',
   },
 ];
 

@@ -16,7 +16,7 @@
 // Overview shows: the drafts' stage mix, inbound volume, the send queue,
 // the funnel and the latest replies.
 
-import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { outreachDrafts, outreachQueue } from '@/lib/db/schema/outreach';
 import { mailMessages } from '@/lib/db/schema/mailing';
@@ -37,8 +37,10 @@ export interface DashboardSignals {
     pitch: number;
     closing: number;
   };
+  /** People answering our mail in the last 7 days (prospect_reply). */
   replies7d: number;
-  /** Last 5 inbound messages, newest first. */
+  /** Last 5 replies from people answering our mail, newest first —
+   *  never newsletters or other mailbox mail (flow:F-01). */
   recentInbound: Array<{
     id: string;
     fromName: string | null;
@@ -89,6 +91,19 @@ const DEGRADED: DashboardSignals = {
   funnel: ZERO_FUNNEL,
 };
 
+/** Replies from people answering our mail (relevance prospect_reply) —
+ *  the same set the attention summary counts — not trashed or spam. The
+ *  rest of the synced mailbox never reaches Today. */
+function visibleProspectReplies(workspaceId: bigint) {
+  return and(
+    eq(mailMessages.workspaceId, workspaceId),
+    eq(mailMessages.direction, 'inbound'),
+    eq(mailMessages.outreachRelevance, 'prospect_reply'),
+    isNull(mailMessages.trashedAt),
+    isNull(mailMessages.spamAt),
+  );
+}
+
 export async function getDashboardSignals(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
 ): Promise<DashboardSignals> {
@@ -125,8 +140,7 @@ export async function getDashboardSignals(
         .from(mailMessages)
         .where(
           and(
-            eq(mailMessages.workspaceId, ws),
-            eq(mailMessages.direction, 'inbound'),
+            visibleProspectReplies(ws),
             gte(mailMessages.createdAt, sevenDaysAgo),
           ),
         ),
@@ -141,12 +155,7 @@ export async function getDashboardSignals(
           intent: mailMessages.replyClassification,
         })
         .from(mailMessages)
-        .where(
-          and(
-            eq(mailMessages.workspaceId, ws),
-            eq(mailMessages.direction, 'inbound'),
-          ),
-        )
+        .where(visibleProspectReplies(ws))
         .orderBy(desc(mailMessages.id))
         .limit(5),
       db

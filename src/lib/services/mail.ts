@@ -84,6 +84,7 @@ import {
   isOutreachLinked,
   type OutreachRelevance,
 } from '@/lib/mail/relevance';
+import { isPlatformInbound, platformMailCondition } from './mail-scope';
 import { getUnsubscribeFooter } from '@/lib/i18n/email-footer';
 import { randomUUID } from 'node:crypto';
 import {
@@ -867,6 +868,13 @@ export interface SyncInboundResult {
   fetched: number;
   inserted: number;
   duplicates: number;
+  /** Of `inserted`, the new messages Conversations shows: the answers to
+   *  our mail (prospect reply, auto-reply, bounce) and any other message
+   *  whose relevance evidence says it references our outbound, such as a
+   *  colleague's reply-all from another connected mailbox
+   *  (isPlatformInbound, the same rule the lists apply). The rest is the
+   *  mailbox's other mail, stored for reply detection but not shown. */
+  replies: number;
 }
 
 /** PC-12: the mailbox's sync lease is held by another sync or check. */
@@ -914,6 +922,7 @@ async function syncInboundHeld(
 
   let inserted = 0;
   let duplicates = 0;
+  let replies = 0;
   const relevance: Partial<Record<OutreachRelevance, number>> = {};
   for (const inbound of messages) {
     const outcome = await persistInbound(ctx, mailbox.id, inbound);
@@ -922,6 +931,7 @@ async function syncInboundHeld(
     } else {
       inserted++;
       relevance[outcome.relevance] = (relevance[outcome.relevance] ?? 0) + 1;
+      if (outcome.inConversations) replies++;
     }
   }
 
@@ -944,15 +954,24 @@ async function syncInboundHeld(
     });
   }
 
-  return { fetched: messages.length, inserted, duplicates };
+  return { fetched: messages.length, inserted, duplicates, replies };
 }
 
-type PersistInboundOutcome = { existed: true } | { existed: false; relevance: OutreachRelevance };
+type PersistInboundOutcome =
+  | { existed: true }
+  | {
+      existed: false;
+      relevance: OutreachRelevance;
+      /** The stored row is platform mail (isPlatformInbound): Conversations
+       *  lists it. */
+      inConversations: boolean;
+    };
 
 /**
  * Store one fetched message, then run the reply pipeline only when it is
  * about our outreach (flow:F-01, X1). Every message is stored and threaded
- * so it still shows in Conversations; what differs is the side effects:
+ * (reply detection needs the whole folder), but Conversations lists only
+ * platform mail (mail-scope.ts); what differs here is the side effects:
  *
  *   relevance        contact  classify+auto-actions  translate  notify
  *   prospect_reply     yes            yes               yes       yes
@@ -1077,9 +1096,16 @@ async function persistInbound(
 
   await touchThread(thread.id);
 
+  const inConversations = isPlatformInbound({
+    outreachRelevance: relevance,
+    relevanceSignals: assessment.signals,
+  });
+
   // Bulk and unrelated mail stops here: stored, threaded, no side effects.
+  // (A colleague's reply-all to our outreach is 'unrelated' too — no reply
+  // pipeline — but it answers our mail, so Conversations lists it.)
   if (!isOutreachLinked(relevance)) {
-    return { existed: false, relevance };
+    return { existed: false, relevance, inConversations };
   }
 
   // Phase 20: classify the inbound + run auto-actions inline. Best-effort.
@@ -1110,7 +1136,7 @@ async function persistInbound(
     });
   }
 
-  return { existed: false, relevance };
+  return { existed: false, relevance, inConversations };
 }
 
 // ---- read ----------------------------------------------------------
@@ -1240,8 +1266,8 @@ function folderFilter(folder: MailFolder): SQL {
   }
 }
 
-export type MailSourceFilter = 'all' | 'outreach' | 'external';
-
+/** Every listing and count below covers platform mail only
+ *  (platformMailCondition); there is no filter that widens it. */
 export interface ListMessagesFilter {
   /** Omit to list across every mailbox in the workspace (Gmail-style
    *  unified inbox). Set to scope to a single mailbox. */
@@ -1255,10 +1281,6 @@ export interface ListMessagesFilter {
   /** P61-17: filter by date range on mail_messages.createdAt. */
   dateFrom?: Date;
   dateTo?: Date;
-  /** P61-17: 'outreach' = thread is linked to an outreach_thread_state
-   *  row (i.e., app-driven conversation); 'external' = NOT linked
-   *  (random inbound, manual sends); 'all' = both. */
-  source?: MailSourceFilter;
   /** P61-17: filter to messages whose thread is linked to a qualified
    *  lead for this product. */
   productId?: bigint;
@@ -1272,6 +1294,7 @@ async function buildMessageFilterConditions(
 ): Promise<SQL[]> {
   const conditions: SQL[] = [
     eq(mailMessages.workspaceId, workspaceId),
+    platformMailCondition(),
     folderFilter(filter.folder),
   ];
   if (filter.mailboxId !== undefined) {
@@ -1292,19 +1315,6 @@ async function buildMessageFilterConditions(
   }
   if (filter.dateTo) {
     conditions.push(lte(mailMessages.createdAt, filter.dateTo));
-  }
-  if (filter.source === 'outreach' || filter.source === 'external') {
-    const { outreachThreadState } = await import('@/lib/db/schema/outreach');
-    const exists = sql`EXISTS (
-      SELECT 1 FROM ${outreachThreadState}
-      WHERE ${outreachThreadState.threadId} = ${mailMessages.threadId}
-        AND ${outreachThreadState.workspaceId} = ${mailMessages.workspaceId}
-    )`;
-    conditions.push(
-      filter.source === 'outreach'
-        ? (exists as unknown as SQL)
-        : (sql`NOT ${exists}` as unknown as SQL),
-    );
   }
   if (filter.productId !== undefined) {
     const { outreachThreadState } = await import('@/lib/db/schema/outreach');
@@ -1382,7 +1392,12 @@ export async function countMessagesByFolder(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   mailboxId?: bigint,
 ): Promise<FolderCounts> {
-  const where: SQL[] = [eq(mailMessages.workspaceId, ctx.workspaceId)];
+  const where: SQL[] = [
+    eq(mailMessages.workspaceId, ctx.workspaceId),
+    // The same platform scope as listMessages, so a folder badge never
+    // counts mail the list cannot show.
+    platformMailCondition(),
+  ];
   if (mailboxId !== undefined) {
     where.push(eq(mailMessages.mailboxId, mailboxId));
   }
@@ -1615,6 +1630,8 @@ export type SafeSyncOutcome =
       fetched: number;
       inserted: number;
       duplicates: number;
+      /** Of `inserted`, the answers to our mail (see SyncInboundResult). */
+      replies: number;
       /** A failing mailbox passed its check and is active again. */
       recovered: boolean;
     }
@@ -1762,7 +1779,7 @@ async function safeSyncHeld(
     recovered = check.recovered;
     // Outbound-only mailbox: the check was the whole job.
     if (!mailbox.imapHost) {
-      return { kind: 'synced', fetched: 0, inserted: 0, duplicates: 0, recovered };
+      return { kind: 'synced', fetched: 0, inserted: 0, duplicates: 0, replies: 0, recovered };
     }
   }
   const priorFailures = recovered ? 0 : mailbox.imapConsecutiveFailures;
@@ -1791,6 +1808,7 @@ async function safeSyncHeld(
       fetched: result.fetched,
       inserted: result.inserted,
       duplicates: result.duplicates,
+      replies: result.replies,
       recovered,
     };
   } catch (err) {

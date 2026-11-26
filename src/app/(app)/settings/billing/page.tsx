@@ -144,15 +144,15 @@ export default async function BillingPage({
                 ) : null}
                 {!ws.billingExempt && ws.tokenBalance <= 0n ? (
                   <span className="badge badge-bad" style={{ marginLeft: '0.5rem' }}>
-                    empty — discovery, drafting and translation are paused
+                    empty — discovery, qualification, drafting and some translation are paused
                   </span>
                 ) : null}
               </dd>
             </dl>
           </div>
           <p className="muted small">
-            Tokens are the prepaid currency for metered work: discovery search,
-            AI qualification, outreach drafting, reply suggestions and
+            Tokens are the prepaid currency for metered work, such as discovery
+            search, AI qualification, outreach drafting, reply suggestions and
             translation. 1 token ≈ €0.01 of usage; every debit is itemised
             below. Actions running on your own API keys (BYOK) are free.
           </p>

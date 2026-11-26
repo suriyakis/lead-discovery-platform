@@ -365,7 +365,8 @@ export const NAV_AREAS: ReadonlyArray<NavArea> = [
         id: 'conversations.threads',
         label: 'Threads',
         href: '/communication',
-        purpose: 'Every mail thread with its full history; reply from the thread.',
+        purpose:
+          'The conversations the platform started, with their replies; reply from the thread.',
         keywords: ['communication', 'mail', 'replies', 'inbox'],
       },
     ],
@@ -535,8 +536,9 @@ export const NAV_AREAS: ReadonlyArray<NavArea> = [
         label: 'AI & search',
         href: '/settings/integrations',
         section: 'Connections',
-        purpose: 'AI provider, web search, embeddings and your own API keys.',
-        keywords: ['integrations', 'api keys', 'byok', 'providers'],
+        purpose:
+          'Whether each job will run and on whose API key; AI provider, web search, embeddings and your own keys.',
+        keywords: ['integrations', 'api keys', 'byok', 'providers', 'platform key', 'not configured'],
       },
       {
         id: 'settings.crm',
@@ -695,7 +697,7 @@ export const DETAIL_ROUTES: Readonly<Record<string, DetailRoute>> = {
     tab: 'conversations.threads',
     label: 'Thread',
     kind: 'detail',
-    purpose: 'One conversation with its full history and the reply box.',
+    purpose: 'One conversation the platform started, with its replies and the reply box.',
     openedFrom: '/communication',
   },
   '/mailbox/[id]/compose': {

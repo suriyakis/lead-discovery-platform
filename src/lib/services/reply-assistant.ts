@@ -3,14 +3,15 @@
 // lessons, build a structured prompt, and ask the IAIProvider to draft a
 // reply. Phase 12 — RAG-grounded reply generation.
 
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { contactAssociations } from '@/lib/db/schema/contacts';
-import { mailMessages, mailThreads, type MailMessage } from '@/lib/db/schema/mailing';
+import { mailThreads, type MailMessage } from '@/lib/db/schema/mailing';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { recordAuditEvent } from './audit';
 import { canWrite, type WorkspaceContext } from './context';
+import { listPlatformThreadMessages } from './mail-scope';
 import { retrieve, retrieveLessons } from './rag';
 import { getAIProviderForCtx, type IAIProvider } from '@/lib/ai';
 import type { IEmbeddingProvider } from '@/lib/embeddings';
@@ -69,16 +70,12 @@ export async function suggestReply(
     .limit(1);
   if (!thread[0]) throw notFound();
 
-  const messages = await db
-    .select()
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, input.threadId),
-      ),
-    )
-    .orderBy(asc(mailMessages.createdAt));
+  // The conversation the thread page shows (platform mail, not trashed or
+  // spam) — never a newsletter filed on the thread, so the suggestion
+  // answers what the user is looking at.
+  const messages = await listPlatformThreadMessages(ctx, input.threadId, {
+    excludeHidden: true,
+  });
   if (messages.length === 0) throw invalid('thread has no messages');
 
   const lastInbound = [...messages].reverse().find((m) => m.direction === 'inbound')

@@ -7,6 +7,7 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import type { WorkspaceContext } from './context';
+import { threadHasPlatformMail, threadPlatformLastMessageAt } from './mail-scope';
 import { productProfiles } from '@/lib/db/schema/products';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
 import { mailboxes, mailThreads } from '@/lib/db/schema/mailing';
@@ -66,11 +67,13 @@ export async function getCommandPaletteIndex(
       .select({
         id: mailThreads.id,
         subject: mailThreads.subject,
-        lastAt: mailThreads.lastMessageAt,
+        lastAt: threadPlatformLastMessageAt(),
       })
       .from(mailThreads)
-      .where(eq(mailThreads.workspaceId, ws))
-      .orderBy(desc(mailThreads.lastMessageAt))
+      // Only conversations the platform started — the rest of the synced
+      // mailbox is never listed, counted or dated (src/lib/services/mail-scope.ts).
+      .where(and(eq(mailThreads.workspaceId, ws), threadHasPlatformMail()))
+      .orderBy(desc(threadPlatformLastMessageAt()))
       .limit(PER_KIND_LIMIT),
   ]);
 

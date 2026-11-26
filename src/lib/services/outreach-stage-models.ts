@@ -32,7 +32,11 @@ export interface StageProvider {
   model: string;
 }
 
-const TIERS: Record<StageRole, { vendor: 'openai' | 'anthropic'; model: string }> = {
+/** Exported for Settings → AI & search (provider-readiness.ts), which
+ *  reports these tiers as the "First emails" and "Replies to leads" rows. */
+export const STAGE_TIERS: Readonly<
+  Record<StageRole, { vendor: 'openai' | 'anthropic'; model: string }>
+> = {
   discovery:      { vendor: 'openai',    model: 'gpt-5-nano' },
   referral_intro: { vendor: 'openai',    model: 'gpt-5-nano' },
   closing:        { vendor: 'openai',    model: 'gpt-5-nano' },
@@ -62,7 +66,7 @@ export async function getStageProvider(
   ctx: WorkspaceContext,
   role: StageRole,
 ): Promise<StageProvider> {
-  const tier = TIERS[role];
+  const tier = STAGE_TIERS[role];
   const specific = await getAIProviderById(ctx, tier.vendor, 'ai.outreach');
   if (specific) {
     return { provider: specific, model: tier.model };

@@ -60,8 +60,8 @@ export function BuyTokensButtons({ packs }: { packs: ReadonlyArray<PackOption> }
               <span className="plan-price">{p.display}</span>
             </header>
             <p className="plan-pitch">
-              {p.tokens.toLocaleString()} tokens — spent on discovery search,
-              AI qualification, drafting and translation.
+              {p.tokens.toLocaleString()} tokens — spent on metered work such as
+              discovery search, AI qualification, drafting and translation.
             </p>
             <button
               type="button"

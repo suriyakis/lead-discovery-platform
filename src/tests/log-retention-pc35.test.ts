@@ -302,7 +302,7 @@ describe('(2) syncInbound audits only syncs that stored something', () => {
     const provider = new MockMailProvider();
 
     const empty = await syncInbound(ws.ctx, mb.id, provider);
-    expect(empty).toEqual({ fetched: 0, inserted: 0, duplicates: 0 });
+    expect(empty).toEqual({ fetched: 0, inserted: 0, duplicates: 0, replies: 0 });
     expect(await syncAudits()).toHaveLength(0);
     // The sync itself still happened.
     const [synced] = await db.select().from(mailboxes).where(eq(mailboxes.id, mb.id));
@@ -317,7 +317,7 @@ describe('(2) syncInbound audits only syncs that stored something', () => {
     expect(audits[0]!.payload).toMatchObject({ fetched: 1, inserted: 1, duplicates: 0 });
 
     const dupes = await syncInbound(ws.ctx, mb.id, provider);
-    expect(dupes).toEqual({ fetched: 1, inserted: 0, duplicates: 1 });
+    expect(dupes).toEqual({ fetched: 1, inserted: 0, duplicates: 1, replies: 0 });
     expect(await syncAudits()).toHaveLength(1);
   });
 });

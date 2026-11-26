@@ -9,6 +9,7 @@
 
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
+import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { contactAssociations, contacts } from '@/lib/db/schema/contacts';
 import { sourceRecords } from '@/lib/db/schema/connectors';
@@ -55,6 +56,14 @@ async function renderLeadPage(id: string): Promise<string> {
  * One qualified lead whose contact is attached to a mail thread with an
  * inbound reply: the shape that exercises the lead page's
  * thread-for-lead lookup and its Conversation section.
+ *
+ * The reply is marked a prospect reply (outreach_relevance) because it is
+ * the lead answering its outreach conversation. The app lists only mail the
+ * platform started and the answers to it (services/mail-scope.ts): an
+ * unassessed inbound on a thread with no outbound of ours is mailbox mail,
+ * so the page's Conversation section (listPlatformThreadMessages) and the
+ * CRM "Push thread as notes" picker (threadHasPlatformMail) would both
+ * rightly leave the thread out.
  */
 async function seedLeadWithThread(workspaceId: bigint) {
   const [product] = await db
@@ -122,6 +131,7 @@ async function seedLeadWithThread(workspaceId: bigint) {
     toAddresses: ['sales@nulife.test'],
     subject: 'Re: Repair kit pricing',
     bodyText: 'Could you send the spec sheet?',
+    outreachRelevance: 'prospect_reply',
   });
   const [contact] = await db
     .insert(contacts)
@@ -142,6 +152,45 @@ async function seedLeadWithThread(workspaceId: bigint) {
     },
   ]);
   return { lead: lead!, thread: thread! };
+}
+
+/** One more mail thread holding a single message, linked to `contactId`. */
+async function seedLinkedThread(
+  workspaceId: bigint,
+  mailboxId: bigint,
+  contactId: bigint,
+  msg: Pick<
+    typeof mailMessages.$inferInsert,
+    'direction' | 'status' | 'fromAddress' | 'bodyText' | 'outreachRelevance' | 'trashedAt'
+  > & { subject: string },
+) {
+  const [thread] = await db
+    .insert(mailThreads)
+    .values({
+      workspaceId,
+      mailboxId,
+      subject: msg.subject,
+      externalThreadKey: `subj:${msg.subject}-${workspaceId}`,
+      participants: [msg.fromAddress],
+    })
+    .returning();
+  const { subject, ...rest } = msg;
+  await db.insert(mailMessages).values({
+    workspaceId,
+    mailboxId,
+    threadId: thread!.id,
+    messageId: `<${thread!.id}-${workspaceId}@linked.test>`,
+    toAddresses: ['anna@target.test'],
+    subject,
+    ...rest,
+  });
+  await db.insert(contactAssociations).values({
+    workspaceId,
+    contactId,
+    entityType: 'mail_thread',
+    entityId: thread!.id.toString(),
+  });
+  return thread!;
 }
 
 beforeEach(async () => {
@@ -176,6 +225,57 @@ describe('/pipeline/[id] lead detail page', () => {
     // Conversation section: the thread and its inbound reply.
     expect(html).toContain(`Thread ${thread.id.toString()}`);
     expect(html).toContain('Could you send the spec sheet?');
+  });
+
+  it('offers only threads holding our conversation in the "Push thread as notes" picker', async () => {
+    const ownerA = await seedUser({ email: 'ownerA@test.local' });
+    const workspaceA = await seedWorkspace({ name: 'A', ownerUserId: ownerA });
+    const { lead, thread } = await seedLeadWithThread(workspaceA);
+    const [assoc] = await db
+      .select()
+      .from(contactAssociations)
+      .where(eq(contactAssociations.entityType, 'mail_thread'));
+    // Two more threads linked to the same contact. pushThreadAsNotes sends
+    // only the platform's visible messages, so neither would push anything:
+    //   - a newsletter the contact's company sent (bulk mailbox mail);
+    //   - our old pitch, which the user trashed.
+    const digest = await seedLinkedThread(workspaceA, thread.mailboxId, assoc!.contactId, {
+      subject: 'Weekly digest from Target',
+      direction: 'inbound',
+      status: 'received',
+      fromAddress: 'news@target.test',
+      bodyText: 'DIGEST-BODY-NEWSLETTER',
+      outreachRelevance: 'bulk',
+    });
+    const trashed = await seedLinkedThread(workspaceA, thread.mailboxId, assoc!.contactId, {
+      subject: 'Old pitch, trashed',
+      direction: 'outbound',
+      status: 'sent',
+      fromAddress: 'sales@nulife.test',
+      bodyText: 'TRASHED-PITCH-BODY',
+      trashedAt: new Date(),
+    });
+    await createCrmConnection(
+      makeWorkspaceContext({ workspaceId: workspaceA, userId: ownerA, role: 'owner' }),
+      { system: 'csv', name: 'CSV exports' },
+    );
+    signInAs(ownerA);
+
+    const html = await renderLeadPage(lead.id.toString());
+
+    expect(html).toContain('Push thread as notes');
+    expect(html).toContain(
+      `<option value="${thread.id.toString()}">Repair kit pricing</option>`,
+    );
+    expect(html).not.toContain(
+      `<option value="${digest.id.toString()}">Weekly digest from Target</option>`,
+    );
+    expect(html).not.toContain(
+      `<option value="${trashed.id.toString()}">Old pitch, trashed</option>`,
+    );
+    // Nor does either reach the Conversation section.
+    expect(html).not.toContain('DIGEST-BODY-NEWSLETTER');
+    expect(html).not.toContain('TRASHED-PITCH-BODY');
   });
 
   it('renders a lead with no contact or threads', async () => {

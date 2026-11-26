@@ -29,7 +29,6 @@ import {
   countMessagesMatching,
   isHardBounce,
   listMessages,
-  type MailSourceFilter,
 } from '@/lib/services/mail';
 import {
   deleteSelected,
@@ -82,7 +81,7 @@ function emptyFolderTitle(f: MailFolder): string {
 function emptyFolderHint(f: MailFolder): string {
   switch (f) {
     case 'inbox':
-      return 'Inbound mail across every mailbox will land here.';
+      return 'Replies to mail the platform sent land here. The rest of your mailbox stays in your own mail app.';
     case 'sent':
       return 'Sent + delivered messages will collect here.';
     case 'queued':
@@ -143,7 +142,6 @@ export default async function CommunicationPage({
     folder?: string;
     mailboxId?: string;
     q?: string;
-    source?: string;
     productId?: string;
     from?: string;
     to?: string;
@@ -176,11 +174,6 @@ export default async function CommunicationPage({
   const search = sp.q?.trim() ?? '';
   const mailboxIdFilter =
     sp.mailboxId && /^\d+$/.test(sp.mailboxId) ? BigInt(sp.mailboxId) : undefined;
-  const sourceParam = sp.source ?? '';
-  const source: MailSourceFilter =
-    sourceParam === 'outreach' || sourceParam === 'external'
-      ? sourceParam
-      : 'all';
   const productId =
     sp.productId && /^\d+$/.test(sp.productId) ? BigInt(sp.productId) : undefined;
   const dateFrom = parseDateStart(sp.from);
@@ -195,7 +188,6 @@ export default async function CommunicationPage({
     search: search || undefined,
     dateFrom,
     dateTo,
-    source: source !== 'all' ? source : undefined,
     productId,
   };
 
@@ -253,7 +245,6 @@ export default async function CommunicationPage({
   // ---- helpers for URL building in JSX ----
   function buildHref(overrides: Partial<{
     folder: MailFolder;
-    source: MailSourceFilter;
     productId: string;
     from: string;
     to: string;
@@ -265,8 +256,6 @@ export default async function CommunicationPage({
     const params = new URLSearchParams();
     const f = overrides.folder ?? activeFolder;
     if (f !== 'inbox') params.set('folder', f);
-    const s = overrides.source ?? source;
-    if (s !== 'all') params.set('source', s);
     const pId = overrides.productId !== undefined
       ? overrides.productId
       : productId?.toString() ?? '';
@@ -325,10 +314,15 @@ export default async function CommunicationPage({
         </div>
       </section>
 
+      <p className="muted small mail-scope-note">
+        Only conversations the platform started are shown — outreach,
+        follow-ups and messages written here — together with the replies to
+        them. Other mail in your mailboxes is not shown.
+      </p>
+
       {/* ============ Filters (auto-submit on change) ============ */}
       <MailFilterForm
         activeFolder={activeFolder}
-        source={source}
         productId={productId?.toString() ?? ''}
         dateFrom={toDateInputValue(dateFrom)}
         dateTo={toDateInputValue(dateTo)}
@@ -345,16 +339,10 @@ export default async function CommunicationPage({
             mailboxIdFilter !== undefined ||
             productId !== undefined ||
             dateFrom ||
-            dateTo ||
-            source !== 'all'
+            dateTo
           )
         }
         resetHref={`/communication?folder=${activeFolder}`}
-        segmentLinks={{
-          all: buildHref({ source: 'all', page: 1 }),
-          outreach: buildHref({ source: 'outreach', page: 1 }),
-          external: buildHref({ source: 'external', page: 1 }),
-        }}
       />
 
       {/* ============ 2-pane layout ============ */}
@@ -433,7 +421,6 @@ export default async function CommunicationPage({
             <form method="get" action="/communication" className="mail-rail-mailbox-select">
               <input type="hidden" name="folder" value={activeFolder} />
               {search ? <input type="hidden" name="q" value={search} /> : null}
-              {source !== 'all' ? <input type="hidden" name="source" value={source} /> : null}
               {productId !== undefined ? <input type="hidden" name="productId" value={productId.toString()} /> : null}
               <label className="mail-rail-section-title" style={{ padding: 0 }}>Mailbox</label>
               <select name="mailboxId" defaultValue={mailboxIdFilter?.toString() ?? ''}>
@@ -461,12 +448,12 @@ export default async function CommunicationPage({
                 <FolderIcon folder={activeFolder} />
               </div>
               <p className="mail-empty-title">
-                {search || productId !== undefined || dateFrom || dateTo || source !== 'all'
+                {search || productId !== undefined || dateFrom || dateTo
                   ? `No messages match these filters`
                   : emptyFolderTitle(activeFolder)}
               </p>
               <p style={{ margin: 0 }}>
-                {search || productId !== undefined || dateFrom || dateTo || source !== 'all'
+                {search || productId !== undefined || dateFrom || dateTo
                   ? 'Reset the filters above to widen the view, or switch folder.'
                   : emptyFolderHint(activeFolder)}
               </p>
