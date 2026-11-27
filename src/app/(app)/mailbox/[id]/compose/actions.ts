@@ -3,10 +3,12 @@
 // MOB-06: both actions are guarded — ComposeForm passes the page's
 // workspace as `expectedWorkspaceId`, and after a switch in another tab
 // they answer { ok: false, code: 'workspace_changed' } before anything is
-// translated (spent) or sent.
+// translated (spent) or sent. Translating also needs tokens: on an empty
+// wallet it answers { ok: false } with the token message.
 
 import { getWorkspaceContext } from '@/lib/services/auth-context';
 import { getWorkspaceNativeLanguage } from '@/lib/services/workspace';
+import { TokenError, assertTokens } from '@/lib/services/token-ledger';
 import { translateText } from '@/lib/services/translation';
 import { MailServiceError, sendMessage } from '@/lib/services/mail';
 import { AutomationGateError } from '@/lib/services/automation-gate';
@@ -33,6 +35,15 @@ async function translateCompose(input: {
   const target = (input.targetLanguage ?? '').toLowerCase().split('-')[0] ?? '';
   if (!target || target === native) {
     return { ok: true, subject: input.subject, body: input.body };
+  }
+  // Show translation / Re-translate on a new email needs tokens, as on a
+  // reply (/api/translate): refused on an empty wallet (27 Nov — it used to
+  // run here and debit below zero).
+  try {
+    await assertTokens(ctx);
+  } catch (err) {
+    if (err instanceof TokenError) return { ok: false, error: err.message };
+    throw err;
   }
   const bodyT = await translateText(ctx, {
     text: input.body,

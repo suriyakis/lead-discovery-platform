@@ -142,6 +142,10 @@ function withNormalizedCountry(
   return code === raw ? selectors : { ...selectors, country: code };
 }
 
+/** selectors key: the recipe's queries still need translating (saved on an
+ *  empty wallet). The internet-search recipe shape passes it through. */
+const ISSUED_PENDING_KEY = 'searchQueriesIssuedPending';
+
 /**
  * Phase 63: pre-translate a recipe's search queries into its search
  * language at SAVE time and store them as `selectors.searchQueriesIssued`
@@ -151,16 +155,23 @@ function withNormalizedCountry(
  * search language, no queries, or the search language equals the workspace
  * native language. `effectiveQueries` is what the connector will actually
  * run (selectors.searchQueries when present, else the searchQueries column).
+ *
+ * On an empty wallet (27 Nov) the recipe is saved without translating: the
+ * stale issued queries are dropped and `selectors.searchQueriesIssuedPending`
+ * marks it, and startRun — which needs tokens anyway — translates before
+ * the run (translatePendingRecipeQueries).
  */
 async function applyIssuedQueries(
   ctx: WorkspaceContext,
   selectors: Record<string, unknown>,
   effectiveQueries: readonly string[],
 ): Promise<Record<string, unknown>> {
-  const stripIssued = () => {
-    if ('searchQueriesIssued' in selectors) {
+  /** The selectors without issued queries or the pending marker. */
+  const withoutIssued = () => {
+    if ('searchQueriesIssued' in selectors || ISSUED_PENDING_KEY in selectors) {
       const clone = { ...selectors };
       delete clone.searchQueriesIssued;
+      delete clone[ISSUED_PENDING_KEY];
       return clone;
     }
     return selectors;
@@ -168,10 +179,14 @@ async function applyIssuedQueries(
 
   const language = typeof selectors.language === 'string' ? selectors.language : null;
   const base = language ? (language.toLowerCase().split('-')[0] ?? null) : null;
-  if (!base || effectiveQueries.length === 0) return stripIssued();
+  if (!base || effectiveQueries.length === 0) return withoutIssued();
 
   const native = await getWorkspaceNativeLanguage(ctx);
-  if (base === native) return stripIssued();
+  if (base === native) return withoutIssued();
+
+  // Translating is metered: with no tokens it waits for the next run.
+  const { hasTokens } = await import('./token-ledger');
+  if (!(await hasTokens(ctx))) return { ...withoutIssued(), [ISSUED_PENDING_KEY]: true };
 
   const issued: string[] = [];
   for (const q of effectiveQueries) {
@@ -187,7 +202,33 @@ async function applyIssuedQueries(
       issued.push(q); // best-effort: fall back to the native query
     }
   }
-  return { ...selectors, searchQueriesIssued: issued };
+  return { ...withoutIssued(), searchQueriesIssued: issued };
+}
+
+/**
+ * startRun, after its token gate: translate the queries of a recipe saved
+ * on an empty wallet (applyIssuedQueries' pending marker) and store them,
+ * so this run — and every later one — issues them in the search language.
+ * Any other recipe is returned as it is.
+ */
+async function translatePendingRecipeQueries(
+  ctx: WorkspaceContext,
+  recipe: ConnectorRecipe,
+): Promise<ConnectorRecipe> {
+  const selectors = asSelectorsObject(recipe.selectors);
+  if (selectors[ISSUED_PENDING_KEY] !== true) return recipe;
+  const effectiveQueries = Array.isArray(selectors.searchQueries)
+    ? selectors.searchQueries.filter((q): q is string => typeof q === 'string')
+    : recipe.searchQueries;
+  const next = await applyIssuedQueries(ctx, selectors, effectiveQueries);
+  const [row] = await db
+    .update(connectorRecipes)
+    .set({ selectors: next as NewConnectorRecipe['selectors'] })
+    .where(
+      and(eq(connectorRecipes.workspaceId, ctx.workspaceId), eq(connectorRecipes.id, recipe.id)),
+    )
+    .returning();
+  return row ?? recipe;
 }
 
 export async function createRecipe(
@@ -679,7 +720,8 @@ export async function startRun(
         'invalid_input',
       );
     }
-    recipeSnapshot = freezeRecipe(recipe);
+    // A recipe saved on an empty wallet has its queries translated now.
+    recipeSnapshot = freezeRecipe(await translatePendingRecipeQueries(ctx, recipe));
   }
 
   const newRow: NewConnectorRun = {

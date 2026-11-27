@@ -106,7 +106,14 @@ export async function researchLead(
     if (cached) return { entry: cached, cached: true };
   }
 
-  // Cache miss → call the research provider.
+  // Cache miss → a paid call. Like every metered button, a new question
+  // needs tokens (27 Nov): on an empty wallet it is refused with the
+  // standard message. A cached answer (above) costs nothing and still
+  // loads. The research before a draft reaches here behind
+  // generateOutreachDraft's own assertTokens.
+  const { assertTokens } = await import('./token-ledger');
+  await assertTokens(ctx);
+
   const provider = await getResearchProviderForCtx(ctx);
   const outcome = await provider.research(ctx, question, input.options);
 

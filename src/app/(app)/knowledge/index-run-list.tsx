@@ -9,6 +9,7 @@ const NOTE_LABELS: Record<string, string> = {
   embedded: 'embedded',
   superseded: 'superseded by a newer request',
   timed_out: 'stopped after 15 minutes',
+  waiting_for_tokens: 'waiting for tokens — resumes after a top-up',
 };
 
 const REASON_LABELS: Record<string, string> = {

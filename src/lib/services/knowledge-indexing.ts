@@ -86,6 +86,7 @@ import {
 } from './knowledge-sources';
 import { notify, resolveNotifications } from './notifications';
 import { chunkText, countSourceChunks, replaceSourceChunks, type IndexResult } from './rag';
+import { assertTokens, hasTokens } from './token-ledger';
 
 export const KNOWLEDGE_INDEX_SWEEP_JOB = 'knowledge.index.sweep';
 export { KNOWLEDGE_INDEX_SWEEP_TICK_MS } from '@/lib/jobs/tick-catalog';
@@ -97,6 +98,10 @@ export const INDEX_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 export const LOST_INDEX_JOB_AFTER_MS = 2 * 60 * 1000;
 /** A row that found another run holding its source waits this long. */
 export const BUSY_DEFER_MS = 60 * 1000;
+/** A row that found the wallet empty waits this long, noted
+ *  'waiting_for_tokens' — never failed (27 Nov). The sweep re-enqueues it
+ *  when due, so a top-up resumes indexing within this. */
+export const TOKENS_DEFER_MS = 5 * 60 * 1000;
 const SWEEP_BATCH = 100;
 
 export const INDEX_TIMEOUT_MESSAGE =
@@ -386,6 +391,9 @@ export async function requestDocumentOcrReextract(
   if (!estimate.available) {
     throw new KnowledgeIndexError(estimate.reason ?? 'OCR is not available', 'ocr_unavailable', true);
   }
+  // A paid OCR run: refused on an empty wallet with the token message
+  // (27 Nov), rather than queued to wait for tokens like an upload.
+  await assertTokens(ctx);
   const sourceIds = (await listDocumentSources(ctx, documentId)).map((r) => r.source.id);
   if (sourceIds.length === 0) {
     throw new KnowledgeIndexError(
@@ -435,8 +443,12 @@ export type IndexRunOutcome =
   | { kind: 'retrying'; job: IndexingJob; error: unknown; message: string }
   | { kind: 'failed'; job: IndexingJob; error: unknown; message: string }
   /** closed: the work finished after the sweeper had timed the run out —
-   *  its row stays failed and the source is not touched. */
-  | { kind: 'skipped'; reason: 'not_found' | 'not_queued' | 'not_due' | 'busy' | 'closed' };
+   *  its row stays failed and the source is not touched. no_tokens: the
+   *  wallet is empty; the row waits (TOKENS_DEFER_MS) and stays queued. */
+  | {
+      kind: 'skipped';
+      reason: 'not_found' | 'not_queued' | 'not_due' | 'busy' | 'no_tokens' | 'closed';
+    };
 
 /** A JSON-safe summary (BullMQ stores the handler's return value). */
 export function summarizeIndexOutcome(outcome: IndexRunOutcome): Record<string, unknown> {
@@ -506,7 +518,9 @@ export async function indexKnowledgeSourceNow(
     throw new KnowledgeIndexError(
       outcome.reason === 'busy'
         ? 'This source is being indexed right now; try again in a minute.'
-        : `indexing run ${outcome.reason}`,
+        : outcome.reason === 'no_tokens'
+          ? 'No tokens left — indexing waits until a workspace admin buys a token pack in Settings → Billing.'
+          : `indexing run ${outcome.reason}`,
       'busy',
       false,
     );
@@ -516,7 +530,7 @@ export async function indexKnowledgeSourceNow(
 
 type Claim =
   | { kind: 'claimed'; job: IndexingJob; source: KnowledgeSource }
-  | { kind: 'skipped'; reason: 'not_found' | 'not_queued' | 'not_due' | 'busy' };
+  | { kind: 'skipped'; reason: 'not_found' | 'not_queued' | 'not_due' | 'busy' | 'no_tokens' };
 
 /**
  * Inside the claim transaction (the source row already locked): will this
@@ -599,6 +613,19 @@ async function claimIndexJob(ctx: WorkspaceContext, jobId: bigint, now: Date): P
     if (job.nextAttemptAt !== null && job.nextAttemptAt.getTime() > now.getTime()) {
       return { kind: 'skipped', reason: 'not_due' };
     }
+    // Indexing embeds the chunks and may OCR a scanned PDF — metered work.
+    // On an empty wallet the row waits, queued and noted, instead of
+    // running below zero (27 Nov); the sweep tries it again when due.
+    if (!(await hasTokens(ctx))) {
+      await tx
+        .update(indexingJobs)
+        .set({
+          nextAttemptAt: new Date(now.getTime() + TOKENS_DEFER_MS),
+          note: 'waiting_for_tokens',
+        })
+        .where(and(eq(indexingJobs.id, job.id), eq(indexingJobs.status, 'queued')));
+      return { kind: 'skipped', reason: 'no_tokens' };
+    }
     const [running] = await tx
       .select({ id: indexingJobs.id })
       .from(indexingJobs)
@@ -623,6 +650,8 @@ async function claimIndexJob(ctx: WorkspaceContext, jobId: bigint, now: Date): P
         status: 'running',
         startedAt: now,
         finishedAt: null,
+        // Clear a 'waiting_for_tokens' note: the run has its tokens now.
+        note: null,
         attempts: sql`${indexingJobs.attempts} + 1`,
       })
       .where(and(eq(indexingJobs.id, job.id), eq(indexingJobs.status, 'queued')))

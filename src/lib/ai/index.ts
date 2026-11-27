@@ -50,6 +50,11 @@ export interface AIGenOptions {
    *  super-admin acting inside a tenant). Logged with payload.support =
    *  true and never debited to the tenant's wallet. */
   support?: boolean;
+  /** Metering only, never sent to a vendor: work the platform pays for
+   *  whatever the wallet holds — translating a queued draft or an approved
+   *  follow-up as it is sent (27 Nov). Logged with payload.platformPaid =
+   *  true and never debited. */
+  platformPaid?: boolean;
 }
 
 export interface AIGenResult {
@@ -583,6 +588,8 @@ export class AnthropicAIProvider implements IAIProvider {
  * AP-02 billing tags (both skip the token debit in services/usage.ts):
  *   - `support: true` when the caller marks a platform-support call
  *     (AIGenOptions.support — a super-admin asking inside a tenant);
+ *   - `platformPaid: true` for work the platform pays for (send-time
+ *     translation, AIGenOptions.platformPaid);
  *   - `unbilled: 'empty_output' | 'refusal'` when the vendor answered
  *     with no usable text (blank result, or a typed AIOutputError). The
  *     row still records what the vendor billed us, for cost tracking.
@@ -707,6 +714,7 @@ function billingTags(
 ): Record<string, unknown> {
   return {
     ...(options?.support ? { support: true } : {}),
+    ...(options?.platformPaid ? { platformPaid: true } : {}),
     ...(unbilled ? { unbilled } : {}),
   };
 }

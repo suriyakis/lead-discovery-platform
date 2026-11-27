@@ -184,9 +184,13 @@ function keySentence(job: JobReadiness, wallet: ProviderReadiness['wallet'], r: 
       // in the note, where the same controls do need tokens.
       const part = job.ungatedPart;
       if (!part) return ready;
+      // Platform-paid work (send-time translation) is never deducted; on
+      // the workspace's own key its vendor bills it, as the sentence says.
       const debit = part.billedFromTokens
         ? ` — and ${part.parts.length > 1 ? 'their' : 'its'} usage is still deducted, so the balance can go below zero`
-        : '';
+        : part.platformPaid && job.key === 'platform'
+          ? ` — ${BRAND_NAME} pays for ${part.parts.length > 1 ? 'them' : 'it'}, so nothing is deducted`
+          : '';
       const note = part.note ? ` ${sentenceCase(part.note)}.` : '';
       return `${ready} Still running: ${part.detail}${debit}.${note}`;
     }

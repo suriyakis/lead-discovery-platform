@@ -95,6 +95,10 @@ export async function suggestStageAngle(
       'no_key',
     );
   }
+  // A suggestion is a metered AI call: it needs tokens (27 Nov). On an
+  // empty wallet TokenError refuses it; the angle can still be typed by hand.
+  const { assertTokens } = await import('./token-ledger');
+  await assertTokens(ctx);
   const model = VENDOR_MODELS[vendor];
 
   const userPrompt = [

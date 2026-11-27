@@ -21,6 +21,7 @@ import {
   type AngleStage,
   type SuggesterVendor,
 } from '@/lib/services/product-angle-suggester';
+import { TokenError } from '@/lib/services/token-ledger';
 import { getProductKnowledgeCoverage } from '@/lib/services/outreach-knowledge';
 import { listKnowledgeSources } from '@/lib/services/knowledge-sources';
 import { canAdminWorkspace } from '@/lib/services/context';
@@ -154,12 +155,13 @@ export default async function EditProductPage({
       redirect(`/products/${id}?saved=1#angle-${stage}`);
     } catch (err) {
       if (isNextRedirectError(err)) throw err;
+      // An empty wallet refuses it with TokenError's message (27 Nov).
       const m =
-        err instanceof ProductAngleSuggesterError
+        err instanceof ProductAngleSuggesterError ||
+        err instanceof ProductProfileServiceError ||
+        err instanceof TokenError
           ? err.message
-          : err instanceof ProductProfileServiceError
-            ? err.message
-            : 'failed';
+          : 'failed';
       redirect(`/products/${id}?error=${encodeURIComponent(m)}`);
     }
   }

@@ -7,6 +7,7 @@
 // previews then saves through the normal create / update path.
 //
 // PC-38: 429 rate_limited after 10 redesigns a minute per workspace.
+// 402 insufficient_tokens on an empty wallet (27 Nov).
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -18,6 +19,7 @@ import {
   SignatureServiceError,
   redesignSignatureHtml,
 } from '@/lib/services/signatures';
+import { TokenError } from '@/lib/services/token-ledger';
 
 const PhoneSchema = z.object({
   label: z.string().max(40),
@@ -100,6 +102,10 @@ export async function POST(req: Request): Promise<NextResponse> {
         { error: err.code, detail: err.message },
         { status },
       );
+    }
+    // Empty wallet (27 Nov): 402 with the token message, like /api/translate.
+    if (err instanceof TokenError) {
+      return NextResponse.json({ error: err.code, detail: err.message }, { status: 402 });
     }
     const detail = err instanceof Error ? err.message : 'unknown';
     return NextResponse.json(

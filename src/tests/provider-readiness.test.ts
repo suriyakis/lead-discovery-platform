@@ -15,14 +15,18 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { and, eq } from 'drizzle-orm';
+import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/connectors/mock';
 import { db } from '@/lib/db/client';
+import { usageLog } from '@/lib/db/schema/audit';
+import { connectorRecipes } from '@/lib/db/schema/connectors';
 import { outreachFollowUps } from '@/lib/db/schema/follow-ups';
 import { mailMessages } from '@/lib/db/schema/mailing';
 import { notifications } from '@/lib/db/schema/notifications';
 import { outreachDrafts } from '@/lib/db/schema/outreach';
 import { qualifiedLeads } from '@/lib/db/schema/pipeline';
+import { indexingJobs } from '@/lib/db/schema/rag';
 import { platformSettings } from '@/lib/db/schema/platform-settings';
 import { reviewItems } from '@/lib/db/schema/review';
 import { platformSecrets, workspaceSecrets } from '@/lib/db/schema/secrets';
@@ -50,6 +54,7 @@ import {
   getResearchProviderForCtx,
 } from '@/lib/research';
 import { InMemoryJobQueue, _setJobQueueForTests, getJobQueue } from '@/lib/jobs';
+import { registerJobHandlers } from '@/lib/jobs/bootstrap';
 import { LocalFileStorage, _setStorageForTests } from '@/lib/storage';
 import { _setVectorStorageProviderForTests, getVectorStorageProviderForCtx } from '@/lib/vector-storage';
 import { askAssistant } from '@/lib/services/assistant';
@@ -65,6 +70,7 @@ import { encryptValue } from '@/lib/services/crypto';
 import { makeWorkspaceContext, type WorkspaceContext } from '@/lib/services/context';
 import { uploadDocument } from '@/lib/services/documents';
 import { approveFollowUp } from '@/lib/services/follow-up';
+import { TOKENS_DEFER_MS } from '@/lib/services/knowledge-indexing';
 import { createKnowledgeSource } from '@/lib/services/knowledge-sources';
 import { researchLead } from '@/lib/services/lead-research';
 import { sendMessage } from '@/lib/services/mail';
@@ -76,10 +82,9 @@ import { suggestStageAngle } from '@/lib/services/product-angle-suggester';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { resolveProviderKey } from '@/lib/services/secrets';
 import { TokenError, debitTokens } from '@/lib/services/token-ledger';
-import { translateText } from '@/lib/services/translation';
+import { recordUsage } from '@/lib/services/usage';
 import { buildHandbookSource } from '@/lib/assistant/handbook';
 import {
-  VENDOR_FEATURES,
   getProviderReadiness,
   type JobId,
   type JobReadiness,
@@ -90,6 +95,7 @@ import {
   NoKeyNote,
   ProviderReadinessPanel,
 } from '@/components/ProviderReadinessPanel';
+import EditProductPage from '@/app/(app)/products/[id]/page';
 import BillingPage from '@/app/(app)/settings/billing/page';
 import IntegrationsPage from '@/app/(app)/settings/integrations/page';
 import { translateDraftAction } from '@/app/(app)/drafts/[id]/actions';
@@ -423,6 +429,27 @@ async function leadFor(reviewItemId: bigint) {
     .from(qualifiedLeads)
     .where(eq(qualifiedLeads.reviewItemId, reviewItemId));
   return lead!;
+}
+
+/** The first function-valued `prop` on any element of a server component's
+ *  tree (a server action handed to a client component). */
+function propOf<T>(node: ReactNode, prop: string): T {
+  const found = (n: ReactNode): T | null => {
+    if (Array.isArray(n)) {
+      for (const c of n) {
+        const f = found(c);
+        if (f) return f;
+      }
+      return null;
+    }
+    if (!isValidElement(n)) return null;
+    const props = (n as ReactElement<Record<string, unknown>>).props;
+    if (typeof props[prop] === 'function') return props[prop] as T;
+    return found(props.children as ReactNode);
+  };
+  const f = found(node);
+  if (!f) throw new Error(`no ${prop} in the tree`);
+  return f;
 }
 
 /** The web-search provider id without the grounding adapter's prefix. */
@@ -954,81 +981,65 @@ describe('what the page says when a job cannot run', () => {
     expect(html).not.toContain('token balance is empty');
   });
 
-  // Replaces "an empty wallet stops every job, whatever the key", which
-  // encoded the bug: lead research and reading scanned PDFs check no
-  // wallet, so the page said they were refused while they ran.
-  it('an empty wallet pauses only the wallet-gated jobs; lead research and scanned PDFs still run', async () => {
+  // 27 Nov (Jacol: "Recs, but free sends"): every job checks the wallet.
+  // Until then lead research, scanned PDFs, Suggest with AI, some
+  // translation, the signature redesign and indexing ran on an empty
+  // wallet and were debited below zero — and the page said so.
+  it('an empty wallet pauses every job; only sending still translates, free', async () => {
     await prodPlatform();
     const ctx = await tenant({ balance: 0n });
     const r = await getProviderReadiness(ctx);
     expect(Object.fromEntries(r.jobs.map((j) => [j.job, j.state]))).toEqual({
       discovery: 'no_tokens',
       qualification: 'no_tokens',
-      research: 'ready',
+      research: 'no_tokens',
       first_emails: 'no_tokens',
       replies: 'no_tokens',
       drafting: 'no_tokens',
       knowledge: 'no_tokens',
-      ocr: 'ready',
+      ocr: 'no_tokens',
     });
+    expect(r.jobs.every((j) => j.walletGated && j.gatedPart === null)).toBe(true);
+    expect(r.features.every((f) => f.walletGated)).toBe(true);
     const html = await panel(r);
     // Every key is there: one alert, the wallet's, which may say so.
     expect(alertTones(html)).toEqual(['warning']);
     expect(html).toContain('Providers are ready, but the token balance is empty');
     expect(html).toContain('<a href="/settings/billing">Buy tokens</a>');
     expect(html).toContain(
-      'Discovery, Qualification, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval pause until tokens are added.',
+      'Discovery, Qualification, Lead research, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval, Reading scanned PDFs pause until tokens are added.',
     );
-    // OCR on the platform key is still debited (recordUsage has no floor),
-    // and so is research on the console's Gemini key (the adapter logs the
-    // key source its factory resolved). Suggest with AI checks no wallet
-    // and is debited; so is the ungated translation on the drafting
-    // provider. Of lead research only the Research panel runs: the
-    // research before a draft sits behind generateOutreachDraft's
-    // assertTokens. Indexing an upload embeds on the platform OpenAI key,
-    // ungated and debited.
+    // What still runs is sending's translation, which the platform pays
+    // for: nothing on the page is "still deducted" any more.
     expect(html).toContain(
-      'The Research panel on a lead, Reading scanned PDFs, Suggest with AI on products, some translation and the signature redesign, and indexing the documents you upload still run, and their usage is still deducted, so the balance can go below zero.',
+      'Translating a queued draft or an approved follow-up as it is sent still runs.',
     );
-    expect(html).not.toContain('Lead research, Reading scanned PDFs');
-    expect(html).not.toContain('refused');
-    expect(html).not.toContain('(except');
-    expect(rowHtml(html, 'ocr')).toContain(
-      'It still runs while the token balance is empty, and its usage is still deducted',
-    );
-    expect(rowHtml(html, 'research')).toContain(
-      'The Research panel on a lead still runs while the token balance is empty, and its usage is still deducted, so the balance can go below zero. The research before a draft pauses with drafting while the token balance is empty.',
-    );
-    expect(rowHtml(html, 'research')).not.toContain('It still runs');
-    // The row pauses, but not the translation on its provider that checks
-    // no wallet — Show translation / Re-translate on a draft and a new
-    // email, never the same buttons on a reply or a follow-up awaiting
-    // approval (the gated /api/translate: refused, so "need tokens").
-    expect(rowHtml(html, 'drafting')).toContain(
-      'the token balance is empty, so this job pauses until tokens are added. Still running: Show translation and Re-translate on a draft and on a new email, translating a queued draft or an approved follow-up as it is sent, translating a search recipe&#x27;s queries when it is saved, and the signature redesign — and their usage is still deducted, so the balance can go below zero. On a reply or a follow-up awaiting approval, Show translation and Re-translate need tokens.',
-    );
+    expect(html).not.toContain('still deducted');
+    expect(html).not.toContain('below zero');
     expect(html).not.toContain('Translate button');
-    expect(html).not.toContain('they pause');
-    // Retrieval pauses with drafting; indexing an upload does not.
-    expect(rowHtml(html, 'knowledge')).toContain(
-      'so this job pauses until tokens are added. Still running: indexing the documents you upload — and its usage is still deducted, so the balance can go below zero.',
+    expect(rowHtml(html, 'drafting')).toContain(
+      'the token balance is empty, so this job pauses until tokens are added. Still running: translating a queued draft or an approved follow-up as it is sent — Leadsonar pays for it, so nothing is deducted.',
     );
-    // A paused job with no ungated part says no more.
-    expect(rowHtml(html, 'replies')).not.toContain('Still running');
+    for (const job of ['research', 'ocr', 'knowledge', 'replies'] as const) {
+      expect(rowHtml(html, job)).toContain('so this job pauses until tokens are added.');
+      expect(rowHtml(html, job)).not.toContain('Still running');
+    }
   });
 
-  it('a Gemini key kept only in the server env: lead research on an empty wallet is still deducted', async () => {
+  it('a Gemini key kept only in the server env: lead research is paid from tokens, so it pauses on an empty wallet', async () => {
     // F1's first fixture. The adapter logs an env key as the platform's,
-    // so recordUsage debits lead research — and the page must say so.
+    // so recordUsage debits lead research — and on an empty wallet the
+    // Research panel refuses, as the row says.
     process.env.GEMINI_API_KEY = 'env-gemini';
     const ctx = await tenant({ balance: 0n });
     const r = await getProviderReadiness(ctx);
     expect(jobOf(r.jobs, 'research')).toMatchObject({
       vendor: 'gemini',
       key: 'platform',
-      state: 'ready',
+      state: 'no_tokens',
       platformKeyDebited: true,
       billedFromTokens: true,
+      gatedPart: null,
     });
     // Discovery's safety net runs on the same key, and is debited too.
     expect(jobOf(r.jobs, 'discovery')).toMatchObject({
@@ -1036,9 +1047,11 @@ describe('what the page says when a job cannot run', () => {
       state: 'no_tokens',
       billedFromTokens: true,
     });
-    expect(rowHtml(await panel(r), 'research')).toContain(
-      'The Research panel on a lead still runs while the token balance is empty, and its usage is still deducted, so the balance can go below zero. The research before a draft pauses with drafting while the token balance is empty.',
+    const row = rowHtml(await panel(r), 'research');
+    expect(row).toContain(
+      'Gemini key is ready, but the token balance is empty, so this job pauses until tokens are added.',
     );
+    expect(row).not.toContain('still runs');
     // The Gemini key line promises billing for every job on it.
     const line = clean(
       await renderToHtml(
@@ -1046,39 +1059,15 @@ describe('what the page says when a job cannot run', () => {
       ),
     );
     expect(line).toContain('Leadsonar provides the key; usage is paid from your token balance.');
-
-    // With every other job ready, the empty-wallet alert counts the
-    // Research panel among what is still deducted — no exception left.
-    await prodPlatform();
-    await dropConsoleKey('gemini.apiKey');
-    const full = await panel(await getProviderReadiness(ctx));
-    expect(full).toContain(
-      'The Research panel on a lead, Reading scanned PDFs, Suggest with AI on products, some translation and the signature redesign, and indexing the documents you upload still run, and their usage is still deducted, so the balance can go below zero.',
-    );
   });
 
-  it('the research row never promises what a top-up cannot bring back', async () => {
-    // Lead research on the env Gemini key; no AI key anywhere, so a draft
-    // cannot be written even once tokens are added.
+  it('lead research without a key: the row names the key gap, and never that drafts are still written', async () => {
     process.env.RESEARCH_PROVIDER = 'gemini';
-    process.env.GEMINI_API_KEY = 'env-gemini';
     process.env.AI_PROVIDER = 'anthropic';
     const ctx = await tenant({ balance: 0n });
-    let r = await getProviderReadiness(ctx);
-    expect(jobOf(r.jobs, 'research').state).toBe('ready');
-    expect(jobOf(r.jobs, 'first_emails').state).toBe('no_key');
-    let row = rowHtml(await panel(r), 'research');
-    expect(row).toContain(
-      'The research before a draft pauses with drafting while the token balance is empty.',
-    );
-    expect(row).not.toContain('until tokens are added');
-
-    // Without a research key, the row does not say drafts are still
-    // written: on an empty wallet none is.
-    delete process.env.GEMINI_API_KEY;
-    r = await getProviderReadiness(ctx);
+    const r = await getProviderReadiness(ctx);
     expect(jobOf(r.jobs, 'research').state).toBe('no_key');
-    row = rowHtml(await panel(r), 'research');
+    const row = rowHtml(await panel(r), 'research');
     expect(row).toContain('so lead research fails; a draft skips the research rather than failing.');
     expect(row).not.toContain('still written');
   });
@@ -1086,7 +1075,8 @@ describe('what the page says when a job cannot run', () => {
   it('grounded research debits exactly when the page says: a platform key yes (console or env), the workspace\'s own no', async () => {
     const ctx = await tenant();
     const { lead } = await seedLead(ctx);
-    await setBalance(ctx, 0n);
+    // A funded wallet: on an empty one the Research panel refuses (27 Nov).
+    const start = await balanceOf(ctx);
     stubGeminiFetch();
     try {
       // A console key that is not the env var's value — prod's setup.
@@ -1102,9 +1092,9 @@ describe('what the page says when a job cannot run', () => {
       });
       await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who buys?' });
       const afterConsole = await balanceOf(ctx);
-      expect(afterConsole).toBeLessThan(0n);
+      expect(afterConsole).toBeLessThan(start);
 
-      // Only the env key: debited too, further below zero.
+      // Only the env key: debited too.
       await dropConsoleKey('gemini.apiKey');
       expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research')).toMatchObject({
         key: 'platform',
@@ -1134,7 +1124,7 @@ describe('what the page says when a job cannot run', () => {
     process.env.PERPLEXITY_API_KEY = 'env-perplexity';
     const ctx = await tenant();
     const { lead } = await seedLead(ctx);
-    await setBalance(ctx, 0n);
+    const start = await balanceOf(ctx);
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -1158,7 +1148,7 @@ describe('what the page says when a job cannot run', () => {
       const run = await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who buys?' });
       expect(run.outcome?.usage.keySource).toBe('platform');
       const afterConsole = await balanceOf(ctx);
-      expect(afterConsole).toBeLessThan(0n);
+      expect(afterConsole).toBeLessThan(start);
 
       await byokKey(ctx.workspaceId, 'perplexity.apiKey', 'env-perplexity');
       expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research')).toMatchObject({
@@ -1173,11 +1163,13 @@ describe('what the page says when a job cannot run', () => {
     }
   });
 
-  it('the wallet facts agree with the runtime: discovery and drafts refuse, lead research runs', async () => {
+  it('the wallet facts agree with the runtime: discovery, drafts and new research refuse; a cached answer loads', async () => {
     _setResearchProviderForTests(new MockResearchProvider());
     const ctx = await tenant();
-    // A lead to research, made while the wallet still has tokens.
+    // A lead to research, made while the wallet still has tokens — and one
+    // answer looked up then.
     const { product, item, lead } = await seedLead(ctx);
+    await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who buys?' });
 
     await setBalance(ctx, 0n);
     const r = await getProviderReadiness(ctx);
@@ -1189,27 +1181,23 @@ describe('what the page says when a job cannot run', () => {
     await expect(
       generateOutreachDraft(ctx, { reviewItemId: item!.id, productProfileId: product.id }),
     ).rejects.toBeInstanceOf(TokenError);
-    // Not gated: the Research panel's call runs on an empty wallet. The
-    // research before a draft is gated — generateOutreachDraft refused
-    // above before any research — and the row says so (gatedPart).
-    expect(gated('research')).toBe(false);
-    expect(jobOf(r.jobs, 'research').gatedPart).toEqual({
-      running: 'the Research panel on a lead',
-      paused: 'the research before a draft pauses with drafting',
-    });
+    // Lead research is gated whole (27 Nov): a new question is refused, an
+    // answer already looked up still loads — it costs nothing.
+    expect(gated('research')).toBe(true);
+    expect(jobOf(r.jobs, 'research').gatedPart).toBeNull();
+    await expect(
+      researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who installs?' }),
+    ).rejects.toBeInstanceOf(TokenError);
     await expect(
       researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who buys?' }),
-    ).resolves.toMatchObject({ cached: false });
-    // Drafting is gated, but translateText — behind Show translation on a
-    // draft and on a new email — checks no wallet: the row's "Still
-    // running" (each entry point is run in the describe below).
+    ).resolves.toMatchObject({ cached: true });
+    // Drafting is gated; only sending's translation runs on (the describe
+    // below runs every entry point).
     expect(gated('drafting')).toBe(true);
-    expect(jobOf(r.jobs, 'drafting').ungatedPart?.detail).toContain(
-      'Show translation and Re-translate on a draft',
-    );
-    await expect(
-      translateText(ctx, { text: 'Hallo Welt', targetLanguage: 'en', recordAudit: false }),
-    ).resolves.toBeDefined();
+    expect(jobOf(r.jobs, 'drafting').ungatedPart?.parts).toEqual([
+      'translating a queued draft or an approved follow-up as it is sent',
+    ]);
+    expect(gated('ocr')).toBe(true);
   });
 
   it('no provider at all (the mock) is "not set up", not ready', async () => {
@@ -1235,25 +1223,24 @@ describe('the alerts: a key gap never hides the empty wallet', () => {
     const ctx = await tenant({ balance: 0n });
     const r = await getProviderReadiness(ctx);
     expect(jobOf(r.jobs, 'ocr').state).toBe('no_key');
-    expect(r.jobs.filter((j) => j.state === 'no_tokens')).toHaveLength(6);
+    expect(r.jobs.filter((j) => j.state === 'no_tokens')).toHaveLength(7);
     const html = await panel(r);
     expect(alertTones(html)).toEqual(['danger', 'warning']);
     // The key alert: one job, for a key reason — and it says it leaves the
     // paused jobs out of that count.
     expect(html).toContain('1 job will not run without a key');
     expect(html).toContain(
-      'Reading scanned PDFs — see the reason on each row below. Not counted here: the 6 jobs paused because the token balance is empty.',
+      'Reading scanned PDFs — see the reason on each row below. Not counted here: the 7 jobs paused because the token balance is empty.',
     );
     // The wallet alert, with its action, never "Providers are ready".
     expect(html).toContain('The token balance is empty');
     expect(html).not.toContain('Providers are ready');
     expect(html).toContain('<a href="/settings/billing">Buy tokens</a>');
     expect(html).toContain(
-      'Discovery, Qualification, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval pause until tokens are added.',
+      'Discovery, Qualification, Lead research, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval pause until tokens are added.',
     );
-    // Without a key, reading scanned PDFs is not among what still runs.
     expect(html).toContain(
-      'The Research panel on a lead, Suggest with AI on products, some translation and the signature redesign, and indexing the documents you upload still run, and their usage is still deducted, so the balance can go below zero.',
+      'Translating a queued draft or an approved follow-up as it is sent still runs.',
     );
     // A member gets the same alerts, without the purchase action.
     const member = await panel(r, { isAdmin: false });
@@ -1283,7 +1270,7 @@ describe('the alerts: a key gap never hides the empty wallet', () => {
     // Keyword-rules scoring runs inside a discovery run (or Re-classify
     // all), behind the same wallet gate: it is counted among the pauses.
     expect(html).toContain(
-      'Discovery, Qualification, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval pause until tokens are added.',
+      'Discovery, Qualification, Lead research, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval, Reading scanned PDFs pause until tokens are added.',
     );
     expect(rowHtml(html, 'qualification')).toContain(
       'The token balance is empty too, so this job pauses until tokens are added.',
@@ -1296,41 +1283,40 @@ describe('the alerts: a key gap never hides the empty wallet', () => {
     const both = await panel(await getProviderReadiness(ctx));
     expect(alertTones(both)).toEqual(['danger', 'warning']);
     expect(both).toContain(
-      'Reading scanned PDFs — see the reason on each row below. Qualification has no key, so it would score with keyword rules only — and the empty token balance pauses it too. Not counted here: the 6 jobs paused because the token balance is empty.',
+      'Reading scanned PDFs — see the reason on each row below. Qualification has no key, so it would score with keyword rules only — and the empty token balance pauses it too. Not counted here: the 7 jobs paused because the token balance is empty.',
     );
     expect(both).not.toContain('runs on keyword rules only');
   });
 
   it('every job that checks the wallet lacks a key or a provider: the wallet alert names them, not "the jobs that use tokens"', async () => {
-    // Reachable only with qualification on no provider at all (keyword
-    // rules count among the pauses). Lead research and scanned PDFs have
-    // keys, use tokens and still run — so "the jobs that use tokens have
-    // no key" would be false.
+    // Every job checks the wallet (27 Nov), so this is the case where none
+    // can run for want of a key or a provider: the wallet alert must not
+    // say "the jobs that use tokens have no key" — it names them, and that
+    // each pauses once it has one.
     process.env.SEARCH_PROVIDER = 'serpapi';
     process.env.AI_PROVIDER = 'mock';
     process.env.VECTOR_STORAGE_PROVIDER = 'mock';
     process.env.RESEARCH_PROVIDER = 'gemini';
-    process.env.GEMINI_API_KEY = 'env-gemini';
-    process.env.MISTRAL_API_KEY = 'env-mistral';
     await consoleSetting('qualification.provider', 'mock');
     const ctx = await tenant({ balance: 0n });
     const r = await getProviderReadiness(ctx);
     expect(Object.fromEntries(r.jobs.map((j) => [j.job, j.state]))).toEqual({
       discovery: 'no_key',
       qualification: 'not_set_up',
-      research: 'ready',
+      research: 'no_key',
       first_emails: 'not_set_up',
       replies: 'not_set_up',
       drafting: 'not_set_up',
       knowledge: 'not_set_up',
-      ocr: 'ready',
+      ocr: 'no_key',
     });
     const html = await panel(r);
     expect(alertTones(html)).toEqual(['danger', 'warning']);
-    expect(html).toContain('6 jobs will not run without a key or a provider');
+    expect(html).toContain('8 jobs will not run without a key or a provider');
     expect(html).toContain(
-      'Discovery, Qualification, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval need a key or a provider first (see their rows); once they have one, they pause until tokens are added. The Research panel on a lead and Reading scanned PDFs still run, and their usage is still deducted, so the balance can go below zero.',
+      'Discovery, Qualification, Lead research, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval, Reading scanned PDFs need a key or a provider first (see their rows); once they have one, they pause until tokens are added.',
     );
+    expect(html).not.toContain('still run');
     expect(html).not.toContain('The jobs that use tokens');
   });
 
@@ -1360,27 +1346,63 @@ describe('the alerts: a key gap never hides the empty wallet', () => {
   });
 });
 
-// ---- what "Still running" names really runs -----------------------------------
+// ---- an empty wallet, entry point by entry point ---------------------------------
 
-// The drafting and knowledge rows' "Still running" and the empty-wallet
-// alert name work whose entry points check no wallet. Each is run here on
-// an empty, non-exempt wallet, on a platform key kept in the server env
-// (debited: Anthropic for the writing, OpenAI for indexing's embeddings):
-// it must complete, and its usage must take the balance below zero — as
-// the page says. A wallet gate added to any of them fails its own test;
-// then the page, not the gate, is what to change.
-describe('on an empty wallet, the work the page lists as still running runs — and is debited', () => {
+// 27 Nov (Jacol: "Recs, but free sends"). Until then the drafting and
+// knowledge rows' "Still running" named work whose entry points checked no
+// wallet — Show translation on a draft and on a new email, a recipe's
+// query translation, the signature redesign, Suggest with AI, indexing an
+// upload — and it ran on an empty wallet, debited below zero. Now each is
+// refused (or waits for tokens), and only sending still translates: free,
+// never debited. Each entry point runs here on an empty, non-exempt wallet,
+// on a platform key kept in the server env (Anthropic for the writing,
+// OpenAI for indexing's embeddings) — keys whose usage IS debited, so a
+// balance that stays at zero proves nothing was charged.
+describe('on an empty wallet, what pauses is refused, and only sending still translates — free', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  async function draftingRow(ctx: Pick<WorkspaceContext, 'workspaceId'>, names: string) {
+  const NO_TOKENS = 'No tokens left — a workspace admin can buy a token pack in Settings → Billing.';
+  const SEND_TRANSLATION = 'translating a queued draft or an approved follow-up as it is sent';
+
+  /** How often the stubbed vendor API was called. */
+  const vendorCalls = () => vi.mocked(globalThis.fetch).mock.calls.length;
+
+  /** The drafting row as the page renders it: paused, with sending's
+   *  translation as its only still-running part, paid by the platform. */
+  async function emptyDraftingRow(ctx: Pick<WorkspaceContext, 'workspaceId'>) {
     const drafting = jobOf((await emptyWalletOnPlatformAnthropic(ctx)).jobs, 'drafting');
     expect(drafting).toMatchObject({ state: 'no_tokens', key: 'platform', billedFromTokens: true });
-    expect(drafting.ungatedPart?.detail).toContain(names);
+    expect(drafting.ungatedPart).toMatchObject({
+      parts: [SEND_TRANSLATION],
+      platformPaid: true,
+      billedFromTokens: false,
+      note: null,
+    });
   }
 
-  it('Show translation on a draft: translateDraftAction → generateDraftTranslation', async () => {
+  /** usage_log rows the platform pays for (payload.platformPaid). */
+  async function platformPaidUsage(ctx: Pick<WorkspaceContext, 'workspaceId'>) {
+    const rows = await db
+      .select({ payload: usageLog.payload, cents: usageLog.costEstimateCents })
+      .from(usageLog)
+      .where(eq(usageLog.workspaceId, ctx.workspaceId));
+    return rows.filter((r) => (r.payload as Record<string, unknown> | null)?.platformPaid === true);
+  }
+
+  const selectorsOf = (recipe: { selectors: unknown }) => recipe.selectors as Record<string, unknown>;
+
+  it('a platform-paid usage row debits nothing; the same row without the tag does', async () => {
+    const ctx = await tenant({ balance: 1000n });
+    const row = { kind: 'ai.generate' as const, provider: 'anthropic', units: 1, costEstimateCents: 50 };
+    await recordUsage(ctx, { ...row, payload: { keySource: 'platform', platformPaid: true } });
+    expect(await balanceOf(ctx)).toBe(1000n);
+    await recordUsage(ctx, { ...row, payload: { keySource: 'platform' } });
+    expect(await balanceOf(ctx)).toBe(850n);
+  });
+
+  it('Show translation on a draft is refused: translateDraftAction → generateDraftTranslation', async () => {
     const s = await setupQueueWorkspace();
     const ctx = queueCtx(s);
     const { draft: queued } = await queuedDraft(s, 'anna@target.com');
@@ -1392,24 +1414,23 @@ describe('on an empty wallet, the work the page lists as still running runs — 
       .set({ status: 'draft' })
       .where(eq(outreachDrafts.id, queued.id))
       .returning();
-    await draftingRow(ctx, 'Show translation and Re-translate on a draft');
+    await emptyDraftingRow(ctx);
 
     signIn(s.ownerId);
     const to = await expectRedirect(() =>
       translateDraftAction(draft!.id.toString(), claimedForm(s.workspaceId)),
     );
-    const flash = new URL(to, 'http://flash.invalid').searchParams;
-    expect(flash.get('error')).toBeNull();
-    expect(flash.get('message')).toMatch(/^Translation generated/);
+    expect(new URL(to, 'http://flash.invalid').searchParams.get('error')).toBe(NO_TOKENS);
     const [after] = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draft!.id));
-    expect(after!.targetLanguage).toBe('de');
-    expect(after!.bodyTranslated).toBe('[DE] Who handles concrete repair at your company?');
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(after!.bodyTranslated).toBe(draft!.bodyTranslated);
+    expect(after!.targetLanguage).toBe(draft!.targetLanguage);
+    expect(vendorCalls()).toBe(0);
+    expect(await balanceOf(ctx)).toBe(0n);
   });
 
-  it('Show translation on a new email: translateComposeAction', async () => {
+  it('Show translation on a new email is refused: translateComposeAction', async () => {
     const ctx = await tenant();
-    await draftingRow(ctx, 'on a draft and on a new email');
+    await emptyDraftingRow(ctx);
     signIn(ctx.userId);
     const r = await translateComposeAction({
       subject: 'Prices',
@@ -1417,22 +1438,14 @@ describe('on an empty wallet, the work the page lists as still running runs — 
       targetLanguage: 'de',
       expectedWorkspaceId: ctx.workspaceId.toString(),
     });
-    expect(r).toEqual({
-      ok: true,
-      subject: '[DE] Prices',
-      body: '[DE] Thanks for your reply — here are the prices.',
-    });
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(r).toEqual({ ok: false, error: NO_TOKENS });
+    expect(vendorCalls()).toBe(0);
+    expect(await balanceOf(ctx)).toBe(0n);
   });
 
-  it('Show translation on a reply or a follow-up awaiting approval needs tokens: /api/translate answers 402', async () => {
-    // The copy says these labels need tokens there — refused, not queued:
-    // the gated route answers 402 and nothing runs later.
+  it('Show translation on a reply or a follow-up awaiting approval: /api/translate answers 402', async () => {
     const ctx = await tenant();
-    const drafting = jobOf((await emptyWalletOnPlatformAnthropic(ctx)).jobs, 'drafting');
-    expect(drafting.ungatedPart?.note).toBe(
-      'on a reply or a follow-up awaiting approval, Show translation and Re-translate need tokens',
-    );
+    await emptyDraftingRow(ctx);
     signIn(ctx.userId);
     const res = await translatePOST(
       new Request('http://localhost/api/translate', {
@@ -1445,7 +1458,7 @@ describe('on an empty wallet, the work the page lists as still running runs — 
     expect(await balanceOf(ctx)).toBe(0n);
   });
 
-  it('an approved follow-up, translated as it is sent: approveFollowUp', async () => {
+  it('an approved follow-up is still translated as it is sent, and never debited: approveFollowUp', async () => {
     const s = await setupQueueWorkspace();
     const ctx = queueCtx(s);
     const { draft: queued } = await queuedDraft(s, 'anna@target.com');
@@ -1475,7 +1488,7 @@ describe('on an empty wallet, the work the page lists as still running runs — 
         stagedBody: 'Did you have a chance to look at our offer?',
       })
       .returning();
-    await draftingRow(ctx, 'an approved follow-up as it is sent');
+    await emptyDraftingRow(ctx);
 
     const approved = await approveFollowUp(ctx, step!.id, undefined, {
       mailProviderOverride: provider,
@@ -1484,21 +1497,28 @@ describe('on an empty wallet, the work the page lists as still running runs — 
     expect(provider.sent.at(-1)!.message.text).toContain(
       '[DE] Did you have a chance to look at our offer?',
     );
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(vendorCalls()).toBeGreaterThan(0);
+    expect(await balanceOf(ctx)).toBe(0n);
+    // Logged at its real cost, for cost tracking — tagged as the platform's.
+    const paid = await platformPaidUsage(ctx);
+    expect(paid.length).toBeGreaterThan(0);
+    expect(paid.every((r) => (r.cents ?? 0) > 0)).toBe(true);
   });
 
-  it('a queued draft, translated as it is sent: drainQueue', async () => {
+  it('a queued draft is still translated as it is sent, and never debited — on a funded wallet too: drainQueue', async () => {
     const s = await setupQueueWorkspace();
     const ctx = queueCtx(s);
     const { draft } = await queuedDraft(s, 'anna@target.com');
     await setOutreachLanguage(ctx, (await leadFor(draft.reviewItemId)).id, 'de');
-    await draftingRow(ctx, 'translating a queued draft');
+    await emptyDraftingRow(ctx);
 
-    // The background drain tick asks the same 'sending' gate, without
-    // spendsTokens: on an empty wallet it runs too.
+    // The background drain tick asks the 'sending' gate, without
+    // spendsTokens: on an empty wallet it runs.
     expect(tickVerdict(await resolveAutomationPolicy(ctx), 'outreach.drain.tick')).toEqual({
       run: true,
     });
+    // Free whatever the wallet holds: on a funded one nothing is taken either.
+    await setBalance(ctx, 1000n);
     const r = await drainQueue(ctx, { providerOverride: new MockMailProvider() });
     expect(r.sent).toBe(1);
     const [msg] = await db
@@ -1507,51 +1527,77 @@ describe('on an empty wallet, the work the page lists as still running runs — 
       .where(eq(mailMessages.workspaceId, s.workspaceId));
     expect(msg!.targetLanguage).toBe('de');
     expect(msg!.bodyText).toContain(`[DE] ${draft.body}`);
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(await balanceOf(ctx)).toBe(1000n);
+    expect((await platformPaidUsage(ctx)).length).toBeGreaterThan(0);
   });
 
-  it("a search recipe's queries, translated when it is saved: createRecipe", async () => {
+  it('a search recipe saved on an empty wallet keeps its queries untranslated until its next run: createRecipe → startRun', async () => {
     const ctx = await tenant();
     const conn = await createConnector(ctx, { templateType: 'mock', name: 'Mock', config: {} });
-    await draftingRow(ctx, "translating a search recipe's queries when it is saved");
+    await emptyDraftingRow(ctx);
 
     const recipe = await createRecipe(ctx, {
       connectorId: conn.id,
       name: 'German buyers',
       searchQueries: ['concrete repair contractors'],
-      selectors: { language: 'de' },
+      selectors: { language: 'de', seed: 'pending', count: 1 },
     });
-    // Translated — not the native query the best-effort fallback keeps.
-    expect((recipe.selectors as Record<string, unknown>).searchQueriesIssued).toEqual([
-      '[DE] concrete repair contractors',
-    ]);
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(selectorsOf(recipe)).not.toHaveProperty('searchQueriesIssued');
+    expect(selectorsOf(recipe).searchQueriesIssuedPending).toBe(true);
+    expect(vendorCalls()).toBe(0);
+    expect(await balanceOf(ctx)).toBe(0n);
+    // No run starts on an empty wallet…
+    await expect(startRun(ctx, { connectorId: conn.id, recipeId: recipe.id })).rejects.toBeInstanceOf(
+      TokenError,
+    );
+
+    // …and after a top-up the run translates the queries first, for itself
+    // and for every later run. (A fresh queue with no handlers leaves the
+    // run itself pending: only its start is under test.)
+    await setBalance(ctx, 1000n);
+    registerJobHandlers();
+    const previousQueue = getJobQueue();
+    _setJobQueueForTests(new InMemoryJobQueue());
+    try {
+      const { run } = await startRun(ctx, { connectorId: conn.id, recipeId: recipe.id });
+      expect((run.recipeSnapshot as Record<string, unknown>).searchQueriesIssued).toEqual([
+        '[DE] concrete repair contractors',
+      ]);
+    } finally {
+      _setJobQueueForTests(previousQueue);
+    }
+    const [row] = await db.select().from(connectorRecipes).where(eq(connectorRecipes.id, recipe.id));
+    expect(selectorsOf(row!).searchQueriesIssued).toEqual(['[DE] concrete repair contractors']);
+    expect(selectorsOf(row!)).not.toHaveProperty('searchQueriesIssuedPending');
+    expect(await balanceOf(ctx)).toBeLessThan(1000n);
   });
 
-  it("a search recipe's queries, translated when it is saved: updateRecipe", async () => {
+  it("editing a recipe's queries on an empty wallet drops the stale translation and waits: updateRecipe", async () => {
     const ctx = await tenant();
     const conn = await createConnector(ctx, { templateType: 'mock', name: 'Mock', config: {} });
-    // Saved without a search language while the wallet had tokens.
+    await emptyDraftingRow(ctx);
+    // Saved while the wallet had tokens: translated.
+    await setBalance(ctx, 1000n);
     const recipe = await createRecipe(ctx, {
       connectorId: conn.id,
       name: 'Buyers',
       searchQueries: ['pump buyers'],
-    });
-    await draftingRow(ctx, "translating a search recipe's queries when it is saved");
-
-    const updated = await updateRecipe(ctx, recipe.id, {
       selectors: { language: 'de' },
-      searchQueries: ['pump buyers'],
     });
-    expect((updated.selectors as Record<string, unknown>).searchQueriesIssued).toEqual([
-      '[DE] pump buyers',
-    ]);
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(selectorsOf(recipe).searchQueriesIssued).toEqual(['[DE] pump buyers']);
+
+    await setBalance(ctx, 0n);
+    const calls = vendorCalls();
+    const updated = await updateRecipe(ctx, recipe.id, { searchQueries: ['valve buyers'] });
+    expect(selectorsOf(updated)).not.toHaveProperty('searchQueriesIssued');
+    expect(selectorsOf(updated).searchQueriesIssuedPending).toBe(true);
+    expect(vendorCalls()).toBe(calls);
+    expect(await balanceOf(ctx)).toBe(0n);
   });
 
-  it('the signature redesign: POST /api/signatures/redesign', async () => {
+  it('the signature redesign is refused with a 402: POST /api/signatures/redesign', async () => {
     const ctx = await tenant();
-    await draftingRow(ctx, 'and the signature redesign');
+    await emptyDraftingRow(ctx);
     signIn(ctx.userId);
     const res = await redesignSignaturePOST(
       new Request('http://localhost/api/signatures/redesign', {
@@ -1560,31 +1606,40 @@ describe('on an empty wallet, the work the page lists as still running runs — 
         body: JSON.stringify({ fullName: 'Anna Nowak', company: 'Acme' }),
       }),
     );
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { bodyHtml: string }).bodyHtml).toContain('Anna Nowak');
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: 'insufficient_tokens', detail: NO_TOKENS });
+    expect(vendorCalls()).toBe(0);
+    expect(await balanceOf(ctx)).toBe(0n);
   });
 
-  it('Suggest with AI on products: suggestStageAngle', async () => {
+  it('Suggest with AI on products is refused: suggestStageAngle', async () => {
     const ctx = await tenant();
     const product = await createProductProfile(ctx, { name: 'Test Product' });
     const r = await emptyWalletOnPlatformAnthropic(ctx);
     const feature = r.features.find((f) => f.id === 'suggest_angles')!;
-    expect(feature).toMatchObject({ walletGated: false, platformKeyDebited: true });
-    expect(feature.vendors.find((v) => v.vendor === 'anthropic')).toMatchObject({
-      key: 'platform',
-      hasKey: true,
-    });
-    expect(await panel(r)).toContain('Suggest with AI on products');
+    expect(feature).toMatchObject({ walletGated: true, platformKeyDebited: true });
+    expect(await panel(r)).not.toContain('Suggest with AI on products still');
 
-    const out = await suggestStageAngle(ctx, product.id, 'discovery', 'anthropic');
-    expect(out.text).toBe('Lead with what a failed repair costs them.');
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    await expect(suggestStageAngle(ctx, product.id, 'discovery', 'anthropic')).rejects.toThrow(
+      NO_TOKENS,
+    );
+    // The product page's button flashes the refusal, not "failed".
+    signIn(ctx.userId);
+    const tree = await EditProductPage({
+      params: Promise.resolve({ id: product.id.toString() }),
+      searchParams: Promise.resolve({}),
+    });
+    const suggest = propOf<(fd: FormData) => Promise<void>>(tree, 'suggesterAction');
+    const form = new FormData();
+    form.set('stage', 'discovery');
+    form.set('vendor', 'anthropic');
+    const to = await expectRedirect(() => suggest(form));
+    expect(new URL(to, 'http://flash.invalid').searchParams.get('error')).toBe(NO_TOKENS);
+    expect(vendorCalls()).toBe(0);
+    expect(await balanceOf(ctx)).toBe(0n);
   });
 
-  it('indexing the documents you upload: uploadDocument → the knowledge.index job', async () => {
-    // Knowledge retrieval pauses with drafting, but an upload is still
-    // indexed — its embeddings on the platform OpenAI key, debited.
+  it('an upload waits to be indexed, and is indexed after a top-up: uploadDocument → the knowledge.index job', async () => {
     const ctx = await tenant();
     process.env.EMBEDDING_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'env-openai';
@@ -1595,21 +1650,15 @@ describe('on an empty wallet, the work the page lists as still running runs — 
       state: 'no_tokens',
       vendor: 'openai',
       key: 'platform',
-      billedFromTokens: false,
-    });
-    expect(knowledge.ungatedPart).toMatchObject({
-      parts: ['indexing the documents you upload'],
-      billedFromTokens: true,
+      ungatedPart: null,
     });
 
     stubOpenAIEmbeddingsFetch();
     const root = await mkdtemp(path.join(tmpdir(), 'readiness-index-'));
     _setStorageForTests(new LocalFileStorage(root));
     // Once any earlier test has registered the job handlers, the in-memory
-    // queue runs knowledge.index by itself as soon as the source is added,
-    // and under load it claims the row before runQueuedIndexJobs does (the
-    // outcome then reads 'skipped'). A fresh queue with no handlers leaves
-    // the run to this test.
+    // queue runs knowledge.index by itself as soon as the source is added.
+    // A fresh queue with no handlers leaves the runs to this test.
     const previousQueue = getJobQueue();
     _setJobQueueForTests(new InMemoryJobQueue());
     try {
@@ -1620,20 +1669,33 @@ describe('on an empty wallet, the work the page lists as still running runs — 
         mimeType: 'text/plain',
         body: Buffer.from('The P-40 pump moves 40 cubic metres an hour at 6 bar.\n'.repeat(40)),
       });
-      await createKnowledgeSource(ctx, {
+      const source = await createKnowledgeSource(ctx, {
         kind: 'document',
         title: document.name,
         documentId: document.id,
         scope: { kind: 'workspace' },
       });
-      const outcomes = await runQueuedIndexJobs(ctx);
+      const runOf = async () =>
+        (await db.select().from(indexingJobs).where(eq(indexingJobs.knowledgeSourceId, source.id)))[0]!;
+
+      // It waits — queued and noted, never failed — and nothing is called.
+      expect(await runQueuedIndexJobs(ctx)).toEqual([{ kind: 'skipped', reason: 'no_tokens' }]);
+      expect(await runOf()).toMatchObject({ status: 'queued', note: 'waiting_for_tokens', attempts: 0 });
+      expect(vendorCalls()).toBe(0);
+      expect(await balanceOf(ctx)).toBe(0n);
+
+      // After a top-up its next try (the sweep's, once due) indexes it.
+      await setBalance(ctx, 1000n);
+      const later = new Date(Date.now() + TOKENS_DEFER_MS + 1000);
+      const outcomes = await runQueuedIndexJobs(ctx, { now: () => later });
       expect(outcomes.map((o) => o.kind)).toEqual(['succeeded']);
+      expect(await runOf()).toMatchObject({ status: 'succeeded', note: 'embedded' });
     } finally {
       _setJobQueueForTests(previousQueue);
       _setStorageForTests(null);
       await rm(root, { recursive: true, force: true });
     }
-    expect(await balanceOf(ctx)).toBeLessThan(0n);
+    expect(await balanceOf(ctx)).toBeLessThan(1000n);
   });
 });
 
@@ -1649,7 +1711,7 @@ describe('the handbook says what the panel says about an empty wallet', () => {
     )?.[1];
     expect(bullet).toBeDefined();
     const [pauses, rest] = bullet!.split(' PAUSE until tokens arrive');
-    const [needTokens, runs] = rest!.split(' These still run');
+    const [waits, runs] = rest!.split(' These still run');
     expect(runs).toBeDefined();
     // Everything the panel can name as still running on an empty wallet,
     // taken from its own data — not a copy of it here: the ungated jobs
@@ -1663,21 +1725,29 @@ describe('the handbook says what the panel says about an empty wallet', () => {
       ...r.features.filter((f) => !f.walletGated).map((f) => f.label),
       ...r.jobs.flatMap((j) => j.ungatedPart?.parts ?? []),
     ];
-    expect(r.jobs.filter((j) => j.ungatedPart).map((j) => j.job)).toEqual(['drafting', 'knowledge']);
-    expect(named).toContain(VENDOR_FEATURES[0]!.label);
-    expect(named.length).toBeGreaterThanOrEqual(8);
+    // Since 27 Nov: sending's translation alone, and it is free.
+    expect(named).toEqual(['translating a queued draft or an approved follow-up as it is sent']);
     for (const name of named) {
       expect(runs!.toLowerCase(), name).toContain(name.toLowerCase());
     }
-    // …and what pauses, where the same button labels call the gated route
-    // (refused with a 402, so "need tokens", as the panel's note says).
-    expect(pauses).toContain('outreach drafting (with the research before a draft)');
-    expect(needTokens).toContain(
-      'Show translation and Re-translate on a reply or on a follow-up awaiting approval need tokens too',
-    );
-    expect(jobOf(r.jobs, 'drafting').ungatedPart!.note).toContain(
-      'on a reply or a follow-up awaiting approval, Show translation and Re-translate need tokens',
-    );
+    expect(runs).toContain('free of charge, never taken from your tokens');
+    expect(runs).not.toMatch(/charged|below zero/);
+    // …and what pauses: everything the panel lists as paused, the
+    // Research panel and Suggest with AI included; uploads and recipes wait.
+    for (const paused of [
+      'discovery',
+      'qualification',
+      'lead research (the Research panel on a lead',
+      'outreach drafting',
+      'Suggest with AI on products',
+      'the signature redesign',
+      'translation (Show translation and Re-translate everywhere, and incoming mail)',
+      'reading scanned PDFs',
+    ]) {
+      expect(pauses, paused).toContain(paused);
+    }
+    expect(waits).toContain('Documents you upload wait to be indexed');
+    expect(waits).toContain('keeps its queries untranslated until its next run');
     expect(text).not.toContain('Translate button');
     expect(text).toContain(
       'an empty wallet pauses discovery, qualification, drafting and some translation (Tokens & billing lists what pauses and what still runs)',
@@ -1688,7 +1758,7 @@ describe('the handbook says what the panel says about an empty wallet', () => {
 // ---- the other places that say the wallet is empty -------------------------------
 
 // The panel and the handbook say some translation still runs on an empty
-// wallet (and is debited). The out-of-tokens notification, the billing
+// wallet — since 27 Nov only sending's, which the platform pays for. The out-of-tokens notification, the billing
 // page, the /health finding and the guide's own empty-wallet answer said
 // "discovery, drafting and translation are paused" — all translation.
 describe('every other place that says the wallet is empty agrees with the panel', () => {
@@ -1701,7 +1771,7 @@ describe('every other place that says the wallet is empty agrees with the panel'
     // The panel's answer these must agree with: translation on the
     // drafting provider partly still runs on an empty wallet.
     expect(jobOf((await getProviderReadiness(ctx)).jobs, 'drafting').ungatedPart?.short).toBe(
-      'some translation and the signature redesign',
+      'translating a queued draft or an approved follow-up as it is sent',
     );
 
     // The notification sent when a debit empties the wallet.

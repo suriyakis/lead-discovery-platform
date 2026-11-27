@@ -20,9 +20,8 @@
 //                  else the Gemini safety net, else the plain search provider
 //   qualification  getQualificationProviderForCtx; without a key the
 //                  runtime scores with keyword rules (qualification.ts)
-//   research       getResearchProviderForCtx (the lead page's Research panel,
-//                  ungated, and the optional research before a draft,
-//                  gated with the draft)
+//   research       getResearchProviderForCtx (the lead page's Research panel
+//                  and the optional research before a draft)
 //   first_emails   getStageProvider 'discovery' / 'referral_intro' /
 //   replies        'closing' and 'pitch' / 'engagement' (outreach-stage-
 //                  models.ts): the tier vendor when it has a key anywhere,
@@ -31,7 +30,8 @@
 //                  translation, product autofill and the other AI writing
 //   knowledge      getVectorStorageProviderForCtx, then (pgvector) the
 //                  embedding cascade (retrieval, gated with drafting;
-//                  indexing an upload, ungated, embeds on that cascade)
+//                  indexing an upload, which waits for tokens, embeds on
+//                  that cascade)
 //   ocr            getOcrProviderForCtx: Mistral, for scanned PDFs
 // A change to one of those cascades must change this file too
 // (provider-readiness.test.ts pins the agreement against the factories).
@@ -46,13 +46,14 @@
 // applies whichever key a call runs on, but only where an entry point
 // asks for it. WALLET_GATED records, per job, whether its entry points
 // do: on an empty wallet a gated job pauses (no_tokens), an ungated one
-// still runs — and, on the platform key, is still debited, below zero.
+// would still run — and, on the platform key, still be debited, below
+// zero. Since 27 Nov (Jacol: "Recs, but free sends") every job is gated.
 // A gated job can still own ungated work on its provider
-// (WALLET_UNGATED_PARTS: some translation and the signature redesign on
-// the drafting provider, indexing an upload on the knowledge row's
-// embeddings); the page names it as still running. An
-// ungated job can own gated work (WALLET_GATED_PARTS: lead research
-// before a draft); the page names what of it runs and what pauses.
+// (WALLET_UNGATED_PARTS: translating a queued draft or an approved
+// follow-up as it is sent, which the platform pays for — never debited);
+// the page names it as still running. An ungated job could own gated work
+// (WALLET_GATED_PARTS, empty now); the page would name what of it runs
+// and what pauses.
 
 import type { ProviderJobState, ProviderKeyGap } from '@/lib/kinds/provider';
 import {
@@ -122,14 +123,16 @@ export interface JobReadiness {
    *  (WALLET_UNGATED_PARTS): it still runs while the job pauses. `short`
    *  fits a list; `parts` names every such entry point, and `detail` is
    *  them in one sentence; `note` (or null) names where the same controls
-   *  do need tokens. `billedFromTokens`: a call made now is debited — the
-   *  job's own answer, except indexing, which is metered on its own
-   *  (MeteredEmbeddingProvider). Null: none. */
+   *  do need tokens. `platformPaid`: the platform pays for it — logged,
+   *  never debited (AIGenOptions.platformPaid). `billedFromTokens`: a call
+   *  made now is debited — the job's own answer, false when platform-paid.
+   *  Null: none. */
   ungatedPart: {
     short: string;
     parts: readonly string[];
     detail: string;
     note: string | null;
+    platformPaid: boolean;
     billedFromTokens: boolean;
   } | null;
   /** The mirror of ungatedPart, for an UNGATED job: part of its work sits
@@ -174,17 +177,17 @@ export interface VendorFeature {
  * products/_suggest-button.tsx (Opus 4.7 or GPT-5) and fails with no_key
  * when that vendor has none — it never falls back like getStageProvider.
  * `satisfies` fails typecheck when the suggester gains or loses a vendor.
- * Wallet: the products page's suggestAngle → suggestStageAngle checks no
- * wallet, and getAIProviderById meters with the key's source
- * (metered(…, resolved.source)), so on the platform key it is debited —
- * below zero on an empty wallet.
+ * Wallet: the products page's suggestAngle → suggestStageAngle refuses on
+ * an empty wallet (assertTokens, 27 Nov), and getAIProviderById meters
+ * with the key's source (metered(…, resolved.source)), so on the platform
+ * key it is debited.
  */
 export const VENDOR_FEATURES: ReadonlyArray<VendorFeature> = [
   {
     id: 'suggest_angles',
     label: 'Suggest with AI on products',
     models: { anthropic: 'Opus 4.7', openai: 'GPT-5' } satisfies Record<SuggesterVendor, string>,
-    walletGated: false,
+    walletGated: true,
     platformKeyDebited: true,
   },
 ];
@@ -285,8 +288,8 @@ const JOB_COPY: Record<JobId, { label: string; purpose: string; noKeyEffect: str
  * MeteredEmbeddingProvider, whose
  * Math.round(cents) makes a query-sized embed 0 cents — logged, not
  * debited. (Indexing an upload is a separate batch on the same embedding
- * cascade, metered on its own: the row's ungated part, whose debit
- * build() works out from the embedding key — a large upload is debited.)
+ * cascade, metered on its own — a large upload is debited — and it waits
+ * for tokens on an empty wallet: WALLET_GATED.)
  * Flip this if retrieval starts recording billable usage.
  */
 const KNOWLEDGE_RETRIEVAL_DEBITED = false;
@@ -303,11 +306,11 @@ const WALLET_GATED: Record<JobId, boolean> = {
   // qualification-runs.ts assertTokens / hasTokens; the scoring inside a
   // discovery run sits behind that run's gate.
   qualification: true,
-  // NOT gated: researchLead (the Research panel on /pipeline/[id]) checks
-  // no wallet. Only the optional research before a draft is gated: it
-  // runs inside generateOutreachDraft, after its assertTokens — so on an
-  // empty wallet it pauses with drafting (WALLET_GATED_PARTS).
-  research: false,
+  // researchLead (the Research panel on /pipeline/[id]) assertTokens on a
+  // cache miss (27 Nov; a cached answer still loads); the optional
+  // research before a draft runs inside generateOutreachDraft, after its
+  // assertTokens.
+  research: true,
   // generateOutreachDraft assertTokens; closing notes and referral
   // introductions in handleOutreachReply, behind its spendsTokens gate.
   first_emails: true,
@@ -319,58 +322,55 @@ const WALLET_GATED: Record<JobId, boolean> = {
   // a thread reply, CommunicationReply, and on a follow-up awaiting
   // approval, FollowUpApprovalRow), inbound auto-translation
   // (background_ai with spendsTokens), product autofill (assertTokens).
-  // NOT gated, though on this row's provider (translateText /
-  // getAIProviderForCtx) — listed in WALLET_UNGATED_PARTS so the page
-  // says they still run:
+  // Gated 27 Nov (assertTokens; until then they ran and were debited
+  // below zero):
   //   - "Show translation" / "Re-translate from draft" on a draft
   //     (drafts/[id]/page.tsx): translateDraftAction →
-  //     generateDraftTranslation (outreach.ts) → translateText
+  //     generateDraftTranslation (outreach.ts)
   //   - "Show translation" / "Re-translate" on a new email (compose
-  //     ComposeForm): translateComposeAction → translateText
-  //   - send-time translation of a queued draft (outreach-queue →
-  //     prepareOutboundDualBody, under the 'sending' gate without
-  //     spendsTokens) and of an approved follow-up (approveFollowUp's
-  //     assertGate('sending') has no spendsTokens either)
-  //   - a recipe's search-query translation when it is saved
-  //     (connector-run.ts createRecipe / updateRecipe → translateText)
-  //   - the signature redesign (/api/signatures/redesign)
-  // The row stays gated: the writing it names pauses, those parts do not.
+  //     ComposeForm): translateComposeAction
+  //   - the signature redesign (/api/signatures/redesign → 402)
+  //   - a recipe's search-query translation: saved untranslated on an
+  //     empty wallet and translated when its next run starts (startRun,
+  //     gated — connector-run.ts translatePendingRecipeQueries)
+  // NOT gated, though on this row's provider (translateText /
+  // getAIProviderForCtx) — WALLET_UNGATED_PARTS, so the page says it
+  // still runs: send-time translation of a queued draft (outreach-queue →
+  // prepareOutboundDualBody, under the 'sending' gate without
+  // spendsTokens) and of an approved follow-up (approveFollowUp's
+  // assertGate('sending') has no spendsTokens either). Both pass
+  // platformPaid: logged, never debited.
+  // The row stays gated: the writing it names pauses, that part does not.
   drafting: true,
   // Retrieval runs only inside gated drafting: handleOutreachReply's
   // composers and suggestReply (/api/communication/suggest-reply).
-  // NOT gated, though on this row's embedding cascade: indexing an
-  // upload (uploadDocument / createKnowledgeSource → the knowledge.index
-  // job → runKnowledgeIndexJob → getEmbeddingProviderForCtx, metered by
-  // MeteredEmbeddingProvider) — WALLET_UNGATED_PARTS.
+  // Indexing an upload on this row's embedding cascade (the
+  // knowledge.index job → claimIndexJob) waits on an empty wallet: the
+  // row stays queued, noted 'waiting_for_tokens', and resumes after a
+  // top-up (27 Nov; until then it ran and was debited below zero).
   knowledge: true,
-  // NOT gated: knowledge indexing → extractPdfText → Mistral OCR checks no
-  // wallet, and recordUsage debits the pages afterwards (below zero).
-  ocr: false,
+  // Mistral OCR runs inside knowledge indexing (extractPdfText), which
+  // waits for tokens as above; Re-extract with OCR
+  // (requestDocumentOcrReextract) assertTokens before queueing (27 Nov).
+  ocr: true,
 };
 
 /** The ungated work on a gated job's provider (traced in WALLET_GATED's
  *  comments): on an empty wallet the job pauses, this still runs. Each
  *  part names a control as the pages label it, or the work; the handbook
  *  names every part (provider-readiness.test.ts derives that check from
- *  this table). The note says the same labels on a reply or a follow-up
- *  awaiting approval need tokens: they call the gated /api/translate,
- *  which answers 402 — refused, not queued. */
+ *  this table). `note` (optional) names where the same controls do need
+ *  tokens; `platformPaid`: the platform pays for the part, never debited. */
 const WALLET_UNGATED_PARTS: Partial<
-  Record<JobId, { short: string; parts: readonly string[]; note?: string }>
+  Record<
+    JobId,
+    { short: string; parts: readonly string[]; note?: string; platformPaid?: boolean }
+  >
 > = {
   drafting: {
-    short: 'some translation and the signature redesign',
-    parts: [
-      'Show translation and Re-translate on a draft and on a new email',
-      'translating a queued draft or an approved follow-up as it is sent',
-      "translating a search recipe's queries when it is saved",
-      'the signature redesign',
-    ],
-    note: 'on a reply or a follow-up awaiting approval, Show translation and Re-translate need tokens',
-  },
-  knowledge: {
-    short: 'indexing the documents you upload',
-    parts: ['indexing the documents you upload'],
+    short: 'translating a queued draft or an approved follow-up as it is sent',
+    parts: ['translating a queued draft or an approved follow-up as it is sent'],
+    platformPaid: true,
   },
 };
 
@@ -379,13 +379,10 @@ const listParts = (parts: readonly string[]) =>
   new Intl.ListFormat('en', { style: 'long', type: 'conjunction' }).format(parts);
 
 /** The gated work inside an ungated job (traced in WALLET_GATED's
- *  comments): on an empty wallet `running` still runs, `paused` pauses. */
-const WALLET_GATED_PARTS: Partial<Record<JobId, { running: string; paused: string }>> = {
-  research: {
-    running: 'the Research panel on a lead',
-    paused: 'the research before a draft pauses with drafting',
-  },
-};
+ *  comments): on an empty wallet `running` still runs, `paused` pauses.
+ *  Empty since 27 Nov: lead research — the Research panel too — is gated
+ *  whole. */
+const WALLET_GATED_PARTS: Partial<Record<JobId, { running: string; paused: string }>> = {};
 
 /** The AI factory falls back to the raw AI_MODEL env var for these vendors
  *  only (src/lib/ai/index.ts); DeepSeek runs its built-in default. */
@@ -574,11 +571,6 @@ export async function getProviderReadiness(
   };
 
   const walletEmpty = !wallet.billingExempt && wallet.balance <= 0n;
-  // Indexing an upload is debited when its embeddings run on a platform
-  // key: MeteredEmbeddingProvider records the cost with the key's source,
-  // and recordUsage debits the platform's (Math.round: a large upload).
-  const indexingDebited =
-    embeddingActive.id !== 'mock' && keyFor(embeddingActive.id) === 'platform';
   const build = (job: JobId, r: ResolvedJob): JobReadiness => {
     const key = keyFor(r.vendor);
     const walletGated = WALLET_GATED[job];
@@ -607,7 +599,8 @@ export async function getProviderReadiness(
             parts: part.parts,
             detail: listParts(part.parts),
             note: part.note ?? null,
-            billedFromTokens: job === 'knowledge' ? indexingDebited : billedFromTokens,
+            platformPaid: part.platformPaid === true,
+            billedFromTokens: part.platformPaid === true ? false : billedFromTokens,
           }
         : null,
       gatedPart: walletGated ? null : (WALLET_GATED_PARTS[job] ?? null),

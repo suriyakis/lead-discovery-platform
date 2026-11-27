@@ -462,6 +462,12 @@ export async function redesignSignatureHtml(
 
   const userPrompt = sections.join('\n');
 
+  // Each redesign is a metered AI call: it needs tokens (27 Nov). On an
+  // empty wallet TokenError refuses it (the route answers 402); the
+  // signature can still be edited and saved by hand.
+  const { assertTokens } = await import('./token-ledger');
+  await assertTokens(ctx);
+
   const provider = await getAIProviderForCtx(ctx);
   const result = await provider.generateJson(
     { system: REDESIGN_SYSTEM_PROMPT, prompt: userPrompt },

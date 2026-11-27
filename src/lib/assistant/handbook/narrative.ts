@@ -308,19 +308,20 @@ every send) on [/mailbox/suppression].
   search, AI qualification, drafting, reply suggestions, translation.
   1 token ≈ €0.01. New workspaces start with 500 free tokens.
 ${b.billing}
-- When the wallet is empty, discovery, qualification, outreach
-  drafting (with the research before a draft), writing follow-ups,
-  reply suggestions, product autofill and translation of incoming mail
-  PAUSE until tokens arrive (pack purchase or the next allowance).
-  Show translation and Re-translate on a reply or on a follow-up
-  awaiting approval need tokens too: they are refused until then.
-  These still run and can still be charged, taking the balance below
-  zero: the Research panel on a lead, reading scanned PDFs, indexing
-  the documents you upload, Suggest with AI on products, Show
-  translation and Re-translate on a draft and on a new email,
-  translating a queued draft or an approved follow-up as it is sent,
-  translating a search recipe's queries when it is saved, and the
-  signature redesign. [/settings/integrations] shows what pauses and
+- When the wallet is empty, discovery, qualification, lead research
+  (the Research panel on a lead — answers already looked up still open
+  — and the research before a draft), outreach drafting, writing
+  follow-ups, reply suggestions, Suggest with AI on products, product
+  autofill, the signature redesign, translation (Show translation and
+  Re-translate everywhere, and incoming mail) and reading scanned PDFs
+  PAUSE until tokens arrive (pack purchase or the next allowance):
+  their buttons are refused with a message until then. Documents you
+  upload wait to be indexed — their runs say "waiting for tokens" —
+  and are indexed within minutes of a top-up. A search recipe saved
+  meanwhile keeps its queries untranslated until its next run, which
+  needs tokens anyway. These still run: translating a queued draft or
+  an approved follow-up as it is sent — free of charge, never taken
+  from your tokens. [/settings/integrations] shows what pauses and
   what still runs.
 - Questions to this guide are metered AI work too. With an empty wallet
   the guide still answers — free, from a built-in checklist of what it
@@ -346,14 +347,16 @@ or failed — and its page updates on its own while it is queued or
 indexing. Editing a source's text, URL, summary or products marks it
 stale and re-indexes it automatically; drafts use the previous version
 until that finishes. A failed run is retried a few times, then the
-workspace gets one notification for that source. {H-39}
+workspace gets one notification for that source. {H-39} Indexing uses
+tokens: with an empty wallet a run waits — it shows "waiting for tokens"
+— and goes ahead within minutes of a top-up; nothing fails.
 Scanned / image-based PDFs (no text layer) are OCR'd automatically via
 Mistral when a Mistral API key is configured (platform-wide by the
 admin, or the workspace's own under BYOK) — once per file: the text is
 kept, so re-indexing never pays for OCR again. Without a key they fail
 with a clear message instead of indexing empty. On a PDF's page, owners
 and admins can force a fresh read with "Re-extract with OCR", which
-shows the estimated cost first. Deleting a knowledge source needs its
+shows the estimated cost first and needs tokens. Deleting a knowledge source needs its
 title typed to confirm.
 Download on a document's page (opened from [/documents]) sends the
 original file through the app to any member of the workspace, viewers

@@ -1072,11 +1072,15 @@ export async function approveFollowUp(
     nativeLanguage = await getWorkspaceNativeLanguage(ctx);
     targetLanguage = override!.targetLanguage!;
   } else {
+    // An approved follow-up sends on an empty wallet too: the platform
+    // pays for its translation, never debited (27 Nov). The automatic
+    // follow-ups above stay behind FOLLOW_UP_GATE and are debited.
     const dual = await prepareOutboundDualBody(ctx, {
       reviewItemId: lead.reviewItemId,
       productProfileId: lead.productProfileId,
       nativeBody: body,
       nativeSubject: subject,
+      platformPaid: true,
     });
     sendText = dual.sendText;
     sendSubject = dual.sendSubject ?? subject;

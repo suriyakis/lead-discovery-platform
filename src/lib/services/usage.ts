@@ -39,7 +39,10 @@ export interface UsageEventInput {
  *     super-admin asking inside a tenant; the platform pays, AP-02),
  *   - the call produced no usable output (`payload.unbilled` set — an
  *     empty answer or a refusal is logged for cost tracking but never
- *     charged, AP-02).
+ *     charged, AP-02),
+ *   - the platform pays for the work (`payload.platformPaid === true` —
+ *     translating a queued draft or an approved follow-up as it is sent,
+ *     which runs on an empty wallet too; 27 Nov).
  * The debit is best-effort: a ledger hiccup must never fail the action
  * that already happened — the usage row itself is the recovery source.
  */
@@ -75,7 +78,7 @@ export async function recordUsage(
 /**
  * The tokens a usage row debits from a wallet that is not billing-exempt
  * (0 for the rows recordUsage never bills: mock, BYOK, platform support,
- * unbilled). PC-38: also the basis of token estimates (Re-classify all's
+ * unbilled, platform-paid). PC-38: also the basis of token estimates (Re-classify all's
  * confirmation), so an estimate bills exactly like the real thing.
  */
 export function usageDebitTokens(
@@ -87,6 +90,7 @@ export function usageDebitTokens(
   if (keySource === 'workspace' || keySource === 'mock') return 0;
   if (payload.support === true) return 0;
   if (payload.unbilled) return 0;
+  if (payload.platformPaid === true) return 0;
   return costCentsToTokens(entry.costEstimateCents);
 }
 
