@@ -241,6 +241,9 @@ export interface TranslateTextInput {
    *  low-value callers (e.g. per search-query translation inside a connector
    *  run) pass false to avoid audit-row write contention. */
   recordAudit?: boolean;
+  /** The platform pays for this call: logged, never debited
+   *  (AIGenOptions.platformPaid). Only send-time translation passes it. */
+  platformPaid?: boolean;
 }
 
 export interface TranslateTextResult {
@@ -305,7 +308,11 @@ export async function translateText(
 
   let parsed: TranslateTextParsed;
   try {
-    parsed = await provider.generateJson({ system, prompt: text }, translateTextSchema);
+    parsed = await provider.generateJson(
+      { system, prompt: text },
+      translateTextSchema,
+      input.platformPaid ? { platformPaid: true } : undefined,
+    );
   } catch (err) {
     if (provider.id === 'mock') {
       parsed = { translatedText: input.text };

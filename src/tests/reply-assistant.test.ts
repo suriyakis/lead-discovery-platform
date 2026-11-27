@@ -1,8 +1,10 @@
+import { eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { db } from '@/lib/db/client';
+import { mailMessages } from '@/lib/db/schema/mailing';
 import {
   type WorkspaceContext,
   makeWorkspaceContext,
@@ -111,11 +113,13 @@ describe('suggestReply', () => {
     };
     provider.enqueueInbound(inbound);
     await syncInbound(ctx(s.workspaceA, s.ownerA), mb.id, provider);
-
-    const messages = await db.execute(
-      `select id, thread_id from mail_messages where workspace_id = ${s.workspaceA} order by id` as unknown as never,
-    );
-    void messages;
+    // The gate cannot tie a cold inquiry to our mail, so it is stored as
+    // 'unrelated' and not shown. Treat it as a reply the gate accepted —
+    // the conversation the thread page shows and the assistant answers.
+    await db
+      .update(mailMessages)
+      .set({ outreachRelevance: 'prospect_reply' })
+      .where(eq(mailMessages.workspaceId, s.workspaceA));
 
     if (indexedDocText) {
       const { document } = await uploadDocument(ctx(s.workspaceA, s.ownerA), {
@@ -157,6 +161,43 @@ describe('suggestReply', () => {
     });
     expect(result.text).toContain('STUB-REPLY');
     expect(result.sources.chunkIds).toEqual([]);
+  });
+
+  it('answers the conversation the thread page shows — never a newsletter filed on the thread', async () => {
+    const s = await setup();
+    const { mb, threadId } = await setupThread(s);
+    // Subject threading files a newsletter next to the inquiry; the gate
+    // classes it bulk, so the thread page does not show it.
+    const [inquiry] = await db
+      .select()
+      .from(mailMessages)
+      .where(eq(mailMessages.threadId, threadId));
+    await db.insert(mailMessages).values({
+      workspaceId: s.workspaceA,
+      mailboxId: mb.id,
+      threadId,
+      direction: 'inbound',
+      status: 'received',
+      messageId: '<digest-1@news.example>',
+      fromAddress: 'news@news.example',
+      toAddresses: [mb.fromAddress],
+      subject: 'Acoustic glass for office tower — weekly digest',
+      bodyText: 'NEWSLETTER-BODY unsubscribe here',
+      outreachRelevance: 'bulk',
+      receivedAt: new Date(Date.now() + 60_000),
+      createdAt: new Date(inquiry!.createdAt.getTime() + 60_000),
+    });
+    let prompt = '';
+    const capture: IAIProvider = {
+      ...stubAi,
+      async generateText(input, opts) {
+        prompt = `${input.system}\n${input.prompt}`;
+        return stubAi.generateText(input, opts);
+      },
+    };
+    await suggestReply(ctx(s.workspaceA, s.ownerA), { threadId, ai: capture });
+    expect(prompt).toContain('What R-values can you offer?');
+    expect(prompt).not.toContain('NEWSLETTER-BODY');
   });
 
   it('viewer denied', async () => {

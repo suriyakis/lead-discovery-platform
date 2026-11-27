@@ -26,6 +26,7 @@ import {
   safeSyncOne,
 } from '@/lib/services/mail';
 import { MAIL_FOLDERS, type MailFolder } from '@/lib/services/mail-folders';
+import { describeSyncCounts } from '@/lib/services/mail-scope';
 import { ConfirmFormButton } from '@/components/ConfirmFormButton';
 import { getOrCreateMailboxSendingLimits } from '@/lib/services/sending-policy';
 import {
@@ -117,7 +118,7 @@ export default async function MailboxDetail({
       if (outcome.kind === 'synced') {
         const msg =
           (outcome.recovered ? 'The connection works again — the mailbox is active. ' : '') +
-          `Synced — fetched ${outcome.fetched}, new ${outcome.inserted}, deduped ${outcome.duplicates}.`;
+          `Synced — ${describeSyncCounts(outcome)}, deduped ${outcome.duplicates}.`;
         redirect(`/mailbox/${id}?message=${encodeURIComponent(msg)}`);
       }
       // PC-12: the IMAP tick (or someone's Sync / Test / a health probe)
@@ -577,10 +578,14 @@ export default async function MailboxDetail({
         <section>
           <h2>Messages</h2>
           <p className="muted small">
-            Folders are derived from message state — a message can move
-            between them as it ages (queued → sent → trashed, for
-            example). The Errors folder surfaces failed and bounced sends.
-            Trash is auto-purged after the workspace retention window.
+            Only mail the platform sent from this mailbox and the replies
+            to it are listed — the rest of the mailbox (newsletters,
+            colleagues, receipts) is not shown, even though a sync fetches
+            it to recognise replies. Folders are derived from message
+            state — a message can move between them as it ages (queued →
+            sent → trashed, for example). The Errors folder surfaces failed
+            and bounced sends. Trash is auto-purged after the workspace
+            retention window.
           </p>
           <div className="window-tabs" style={{ marginBottom: '0.75rem' }}>
             {MAIL_FOLDERS.map((f) => {
@@ -820,7 +825,7 @@ function folderLabel(f: MailFolder): string {
 function emptyFolderHint(f: MailFolder): string {
   switch (f) {
     case 'inbox':
-      return 'Inbox is empty. Inbound messages will land here as they arrive.';
+      return 'No replies yet. Replies to mail the platform sent from this mailbox land here.';
     case 'sent':
       return 'Nothing sent yet. Compose a message or let the outreach engine generate one.';
     case 'queued':

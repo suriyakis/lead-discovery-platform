@@ -22,6 +22,7 @@ import {
   unmarkSpam,
 } from '@/lib/services/mail';
 import { affectedNote, parseSelectedIds as parseIds, retrySummary } from '@/lib/mail-bulk-actions';
+import { describeSyncCounts } from '@/lib/services/mail-scope';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 const FILTER_KEYS = [
@@ -175,6 +176,7 @@ export async function syncMailbox(formData: FormData): Promise<void> {
   let syncedName = '';
   let totalFetched = 0;
   let totalInserted = 0;
+  let totalReplies = 0;
   const failures: string[] = [];
   const failing: string[] = [];
   const busy: string[] = [];
@@ -191,6 +193,7 @@ export async function syncMailbox(formData: FormData): Promise<void> {
       syncedName = mb.name;
       totalFetched += outcome.fetched;
       totalInserted += outcome.inserted;
+      totalReplies += outcome.replies;
     } else if (outcome.kind === 'busy') {
       // PC-12: the IMAP tick (or another Sync) is on it right now; its
       // new mail shows up when that sync finishes.
@@ -210,10 +213,15 @@ export async function syncMailbox(formData: FormData): Promise<void> {
   // partial-success batch reads as a partial success, not a failure.
   const parts: string[] = [];
   if (synced > 0) {
+    const counts = describeSyncCounts({
+      fetched: totalFetched,
+      inserted: totalInserted,
+      replies: totalReplies,
+    });
     parts.push(
       synced === 1
-        ? `Synced ${syncedName || '1 mailbox'} — fetched ${totalFetched}, new ${totalInserted}`
-        : `Synced ${synced} mailbox(es) — fetched ${totalFetched}, new ${totalInserted}`,
+        ? `Synced ${syncedName || '1 mailbox'} — ${counts}`
+        : `Synced ${synced} mailbox(es) — ${counts}`,
     );
   }
   if (busy.length > 0) {

@@ -158,7 +158,11 @@ async function translateDraftForm(rawId: string, _formData?: FormData): Promise<
       : 'Recipient language matches your draft — nothing to translate.';
   } catch (err) {
     if (isNextRedirectError(err)) throw err;
-    const m = err instanceof OutreachServiceError ? err.message : 'translate failed';
+    // An empty wallet refuses it with TokenError's message (27 Nov).
+    const m =
+      err instanceof OutreachServiceError || err instanceof TokenError
+        ? err.message
+        : 'translate failed';
     redirect(withFlash(draftPath(id), { error: m }));
   }
   redirect(withFlash(draftPath(id), { message }));

@@ -1184,12 +1184,14 @@ async function processEntry(
       } else if (draft) {
         // No stored translation — auto-translate at dispatch (Flow A). The
         // draft subject is composed in the native language too, so translate
-        // it alongside the body.
+        // it alongside the body. The platform pays for it (27 Nov): a queued
+        // send also runs on an empty wallet, and is never debited for it.
         const dual = await prepareOutboundDualBody(ctx, {
           reviewItemId: draft.reviewItemId,
           productProfileId: draft.productProfileId,
           nativeBody: entry.bodyText,
           nativeSubject: entry.subject,
+          platformPaid: true,
         });
         sendText = dual.sendText;
         sendSubject = dual.sendSubject ?? entry.subject;

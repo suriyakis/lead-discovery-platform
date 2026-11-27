@@ -160,8 +160,9 @@ export async function debitTokens(
     // the escalation to "paused" — that's the one that really matters.
     await notify(workspaceId, {
       kind: empty ? 'tokens.empty' : 'tokens.low',
+      // Not all translation: some still runs (Settings → AI & search).
       title: empty
-        ? 'Out of tokens — discovery, drafting and translation are paused'
+        ? 'Out of tokens — discovery, qualification, drafting and some translation are paused'
         : `Tokens running low (${tx.balanceAfter.toLocaleString()} left)`,
       body: 'Buy a token pack to keep the pipeline running.',
       href: '/settings/billing',

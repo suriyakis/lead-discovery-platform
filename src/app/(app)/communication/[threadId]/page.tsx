@@ -18,7 +18,7 @@ import {
 } from '@/lib/services/auth-context';
 import { db } from '@/lib/db/client';
 import { getLanguageName } from '@/lib/i18n/language';
-import { mailThreads, mailMessages, type MailMessage } from '@/lib/db/schema/mailing';
+import { mailThreads, type MailMessage } from '@/lib/db/schema/mailing';
 import { outreachThreadState } from '@/lib/db/schema/outreach';
 import { outreachQueue } from '@/lib/db/schema/outreach';
 import { qualifiedLeads, pipelineEvents } from '@/lib/db/schema/pipeline';
@@ -34,6 +34,7 @@ import {
   restoreFromTrash,
   unmarkSpam,
 } from '@/lib/services/mail';
+import { listPlatformThreadMessages } from '@/lib/services/mail-scope';
 import { isNextRedirectError } from '@/lib/server-redirect';
 
 export default async function CommunicationDetail({
@@ -72,16 +73,18 @@ export default async function CommunicationDetail({
     )
     .limit(1);
   if (!thread) redirect('/communication');
-  const messages = await db
-    .select()
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, threadId),
-      ),
-    )
-    .orderBy(mailMessages.createdAt);
+  // Platform mail only (listPlatformThreadMessages): a newsletter that
+  // subject threading filed next to our outreach is not part of the
+  // conversation, and a thread with no platform mail at all is not one we
+  // show. The reply assistant reads the same list.
+  const messages = await listPlatformThreadMessages(ctx, threadId);
+  if (messages.length === 0) {
+    redirect(
+      `/communication?message=${encodeURIComponent(
+        'That conversation was not started by the platform, so it is not shown here.',
+      )}`,
+    );
+  }
 
   // P61-10: split into visible (in-conversation) vs hidden (trashed or
   // spammed). Hidden messages live inside a <details> expander so the

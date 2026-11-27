@@ -17,6 +17,17 @@ export function formatTokens(value: bigint): string {
 }
 
 /**
+ * What an empty wallet does to a workspace, for the console's confirms.
+ * Since 27 Nov every AI and search job checks the wallet; only sending
+ * still translates, which the platform pays for (provider-readiness.ts
+ * WALLET_GATED / WALLET_UNGATED_PARTS). It used to say only "discovery,
+ * qualification, drafting" pause — while research, some translation and
+ * indexing ran on, below zero.
+ */
+export const EMPTY_WALLET_EFFECT =
+  "the workspace's AI and search work pauses until tokens are added (discovery, qualification, lead research, drafting, translation; uploads wait to be indexed). Queued emails and approved follow-ups still go out, translated free of charge.";
+
+/**
  * The token delta a grant form will submit, or null when the server
  * would reject it anyway (empty, zero, fractional, not a number). Mirrors
  * the Number()/isInteger check in the grant server actions.
@@ -84,7 +95,7 @@ export function tokenAdjustmentConfirm(input: {
     lines.push(`Balance: ${formatTokens(balance)} → ${formatTokens(after)} tokens.`);
     if (!input.billingExempt && after <= 0n) {
       lines.push(
-        'At zero or below, metered work in this workspace (discovery, qualification, drafting) pauses until tokens are added.',
+        `At zero or below, ${EMPTY_WALLET_EFFECT}`,
       );
     }
   }
@@ -138,7 +149,7 @@ export function billingExemptOffConfirm(
   const shown = balance === null ? ws.balance : formatTokens(balance);
   const empty =
     balance !== null && balance <= 0n
-      ? ' Its wallet is empty, so metered work (discovery, qualification, drafting) pauses until tokens are added.'
+      ? ` Its wallet is empty, so ${EMPTY_WALLET_EFFECT}`
       : '';
   return `End the billing exemption for ${workspaceLabel(ws, { quoted: true })}?\n\nUsage debits its token balance again (${shown} tokens now) and its own plan limits apply (${ws.plan}, ${ws.subscriptionStatus}).${empty}`;
 }

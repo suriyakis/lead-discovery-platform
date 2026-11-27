@@ -168,6 +168,8 @@ describe('listCommunication (P57)', () => {
       messageId: '<reply-1@target.com>',
       direction: 'inbound',
       status: 'received',
+      // A reply on our thread — what the relevance gate stores for it.
+      outreachRelevance: 'prospect_reply',
       fromAddress: 'lead@target.com',
       toAddresses: ['sales@nulife.pl'],
       subject: 'Re: Hello',
@@ -268,6 +270,8 @@ describe('listCommunication (P57)', () => {
       messageId: '<reply-b@target.com>',
       direction: 'inbound',
       status: 'received',
+      // A reply on our thread — what the relevance gate stores for it.
+      outreachRelevance: 'prospect_reply',
       fromAddress: 'b@target.com',
       toAddresses: ['sales@nulife.pl'],
       subject: 'Re: B',
@@ -449,6 +453,8 @@ describe('countCommunicationByStatus', () => {
       messageId: '<r-b@x.com>',
       direction: 'inbound',
       status: 'received',
+      // A reply on our thread — what the relevance gate stores for it.
+      outreachRelevance: 'prospect_reply',
       fromAddress: 'b@x.com',
       toAddresses: ['sales@nulife.pl'],
       subject: 'Re: B',

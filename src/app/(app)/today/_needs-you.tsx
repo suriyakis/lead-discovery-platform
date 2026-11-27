@@ -245,7 +245,7 @@ async function RepliesTab({ ctx }: { ctx: WorkspaceContext }) {
     return (
       <EmptyState
         label="No prospect replies waiting for an answer"
-        sub="A reply from a prospect shows here until someone answers it from the thread. Other inbox mail stays on /communication."
+        sub="A reply from a prospect shows here until someone answers it from the thread. Out-of-office replies and bounces are in Conversations; the rest of your mailbox stays in your own mail app."
       />
     );
   }

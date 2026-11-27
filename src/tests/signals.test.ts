@@ -28,6 +28,7 @@ import { PLATFORM_AUDIT_KINDS } from '@/lib/audit-scope';
 import { WORKSPACE_PLANS } from '@/lib/billing/plans';
 import { AUDIT_KINDS, LEGACY_AUDIT_KINDS, isLabelledAuditKind } from '@/lib/kinds/audit';
 import { NOTIFICATION_KINDS, isNotificationKind } from '@/lib/kinds/notification';
+import { PROVIDER_JOB_STATES, PROVIDER_KEY_GAPS } from '@/lib/kinds/provider';
 import {
   AI_USAGE_KINDS,
   LEGACY_USAGE_KINDS,
@@ -95,6 +96,8 @@ const REGISTRIES: Readonly<Record<string, readonly string[]>> = {
   hint_severity: HINT_SEVERITIES,
   workspace_plan: WORKSPACE_PLANS,
   usage_key_source: USAGE_KEY_SOURCES,
+  provider_job_state: PROVIDER_JOB_STATES,
+  provider_key_gap: PROVIDER_KEY_GAPS,
 };
 
 const sorted = (xs: Iterable<string>) => [...xs].sort();
@@ -208,6 +211,17 @@ describe('the meaning map (design proposal §6.2)', () => {
     for (const set of ['workspace_member_role', 'user_role', 'workspace_plan'] as const) {
       for (const tone of Object.values(TONE_MAPS[set])) expect(tone).toBe('neutral');
     }
+  });
+
+  it('a vendor with no key reads like the jobs it affects: red only when one stops', () => {
+    expect(TONE_MAPS.provider_key_gap).toEqual({
+      stops_jobs: 'danger',
+      limits_jobs: 'attention',
+      unused: 'muted',
+    });
+    // The same tone as the job row it describes: keyword rules only is amber.
+    expect(TONE_MAPS.provider_key_gap.limits_jobs).toBe(TONE_MAPS.provider_job_state.rules_only);
+    expect(TONE_MAPS.provider_key_gap.stops_jobs).toBe(TONE_MAPS.provider_job_state.no_key);
   });
 
   it('notification kinds follow the map: decisions amber, failures red, AI violet', () => {

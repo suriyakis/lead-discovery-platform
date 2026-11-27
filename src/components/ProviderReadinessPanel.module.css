@@ -1,0 +1,71 @@
+@layer reset, tokens, base, legacy, components, patterns, utilities;
+
+/* ProviderReadinessPanel: on Settings → AI & search, one row per job
+ * (discovery, qualification, drafting, knowledge retrieval) saying whether
+ * it will run and on whose API key. A row is [badge][title + detail];
+ * the same shape as FindingList. Tokens only (DS-06). */
+
+@layer components {
+  .panel {
+    display: grid;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1) var(--space-3);
+    align-items: start;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    min-width: 0;
+  }
+
+  .head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .title {
+    margin: 0;
+    font-weight: var(--weight-medium);
+    overflow-wrap: anywhere;
+  }
+
+  .purpose,
+  .detail {
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .purpose {
+    color: var(--fg-muted);
+  }
+
+  .detail {
+    color: var(--fg);
+  }
+
+  .note {
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    color: var(--fg-muted);
+  }
+}

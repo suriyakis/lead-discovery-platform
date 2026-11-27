@@ -16,6 +16,12 @@ import { mailMessages, mailThreads, type MailMessage, type MailThread } from '@/
 import { qualifiedLeads, type QualifiedLead } from '@/lib/db/schema/pipeline';
 import { recordAuditEvent } from './audit';
 import {
+  platformMailCondition,
+  threadHasPlatformMail,
+  threadPlatformLastMessageAt,
+  threadPlatformMessageCount,
+} from './mail-scope';
+import {
   canAdminWorkspace,
   canWrite,
   type WorkspaceContext,
@@ -721,15 +727,30 @@ export async function getContactDetail(
       : Promise.resolve([] as QualifiedLead[]),
     threadIds.length > 0
       ? db
-          .select()
+          .select({
+            thread: mailThreads,
+            platformCount: threadPlatformMessageCount(),
+            platformLastAt: threadPlatformLastMessageAt(),
+          })
           .from(mailThreads)
           .where(
             and(
               eq(mailThreads.workspaceId, ctx.workspaceId),
               inArray(mailThreads.id, threadIds),
+              // As Conversations: only threads the platform started.
+              threadHasPlatformMail(),
             ),
           )
-          .orderBy(desc(mailThreads.lastMessageAt))
+          .orderBy(desc(threadPlatformLastMessageAt()))
+          // Count and time as the thread page shows them — not the
+          // denormalised columns, which include mailbox mail on the thread.
+          .then((rows): MailThread[] =>
+            rows.map((r) => ({
+              ...r.thread,
+              messageCount: r.platformCount,
+              lastMessageAt: r.platformLastAt ?? r.thread.lastMessageAt,
+            })),
+          )
       : Promise.resolve([] as MailThread[]),
     db
       .select()
@@ -738,6 +759,8 @@ export async function getContactDetail(
         and(
           eq(mailMessages.workspaceId, ctx.workspaceId),
           eq(mailMessages.contactId, id),
+          // A contact's newsletter or unrelated mail is not shown either.
+          platformMailCondition(),
         ),
       )
       .orderBy(desc(mailMessages.createdAt))

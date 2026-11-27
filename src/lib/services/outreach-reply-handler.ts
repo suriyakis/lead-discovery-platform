@@ -9,7 +9,7 @@
 // the drafting is handled by the existing engine via dedicated entry
 // points added below.
 
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { mailMessages, mailThreads, type MailMessage } from '@/lib/db/schema/mailing';
 import {
@@ -51,6 +51,7 @@ import {
 import { resolveProfileLanguage } from '@/lib/i18n/language';
 import { isOutreachLinked } from '@/lib/mail/relevance';
 import { runDetached } from '@/lib/detached';
+import { listPlatformThreadMessages } from './mail-scope';
 
 export class OutreachReplyHandlerError extends Error {
   public readonly code: string;
@@ -655,20 +656,18 @@ async function productForLead(
   return rows[0];
 }
 
+/**
+ * The conversation the composers answer, oldest first: platform mail only
+ * (mail-scope.ts), trashed and spammed messages left out — what the thread
+ * page shows and the reply assistant reads. Subject threading can file a
+ * newsletter or a colleague's mail on our outreach thread; it must never
+ * reach a lead-facing draft.
+ */
 async function loadThreadHistory(
   ctx: Pick<WorkspaceContext, 'workspaceId'>,
   threadId: bigint,
 ): Promise<ThreadMessage[]> {
-  const rows = await db
-    .select()
-    .from(mailMessages)
-    .where(
-      and(
-        eq(mailMessages.workspaceId, ctx.workspaceId),
-        eq(mailMessages.threadId, threadId),
-      ),
-    )
-    .orderBy(asc(mailMessages.id));
+  const rows = await listPlatformThreadMessages(ctx, threadId, { excludeHidden: true });
   return rows.map((r) => ({
     direction: r.direction,
     body: (r.bodyText ?? '').slice(0, 4000),

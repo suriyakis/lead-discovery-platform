@@ -493,6 +493,11 @@ export async function generateDraftTranslation(
     set.bodyTranslated = null;
     set.targetLanguage = null;
   } else {
+    // Show translation / Re-translate on a draft needs tokens, as the same
+    // buttons on a reply or a follow-up do (/api/translate): refused on an
+    // empty wallet (27 Nov — they used to run here and debit below zero).
+    const { assertTokens } = await import('./token-ledger');
+    await assertTokens(ctx);
     const bodyT = await translateText(ctx, {
       text: draft.body,
       targetLanguage: target,

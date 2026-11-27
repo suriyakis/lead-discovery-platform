@@ -131,6 +131,12 @@ describe('token adjustment confirm', () => {
     })!;
     expect(msg).toContain('Balance: 1,000 → -500 tokens.');
     expect(msg).toContain('pauses until tokens are added');
+    // 27 Nov: every AI and search job pauses; only sending still
+    // translates, free. It used to name only "discovery, qualification,
+    // drafting" while research, some translation and indexing ran on.
+    expect(msg).toContain(
+      "At zero or below, the workspace's AI and search work pauses until tokens are added (discovery, qualification, lead research, drafting, translation; uploads wait to be indexed). Queued emails and approved follow-ups still go out, translated free of charge.",
+    );
     expect(msg).toContain('Reason: correction');
     expect(msg.endsWith('Apply this adjustment?')).toBe(true);
 
@@ -268,7 +274,9 @@ describe('confirm copy names what it acts on', () => {
     expect(off).toContain('End the billing exemption for "Acme"?');
     expect(off).toContain('(0 tokens now)');
     expect(off).toContain('(pro, trial)');
-    expect(off).toContain('pauses until tokens are added');
+    expect(off).toContain(
+      "Its wallet is empty, so the workspace's AI and search work pauses until tokens are added (discovery, qualification, lead research, drafting, translation; uploads wait to be indexed). Queued emails and approved follow-ups still go out, translated free of charge.",
+    );
     expect(
       billingExemptOffConfirm({
         name: 'A',

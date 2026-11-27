@@ -799,7 +799,8 @@ describe('syncInbound', () => {
     provider.enqueueInbound(inbound1, inbound2);
 
     const r1 = await syncInbound(ctx(s.workspaceA, s.ownerA), mb.id, provider);
-    expect(r1).toEqual({ fetched: 2, inserted: 2, duplicates: 0 });
+    // Neither answers mail we sent, so neither reaches Conversations.
+    expect(r1).toEqual({ fetched: 2, inserted: 2, duplicates: 0, replies: 0 });
 
     // Run again with the same fixtures — both should be deduped.
     provider.enqueueInbound(inbound1, inbound2);
@@ -1211,6 +1212,10 @@ describe('listMessages + countMessagesByFolder (P61)', () => {
       subject?: string;
       fromAddress?: string;
       toAddresses?: string[];
+      /** Inbound defaults to a proven reply (prospect_reply) — the only
+       *  inbound mail the platform lists; pass null / 'bulk' / 'unrelated'
+       *  for the rest of a synced mailbox. */
+      outreachRelevance?: 'prospect_reply' | 'auto_reply' | 'bounce' | 'bulk' | 'unrelated' | null;
     },
   ) {
     counter += 1;
@@ -1228,6 +1233,12 @@ describe('listMessages + countMessagesByFolder (P61)', () => {
         trashedAt: overrides.trashedAt ?? null,
         spamAt: overrides.spamAt ?? null,
         spamReason: overrides.spamReason ?? null,
+        outreachRelevance:
+          overrides.outreachRelevance !== undefined
+            ? overrides.outreachRelevance
+            : overrides.direction === 'inbound'
+              ? 'prospect_reply'
+              : null,
       })
       .returning();
     return row!;
@@ -1547,6 +1558,9 @@ describe('per-message actions (P61)', () => {
         trashedAt: overrides.trashedAt ?? null,
         spamAt: overrides.spamAt ?? null,
         spamReason: overrides.spamReason ?? null,
+        // A proven reply: the only inbound mail the platform lists.
+        outreachRelevance:
+          (overrides.direction ?? 'inbound') === 'inbound' ? 'prospect_reply' : null,
       })
       .returning();
     return row!;
@@ -2304,6 +2318,8 @@ describe('purgeOldTrashUnattended (P61-09)', () => {
         toAddresses: ['us@test.local'],
         subject: 'old trash',
         trashedAt,
+        // A trashed reply: inbound mail the platform lists and counts.
+        outreachRelevance: 'prospect_reply',
       })
       .returning();
     return row!;
@@ -2422,6 +2438,8 @@ describe('emptyTrashNow (P61-09)', () => {
         toAddresses: ['us@test.local'],
         subject: 'trash',
         trashedAt,
+        // A trashed reply: inbound mail the platform lists and counts.
+        outreachRelevance: 'prospect_reply',
       })
       .returning();
     return row!;

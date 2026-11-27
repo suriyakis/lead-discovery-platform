@@ -29,6 +29,7 @@ import { documents, knowledgeSourceProducts, knowledgeSources } from '@/lib/db/s
 import { notifications } from '@/lib/db/schema/notifications';
 import { documentChunks, indexingJobs } from '@/lib/db/schema/rag';
 import { productVectorStores } from '@/lib/db/schema/vector-stores';
+import { workspaces } from '@/lib/db/schema/workspaces';
 import {
   EMBEDDING_DIM,
   MockEmbeddingProvider,
@@ -60,6 +61,7 @@ import {
   KNOWLEDGE_INDEX_SWEEP_JOB,
   KNOWLEDGE_INDEX_SWEEP_TICK_MS,
   MAX_INDEX_ATTEMPTS,
+  TOKENS_DEFER_MS,
   describeOcrCost,
   estimateDocumentOcr,
   knowledgeIndexFailedKey,
@@ -76,6 +78,7 @@ import {
 } from '@/lib/services/knowledge-sources';
 import { createProductProfile } from '@/lib/services/product-profile';
 import { indexKnowledgeSource, retrieve } from '@/lib/services/rag';
+import { TokenError } from '@/lib/services/token-ledger';
 import DocumentsPage from '@/app/(app)/documents/page';
 import DocumentDetail from '@/app/(app)/documents/[id]/page';
 import KnowledgeSourceDetail from '@/app/(app)/knowledge/[id]/page';
@@ -285,6 +288,10 @@ function pdfFile(name = 'scanned-datasheet.pdf', body = 'scan-1'): File {
 }
 
 const minutes = (n: number) => n * 60 * 1000;
+
+async function setBalance(c: WorkspaceContext, balance: bigint): Promise<void> {
+  await db.update(workspaces).set({ tokenBalance: balance }).where(eq(workspaces.id, c.workspaceId));
+}
 
 let storageRoot: string;
 let embedder: CountingEmbedder;
@@ -1080,6 +1087,101 @@ describe('Re-extract with OCR (admin, with the cost)', () => {
     await expect(requestDocumentOcrReextract(s.a, doc.id)).rejects.toMatchObject({
       code: 'ocr_unavailable',
     });
+  });
+
+  it('is refused on an empty wallet before anything is queued (27 Nov)', async () => {
+    const s = await setup();
+    pdf.text = OCR_TEXT.replace(/Vetrofluid/g, 'Textlayer');
+    const doc = await uploadScan(s.a, 'datasheet.pdf', 'text-layer');
+    const ks = await createKnowledgeSource(s.a, {
+      kind: 'document',
+      title: 'Datasheet',
+      documentId: doc.id,
+      scope: { kind: 'workspace' },
+    });
+    await runQueuedIndexJobs(s.a);
+    const before = await jobsOf(ks.id);
+    await setBalance(s.a, 0n);
+    await expect(requestDocumentOcrReextract(s.a, doc.id)).rejects.toThrow(
+      new TokenError(
+        'No tokens left — a workspace admin can buy a token pack in Settings → Billing.',
+        'insufficient_tokens',
+      ),
+    );
+    expect(await jobsOf(ks.id)).toEqual(before);
+    expect(ocr.calls).toBe(0);
+  });
+});
+
+// ---- an empty wallet ------------------------------------------------------------
+
+describe('an empty wallet: indexing waits for tokens, never fails (27 Nov)', () => {
+  it('a run waits queued and noted, the page says so, and it indexes once tokens are back', async () => {
+    const s = await setup();
+    await setBalance(s.a, 0n);
+    // A fresh queue with no handlers: the runs below are this test's own.
+    const previousQueue = getJobQueue();
+    _setJobQueueForTests(new InMemoryJobQueue());
+    try {
+      const doc = await uploadScan(s.a);
+      const ks = await createKnowledgeSource(s.a, {
+        kind: 'document',
+        title: 'Scanned datasheet',
+        documentId: doc.id,
+        scope: { kind: 'workspace' },
+      });
+      const t0 = Date.now();
+      expect(await runQueuedIndexJobs(s.a, { now: () => new Date(t0) })).toEqual([
+        { kind: 'skipped', reason: 'no_tokens' },
+      ]);
+      const [waiting] = await jobsOf(ks.id);
+      expect(waiting).toMatchObject({ status: 'queued', note: 'waiting_for_tokens', attempts: 0 });
+      expect(waiting!.nextAttemptAt!.getTime()).toBe(t0 + TOKENS_DEFER_MS);
+      // No OCR and no embedding: nothing paid while it waits.
+      expect(ocr.calls).toBe(0);
+      expect(embedder.calls).toBe(0);
+      expect((await sourceRow(ks.id)).indexStatus).not.toBe('failed');
+      expect(await failureNotices(s.a.workspaceId)).toHaveLength(0);
+      const page = await renderToHtml(
+        await KnowledgeSourceDetail({
+          params: Promise.resolve({ id: ks.id.toString() }),
+          searchParams: Promise.resolve({}),
+        }),
+      );
+      expect(page).toContain('waiting for tokens — resumes after a top-up');
+      // The inline index (scripts, rag.indexKnowledgeSource) reuses the
+      // queued row, tries it at once and says why it waits.
+      await expect(indexKnowledgeSource(s.a, ks.id)).rejects.toThrow(/No tokens left — indexing waits/);
+      expect(await jobsOf(ks.id)).toHaveLength(1);
+
+      // Still empty when it comes due: it waits again, it does not fail.
+      const due = Date.now() + TOKENS_DEFER_MS + 1000;
+      expect(await runQueuedIndexJobs(s.a, { now: () => new Date(due) })).toEqual([
+        { kind: 'skipped', reason: 'no_tokens' },
+      ]);
+      expect((await jobsOf(ks.id))[0]).toMatchObject({ status: 'queued', attempts: 0 });
+
+      // A top-up: its next try runs, OCRs and indexes it. The note goes as
+      // soon as it runs (held open in OCR here), not only when it ends.
+      await setBalance(s.a, 500n);
+      const later = due + TOKENS_DEFER_MS + 1000;
+      let release!: () => void;
+      ocr.gate = new Promise<void>((r) => (release = r));
+      const running = runQueuedIndexJobs(s.a, { now: () => new Date(later) });
+      for (let i = 0; i < 100 && ocr.started === 0; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect((await jobsOf(ks.id))[0]).toMatchObject({ status: 'running', note: null });
+      ocr.gate = null;
+      release();
+      const outcomes = await running;
+      expect(outcomes.map((o) => o.kind)).toEqual(['succeeded']);
+      expect(ocr.calls).toBe(1);
+      expect((await jobsOf(ks.id))[0]).toMatchObject({ status: 'succeeded', note: 'embedded' });
+      expect((await sourceRow(ks.id)).indexStatus).toBe('indexed');
+    } finally {
+      _setJobQueueForTests(previousQueue);
+    }
   });
 });
 

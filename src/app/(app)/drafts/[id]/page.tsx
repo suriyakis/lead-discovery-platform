@@ -457,7 +457,8 @@ async function ThreadContextSection({
   }
   const { db } = await import('@/lib/db/client');
   const { mailMessages } = await import('@/lib/db/schema/mailing');
-  const { and, asc, eq } = await import('drizzle-orm');
+  const { listPlatformThreadMessages } = await import('@/lib/services/mail-scope');
+  const { and, eq } = await import('drizzle-orm');
   const triggerRows = await db
     .select()
     .from(mailMessages)
@@ -472,18 +473,15 @@ async function ThreadContextSection({
   if (!trigger) {
     return null;
   }
-  const threadRows = trigger.threadId
-    ? await db
-        .select()
-        .from(mailMessages)
-        .where(
-          and(
-            eq(mailMessages.workspaceId, workspaceId),
-            eq(mailMessages.threadId, trigger.threadId),
-          ),
-        )
-        .orderBy(asc(mailMessages.id))
-    : [trigger];
+  // The conversation as the thread page shows it (platform mail, no trashed
+  // or spam), so a newsletter filed on the thread never pushes the real
+  // messages out of the window below.
+  const threadMessages = trigger.threadId
+    ? await listPlatformThreadMessages({ workspaceId }, trigger.threadId, {
+        excludeHidden: true,
+      })
+    : [];
+  const threadRows = threadMessages.length > 0 ? threadMessages : [trigger];
   const last5 = threadRows.slice(-5);
   return (
     <section>

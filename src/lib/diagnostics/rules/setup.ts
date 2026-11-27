@@ -33,7 +33,8 @@ export const tokensEmptyRule = defineRule({
         severity: 'critical',
         title: 'Token wallet is empty',
         detail:
-          'Discovery, AI drafting, translation and the AI review are paused until tokens are added. ' +
+          'Discovery, qualification, AI drafting, some translation and the AI review are paused until tokens are added ' +
+          '(Settings → AI & search shows what still runs). ' +
           'Buy a token pack or start a subscription.',
         facts: { balance: Number(ws.tokenBalance) },
         href: fixHref.billing(),

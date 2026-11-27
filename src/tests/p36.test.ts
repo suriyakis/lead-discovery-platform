@@ -108,6 +108,8 @@ interface InsertMessageOpts {
     | 'received';
   openCount?: number;
   replyClassification?: string;
+  /** Inbound defaults to a reply to our mail (prospect_reply). */
+  relevance?: 'prospect_reply' | 'auto_reply' | 'bounce' | 'bulk' | 'unrelated' | null;
   createdAt?: Date;
 }
 
@@ -127,6 +129,12 @@ async function insertMessage(opts: InsertMessageOpts, idx: number): Promise<void
     openCount: opts.openCount ?? 0,
     firstOpenedAt: (opts.openCount ?? 0) > 0 ? new Date() : null,
     replyClassification: opts.replyClassification ?? null,
+    outreachRelevance:
+      opts.relevance !== undefined
+        ? opts.relevance
+        : opts.direction === 'inbound'
+          ? 'prospect_reply'
+          : null,
     ...(opts.createdAt
       ? { createdAt: opts.createdAt, updatedAt: opts.createdAt }
       : {}),
@@ -236,6 +244,16 @@ describe('getDeliverabilityReport', () => {
     await insertMessage(
       { workspaceId: s.workspaceA, mailboxId: s.mailboxA1, threadId: s.threadA1, direction: 'inbound', status: 'received' },
       5,
+    );
+    // The rest of the synced mailbox — a newsletter and a colleague's mail —
+    // is neither a reply nor a classification bucket.
+    await insertMessage(
+      { workspaceId: s.workspaceA, mailboxId: s.mailboxA1, threadId: s.threadA2, direction: 'inbound', status: 'received', relevance: 'bulk' },
+      6,
+    );
+    await insertMessage(
+      { workspaceId: s.workspaceA, mailboxId: s.mailboxA1, threadId: s.threadA2, direction: 'inbound', status: 'received', relevance: 'unrelated' },
+      7,
     );
 
     const r = await getDeliverabilityReport(ctx(s.workspaceA, s.ownerA));

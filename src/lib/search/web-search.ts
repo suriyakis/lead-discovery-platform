@@ -130,7 +130,7 @@ export async function getWebSearchProviderForCtx(
     if (geminiKey) {
       const { GeminiResearchProvider } = await import('@/lib/research/gemini');
       return new ResearchAsSearchAdapter(
-        new GeminiResearchProvider({ apiKey: geminiKey.key }),
+        new GeminiResearchProvider({ apiKey: geminiKey.key, keySource: geminiKey.source }),
       );
     }
   }

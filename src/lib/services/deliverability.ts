@@ -25,6 +25,7 @@ import {
   type OutreachQueueStatus,
 } from '@/lib/db/schema/outreach';
 import type { WorkspaceContext } from './context';
+import { platformMailCondition } from './mail-scope';
 
 export interface DeliverabilityRange {
   /** Window length in days. Clamped to [1, 365]. Default 30. */
@@ -48,7 +49,8 @@ export interface MailboxDeliverability {
   bounced: number;
   /** Outbound with status='failed' in window. */
   failed: number;
-  /** Inbound replies received in window on this mailbox. */
+  /** Replies from a person (outreach_relevance prospect_reply) received in
+   *  window on this mailbox — not the rest of the synced mailbox. */
   replied: number;
   /** Outreach queue rows that ended terminal states in window. */
   queueSent: number;
@@ -132,10 +134,14 @@ export async function getDeliverabilityReport(
     .where(and(...outboundConds))
     .groupBy(mailMessages.mailboxId);
 
-  // Per-mailbox inbound replies in window.
+  // Per-mailbox replies in window: a person answering our mail
+  // (prospect_reply) — the same rule as Today's 'Replies'. IMAP sync also
+  // stores the rest of the mailbox (newsletters, colleagues, receipts);
+  // counting those made the reply rate exceed 100%.
   const inboundConds: SQL[] = [
     wsCond,
     eq(mailMessages.direction, 'inbound'),
+    eq(mailMessages.outreachRelevance, 'prospect_reply'),
     gte(mailMessages.createdAt, windowStart),
   ];
   const inboundRows = await db
@@ -252,7 +258,8 @@ export async function getDeliverabilityReport(
     else if (r.reason === 'bounce_soft') bouncedSoftSuppressed = Number(r.c);
   }
 
-  // Reply classification breakdown.
+  // Reply classification breakdown — over the answers to our mail only
+  // (platformMailCondition), not the rest of the synced mailbox.
   const replyClassRows = await db
     .select({
       classification: sql<string>`coalesce(${mailMessages.replyClassification}, 'unclassified')`,
@@ -263,6 +270,7 @@ export async function getDeliverabilityReport(
       and(
         eq(mailMessages.workspaceId, ctx.workspaceId),
         eq(mailMessages.direction, 'inbound'),
+        platformMailCondition(),
         gte(mailMessages.createdAt, windowStart),
       ),
     )

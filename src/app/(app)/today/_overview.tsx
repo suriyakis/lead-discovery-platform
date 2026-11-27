@@ -170,7 +170,7 @@ function CockpitGrid({
         />
         <SignalCard
           icon={MessageSquare}
-          label="Inbound mail (7d)"
+          label="Replies (7d)"
           value={value(signals.replies7d)}
           href={`${HOME_PATH}?tab=replies`}
           tone={signals.replies7d > 0 ? 'teal' : 'neutral'}

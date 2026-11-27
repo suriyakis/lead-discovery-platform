@@ -194,6 +194,11 @@ export async function prepareOutboundDualBody(
     /** Optional native-language subject. When set and a translation
      *  happens, it is translated to the target language too. */
     nativeSubject?: string | null;
+    /** The platform pays for the translation: logged, never debited
+     *  (27 Nov). The outreach-queue drain and approveFollowUp pass it — so
+     *  a send runs on an empty wallet without going below zero; automatic
+     *  follow-ups (behind FOLLOW_UP_GATE) do not, and stay debited. */
+    platformPaid?: boolean;
   },
 ): Promise<OutboundDualBody> {
   const nativeLanguage = await getWorkspaceNativeLanguage(ctx);
@@ -213,10 +218,12 @@ export async function prepareOutboundDualBody(
     };
   }
 
+  const platformPaid = input.platformPaid === true;
   const { translatedText } = await translateText(ctx, {
     text: input.nativeBody,
     targetLanguage,
     sourceLanguageHint: nativeLanguage,
+    platformPaid,
   });
 
   let sendSubject = input.nativeSubject ?? undefined;
@@ -225,6 +232,7 @@ export async function prepareOutboundDualBody(
       text: input.nativeSubject,
       targetLanguage,
       sourceLanguageHint: nativeLanguage,
+      platformPaid,
     });
     sendSubject = subj.translatedText;
   }

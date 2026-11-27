@@ -30,7 +30,8 @@ import {
 } from '@/lib/mail/relevance';
 import { extractReplyText } from '@/lib/mail/reply-text';
 import { makeWorkspaceContext, type WorkspaceContext } from '@/lib/services/context';
-import { syncInbound } from '@/lib/services/mail';
+import { listMessages, syncInbound, type SyncInboundResult } from '@/lib/services/mail';
+import { describeSyncCounts } from '@/lib/services/mail-scope';
 import {
   assessInboundRelevance,
   autoSuppressionRefusal,
@@ -149,10 +150,10 @@ async function seedLead(s: Setup, contactEmail: string): Promise<bigint> {
   return lead!.id;
 }
 
-async function syncFixtures(s: Setup, names: string[]): Promise<void> {
+async function syncFixtures(s: Setup, names: string[]): Promise<SyncInboundResult> {
   const provider = new MockMailProvider();
   for (const name of names) provider.enqueueInbound(await parseFixture(name));
-  await syncInbound(ctx(s.ws, s.owner), s.mailboxId, provider);
+  return syncInbound(ctx(s.ws, s.owner), s.mailboxId, provider);
 }
 
 async function inboundByMessageId(ws: bigint, messageId: string): Promise<MailMessage> {
@@ -517,7 +518,9 @@ describe('syncInbound behind the relevance gate', { timeout: 30000 }, () => {
   it('5 bulk + 2 unrelated messages with every auto-action on cause no side effects at all', async () => {
     const s = await setup();
     await enableEverything(s);
-    await syncFixtures(s, [...BULK, ...UNRELATED]);
+    const result = await syncFixtures(s, [...BULK, ...UNRELATED]);
+    // Stored, but none of it reaches Conversations — the sync says so.
+    expect(result).toMatchObject({ inserted: 7, replies: 0 });
 
     const rows = await db
       .select()
@@ -538,7 +541,7 @@ describe('syncInbound behind the relevance gate', { timeout: 30000 }, () => {
     expect((newsletter.relevanceSignals as StoredRelevanceSignals).evidence.reason).toMatch(
       /bulk signals: .*list-unsubscribe/,
     );
-    // Messages are still stored and threaded (they show in Conversations)…
+    // Messages are still stored and threaded (reply detection needs them)…
     expect(rows.every((r) => r.threadId !== null)).toBe(true);
     // …but never classified.
     expect(rows.every((r) => r.replyClassification === null)).toBe(true);
@@ -579,12 +582,15 @@ describe('syncInbound behind the relevance gate', { timeout: 30000 }, () => {
       messageId: OUR_ID,
       to: ['anna@target.example', 'piotr@target.example', 'gone@target.example'],
     });
-    await syncFixtures(s, [
+    const result = await syncFixtures(s, [
       'newsletter.eml',
       'prospect-reply.eml',
       'auto-reply.eml',
       'postfix-dsn.eml',
     ]);
+    // The reply, the out-of-office and the bounce answer our mail and show
+    // in Conversations; the newsletter does not.
+    expect(result).toMatchObject({ inserted: 4, replies: 3 });
     await settleDetached();
 
     const reply = await inboundByMessageId(s.ws, (await parseFixture('prospect-reply.eml')).messageId);
@@ -625,6 +631,53 @@ describe('syncInbound behind the relevance gate', { timeout: 30000 }, () => {
     expect(refused.length).toBeGreaterThanOrEqual(1);
     expect(refused[0]!.entityId).toBe(bounce.id.toString());
     expect(refused[0]!.payload).toMatchObject({ trigger: 'bounce', relevance: 'bounce' });
+  });
+
+  it("a colleague's reply-all from another connected mailbox counts as new in Conversations", async () => {
+    const s = await setup();
+    await seedOutbound(s, { messageId: OUR_ID, to: ['anna@target.example'] });
+    // ceo@ is the workspace's other connected mailbox; sales@ syncs her
+    // reply-all to our outreach.
+    await db.insert(mailboxes).values({
+      workspaceId: s.ws,
+      name: 'ceo',
+      fromAddress: 'ceo@nulife.pl',
+      smtpHost: 'smtp.x',
+      smtpUser: 'ceo@nulife.pl',
+      smtpPasswordSecretKey: 'mailbox.smtpPassword_fixedfortests',
+      imapFolder: 'INBOX',
+      status: 'active',
+    });
+    const provider = new MockMailProvider();
+    provider.enqueueInbound({
+      uid: 1,
+      messageId: '<ceo-reply-all@nulife.pl>',
+      inReplyTo: OUR_ID,
+      references: [OUR_ID],
+      from: { address: 'ceo@nulife.pl', name: 'The CEO' },
+      to: [{ address: 'anna@target.example' }],
+      cc: [{ address: 'sales@nulife.pl' }],
+      subject: 'Re: Who handles glazing on your team?',
+      textBody: 'Anna, happy to jump on a call too.',
+      htmlBody: null,
+      receivedAt: new Date(),
+      headers: {},
+      attachments: [],
+    });
+    const result = await syncInbound(ctx(s.ws, s.owner), s.mailboxId, provider);
+
+    // The gate keeps it 'unrelated' (no reply pipeline for our own mail)…
+    const row = await inboundByMessageId(s.ws, '<ceo-reply-all@nulife.pl>');
+    expect(row.outreachRelevance).toBe('unrelated');
+    expect((row.relevanceSignals as StoredRelevanceSignals).evidence).toMatchObject({
+      references_our_outbound: true,
+      sender_is_own_mailbox: true,
+    });
+    // …but it answers our mail, Conversations lists it, and the sync says so.
+    const inbox = await listMessages(ctx(s.ws, s.owner), { folder: 'inbox' });
+    expect(inbox.map((r) => r.message.id)).toEqual([row.id]);
+    expect(result).toMatchObject({ fetched: 1, inserted: 1, replies: 1 });
+    expect(describeSyncCounts(result)).toBe('fetched 1: 1 new in Conversations');
   });
 });
 

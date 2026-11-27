@@ -208,6 +208,7 @@ export async function getResearchProviderForCtx(
     }
     return new GeminiResearchProvider({
       apiKey: resolved.key,
+      keySource: resolved.source,
       model: wsModel,
     });
   }
@@ -224,6 +225,7 @@ export async function getResearchProviderForCtx(
     }
     return new PerplexityResearchProvider({
       apiKey: resolved.key,
+      keySource: resolved.source,
       model: wsModel,
     });
   }

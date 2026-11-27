@@ -170,7 +170,12 @@ ${b.screens}
    limitations, I005). {H-14}
 
 ## Replies (/communication)
-[/communication] shows every thread with its full history. "Suggest
+[/communication] shows only the conversations the platform started —
+outreach, follow-ups and mail written in the app — together with the
+replies, auto-replies and delivery reports they get. The rest of a
+synced mailbox (newsletters, colleagues, receipts) is stored so replies
+can be recognised, but it is never listed, counted or searchable here;
+it stays in your own mail app. "Suggest
 reply (AI)" on a thread drafts a knowledge-grounded reply for you to
 edit and send from the thread. Emails you write yourself (from a
 thread or a mailbox's compose page) and drafts that answer a
@@ -179,8 +184,8 @@ and footer that cold emails and follow-ups carry. {H-26}
 Only mail that answers your outreach — a reply to one of your emails,
 an auto-reply, or a delivery report about one — gets a class:
 ${b.replyClasses}. {H-17} Newsletters, notifications
-and other unrelated mail are filed on their thread without a class and
-trigger nothing (see Known limitations, X1). On a thread
+and other unrelated mail get no class, are not shown, and trigger
+nothing (see Known limitations, X1). On a thread
 linked to a pipeline lead, and only while "Auto-draft replies" is on,
 the next step follows from the class: interest / doc_request → a pitch
 draft; question / positive → an engagement draft; redirect → a thank-you
@@ -303,8 +308,21 @@ every send) on [/mailbox/suppression].
   search, AI qualification, drafting, reply suggestions, translation.
   1 token ≈ €0.01. New workspaces start with 500 free tokens.
 ${b.billing}
-- When the wallet is empty, discovery, drafting and translation PAUSE
-  until tokens arrive (pack purchase or the next allowance).
+- When the wallet is empty, discovery, qualification, lead research
+  (the Research panel on a lead — answers already looked up still open
+  — and the research before a draft), outreach drafting, writing
+  follow-ups, reply suggestions, Suggest with AI on products, product
+  autofill, the signature redesign, translation (Show translation and
+  Re-translate everywhere, and incoming mail) and reading scanned PDFs
+  PAUSE until tokens arrive (pack purchase or the next allowance):
+  their buttons are refused with a message until then. Documents you
+  upload wait to be indexed — their runs say "waiting for tokens" —
+  and are indexed within minutes of a top-up. A search recipe saved
+  meanwhile keeps its queries untranslated until its next run, which
+  needs tokens anyway. These still run: translating a queued draft or
+  an approved follow-up as it is sent — free of charge, never taken
+  from your tokens. [/settings/integrations] shows what pauses and
+  what still runs.
 - Questions to this guide are metered AI work too. With an empty wallet
   the guide still answers — free, from a built-in checklist of what it
   can see in the workspace, with a link to [/settings/billing] — and
@@ -329,14 +347,16 @@ or failed — and its page updates on its own while it is queued or
 indexing. Editing a source's text, URL, summary or products marks it
 stale and re-indexes it automatically; drafts use the previous version
 until that finishes. A failed run is retried a few times, then the
-workspace gets one notification for that source. {H-39}
+workspace gets one notification for that source. {H-39} Indexing uses
+tokens: with an empty wallet a run waits — it shows "waiting for tokens"
+— and goes ahead within minutes of a top-up; nothing fails.
 Scanned / image-based PDFs (no text layer) are OCR'd automatically via
 Mistral when a Mistral API key is configured (platform-wide by the
 admin, or the workspace's own under BYOK) — once per file: the text is
 kept, so re-indexing never pays for OCR again. Without a key they fail
 with a clear message instead of indexing empty. On a PDF's page, owners
 and admins can force a fresh read with "Re-extract with OCR", which
-shows the estimated cost first. Deleting a knowledge source needs its
+shows the estimated cost first and needs tokens. Deleting a knowledge source needs its
 title typed to confirm.
 Download on a document's page (opened from [/documents]) sends the
 original file through the app to any member of the workspace, viewers
@@ -375,8 +395,15 @@ existing rule's confidence instead, with the new event added to its
 evidence chain.
 
 ## Settings that matter
-- [/settings/integrations]: AI provider (BYOK), Web Search backend
-  (Gemini grounding recommended), embeddings, research provider.
+- [/settings/integrations]: "What runs, and on whose key" lists each job
+  (discovery, qualification, lead research, first emails, replies to
+  leads, follow-ups and other writing, knowledge retrieval, reading
+  scanned PDFs) with its provider and model, whether it will run, and
+  whose key it uses: the workspace's own (BYOK, Pro) or the platform's,
+  which the platform admin provides — no key of your own is needed.
+  Without a key qualification still runs, on keyword rules only. In
+  Advanced setup admins pick the AI provider (BYOK), Web Search backend
+  (Gemini grounding recommended), embeddings and research provider.
 - [/settings/outreach] (owners and admins; everyone else sees only the
   reply auto-action switches, read-only): workspace native language,
   default outreach language, "Auto-draft replies" (AI drafts the next
@@ -460,7 +487,8 @@ platform settings is never filed in your workspace. {H-30}
   automation may be paused (owners and admins resume it on [/autopilot]),
   on hold by the platform, or not live for outreach yet; (2) the token
   wallet on [/settings/billing] — an empty wallet pauses discovery,
-  drafting and translation; (3) the autopilot master switch on
+  qualification, drafting and some translation (Tokens & billing lists
+  what pauses and what still runs); (3) the autopilot master switch on
   [/autopilot]; (4) each mailbox's status under [/mailbox] — paused or
   failing.
 `.trim();
