@@ -23,6 +23,13 @@ import type { WorkspaceContext } from '@/lib/services/context';
 
 export interface GeminiResearchConfig {
   apiKey: string;
+  /** Whose key `apiKey` is: resolveProviderKey's `source`. The usage is
+   *  logged with it, and recordUsage debits the platform's (a console key
+   *  or the env var) but never the workspace's own. Required: the adapter
+   *  cannot tell from the key itself — it used to compare the key with
+   *  GEMINI_API_KEY, which logged a console key as the workspace's own,
+   *  so lead research and grounded discovery on it were never debited. */
+  keySource: 'workspace' | 'platform';
   /** Model id, default 'gemini-2.0-flash'. */
   model?: string;
   /** Override base URL — useful for proxies. */
@@ -50,11 +57,13 @@ export class GeminiResearchProvider implements IResearchProvider {
   public readonly id = 'gemini';
   public readonly model: string;
   private readonly apiKey: string;
+  private readonly keySource: 'workspace' | 'platform';
   private readonly baseUrl: string;
   private readonly defaultTimeoutMs: number;
 
   constructor(config: GeminiResearchConfig) {
     this.apiKey = config.apiKey;
+    this.keySource = config.keySource;
     // gemini-2.5-flash is the current Flash generation that supports
     // the google_search grounding tool. gemini-2.0-flash was retired
     // for new users early 2026.
@@ -71,6 +80,7 @@ export class GeminiResearchProvider implements IResearchProvider {
     }
     return new GeminiResearchProvider({
       apiKey,
+      keySource: 'platform',
       model: process.env.RESEARCH_MODEL,
       baseUrl: process.env.GEMINI_BASE_URL,
     });
@@ -135,7 +145,7 @@ export class GeminiResearchProvider implements IResearchProvider {
           outputTokens,
           searchQueries,
         ),
-        keySource: this.apiKey === process.env.GEMINI_API_KEY ? 'platform' : 'workspace',
+        keySource: this.keySource,
       },
     };
   }

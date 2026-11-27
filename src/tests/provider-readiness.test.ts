@@ -605,28 +605,49 @@ describe('discovery agrees with getWebSearchProviderForCtx', () => {
     expect(r.discoveryPlatformDefault).toBe('gemini');
   });
 
-  it('grounded search on a console key promises no token billing (the adapter logs it as the workspace\'s own)', async () => {
+  it('grounded search on a console key is paid from tokens, and the adapter logs it as the platform\'s', async () => {
+    // Until 27 Nov the grounding adapter compared its key with the env
+    // var: a console key was logged as the workspace's own and never
+    // debited, and this row promised no billing to match. The factory now
+    // hands the adapter resolveProviderKey's source.
     await consoleKey('gemini.apiKey');
     const ctx = await tenant();
     const r = await getProviderReadiness(ctx);
-    expect(jobOf(r.jobs, 'discovery').billedFromTokens).toBe(false);
+    expect(jobOf(r.jobs, 'discovery')).toMatchObject({
+      key: 'platform',
+      platformKeyDebited: true,
+      billedFromTokens: true,
+    });
     const html = await panel(r);
     expect(rowHtml(html, 'discovery')).toContain('Runs on Leadsonar&#x27;s Google Gemini key');
-    expect(rowHtml(html, 'discovery')).not.toContain('token balance');
+    expect(rowHtml(html, 'discovery')).toContain('Usage is paid from your token balance');
     const line = clean(
       await renderToHtml(
         KeySourceLine({ vendor: 'gemini', readiness: r, isAdmin: true, byokAllowed: true }),
       ),
     );
-    // The key line says the platform key's usage is paid from tokens and
-    // names what is not: the grounded search and research (here Gemini
-    // also writes, as the auto-detected AI provider, and that is debited).
-    // It used to name only the debited jobs, which read as "the rest of
-    // this key's usage is free" — Suggest with AI and large uploads' index
-    // embeddings are debited too.
-    expect(line).toContain(
-      'Leadsonar provides the key; usage is paid from your token balance, except Discovery and Lead research, which are not charged.',
-    );
+    // Every job on the key is debited (Gemini also writes, as the
+    // auto-detected AI provider): no exception to name.
+    expect(line).toContain('Leadsonar provides the key; usage is paid from your token balance.');
+    expect(line).not.toContain('not charged');
+    // The runtime agrees: the safety net's adapter reports the console key
+    // as the platform's, so the connector's usage row is debited.
+    stubGeminiFetch();
+    try {
+      const outcome = await (await getWebSearchProviderForCtx(ctx)).search(ctx, 'pump buyers');
+      expect(outcome.usage.keySource).toBe('platform');
+      // The workspace's own key — even one holding the platform key's very
+      // value — is the workspace's: never debited.
+      await byokKey(ctx.workspaceId, 'gemini.apiKey', 'console-gemini.apiKey');
+      const own = await (await getWebSearchProviderForCtx(ctx)).search(ctx, 'pump buyers');
+      expect(own.usage.keySource).toBe('workspace');
+      expect(jobOf((await getProviderReadiness(ctx)).jobs, 'discovery')).toMatchObject({
+        key: 'workspace',
+        billedFromTokens: false,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('follows the workspace grounding choice only when its key exists', async () => {
@@ -958,25 +979,26 @@ describe('what the page says when a job cannot run', () => {
     expect(html).toContain(
       'Discovery, Qualification, First emails, Replies to leads, Follow-ups and other writing, Knowledge retrieval pause until tokens are added.',
     );
-    // OCR on the platform key is still debited (recordUsage has no floor);
-    // research on the console's Gemini key is not (the adapter logs it as
-    // the workspace's own). Suggest with AI checks no wallet and is
-    // debited; so is the ungated translation on the drafting provider.
-    // Of lead research only the Research panel runs: the research before
-    // a draft sits behind generateOutreachDraft's assertTokens. Indexing
-    // an upload embeds on the platform OpenAI key, ungated and debited.
+    // OCR on the platform key is still debited (recordUsage has no floor),
+    // and so is research on the console's Gemini key (the adapter logs the
+    // key source its factory resolved). Suggest with AI checks no wallet
+    // and is debited; so is the ungated translation on the drafting
+    // provider. Of lead research only the Research panel runs: the
+    // research before a draft sits behind generateOutreachDraft's
+    // assertTokens. Indexing an upload embeds on the platform OpenAI key,
+    // ungated and debited.
     expect(html).toContain(
-      'The Research panel on a lead, Reading scanned PDFs, Suggest with AI on products, some translation and the signature redesign, and indexing the documents you upload still run, and their usage is still deducted (except the Research panel on a lead), so the balance can go below zero.',
+      'The Research panel on a lead, Reading scanned PDFs, Suggest with AI on products, some translation and the signature redesign, and indexing the documents you upload still run, and their usage is still deducted, so the balance can go below zero.',
     );
     expect(html).not.toContain('Lead research, Reading scanned PDFs');
     expect(html).not.toContain('refused');
+    expect(html).not.toContain('(except');
     expect(rowHtml(html, 'ocr')).toContain(
       'It still runs while the token balance is empty, and its usage is still deducted',
     );
     expect(rowHtml(html, 'research')).toContain(
-      'The Research panel on a lead still runs while the token balance is empty. The research before a draft pauses with drafting while the token balance is empty.',
+      'The Research panel on a lead still runs while the token balance is empty, and its usage is still deducted, so the balance can go below zero. The research before a draft pauses with drafting while the token balance is empty.',
     );
-    expect(rowHtml(html, 'research')).not.toContain('deducted');
     expect(rowHtml(html, 'research')).not.toContain('It still runs');
     // The row pauses, but not the translation on its provider that checks
     // no wallet — Show translation / Re-translate on a draft and a new
@@ -1061,42 +1083,91 @@ describe('what the page says when a job cannot run', () => {
     expect(row).not.toContain('still written');
   });
 
-  it('grounded research debits exactly when the page says: an env key yes, a console key no', async () => {
+  it('grounded research debits exactly when the page says: a platform key yes (console or env), the workspace\'s own no', async () => {
     const ctx = await tenant();
     const { lead } = await seedLead(ctx);
     await setBalance(ctx, 0n);
     stubGeminiFetch();
     try {
-      // A console key (not the env var's value): logged as the workspace's
-      // own, never debited.
+      // A console key that is not the env var's value — prod's setup.
+      // Until 27 Nov the adapter compared its key with the env var and
+      // logged this one as the workspace's own: never debited.
       process.env.GEMINI_API_KEY = 'env-gemini';
       await consoleKey('gemini.apiKey', 'console-gemini');
-      expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research').platformKeyDebited).toBe(
-        false,
-      );
+      expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research')).toMatchObject({
+        key: 'platform',
+        platformKeyDebited: true,
+        billedFromTokens: true,
+        state: 'ready',
+      });
       await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who buys?' });
-      expect(await balanceOf(ctx)).toBe(0n);
-
-      // The console key holds the env var's very value: logged as the
-      // platform's, debited — the page says so, and the run takes the
-      // balance below zero.
-      await dropConsoleKey('gemini.apiKey');
-      await consoleKey('gemini.apiKey', 'env-gemini');
-      expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research').platformKeyDebited).toBe(
-        true,
-      );
-      await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who installs?' });
       const afterConsole = await balanceOf(ctx);
       expect(afterConsole).toBeLessThan(0n);
 
-      // Only the env key: debited, further below zero, on an empty wallet.
+      // Only the env key: debited too, further below zero.
       await dropConsoleKey('gemini.apiKey');
       expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research')).toMatchObject({
-        platformKeyDebited: true,
-        state: 'ready',
+        key: 'platform',
+        billedFromTokens: true,
+      });
+      await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who installs?' });
+      const afterEnv = await balanceOf(ctx);
+      expect(afterEnv).toBeLessThan(afterConsole);
+
+      // The workspace's own key, even one holding the env var's very value
+      // (which the old comparison logged as the platform's, debiting the
+      // tenant for its own key): never debited, and the page says so.
+      await byokKey(ctx.workspaceId, 'gemini.apiKey', 'env-gemini');
+      expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research')).toMatchObject({
+        key: 'workspace',
+        billedFromTokens: false,
       });
       await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who sells?' });
-      expect(await balanceOf(ctx)).toBeLessThan(afterConsole);
+      expect(await balanceOf(ctx)).toBe(afterEnv);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('Perplexity research on a console key is debited too, and on the workspace\'s own key never', async () => {
+    process.env.RESEARCH_PROVIDER = 'perplexity';
+    process.env.PERPLEXITY_API_KEY = 'env-perplexity';
+    const ctx = await tenant();
+    const { lead } = await seedLead(ctx);
+    await setBalance(ctx, 0n);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: 'They buy pumps.' } }],
+            usage: { prompt_tokens: 100, completion_tokens: 100 },
+            citations: ['https://pumps.example/buyers'],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    try {
+      await consoleKey('perplexity.apiKey', 'console-perplexity');
+      expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research')).toMatchObject({
+        vendor: 'perplexity',
+        key: 'platform',
+        billedFromTokens: true,
+      });
+      const run = await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who buys?' });
+      expect(run.outcome?.usage.keySource).toBe('platform');
+      const afterConsole = await balanceOf(ctx);
+      expect(afterConsole).toBeLessThan(0n);
+
+      await byokKey(ctx.workspaceId, 'perplexity.apiKey', 'env-perplexity');
+      expect(jobOf((await getProviderReadiness(ctx)).jobs, 'research')).toMatchObject({
+        key: 'workspace',
+        billedFromTokens: false,
+      });
+      const own = await researchLead(ctx, { qualifiedLeadId: lead.id, question: 'Who sells?' });
+      expect(own.outcome?.usage.keySource).toBe('workspace');
+      expect(await balanceOf(ctx)).toBe(afterConsole);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1182,7 +1253,7 @@ describe('the alerts: a key gap never hides the empty wallet', () => {
     );
     // Without a key, reading scanned PDFs is not among what still runs.
     expect(html).toContain(
-      'The Research panel on a lead, Suggest with AI on products, some translation and the signature redesign, and indexing the documents you upload still run, and their usage is still deducted (except the Research panel on a lead), so the balance can go below zero.',
+      'The Research panel on a lead, Suggest with AI on products, some translation and the signature redesign, and indexing the documents you upload still run, and their usage is still deducted, so the balance can go below zero.',
     );
     // A member gets the same alerts, without the purchase action.
     const member = await panel(r, { isAdmin: false });

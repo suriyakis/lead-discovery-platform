@@ -24,6 +24,9 @@ import type { WorkspaceContext } from '@/lib/services/context';
 
 export interface PerplexityResearchConfig {
   apiKey: string;
+  /** Whose key `apiKey` is: resolveProviderKey's `source` (see
+   *  GeminiResearchConfig.keySource — the same rule and the same bug). */
+  keySource: 'workspace' | 'platform';
   /** Model id, default 'sonar'. */
   model?: string;
   baseUrl?: string;
@@ -50,11 +53,13 @@ export class PerplexityResearchProvider implements IResearchProvider {
   public readonly id = 'perplexity';
   public readonly model: string;
   private readonly apiKey: string;
+  private readonly keySource: 'workspace' | 'platform';
   private readonly baseUrl: string;
   private readonly defaultTimeoutMs: number;
 
   constructor(config: PerplexityResearchConfig) {
     this.apiKey = config.apiKey;
+    this.keySource = config.keySource;
     this.model = config.model ?? 'sonar';
     this.baseUrl = config.baseUrl ?? 'https://api.perplexity.ai';
     this.defaultTimeoutMs = config.timeoutMs ?? 60_000;
@@ -69,6 +74,7 @@ export class PerplexityResearchProvider implements IResearchProvider {
     }
     return new PerplexityResearchProvider({
       apiKey,
+      keySource: 'platform',
       model: process.env.RESEARCH_MODEL,
       baseUrl: process.env.PERPLEXITY_BASE_URL,
     });
@@ -123,8 +129,7 @@ export class PerplexityResearchProvider implements IResearchProvider {
         outputTokens,
         searchQueries,
         costEstimateCents: this.computeCost(inputTokens, outputTokens),
-        keySource:
-          this.apiKey === process.env.PERPLEXITY_API_KEY ? 'platform' : 'workspace',
+        keySource: this.keySource,
       },
     };
   }

@@ -13,10 +13,7 @@
 //                selector → auto-detect (resolveActiveProvider)
 //   API key      workspace BYOK → console platform key → env platform key
 //                (resolveProviderKey's order; existence only, so a revoked
-//                key still reads as present — the one decrypt is the Gemini
-//                and Perplexity platform key, compared with the env var as
-//                their adapters do to decide whether usage is debited:
-//                groundedPlatformKeyDebited)
+//                key still reads as present)
 // One row per job, each mirroring its factory:
 //   discovery      getWebSearchProviderForCtx (src/lib/search/web-search.ts):
 //                  the workspace's grounding choice when its key exists,
@@ -72,7 +69,7 @@ import {
   resolveTieredModel,
   type ResolvedProvider,
 } from './provider-settings';
-import { hasPlatformSecretKey, hasSecret, resolvePlatformProviderKey } from './secrets';
+import { hasPlatformSecretKey, hasSecret } from './secrets';
 import { getTokenWallet } from './token-ledger';
 
 /** Whose key a call would run on. */
@@ -145,9 +142,9 @@ export interface JobReadiness {
   /** Usage of this job on the vendor's PLATFORM key is debited from the
    *  token balance — whichever key it runs on now (a section intro
    *  describes the platform key even while the workspace's own runs).
-   *  For grounded search and research on Gemini / Perplexity only when
-   *  the platform key is the env var's value (groundedPlatformKeyDebited);
-   *  never for knowledge retrieval (KNOWLEDGE_RETRIEVAL_DEBITED). */
+   *  True for every job on a real vendor — a console key and the env var
+   *  alike, since every adapter logs resolveProviderKey's source — except
+   *  knowledge retrieval (KNOWLEDGE_RETRIEVAL_DEBITED). */
   platformKeyDebited: boolean;
   /** A call made now is debited from the token balance: the platform key
    *  and platformKeyDebited. False on the workspace's own key (the vendor
@@ -272,34 +269,13 @@ const JOB_COPY: Record<JobId, { label: string; purpose: string; noKeyEffect: str
   },
 };
 
-const GROUNDED_RESEARCH_VENDORS: ReadonlySet<string> = new Set(['gemini', 'perplexity']);
-
-/**
- * Is grounded search and research on `vendor`'s PLATFORM key debited?
- * research/gemini.ts and research/perplexity.ts log their usage as the
- * platform's — which recordUsage debits — only when the key they were
- * given equals the env var (`this.apiKey === process.env.GEMINI_API_KEY`);
- * any other key is logged as the workspace's own and never debited. The
- * factories pass resolvePlatformProviderKey's key (console first, then the
- * trimmed env var), so: a key kept only in the server env is debited (lead
- * research and discovery, on an empty wallet too); a key saved in the
- * admin console is not, unless it is the env var's very value. This asks
- * the same question of the same key. Drop it when the adapters take the
- * key source from resolveProviderKey.
- */
-async function groundedPlatformKeyDebited(vendor: string): Promise<boolean> {
-  const spec = platformKeyForVendor(vendor);
-  if (!spec) return false;
-  const envValue = process.env[spec.envVar];
-  if (envValue === undefined) return false;
-  try {
-    const platform = await resolvePlatformProviderKey(spec.secretKey, spec.envVar);
-    return platform?.key === envValue;
-  } catch {
-    // A console key that cannot be decrypted fails every call anyway.
-    return false;
-  }
-}
+// Grounded search and research (research/gemini.ts, research/perplexity.ts)
+// need no exception of their own: their factories pass resolveProviderKey's
+// source into the adapter, which logs it, so a console key and the env var
+// are both the platform's and debited, like every other adapter's. (Until
+// 27 Nov the adapters compared the key with the env var instead, and a key
+// saved in the admin console was logged as the workspace's own — never
+// debited; this module mirrored that comparison.)
 
 /**
  * Knowledge retrieval is never debited. On the OpenAI vector store,
@@ -598,13 +574,6 @@ export async function getProviderReadiness(
   };
 
   const walletEmpty = !wallet.billingExempt && wallet.balance <= 0n;
-  const groundedDebited = new Map(
-    await Promise.all(
-      [...GROUNDED_RESEARCH_VENDORS].map(
-        async (v) => [v, await groundedPlatformKeyDebited(v)] as const,
-      ),
-    ),
-  );
   // Indexing an upload is debited when its embeddings run on a platform
   // key: MeteredEmbeddingProvider records the cost with the key's source,
   // and recordUsage debits the platform's (Math.round: a large upload).
@@ -620,13 +589,8 @@ export async function getProviderReadiness(
     // still run on an empty wallet (WALLET_GATED).
     else if (walletEmpty && walletGated) state = 'no_tokens';
     else state = 'ready';
-    const groundedResearch =
-      (job === 'discovery' || job === 'research') && GROUNDED_RESEARCH_VENDORS.has(r.vendor);
     const platformKeyDebited =
-      r.vendor !== 'mock' &&
-      (job === 'knowledge'
-        ? KNOWLEDGE_RETRIEVAL_DEBITED
-        : !groundedResearch || groundedDebited.get(r.vendor) === true);
+      r.vendor !== 'mock' && (job === 'knowledge' ? KNOWLEDGE_RETRIEVAL_DEBITED : true);
     const billedFromTokens = key === 'platform' && platformKeyDebited;
     const part = walletGated ? WALLET_UNGATED_PARTS[job] : undefined;
     return {
